@@ -462,6 +462,9 @@ impl Recognizer {
             list.insert(index as usize, id);
         }
         if old_target != target {
+            if self.pending_tap.as_ref().is_some_and(|pending| pending.gesture == id) {
+                self.pending_tap = None;
+            }
             self.cancel_decl(id, REASON_DISPOSED);
             if let Some(decl) = self
                 .decls
@@ -475,6 +478,13 @@ impl Recognizer {
     }
 
     pub fn dispose(&mut self, id: u32) -> Result<(), String> {
+        if self
+            .pending_tap
+            .as_ref()
+            .is_some_and(|pending| pending.gesture == id)
+        {
+            self.pending_tap = None;
+        }
         let target = self
             .decl(id)
             .ok_or_else(|| format!("unknown gesture {id}"))?
@@ -1196,9 +1206,6 @@ impl Recognizer {
         let mut fail_indices: Vec<usize> = Vec::new();
         for axis in 0..2 {
             let delta = if axis == 0 { dx } else { dy };
-            if delta.abs() < SCROLL_SLOP {
-                continue;
-            }
             let bit = 1u8 << axis;
             if seq.axes_owned & bit != 0 {
                 seq.buffer[axis] = 0.0;
@@ -1210,6 +1217,9 @@ impl Recognizer {
                     continue;
                 }
                 seq.scroll_armed[axis] = true;
+            }
+            if delta.abs() < SCROLL_SLOP {
+                continue;
             }
             if seq.reserved & bit != 0 {
                 seq.buffer[axis] += delta;
@@ -1898,13 +1908,12 @@ fn direction_matches(mask: u8, axis: u8, dx: f32, dy: f32) -> bool {
             }
         }
     };
-    if main >= 0.0 {
-        if main == 0.0 && mask == 0 {
-            return true;
-        }
-        mask & positive != 0 || mask & negative != 0
+    if main > 0.0 {
+        mask & positive != 0
+    } else if main < 0.0 {
+        mask & negative != 0
     } else {
-        mask & negative != 0 || mask & positive != 0
+        true
     }
 }
 
@@ -2217,6 +2226,29 @@ mod tests {
         assert_eq!(scroll.len(), 1);
         assert_eq!(scroll[0].dx, 0.0);
         assert_eq!(scroll[0].dy, -20.0);
+    }
+
+    #[test]
+    fn a_direction_mask_rejects_the_opposite_movement() {
+        let mut rec = Recognizer::new();
+        rec.spawn(2, 10, GestureKind::Pan, 0).unwrap();
+        rec.bind(2, SLOT_START, 7).unwrap();
+        rec.set_prop(2, "axis", &Value::String("x".into())).unwrap();
+        rec.set_prop(2, "direction", &Value::String("left".into()))
+            .unwrap();
+        rec.pointer(down(0.0, 0.0, &[10, 1]));
+        rec.pointer(mv(20.0, 0.0, 10.0));
+        assert!(rec
+            .drain_events()
+            .iter()
+            .all(|event| event.slot != SLOT_START));
+        rec.pointer(up(20.0, 0.0, 20.0));
+        rec.pointer(down(0.0, 0.0, &[10, 1]));
+        rec.pointer(mv(-20.0, 0.0, 30.0));
+        assert!(rec
+            .drain_events()
+            .iter()
+            .any(|event| event.slot == SLOT_START));
     }
 
     #[test]
