@@ -197,6 +197,33 @@ fn move_reorders_and_rejects_a_cycle() {
         ))
         .is_err());
 }
+#[test]
+fn bind_event_hits_the_node_until_cleared() {
+    let mut shell = laid_out();
+    let handle = shell.next_handle();
+    shell
+        .apply_ops(&encode(
+            2,
+            &[
+                Op::CreateNode {
+                    handle,
+                    template_id: 7,
+                    parent: 6,
+                    index: 0,
+                },
+                Op::BindEvent { handle, handler: 9 },
+            ],
+        ))
+        .unwrap();
+    shell.layout(&mut measure).unwrap();
+    let (x, y, w, h) = shell.node_box(handle).unwrap();
+    assert_eq!(shell.tap(x + w / 2.0, y + h / 2.0), Some(9));
+    shell
+        .apply_ops(&encode(3, &[Op::BindEvent { handle, handler: 0 }]))
+        .unwrap();
+    assert_eq!(shell.tap(x + w / 2.0, y + h / 2.0), None);
+}
+
 
 
 

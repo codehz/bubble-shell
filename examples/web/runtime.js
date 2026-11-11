@@ -95,6 +95,11 @@
       index: index >>> 0,
     });
   }
+  function bind(handle, handlerId) {
+    const key = `s:${structSeq}`;
+    structSeq += 1;
+    record(key, { kind: "bind", handle: handle >>> 0, handler: handlerId >>> 0 });
+  }
 
   function u32(value) {
     const bytes = new Uint8Array(4);
@@ -146,6 +151,10 @@
         pushU32(op.handle);
         pushU32(op.parent);
         pushU32(op.index);
+      } else if (op.kind === "bind") {
+        payload.push(6);
+        pushU32(op.handle);
+        pushU32(op.handler);
       }
     }
     const table = [];
@@ -170,5 +179,5 @@
     return out;
   }
 
-  self.bubble = { signal, effect, setText, setColor, create, dispose, move, configure, flush };
+  self.bubble = { signal, effect, setText, setColor, create, dispose, move, bind, configure, flush };
 })();

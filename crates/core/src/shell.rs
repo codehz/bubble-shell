@@ -198,6 +198,7 @@ impl Shell {
                 } => self.create_node(handle, template_id, parent, index)?,
                 Op::DisposeNode { handle } => self.dispose_node(handle)?,
                 Op::MoveNode { handle, parent, index } => self.move_node(handle, parent, index)?,
+                Op::BindEvent { handle, handler } => self.node_mut(handle)?.handler = handler,
             }
         }
         Ok(seq)
