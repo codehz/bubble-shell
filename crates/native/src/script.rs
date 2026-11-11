@@ -48,8 +48,12 @@ pub enum Cmd {
         entry: Vec<u8>,
         ack: Sender<Result<(), String>>,
     },
-    /// Encoded `BSGE` recognition batch from the frame thread.
-    Gesture(Vec<u8>),
+    /// Encoded `BSGE` recognition batch from the frame thread. `epoch`
+    /// identifies the mounted script instance; stale batches are dropped.
+    Gesture {
+        epoch: u32,
+        bytes: Vec<u8>,
+    },
     Eval {
         source: String,
         ack: Option<Sender<Result<String, String>>>,
@@ -166,7 +170,10 @@ impl Session {
                 let _ = ack.send(result);
                 true
             }
-            Cmd::Gesture(bytes) => {
+            Cmd::Gesture { epoch, bytes } => {
+                if epoch != self.shared.input_epoch.load(Ordering::SeqCst) {
+                    return true;
+                }
                 if self.dispatch_gestures(&bytes).is_ok() {
                     self.shared.generation.fetch_add(1, Ordering::Relaxed);
                 }
@@ -201,6 +208,7 @@ impl Session {
     }
 
     fn boot_vm(&mut self) -> Result<(), String> {
+        self.shared.input_epoch.fetch_add(1, Ordering::SeqCst);
         let Some((manifest, entry)) = self.bundle.clone() else {
             return Err("no bundle loaded".into());
         };

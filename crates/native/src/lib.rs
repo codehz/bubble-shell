@@ -75,6 +75,7 @@ pub struct Shared {
     visible: AtomicBool,
     fonts: Mutex<Vec<(String, Vec<u8>)>>,
     epoch: AtomicU32,
+    input_epoch: AtomicU32,
     requests: Arc<Mutex<VecDeque<HostRequest>>>,
     commands: Mutex<Option<Sender<Cmd>>>,
 }
@@ -166,7 +167,10 @@ fn send_events(shared: &Shared, events: Vec<GestureEvent>) {
         return;
     };
     if let Some(tx) = slot.as_ref() {
-        let _ = tx.send(Cmd::Gesture(encode_events(&events)));
+        let _ = tx.send(Cmd::Gesture {
+            epoch: shared.input_epoch.load(Ordering::SeqCst),
+            bytes: encode_events(&events),
+        });
     }
 }
 
@@ -201,6 +205,7 @@ pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
             visible: AtomicBool::new(true),
             fonts: Mutex::new(Vec::new()),
             epoch: AtomicU32::new(0),
+            input_epoch: AtomicU32::new(1),
             requests: Arc::new(Mutex::new(VecDeque::new())),
             commands: Mutex::new(None),
         });

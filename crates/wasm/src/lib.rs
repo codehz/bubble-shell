@@ -244,6 +244,7 @@ pub extern "C" fn boot() -> i32 {
             TURN.with(|slot| *slot.borrow_mut() = Some(Turn::new()));
             SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
             PENDING.with(|queue| queue.borrow_mut().clear());
+            GESTURES.with(|queue| queue.borrow_mut().clear());
             0
         }
         Err(err) => {
