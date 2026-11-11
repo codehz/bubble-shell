@@ -85,9 +85,15 @@ pub fn ios() -> Result<SuiteReport, String> {
     // The install keeps the data container, so a previous run's report would
     // otherwise be read before the new process writes its own.
     let _ = std::fs::remove_file(&result);
-    let _ = run(Command::new("xcrun").args(["simctl", "terminate", "booted", "dev.bubble.shell"]));
-    run(Command::new("xcrun").args(["simctl", "launch", "booted", "dev.bubble.shell"]))?;
-    let body = wait_file(&result, Duration::from_secs(20))?;
+    let udid = booted_simulator()?;
+    run(Command::new("xcodebuild")
+        .args(["test", "-quiet", "-project"])
+        .arg(root.join("examples/ios/BubbleShellUITests.xcodeproj"))
+        .args(["-scheme", "BubbleShellUITests", "-destination"])
+        .arg(format!("platform=iOS Simulator,id={udid}"))
+        .args(["-derivedDataPath"])
+        .arg(root.join("target/ios-uitest")))?;
+    let body = wait_file(&result, Duration::from_secs(40))?;
     Ok(decode("m1.ios", &body))
 }
 
@@ -200,7 +206,14 @@ pub fn android() -> Result<SuiteReport, String> {
     let _ = run(Command::new("adb").args(["shell", "am", "force-stop", "dev.bubble.shell"]));
     let _ = run(Command::new("adb").args(["logcat", "-c"]));
     run(Command::new("adb").args(["shell", "am", "start", "-n", "dev.bubble.shell/.MainActivity"]))?;
-    let body = wait_logcat(Duration::from_secs(25))?;
+    let (left, top, right, bottom) = wait_scroll_rect(Duration::from_secs(10))?;
+    let x = (left + right) / 2;
+    let start = top + (bottom - top) * 7 / 10;
+    let end = top + (bottom - top) * 3 / 10;
+    run(Command::new("adb")
+        .args(["shell"])
+        .arg(format!("input swipe {x} {start} {x} {end} 300")))?;
+    let body = wait_logcat(Duration::from_secs(20))?;
     Ok(decode("m1.android", &body))
 }
 
@@ -245,6 +258,52 @@ fn wait_file(path: &Path, timeout: Duration) -> Result<String, String> {
             return Err(format!("timed out waiting for {}", path.display()));
         }
         thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn booted_simulator() -> Result<String, String> {
+    let output = run(Command::new("xcrun").args(["simctl", "list", "devices", "booted", "-j"]))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&output).map_err(|err| format!("simctl list: {err}"))?;
+    value
+        .get("devices")
+        .and_then(|devices| devices.as_object())
+        .and_then(|devices| {
+            devices
+                .values()
+                .filter_map(|list| list.as_array())
+                .flatten()
+                .find(|device| device.get("state").and_then(|state| state.as_str()) == Some("Booted"))
+                .and_then(|device| device.get("udid").and_then(|udid| udid.as_str()))
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| "no booted simulator".to_string())
+}
+
+fn wait_scroll_rect(timeout: Duration) -> Result<(i64, i64, i64, i64), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let output = Command::new("adb")
+            .args(["logcat", "-d", "-s", "BUBBLE_EVAL:I"])
+            .output()
+            .map_err(|err| err.to_string())?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines().rev() {
+            let Some(rest) = line.split("BUBBLE_SCROLL").nth(1) else {
+                continue;
+            };
+            let numbers: Vec<i64> = rest
+                .split_whitespace()
+                .filter_map(|token| token.trim_start_matches(':').parse().ok())
+                .collect();
+            if numbers.len() >= 4 {
+                return Ok((numbers[0], numbers[1], numbers[2], numbers[3]));
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("timed out waiting for BUBBLE_SCROLL\n{text}"));
+        }
+        thread::sleep(Duration::from_millis(100));
     }
 }
 

@@ -26,6 +26,42 @@ function Counter() {
         <Text color={0xffdddddd} fontSize={18}>Juliet</Text>
         <Text color={0xffdddddd} fontSize={18}>Kilo</Text>
         <Text color={0xffdddddd} fontSize={18}>Lima</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 13</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 14</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 15</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 16</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 17</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 18</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 19</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 20</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 21</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 22</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 23</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 24</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 25</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 26</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 27</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 28</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 29</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 30</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 31</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 32</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 33</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 34</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 35</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 36</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 37</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 38</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 39</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 40</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 41</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 42</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 43</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 44</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 45</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 46</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 47</Text>
+        <Text color={0xffdddddd} fontSize={18}>Item 48</Text>
       </View>
     </View>
   );

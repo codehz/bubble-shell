@@ -68,12 +68,12 @@
 |---|---|---|
 | remount text | `Count: 0` | `Count: 0` |
 | faults | 1 | 1 |
-| frames during hang | 61–62 | 61 |
-| frame budget | 16.67 ms | 16.67 ms |
+| frames during hang | 58 | 60 |
+| frame budget | 16.87 ms | 16.67 ms |
 | font epoch | 1 | 1 |
-| scroll offset | 40.0 | 40.0 |
-| paint bytes | 500 | 500 |
-| 设备内耗时（启动→报告） | ≈1420 ms | ≈1380 ms |
+| scroll offset | 41.7 | 47.7 |
+| paint bytes | 1652 | 1652 |
+| 设备内耗时（启动→报告） | ≈4460 ms | ≈1490 ms |
 
 复现命令：
 
@@ -85,7 +85,7 @@ cargo run -q -p bubble-eval -- android
 说明：
 
 - Android 硬件加速前后差异明显：SwiftShader 软件渲染时 frame budget 为 38.76 / 35.32 ms、死循环期间仅 30–31 帧；切换为 Metal 后为 16.65 / 16.67 ms、61 帧。`dumpsys gfxinfo` 显示 82 帧中 2 帧 janky（2.44%），`Missed Vsync` 为 0。此前的不达标是模拟器软件光栅化导致，不是运行时缺陷。
-- iOS 已接入 `UIPanGestureRecognizer` → `bubble_scroll` 并为 Android 补齐 `scrollOf` JNI。两端设备检查通过缩短 viewport 覆盖滚动路径（紧凑 bundle 在手机高度下不溢出，测试使用 320×180）；手势本身仍未做合成触摸回归。
+- iOS 已接入 `UIPanGestureRecognizer` → `bubble_scroll`，Android 已接入 touch move → `bubble_scroll`。滚动验收使用真实合成触摸：iOS 由 `XCUITest` 拖拽（`examples/ios/BubbleShellUITests.xcodeproj`），Android 由 `adb shell input swipe` 在 scroller 屏幕矩形内滑动；demo bundle 扩展到 48 行，保证在真机高度下也可滚动。两端 scroll offset 均超过 40。
 - 以上仅为模拟器结果，真机 60fps 基线仍需补测；宿主桥与生命周期暂停由 headless 套件覆盖。
 - `crates/native/tests/m1.rs` 已用进程级互斥串行化，`cargo test --workspace` 默认并行运行通过。内存超限与硬超时走同一重建路径，测试覆盖内存超限、双实例拒绝与坏 manifest 拒绝。
 - iOS 设备脚本现在会删除上次的 `m1-result.json` 再启动，避免读到旧报告。

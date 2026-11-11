@@ -16,6 +16,7 @@ class MainActivity : Activity() {
     private var last = System.nanoTime()
     private var phase = 0
     private var hangFrames = 0
+    private var scrollLogged = false
     private val started = System.nanoTime()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,24 +59,37 @@ class MainActivity : Activity() {
                     phase = 2
                 }
                 2 -> {
-                    hangFrames += 1
+                    if (BubbleNative.faults() == 0) hangFrames += 1
                     if (BubbleNative.faults() > 0 && BubbleNative.nodeText(3) == "Count: 0") {
-                        // The compact bundle list fits a phone viewport, so
-                        // use a short window to exercise the scroll path.
-                        BubbleNative.frame(320f, 180f)
-                        val box = BubbleNative.nodeBox(6)
-                        BubbleNative.scroll(box[0] + 1f, box[1] + 1f, 40f)
-                        report()
-                        phase = 3
+                        if (!scrollLogged) {
+                            logScrollerRect()
+                            scrollLogged = true
+                        }
+                        if (BubbleNative.scrollOf(6) >= 40f) {
+                            report()
+                            phase = 3
+                        }
                     }
                 }
             }
-            if (phase != 3 && now - started > 4_000_000_000L) {
+            if (phase != 3 && now - started > 12_000_000_000L) {
                 report()
                 phase = 3
             }
             if (phase != 3) Choreographer.getInstance().postFrameCallback(this)
         }
+    }
+
+    private fun logScrollerRect() {
+        val box = BubbleNative.nodeBox(6)
+        val density = resources.displayMetrics.density
+        val location = IntArray(2)
+        shell.getLocationOnScreen(location)
+        val left = location[0] + shell.paddingLeft + box[0] * density
+        val top = location[1] + shell.paddingTop + box[1] * density
+        val right = location[0] + shell.paddingLeft + (box[0] + box[2]) * density
+        val bottom = location[1] + shell.paddingTop + (box[1] + box[3]) * density
+        Log.i("BUBBLE_EVAL", "BUBBLE_SCROLL ${left.toInt()} ${top.toInt()} ${right.toInt()} ${bottom.toInt()}")
     }
 
     private fun report() {
@@ -91,7 +105,7 @@ class MainActivity : Activity() {
         add("frames during hang", hangFrames >= 10, hangFrames.toString())
         add("frame budget", average < 20.0, "%.2f".format(average))
         add("font epoch", BubbleNative.fontEpoch() > 0, BubbleNative.fontEpoch().toString())
-        add("scroll offset", BubbleNative.scrollOf(6) > 0f, BubbleNative.scrollOf(6).toString())
+        add("scroll offset", BubbleNative.scrollOf(6) >= 40f, BubbleNative.scrollOf(6).toString())
         add("paint bytes", shell.paintSize() > 16, shell.paintSize().toString())
         val ok = (0 until checks.length()).all { checks.getJSONObject(it).getBoolean("ok") }
         val elapsed = (System.nanoTime() - started) / 1_000_000
