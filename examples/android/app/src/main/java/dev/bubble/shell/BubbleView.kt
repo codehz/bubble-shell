@@ -8,6 +8,7 @@ import android.graphics.Path
 import android.graphics.Typeface
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowInsets
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -22,6 +23,7 @@ class BubbleView(context: Context) : View(context) {
 
     init {
         setBackgroundColor(Color.BLACK)
+        setOnApplyWindowInsetsListener { _, insets -> onApplyWindowInsets(insets) }
     }
 
     fun setHostTypeface(typeface: Typeface) {
@@ -29,11 +31,31 @@ class BubbleView(context: Context) : View(context) {
     }
 
     fun refresh() {
-        paintBytes = BubbleNative.frame(width.toFloat(), height.toFloat())
+        val size = contentSize()
+        paintBytes = BubbleNative.frame(size[0], size[1])
         invalidate()
     }
 
+    override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            val bars = insets.getInsets(WindowInsets.Type.systemBars())
+            setPadding(bars.left, bars.top, bars.right, bars.bottom)
+        }
+        return insets
+    }
+
+    private fun contentSize(): FloatArray {
+        val density = resources.displayMetrics.density.coerceAtLeast(1f)
+        return floatArrayOf(
+            (width - paddingLeft - paddingRight) / density,
+            (height - paddingTop - paddingBottom) / density,
+        )
+    }
+
     override fun onDraw(canvas: Canvas) {
+        val density = resources.displayMetrics.density
+        canvas.translate(paddingLeft.toFloat(), paddingTop.toFloat())
+        canvas.scale(density, density)
         val buffer = ByteBuffer.wrap(paintBytes).order(ByteOrder.LITTLE_ENDIAN)
         if (buffer.remaining() < 4) return
         val count = buffer.int
@@ -90,10 +112,10 @@ class BubbleView(context: Context) : View(context) {
             MotionEvent.ACTION_DOWN -> {
                 tracking = true
                 lastY = event.y
-                BubbleNative.pointerDown(event.x, event.y)
+                BubbleNative.pointerDown(localX(event.x), localY(event.y))
             }
             MotionEvent.ACTION_MOVE -> if (tracking) {
-                BubbleNative.scroll(event.x, event.y, lastY - event.y)
+                BubbleNative.scroll(localX(event.x), localY(event.y), (lastY - event.y) / resources.displayMetrics.density)
                 lastY = event.y
                 refresh()
             }
@@ -101,6 +123,9 @@ class BubbleView(context: Context) : View(context) {
         }
         return true
     }
+
+    private fun localX(x: Float) = (x - paddingLeft) / resources.displayMetrics.density
+    private fun localY(y: Float) = (y - paddingTop) / resources.displayMetrics.density
 
     private fun color(argb: Int): Int = argb
 }
