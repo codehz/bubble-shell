@@ -10,7 +10,8 @@ use std::collections::VecDeque;
 
 use bubble_core::{
     encode_events, encode_paint, encode_set_text, validate_bundle_hashes, GestureEvent,
-    NodeDesc, Op, PointerAction, PointerInput, Shell, Turn, Value, DEFERRED_PROPS, SPAWN_PROPS,
+    GestureKind, NodeDesc, Op, PointerAction, PointerInput, Shell, Turn, Value, DEFERRED_PROPS,
+    SPAWN_PROPS,
 };
 
 thread_local! {
@@ -513,6 +514,116 @@ pub extern "C" fn queue_text(handle: u32, ptr: *const u8, len: u32) -> i32 {
 pub extern "C" fn bind_event(handle: u32, handler: u32) -> i32 {
     match with_turn(|turn| {
         turn.bind_event(handle, handler);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn spawn_gesture(target: u32, kind: u32, index: u32) -> u32 {
+    let Some(kind) = GestureKind::parse(kind) else {
+        set_error(format!("bad gesture kind {kind}"));
+        return 0;
+    };
+    match with_turn(|turn| turn.spawn_gesture(target, kind, index)) {
+        Ok(handle) => handle,
+        Err(err) => {
+            set_error(err);
+            0
+        }
+    }
+}
+
+fn read_value(tag: u32, number: f64, text_ptr: *const u8, text_len: u32) -> Result<Value, String> {
+    Ok(match tag {
+        0 => Value::Null,
+        1 => Value::Bool(number != 0.0),
+        2 => Value::Int(number as i64),
+        3 => Value::Float(number),
+        4 => {
+            let bytes = unsafe { std::slice::from_raw_parts(text_ptr, text_len as usize) };
+            let text = std::str::from_utf8(bytes).map_err(|_| "prop string is not utf-8")?;
+            Value::String(text.to_owned())
+        }
+        other => return Err(format!("unsupported prop tag {other}")),
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn set_gesture_prop(
+    handle: u32,
+    key_ptr: *const u8,
+    key_len: u32,
+    tag: u32,
+    number: f64,
+    text_ptr: *const u8,
+    text_len: u32,
+) -> i32 {
+    let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
+    let Ok(key) = std::str::from_utf8(key_bytes) else {
+        set_error("gesture key is not utf-8".into());
+        return 1;
+    };
+    let value = match read_value(tag, number, text_ptr, text_len) {
+        Ok(value) => value,
+        Err(err) => {
+            set_error(err);
+            return 1;
+        }
+    };
+    match with_turn(|turn| {
+        turn.set_gesture_prop(handle, key, value.clone());
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn bind_gesture_event(handle: u32, slot: u32, handler: u32) -> i32 {
+    if !(1..=9).contains(&slot) {
+        set_error(format!("bad gesture event slot {slot}"));
+        return 1;
+    }
+    match with_turn(|turn| {
+        turn.bind_gesture_event(handle, slot as u8, handler);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dispose_gesture(handle: u32) -> i32 {
+    match with_turn(|turn| {
+        turn.dispose_gesture(handle);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn move_gesture(handle: u32, target: u32, index: u32) -> i32 {
+    match with_turn(|turn| {
+        turn.move_gesture(handle, target, index);
         Ok(())
     }) {
         Ok(()) => 0,

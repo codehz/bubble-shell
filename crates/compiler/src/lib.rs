@@ -571,11 +571,16 @@ fn jsx_name(name: &JSXElementName<'_>) -> Result<String, String> {
         "View" => Ok("View".into()),
         "Text" => Ok("Text".into()),
         "Image" => Ok("Image".into()),
+        "TapGesture" => Ok("TapGesture".into()),
+        "DoubleTapGesture" => Ok("DoubleTapGesture".into()),
+        "LongPressGesture" => Ok("LongPressGesture".into()),
+        "PanGesture" => Ok("PanGesture".into()),
+        "TransformGesture" => Ok("TransformGesture".into()),
         other if other.chars().next().is_some_and(char::is_uppercase) => {
             Ok(format!("component:{other}"))
         }
         other => Err(format!(
-            "unknown primitive <{other}>; use View, Text, or a capitalized component"
+            "unknown primitive <{other}>; use View, Text, Image, a gesture, or a capitalized component"
         )),
     }
 }

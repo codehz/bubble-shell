@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use bubble_ffi::{
     bubble_create, bubble_destroy, bubble_eval, bubble_faults, bubble_finish_request,
     bubble_font_count, bubble_font_epoch, bubble_frame, bubble_generation, bubble_last_error,
-    bubble_load, bubble_node_box, bubble_node_text, bubble_pointer_down, bubble_poll_request,
+    bubble_load, bubble_node_box, bubble_node_text, bubble_pointer, bubble_poll_request,
     bubble_post_eval, bubble_register_font, bubble_scroll, bubble_scroll_y_of, bubble_set_visible,
     bubble_status,
 };
@@ -106,7 +106,9 @@ fn counter_tap_scroll_and_font_epoch() {
     );
     assert!(w > 0.0 && h > 0.0, "button box {x},{y} {w}x{h}");
     let generation = bubble_generation();
-    bubble_pointer_down(x + w / 2.0, y + h / 2.0);
+    let (tx, ty) = (x + w / 2.0, y + h / 2.0);
+    assert_eq!(bubble_pointer(0, 1, tx, ty, 0.0, 0, 1), 0, "{}", error());
+    assert_eq!(bubble_pointer(2, 1, tx, ty, 20.0, 0, 0), 0, "{}", error());
     let deadline = Instant::now() + Duration::from_secs(2);
     while bubble_generation() == generation && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));

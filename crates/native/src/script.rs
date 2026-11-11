@@ -9,7 +9,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use bubble_core::{validate_bundle_hashes, NodeDesc, Op, Turn, Value, DEFERRED_PROPS, SPAWN_PROPS};
+use bubble_core::{
+    validate_bundle_hashes, GestureKind, NodeDesc, Op, Turn, Value, DEFERRED_PROPS, SPAWN_PROPS,
+};
 use rquickjs::{Array, Context, Ctx, Function, Object, Runtime, TypedArray, Value as JsValue};
 use serde::Deserialize;
 
@@ -46,11 +48,8 @@ pub enum Cmd {
         entry: Vec<u8>,
         ack: Sender<Result<(), String>>,
     },
-    Press {
-        handler: u32,
-        x: f32,
-        y: f32,
-    },
+    /// Encoded `BSGE` recognition batch from the frame thread.
+    Gesture(Vec<u8>),
     Eval {
         source: String,
         ack: Option<Sender<Result<String, String>>>,
@@ -167,8 +166,8 @@ impl Session {
                 let _ = ack.send(result);
                 true
             }
-            Cmd::Press { handler, x, y } => {
-                if self.press(handler, x, y).is_ok() {
+            Cmd::Gesture(bytes) => {
+                if self.dispatch_gestures(&bytes).is_ok() {
                     self.shared.generation.fetch_add(1, Ordering::Relaxed);
                 }
                 true
@@ -241,11 +240,11 @@ impl Session {
         }
     }
 
-    fn press(&mut self, handler: u32, x: f32, y: f32) -> Result<(), String> {
+    fn dispatch_gestures(&mut self, bytes: &[u8]) -> Result<(), String> {
         let Some(vm) = self.vm.as_ref() else {
-            return Err("bundle is not loaded".into());
+            return Ok(());
         };
-        match guarded(|| press_in(vm, handler, x, y)) {
+        match guarded(|| gesture_in(vm, bytes)) {
             Ok(()) => Ok(()),
             Err(err) => {
                 if fatal(&err) {
@@ -384,11 +383,12 @@ fn eval_in(vm: &Vm, source: &str) -> Result<String, String> {
     result.map_err(|err: rquickjs::Error| format_eval(vm, err))
 }
 
-fn press_in(vm: &Vm, handler: u32, x: f32, y: f32) -> Result<(), String> {
+fn gesture_in(vm: &Vm, bytes: &[u8]) -> Result<(), String> {
     enter_js();
     let result = vm.context.with(|ctx| {
-        let press: Function = ctx.globals().get("__bubblePress")?;
-        press.call::<_, ()>((handler, x, y))?;
+        let array = TypedArray::new(ctx.clone(), bytes.to_vec())?;
+        let dispatch: Function = ctx.globals().get("__bubbleGesture")?;
+        dispatch.call::<_, ()>((array,))?;
         pump(&ctx);
         Ok(())
     });
@@ -528,6 +528,26 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
         Function::new(ctx.clone(), api_queue_text)?,
     )?;
     api.set("bind_event", Function::new(ctx.clone(), api_bind)?)?;
+    api.set(
+        "spawn_gesture",
+        Function::new(ctx.clone(), api_spawn_gesture)?,
+    )?;
+    api.set(
+        "set_gesture_prop",
+        Function::new(ctx.clone(), api_set_gesture_prop)?,
+    )?;
+    api.set(
+        "bind_gesture_event",
+        Function::new(ctx.clone(), api_bind_gesture_event)?,
+    )?;
+    api.set(
+        "dispose_gesture",
+        Function::new(ctx.clone(), api_dispose_gesture)?,
+    )?;
+    api.set(
+        "move_gesture",
+        Function::new(ctx.clone(), api_move_gesture)?,
+    )?;
     api.set("commit", Function::new(ctx.clone(), api_commit)?)?;
     api.set("request", Function::new(ctx.clone(), api_request)?)?;
     api.set("schedule", Function::new(ctx.clone(), api_schedule)?)?;
@@ -803,6 +823,93 @@ fn api_queue_text(handle: f64, text: String) -> i32 {
 fn api_bind(handle: f64, handler: f64) -> i32 {
     match with_turn(|turn| {
         turn.bind_event(handle as u32, handler as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_spawn_gesture(target: f64, kind: f64, index: f64) -> u32 {
+    let Some(kind) = GestureKind::parse(kind as u32) else {
+        set_api_error(format!("bad gesture kind {kind}"));
+        return 0;
+    };
+    match with_turn(|turn| turn.spawn_gesture(target as u32, kind, index as u32)) {
+        Ok(handle) => handle,
+        Err(err) => {
+            set_api_error(err);
+            0
+        }
+    }
+}
+
+fn api_set_gesture_prop(
+    handle: f64,
+    key: String,
+    tag: f64,
+    number: f64,
+    text: String,
+) -> i32 {
+    let value = match tag as u32 {
+        0 => Value::Null,
+        1 => Value::Bool(number != 0.0),
+        2 => Value::Int(number as i64),
+        3 => Value::Float(number),
+        4 => Value::String(text),
+        other => {
+            set_api_error(format!("unsupported prop tag {other}"));
+            return 1;
+        }
+    };
+    match with_turn(|turn| {
+        turn.set_gesture_prop(handle as u32, key, value.clone());
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_bind_gesture_event(handle: f64, slot: f64, handler: f64) -> i32 {
+    if !(1..=9).contains(&(slot as u32)) {
+        set_api_error(format!("bad gesture event slot {slot}"));
+        return 1;
+    }
+    match with_turn(|turn| {
+        turn.bind_gesture_event(handle as u32, slot as u8, handler as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_dispose_gesture(handle: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.dispose_gesture(handle as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_move_gesture(handle: f64, target: f64, index: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.move_gesture(handle as u32, target as u32, index as u32);
         Ok(())
     }) {
         Ok(()) => 0,

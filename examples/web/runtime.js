@@ -9,6 +9,13 @@ const parentOf = new Map();
 const cursors = [];
 const collectors = [];
 let nextHandler = 1;
+const gestureHandlers = new Map();
+const gesturesOfTarget = new Map();
+const gestureOrderOfTarget = new Map();
+const gestureParentOf = new Map();
+const gestureBindings = new Map();
+const gestureHandlerIds = new Map();
+const sugarTargets = new Set();
 const encoder = typeof TextEncoder === "function" ? new TextEncoder() : null;
 
 export function setApi(next) {
@@ -257,15 +264,8 @@ function pack(kind, props, text) {
     registerChild(parentHandle, handle);
   }
   if (props.onPress) {
-    const id = nextHandler++;
-    handlers.set(id, props.onPress);
-    let owned = handlersOfNode.get(handle);
-    if (!owned) {
-      owned = new Set();
-      handlersOfNode.set(handle, owned);
-    }
-    owned.add(id);
-    if (api.bind_event(handle, id) !== 0) throw new Error(api.error() || "bind failed");
+    if (typeof props.onPress !== "function") throw new Error("onPress must be a function");
+    createSugarTap(handle, props.onPress);
   }
   for (const [key, value] of deferredValues) setProp(handle, key, value);
   for (const [key, run] of dynamics) bindProp(handle, key, run);
@@ -311,9 +311,181 @@ export function primitive(name, props, children) {
   return factory(props, children);
 }
 
+const GESTURE_KINDS = {
+  TapGesture: 1,
+  DoubleTapGesture: 2,
+  LongPressGesture: 3,
+  PanGesture: 4,
+  TransformGesture: 5,
+};
+
+const GESTURE_EVENTS = {
+  1: { onPressStart: 1, onPressEnd: 2, onPressCancel: 3, onTap: 4, enabled: 0 },
+  2: { onPressStart: 1, onPressEnd: 2, onPressCancel: 3, onDoubleTap: 5, enabled: 0 },
+  3: { onStart: 6, onEnd: 8, onCancel: 9, duration: 0, maxDistance: 0, reserveScroll: 0, enabled: 0 },
+  4: {
+    onStart: 6,
+    onUpdate: 7,
+    onEnd: 8,
+    onCancel: 9,
+    axis: 0,
+    direction: 0,
+    minDistance: 0,
+    failCrossDistance: 0,
+    reserveScroll: 0,
+    enabled: 0,
+  },
+  5: {
+    onStart: 6,
+    onUpdate: 7,
+    onEnd: 8,
+    onCancel: 9,
+    pan: 0,
+    pinch: 0,
+    rotate: 0,
+    minDistance: 0,
+    reserveScroll: 0,
+    enabled: 0,
+  },
+};
+
+function gesturePropValue(value) {
+  if (value == null) return [0, 0, ""];
+  if (typeof value === "boolean") return [1, value ? 1 : 0, ""];
+  if (typeof value === "number") return [Number.isInteger(value) ? 2 : 3, value, ""];
+  if (typeof value === "string") return [4, 0, value];
+  throw new Error(`unsupported gesture property value ${typeof value}`);
+}
+
+function setGestureProp(handle, key, value) {
+  const [tag, number, text] = gesturePropValue(value);
+  if (api.set_gesture_prop(handle, key, tag, number, text) !== 0) {
+    throw new Error(api.error() || "set_gesture_prop failed");
+  }
+}
+
+function bindGestureProp(handle, key, fn) {
+  let set = gestureBindings.get(handle);
+  if (!set) {
+    set = new Set();
+    gestureBindings.set(handle, set);
+  }
+  const id = addBinding(() => setGestureProp(handle, key, fn()), null);
+  set.add(id);
+  runBinding(id);
+}
+
+function registerGesture(target, kind) {
+  if (typeof api.spawn_gesture !== "function") {
+    throw new Error("host does not expose gesture declarations");
+  }
+  let order = gestureOrderOfTarget.get(target);
+  if (!order) {
+    order = [];
+    gestureOrderOfTarget.set(target, order);
+  }
+  const index = order.length;
+  const id = api.spawn_gesture(target, kind, index);
+  if (!id) throw new Error(api.error() || "spawn_gesture failed");
+  order.push(id);
+  let list = gesturesOfTarget.get(target);
+  if (!list) {
+    list = [];
+    gesturesOfTarget.set(target, list);
+  }
+  list.push(id);
+  gestureParentOf.set(id, target);
+  const collector = collectors[collectors.length - 1];
+  if (collector && collector.parent === target) collector.gestures.push(id);
+  return { id };
+}
+
+function rememberGestureHandler(gesture, handler) {
+  let ids = gestureHandlerIds.get(gesture);
+  if (!ids) {
+    ids = [];
+    gestureHandlerIds.set(gesture, ids);
+  }
+  ids.push(handler);
+}
+
+function addGestureHandlers(id, props, allowed) {
+  for (const [name, slot] of Object.entries(GESTURE_EVENTS[allowed])) {
+    if (!slot) continue;
+    const fn = props[name];
+    if (fn == null) continue;
+    if (typeof fn !== "function") throw new Error(`${name} must be a function`);
+    const handler = nextHandler++;
+    gestureHandlers.set(handler, fn);
+    rememberGestureHandler(id, handler);
+    if (api.bind_gesture_event(id, slot, handler) !== 0) {
+      throw new Error(api.error() || "bind_gesture_event failed");
+    }
+  }
+}
+
+function packGesture(type, props) {
+  const kind = GESTURE_KINDS[type];
+  if (!kind) throw new Error(`unknown gesture ${type}`);
+  props = props ?? {};
+  const allowed = GESTURE_EVENTS[kind];
+  for (const key of Object.keys(props)) {
+    if (!(key in allowed)) throw new Error(`${type} has no property ${key}`);
+    if (key === "onPressStart" && sugarTargets.has(parent())) {
+      throw new Error("View onPress conflicts with TapGesture on the same target");
+    }
+  }
+  if (kind === 1 && sugarTargets.has(parent())) {
+    throw new Error("View onPress conflicts with TapGesture on the same target");
+  }
+  const target = parent();
+  const { id } = registerGesture(target, kind);
+  for (const key of Object.keys(props)) {
+    const value = props[key];
+    if (key in GESTURE_EVENTS[kind] && GESTURE_EVENTS[kind][key]) continue;
+    if (value instanceof Dynamic) bindGestureProp(id, key, value.run);
+    else setGestureProp(id, key, value);
+  }
+  addGestureHandlers(id, props, kind);
+  return id;
+}
+
+function createSugarTap(target, handler) {
+  sugarTargets.add(target);
+  const { id } = registerGesture(target, 1);
+  const handlerId = nextHandler++;
+  gestureHandlers.set(handlerId, handler);
+  rememberGestureHandler(id, handlerId);
+  if (api.bind_gesture_event(id, 4, handlerId) !== 0) {
+    throw new Error(api.error() || "bind_gesture_event failed");
+  }
+  return id;
+}
+
+export function tapGesture(props) {
+  return packGesture("TapGesture", props);
+}
+export function doubleTapGesture(props) {
+  return packGesture("DoubleTapGesture", props);
+}
+export function longPressGesture(props) {
+  return packGesture("LongPressGesture", props);
+}
+export function panGesture(props) {
+  return packGesture("PanGesture", props);
+}
+export function transformGesture(props) {
+  return packGesture("TransformGesture", props);
+}
+
 registerPrimitive("View", view);
 registerPrimitive("Text", text);
 registerPrimitive("Image", image);
+registerPrimitive("TapGesture", tapGesture);
+registerPrimitive("DoubleTapGesture", doubleTapGesture);
+registerPrimitive("LongPressGesture", longPressGesture);
+registerPrimitive("PanGesture", panGesture);
+registerPrimitive("TransformGesture", transformGesture);
 
 function propParts(value) {
   if (value == null) return [0, 0, ""];
@@ -401,8 +573,51 @@ function writeText(handle, value) {
   api.dealloc(ptr, bytes.length);
 }
 
+function deactivateGestureBindings(id) {
+  const set = gestureBindings.get(id);
+  if (!set) return;
+  for (const binding of set) {
+    const entry = bindings[binding - 1];
+    if (entry) entry.active = false;
+  }
+  gestureBindings.delete(id);
+}
+
+function disposeGesture(id) {
+  if (!gestureParentOf.has(id)) return;
+  const target = gestureParentOf.get(id);
+  gestureParentOf.delete(id);
+  deactivateGestureBindings(id);
+  const handlers = gestureHandlerIds.get(id);
+  if (handlers) {
+    for (const handler of handlers) gestureHandlers.delete(handler);
+    gestureHandlerIds.delete(id);
+  }
+  const order = gestureOrderOfTarget.get(target);
+  if (order) {
+    const index = order.indexOf(id);
+    if (index >= 0) order.splice(index, 1);
+  }
+  const list = gesturesOfTarget.get(target);
+  if (list) {
+    const index = list.indexOf(id);
+    if (index >= 0) list.splice(index, 1);
+  }
+  if (api.dispose_gesture(id) !== 0) throw new Error(api.error() || "dispose gesture failed");
+}
+
+function disposeTargetGestures(handle) {
+  const list = gesturesOfTarget.get(handle);
+  if (!list) return;
+  for (const id of [...list]) disposeGesture(id);
+  gesturesOfTarget.delete(handle);
+  gestureOrderOfTarget.delete(handle);
+  sugarTargets.delete(handle);
+}
+
 function disposeHandle(handle) {
   if (handle === 1) return;
+  disposeTargetGestures(handle);
   deactivateHandleBindings(handle);
   const owned = handlersOfNode.get(handle);
   if (owned) {
@@ -451,7 +666,7 @@ function anchorIndex(parentHandle, anchor) {
 }
 
 function renderAt(parentHandle, index, build) {
-  const collector = { parent: parentHandle, handles: [] };
+  const collector = { parent: parentHandle, handles: [], gestures: [] };
   collectors.push(collector);
   cursors.push({ parent: parentHandle, index });
   parents.push(parentHandle);
@@ -473,13 +688,17 @@ export function when(cond, thenBranch, elseBranch) {
   const condFn = typeof cond === "function" ? cond : () => cond;
   const parentHandle = parent();
   const anchor = createAnchor();
-  let handles = [];
+  let branch = { parent: parentHandle, handles: [], gestures: [] };
+  const disposeBranch = () => {
+    for (const handle of branch.handles) disposeHandle(handle);
+    for (const gesture of branch.gestures) disposeGesture(gesture);
+    branch = { parent: parentHandle, handles: [], gestures: [] };
+  };
   const render = () => {
-    for (const handle of handles) disposeHandle(handle);
-    handles = [];
-    const branch = condFn() ? thenBranch : elseBranch;
-    if (typeof branch !== "function") return;
-    handles = renderAt(parentHandle, anchorIndex(parentHandle, anchor), branch);
+    disposeBranch();
+    const next = condFn() ? thenBranch : elseBranch;
+    if (typeof next !== "function") return;
+    branch = renderAt(parentHandle, anchorIndex(parentHandle, anchor), next);
   };
   runBinding(addBinding(render, anchor));
   return anchor;
@@ -496,6 +715,10 @@ export function each(items, key, render) {
   const parentHandle = parent();
   const anchor = createAnchor();
   const groups = new Map();
+  const disposeGroup = (entry) => {
+    for (const handle of entry.handles) disposeHandle(handle);
+    for (const gesture of entry.gestures) disposeGesture(gesture);
+  };
   const renderList = () => {
     const list = itemsFn() ?? [];
     const next = [];
@@ -504,21 +727,21 @@ export function each(items, key, render) {
       next.push({ item, key: keyFn(item, index) });
     }
     const seen = new Set(next.map((entry) => entry.key));
-    for (const [groupKey, handles] of groups) {
+    for (const [groupKey, entry] of groups) {
       if (!seen.has(groupKey)) {
-        for (const handle of handles) disposeHandle(handle);
+        disposeGroup(entry);
         groups.delete(groupKey);
       }
     }
     let index = anchorIndex(parentHandle, anchor);
     for (const entry of next) {
-      let handles = groups.get(entry.key);
-      if (handles === undefined) {
-        handles = renderAt(parentHandle, index, () => render(entry.item, entry.key));
-        groups.set(entry.key, handles);
-        index += handles.length;
+      let group = groups.get(entry.key);
+      if (group === undefined) {
+        group = renderAt(parentHandle, index, () => render(entry.item, entry.key));
+        groups.set(entry.key, group);
+        index += group.handles.length;
       } else {
-        for (const handle of handles) {
+        for (const handle of group.handles) {
           moveHandle(handle, parentHandle, index);
           index += 1;
         }
@@ -559,5 +782,76 @@ export function press(handler, x, y) {
   return true;
 }
 
+const GESTURE_SLOTS = {
+  1: "pressStart",
+  2: "pressEnd",
+  3: "pressCancel",
+  4: "tap",
+  5: "doubleTap",
+  6: "start",
+  7: "update",
+  8: "end",
+  9: "cancel",
+};
+
+function decodeGestureEvents(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.byteLength < 10 || view.getUint8(0) !== 0x42 || view.getUint8(1) !== 0x53 ||
+      view.getUint8(2) !== 0x47 || view.getUint8(3) !== 0x45) {
+    throw new Error("bad gesture event batch");
+  }
+  const version = view.getUint16(4, true);
+  if (version !== 1) throw new Error(`unsupported gesture event version ${version}`);
+  const count = view.getUint32(6, true);
+  const events = [];
+  let offset = 10;
+  for (let index = 0; index < count; index += 1) {
+    if (offset + 66 > bytes.byteLength) throw new Error("truncated gesture event");
+    const slot = view.getUint8(offset);
+    const gesture = view.getUint32(offset + 1, true);
+    const sequence = view.getUint32(offset + 5, true);
+    const handler = view.getUint32(offset + 9, true);
+    const target = view.getUint32(offset + 13, true);
+    const reason = view.getUint8(offset + 17);
+    const time = view.getFloat64(offset + 18, true);
+    const f = (at) => view.getFloat32(offset + 26 + at * 4, true);
+    events.push({
+      type: GESTURE_SLOTS[slot] ?? "unknown",
+      gesture,
+      sequence,
+      handler,
+      target,
+      reason,
+      time,
+      x: f(0),
+      y: f(1),
+      translationX: f(2),
+      translationY: f(3),
+      deltaX: f(4),
+      deltaY: f(5),
+      scale: f(6),
+      rotation: f(7),
+      velocityX: f(8),
+      velocityY: f(9),
+    });
+    offset += 66;
+  }
+  return events;
+}
+
+export function dispatchGestureEvents(bytes) {
+  const events = bytes instanceof Uint8Array ? decodeGestureEvents(bytes) : bytes;
+  let ran = false;
+  for (const event of events) {
+    const fn = gestureHandlers.get(event.handler);
+    if (!fn) continue;
+    ran = true;
+    fn(event);
+  }
+  if (ran) flush();
+  return events.length;
+}
+
 globalThis.__bubbleSetApi = setApi;
 globalThis.__bubblePress = press;
+globalThis.__bubbleGesture = dispatchGestureEvents;

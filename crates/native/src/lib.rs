@@ -15,7 +15,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use bubble_core::{encode_paint, Shell};
+use bubble_core::{encode_events, encode_paint, GestureEvent, PointerAction, PointerInput, Shell};
 
 use script::Cmd;
 
@@ -76,6 +76,7 @@ pub struct Shared {
     fonts: Mutex<Vec<(String, Vec<u8>)>>,
     epoch: AtomicU32,
     requests: Arc<Mutex<VecDeque<HostRequest>>>,
+    commands: Mutex<Option<Sender<Cmd>>>,
 }
 
 impl Shared {
@@ -134,21 +135,39 @@ fn catch<T>(body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 /// swaps in a fresh root before the new batch is applied.
 fn drain_pending(shared: &Shared) -> Result<(), String> {
     let reset = shared.reset.swap(false, Ordering::SeqCst);
-    let mut queue = shared
-        .pending
-        .lock()
-        .map_err(|_| "op queue poisoned".to_string())?;
-    let mut shell = shared
-        .shell
-        .lock()
-        .map_err(|_| "tree lock poisoned".to_string())?;
-    if reset {
-        *shell = Shell::blank()?;
-    }
-    while let Some(bytes) = queue.pop_front() {
-        shell.apply_ops(&bytes)?;
-    }
+    let events = {
+        let mut queue = shared
+            .pending
+            .lock()
+            .map_err(|_| "op queue poisoned".to_string())?;
+        let mut shell = shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        if reset {
+            *shell = Shell::blank()?;
+        }
+        while let Some(bytes) = queue.pop_front() {
+            shell.apply_ops(&bytes)?;
+        }
+        shell.take_gesture_events()
+    };
+    send_events(shared, events);
     Ok(())
+}
+
+/// Hand recognition events to the script thread. The batch is already
+/// encoded so the frame thread never touches JS state.
+fn send_events(shared: &Shared, events: Vec<GestureEvent>) {
+    if events.is_empty() {
+        return;
+    }
+    let Ok(slot) = shared.commands.lock() else {
+        return;
+    };
+    if let Some(tx) = slot.as_ref() {
+        let _ = tx.send(Cmd::Gesture(encode_events(&events)));
+    }
 }
 
 #[no_mangle]
@@ -183,8 +202,12 @@ pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
             fonts: Mutex::new(Vec::new()),
             epoch: AtomicU32::new(0),
             requests: Arc::new(Mutex::new(VecDeque::new())),
+            commands: Mutex::new(None),
         });
         let (tx, thread) = script::start(Arc::clone(&shared));
+        if let Ok(mut slot) = shared.commands.lock() {
+            *slot = Some(tx.clone());
+        }
         *slot = Some(Engine {
             shared,
             tx,
@@ -314,27 +337,67 @@ pub extern "C" fn bubble_frame(
     finish(result)
 }
 
+/// One normalized pointer sample. `action` 0 down, 1 move, 2 up, 3 cancel.
+/// `pointer_kind` 0 touch, 1 mouse, 2 pen. `buttons` bit 0 is the primary
+/// button. Time is the host's monotonic clock in milliseconds.
 #[no_mangle]
-pub extern "C" fn bubble_pointer_down(x: f32, y: f32) {
-    let _ = catch(|| {
+pub extern "C" fn bubble_pointer(
+    action: u32,
+    id: u32,
+    x: f32,
+    y: f32,
+    time_ms: f64,
+    pointer_kind: u32,
+    buttons: u32,
+) -> i32 {
+    let result = catch(|| {
+        let action =
+            PointerAction::parse(action).ok_or_else(|| format!("bad pointer action {action}"))?;
         let engine = engine()?;
         drain_pending(&engine.shared)?;
-        let handler = {
-            let shell = engine
+        let events = {
+            let mut shell = engine
                 .shared
                 .shell
                 .lock()
                 .map_err(|_| "tree lock poisoned".to_string())?;
-            shell.tap(x, y)
+            shell.pointer(PointerInput {
+                action,
+                id,
+                x,
+                y,
+                time_ms,
+                buttons,
+                pointer_kind: pointer_kind.min(255) as u8,
+                path: Vec::new(),
+            });
+            shell.take_gesture_events()
         };
-        if let Some(handler) = handler {
-            engine
-                .tx
-                .send(Cmd::Press { handler, x, y })
-                .map_err(|_| "script thread is gone".to_string())?;
-        }
+        send_events(&engine.shared, events);
         Ok(())
     });
+    finish(result)
+}
+
+/// UI-thread timer tick for long press and the double-tap window.
+#[no_mangle]
+pub extern "C" fn bubble_tick(time_ms: f64) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            shell.advance_gestures(time_ms);
+            shell.take_gesture_events()
+        };
+        send_events(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
 }
 
 #[no_mangle]
@@ -730,13 +793,35 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_pointerDown<'a>(
-        _env: JNIEnv<'a>,
-        _class: JClass<'a>,
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_pointer(
+        _env: JNIEnv,
+        _class: JClass,
+        action: jint,
+        id: jint,
         x: jfloat,
         y: jfloat,
-    ) {
-        super::bubble_pointer_down(x, y);
+        time_ms: jni::sys::jdouble,
+        pointer_kind: jint,
+        buttons: jint,
+    ) -> jint {
+        super::bubble_pointer(
+            action as u32,
+            id as u32,
+            x,
+            y,
+            time_ms,
+            pointer_kind as u32,
+            buttons as u32,
+        )
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_tick(
+        _env: JNIEnv,
+        _class: JClass,
+        time_ms: jni::sys::jdouble,
+    ) -> jint {
+        super::bubble_tick(time_ms)
     }
 
     #[no_mangle]

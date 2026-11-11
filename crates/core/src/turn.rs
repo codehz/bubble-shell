@@ -29,6 +29,7 @@ pub struct Turn {
     write: usize,
     seq: u32,
     next_handle: u32,
+    next_gesture: u32,
 }
 
 impl Turn {
@@ -44,6 +45,7 @@ impl Turn {
             write: 0,
             seq: 0,
             next_handle: 2,
+            next_gesture: 1,
         }
     }
 
@@ -214,7 +216,11 @@ impl Turn {
         kind: GestureKind,
         index: u32,
     ) -> Result<u32, String> {
-        let gesture = self.allocate_handle()?;
+        let gesture = self.next_gesture;
+        self.next_gesture = self
+            .next_gesture
+            .checked_add(1)
+            .ok_or_else(|| "gesture space exhausted".to_string())?;
         self.push(Op::SpawnGesture {
             gesture,
             target,

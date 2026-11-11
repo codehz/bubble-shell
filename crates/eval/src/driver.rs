@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use bubble_ffi::{
     bubble_create, bubble_destroy, bubble_eval, bubble_faults, bubble_finish_request,
     bubble_font_count, bubble_font_epoch, bubble_frame, bubble_generation, bubble_last_error,
-    bubble_load, bubble_node_box, bubble_node_text, bubble_pointer_down, bubble_poll_request,
+    bubble_load, bubble_node_box, bubble_node_text, bubble_pointer, bubble_poll_request,
     bubble_post_eval, bubble_register_font, bubble_scroll, bubble_scroll_x_of, bubble_scroll_y_of,
     bubble_set_visible, bubble_status,
 };
@@ -66,8 +66,14 @@ impl Session {
         Ok(unsafe { std::slice::from_raw_parts(paint, len as usize) }.to_vec())
     }
 
+    pub fn pointer(&mut self, action: u32, id: u32, x: f32, y: f32, time_ms: f64) -> i32 {
+        unsafe { bubble_pointer(action, id, x, y, time_ms, 0, if action == 2 { 0 } else { 1 }) }
+    }
+
+    /// A complete tap: down then up one sample later.
     pub fn pointer_down(&mut self, x: f32, y: f32) {
-        unsafe { bubble_pointer_down(x, y) };
+        self.pointer(0, 1, x, y, 0.0);
+        self.pointer(2, 1, x, y, 20.0);
     }
 
     pub fn scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) {

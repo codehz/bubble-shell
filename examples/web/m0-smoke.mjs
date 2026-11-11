@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { press, setApi } from "./runtime.js";
+import { dispatchGestureEvents, setApi } from "./runtime.js";
 
 const wasmBytes = readFileSync(new URL("./bubble.wasm", import.meta.url));
 const manifest = readFileSync(new URL("./bundle/manifest.json", import.meta.url));
@@ -137,6 +137,23 @@ setApi({
     return code;
   },
   bind_event: exports.bind_event,
+  spawn_gesture: exports.spawn_gesture,
+  set_gesture_prop(handle, key, tag, number, text) {
+    const keyBytes = encoder.encode(key);
+    const textBytes = tag === 4 ? encoder.encode(text) : new Uint8Array(0);
+    const keyPtr = copyBytes(keyBytes);
+    const textPtr = textBytes.length ? copyBytes(textBytes) : 0;
+    const code = exports.set_gesture_prop(handle, keyPtr, keyBytes.length, tag, number, textPtr, textBytes.length);
+    exports.dealloc(keyPtr, keyBytes.length);
+    if (textBytes.length) exports.dealloc(textPtr, textBytes.length);
+    return code;
+  },
+  bind_gesture_event: exports.bind_gesture_event,
+  dispose_gesture: exports.dispose_gesture,
+  move_gesture: exports.move_gesture,
+  pointer: exports.pointer,
+  tick: exports.tick,
+  take_gesture_events: exports.take_gesture_events,
   queue_text: exports.queue_text,
   commit: exports.commit,
   layout: exports.layout,
@@ -244,8 +261,16 @@ const firstFrameMs = performance.now() - started;
 textOf(first, "Count: 0");
 const button = first.find((cmd) => cmd.tag === 1 && cmd.color === 0xff3b82f6);
 if (!button) throw new Error("increment button was not painted");
-const handler = exports.tap(button.x + button.w / 2, button.y + button.h / 2);
-if (!handler || !press(handler)) throw new Error("click did not run a handler");
+const x = button.x + button.w / 2;
+const y = button.y + button.h / 2;
+if (exports.pointer(0, 1, x, y, 0, 0, 1) !== 0) throw new Error(error() || "pointer down failed");
+if (exports.pointer(2, 1, x, y, 20, 0, 0) !== 0) throw new Error(error() || "pointer up failed");
+let len = exports.take_gesture_events();
+if (len === 0) throw new Error("tap produced no gesture events");
+while (len > 0) {
+  dispatchGestureEvents(new Uint8Array(memory().buffer, exports.scratch_ptr(), len).slice());
+  len = exports.take_gesture_events();
+}
 textOf(paintList(), "Count: 1");
 
 const before = textOf(paintList(), "Alpha");

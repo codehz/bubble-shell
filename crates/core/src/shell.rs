@@ -326,9 +326,6 @@ impl Shell {
                     index,
                 } => {
                     self.node(target)?;
-                    if self.node(gesture).is_ok() {
-                        return Err(format!("handle {gesture} is not free"));
-                    }
                     let kind = GestureKind::parse(kind)
                         .ok_or_else(|| format!("bad gesture kind {kind}"))?;
                     self.recognizer.spawn(gesture, target, kind, index)?;
@@ -782,7 +779,6 @@ impl Shell {
         if handle == 0
             || self.retired.contains(&handle)
             || self.node(handle).is_ok()
-            || self.recognizer.decl(handle).is_some()
         {
             return Err(format!("handle {handle} is not free"));
         }

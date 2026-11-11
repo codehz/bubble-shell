@@ -1,4 +1,4 @@
-import { press, setApi } from "./runtime.js";
+import { dispatchGestureEvents, setApi } from "./runtime.js";
 
 const canvas = document.querySelector("canvas");
 const ctx = canvas.getContext("2d");
@@ -195,6 +195,23 @@ setApi({
     return code;
   },
   bind_event: exports.bind_event,
+  spawn_gesture: exports.spawn_gesture,
+  set_gesture_prop(handle, key, tag, number, text) {
+    const keyBytes = encoder.encode(key);
+    const textBytes = tag === 4 ? encoder.encode(text) : new Uint8Array(0);
+    const keyPtr = copyBytes(keyBytes);
+    const textPtr = textBytes.length ? copyBytes(textBytes) : 0;
+    const code = exports.set_gesture_prop(handle, keyPtr, keyBytes.length, tag, number, textPtr, textBytes.length);
+    exports.dealloc(keyPtr, keyBytes.length);
+    if (textBytes.length) exports.dealloc(textPtr, textBytes.length);
+    return code;
+  },
+  bind_gesture_event: exports.bind_gesture_event,
+  dispose_gesture: exports.dispose_gesture,
+  move_gesture: exports.move_gesture,
+  pointer: exports.pointer,
+  tick: exports.tick,
+  take_gesture_events: exports.take_gesture_events,
   queue_text: exports.queue_text,
   commit: exports.commit,
   layout: exports.layout,
@@ -372,17 +389,89 @@ function point(event) {
   return [event.clientX - rect.left, event.clientY - rect.top];
 }
 
-canvas.addEventListener("pointerdown", (event) => {
+const activePointers = new Set();
+let ticking = false;
+
+function pointerKind(event) {
+  if (event.pointerType === "mouse") return 1;
+  if (event.pointerType === "pen") return 2;
+  return 0;
+}
+
+function pumpGestures() {
+  let len = exports.take_gesture_events();
+  while (len > 0) {
+    const bytes = new Uint8Array(memory().buffer, exports.scratch_ptr(), len).slice();
+    dispatchGestureEvents(bytes);
+    len = exports.take_gesture_events();
+  }
+}
+
+function gestureFrame() {
+  exports.tick(performance.now());
+  pumpGestures();
+  if (exports.layout() === 0) paint();
+  if (activePointers.size > 0) requestAnimationFrame(gestureFrame);
+  else ticking = false;
+}
+
+function startTicking() {
+  if (ticking) return;
+  ticking = true;
+  requestAnimationFrame(gestureFrame);
+}
+
+function sendPointer(action, event) {
   const [x, y] = point(event);
-  const handler = exports.tap(x, y);
-  if (handler && press(handler, x, y)) paint();
+  exports.pointer(
+    action,
+    event.pointerId,
+    x,
+    y,
+    performance.now(),
+    pointerKind(event),
+    event.buttons,
+  );
+  pumpGestures();
+  if (exports.layout() === 0) paint();
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  canvas.setPointerCapture(event.pointerId);
+  activePointers.add(event.pointerId);
+  sendPointer(0, event);
+  startTicking();
 });
+
+canvas.addEventListener("pointermove", (event) => {
+  if (!activePointers.has(event.pointerId)) return;
+  sendPointer(1, event);
+});
+
+function releasePointer(action, event) {
+  if (!activePointers.has(event.pointerId)) return;
+  sendPointer(action, event);
+  activePointers.delete(event.pointerId);
+}
+
+canvas.addEventListener("pointerup", (event) => releasePointer(2, event));
+canvas.addEventListener("pointercancel", (event) => releasePointer(3, event));
+
+function wheelDelta(event, extent) {
+  if (event.deltaMode === 1) return event.deltaY * 16;
+  if (event.deltaMode === 2) return event.deltaY * extent;
+  return event.deltaY;
+}
 
 canvas.addEventListener(
   "wheel",
   (event) => {
     const [x, y] = point(event);
-    if (exports.scroll_wheel(x, y, event.deltaX, event.deltaY)) {
+    const weight = event.deltaMode === 2 ? canvas.clientHeight : 1;
+    const dx = event.deltaMode === 0 ? event.deltaX : event.deltaX * (event.deltaMode === 1 ? 16 : weight);
+    const dy = wheelDelta(event, canvas.clientHeight);
+    if (exports.scroll_wheel(x, y, dx, dy)) {
       event.preventDefault();
       if (exports.layout() === 0) paint();
     }
