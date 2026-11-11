@@ -77,31 +77,35 @@ function validateProps(kind, props) {
   }
 }
 
-export function signal(initial) {
-  if (typeof initial === "string") {
-    const id = api.signal_text_new(initial);
-    const read = () => api.signal_text_get(id);
-    read.id = id;
-    read.update = (fn) => {
-      api.signal_text_set(id, String(fn(api.signal_text_get(id))));
-    };
-    return read;
-  }
-  if (typeof initial === "boolean") {
-    const id = api.signal_bool_new(initial ? 1 : 0);
-    const read = () => api.signal_bool_get(id);
-    read.id = id;
-    read.update = (fn) => {
-      api.signal_bool_set(id, fn(api.signal_bool_get(id)) ? 1 : 0);
-    };
-    return read;
-  }
-  const id = api.signal_new(initial);
-  const read = () => api.signal_get(id);
-  read.id = id;
-  read.update = (fn) => {
-    api.signal_set(id, fn(api.signal_get(id)));
+const signalValues = [undefined];
+
+function signalChanged(equals, prev, next) {
+  if (equals === false) return true;
+  if (typeof equals === "function") return !equals(prev, next);
+  return prev !== next;
+}
+
+function writeSignal(id, value, equals) {
+  const prev = signalValues[id];
+  if (!signalChanged(equals, prev, value)) return;
+  signalValues[id] = value;
+  const code = api.signal_notify(id);
+  if (code !== 0) throw new Error(api.error() || "signal write failed");
+}
+
+export function signal(initial, options) {
+  const id = api.signal_alloc();
+  if (!id) throw new Error(api.error() || "signal alloc failed");
+  signalValues[id] = initial;
+  const equals = options && options.equals;
+  const read = () => {
+    const code = api.signal_read(id);
+    if (code !== 0) throw new Error(api.error() || "signal read failed");
+    return signalValues[id];
   };
+  read.id = id;
+  read.set = (value) => writeSignal(id, value, equals);
+  read.update = (fn) => writeSignal(id, fn(signalValues[id]), equals);
   return read;
 }
 

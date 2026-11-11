@@ -11,15 +11,13 @@ use crate::gesture::GestureKind;
 use crate::ir::NodeDesc;
 use crate::ops::{encode, Op, Value};
 
-#[derive(Clone, Debug, PartialEq)]
-enum SignalValue {
-    Number(f64),
-    Text(String),
-    Bool(bool),
-}
+/// Signal values stay in the script host. The graph only records which
+/// binding read which signal and which bindings a write dirtied. Equality
+/// is the host's (`===` for JS): an array or object is a reference, never
+/// a copy stored here.
 
 pub struct Turn {
-    values: Vec<SignalValue>,
+    /// Index 0 is unused so a zero id is never a live signal.
     subs: Vec<HashSet<u32>>,
     reads: Vec<Vec<u32>>,
     tracking: Option<u32>,
@@ -35,7 +33,6 @@ pub struct Turn {
 impl Turn {
     pub fn new() -> Self {
         Self {
-            values: vec![SignalValue::Number(0.0)],
             subs: vec![HashSet::new()],
             reads: vec![Vec::new()],
             tracking: None,
@@ -53,21 +50,9 @@ impl Turn {
         self.next_handle
     }
 
-    pub fn signal(&mut self, initial: f64) -> u32 {
-        self.push_signal(SignalValue::Number(initial))
-    }
-
-    pub fn signal_text(&mut self, initial: impl Into<String>) -> u32 {
-        self.push_signal(SignalValue::Text(initial.into()))
-    }
-
-    pub fn signal_bool(&mut self, initial: bool) -> u32 {
-        self.push_signal(SignalValue::Bool(initial))
-    }
-
-    fn push_signal(&mut self, value: SignalValue) -> u32 {
-        let id = self.values.len() as u32;
-        self.values.push(value);
+    /// A new signal id. The host stores the value.
+    pub fn alloc_signal(&mut self) -> u32 {
+        let id = self.subs.len() as u32;
         self.subs.push(HashSet::new());
         id
     }
@@ -86,55 +71,29 @@ impl Turn {
         self.tracking = None;
     }
 
-    pub fn get(&mut self, id: u32) -> Result<f64, String> {
-        let value = self
-            .values
-            .get(id as usize)
-            .cloned()
-            .ok_or_else(|| format!("unknown signal {id}"))?;
-        let SignalValue::Number(value) = value else {
-            return Err(format!("signal {id} is not a number"));
-        };
+    /// Subscribe the tracking binding to `id`. Does not return the value.
+    pub fn read(&mut self, id: u32) -> Result<(), String> {
+        self.live(id)?;
         self.record_read(id);
-        Ok(value)
+        Ok(())
     }
 
-    pub fn get_text(&mut self, id: u32) -> Result<String, String> {
-        let value = self
-            .values
-            .get(id as usize)
-            .cloned()
-            .ok_or_else(|| format!("unknown signal {id}"))?;
-        let SignalValue::Text(value) = value else {
-            return Err(format!("signal {id} is not text"));
-        };
-        self.record_read(id);
-        Ok(value)
+    /// The host already decided the value changed. Mark subscribers dirty.
+    pub fn notify(&mut self, id: u32) -> Result<(), String> {
+        self.live(id)?;
+        for binding in &self.subs[id as usize] {
+            if self.dirty_set.insert(*binding) {
+                self.dirty.push(*binding);
+            }
+        }
+        Ok(())
     }
 
-    pub fn get_bool(&mut self, id: u32) -> Result<bool, String> {
-        let value = self
-            .values
-            .get(id as usize)
-            .cloned()
-            .ok_or_else(|| format!("unknown signal {id}"))?;
-        let SignalValue::Bool(value) = value else {
-            return Err(format!("signal {id} is not a bool"));
-        };
-        self.record_read(id);
-        Ok(value)
-    }
-
-    pub fn set(&mut self, id: u32, value: f64) -> Result<(), String> {
-        self.replace(id, SignalValue::Number(value))
-    }
-
-    pub fn set_text(&mut self, id: u32, value: impl Into<String>) -> Result<(), String> {
-        self.replace(id, SignalValue::Text(value.into()))
-    }
-
-    pub fn set_bool(&mut self, id: u32, value: bool) -> Result<(), String> {
-        self.replace(id, SignalValue::Bool(value))
+    fn live(&self, id: u32) -> Result<(), String> {
+        if id == 0 || self.subs.get(id as usize).is_none() {
+            return Err(format!("unknown signal {id}"));
+        }
+        Ok(())
     }
 
     fn record_read(&mut self, id: u32) {
@@ -142,23 +101,6 @@ impl Turn {
             self.subs[id as usize].insert(binding);
             self.reads[binding as usize].push(id);
         }
-    }
-
-    fn replace(&mut self, id: u32, value: SignalValue) -> Result<(), String> {
-        let slot = self
-            .values
-            .get_mut(id as usize)
-            .ok_or_else(|| format!("unknown signal {id}"))?;
-        if *slot == value {
-            return Ok(());
-        }
-        *slot = value;
-        for binding in &self.subs[id as usize] {
-            if self.dirty_set.insert(*binding) {
-                self.dirty.push(*binding);
-            }
-        }
-        Ok(())
     }
 
     pub fn take_dirty(&mut self) -> Vec<u32> {

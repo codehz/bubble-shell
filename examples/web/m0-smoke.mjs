@@ -82,34 +82,9 @@ setApi({
       .decode(new Uint8Array(memory().buffer, exports.scratch_ptr(), len))
       .split("\n");
   },
-  signal_new: exports.signal_new,
-  signal_get: exports.signal_get,
-  signal_set: exports.signal_set,
-  signal_text_new(initial) {
-    const bytes = encoder.encode(initial);
-    const ptr = copyBytes(bytes);
-    const id = exports.signal_text_new(ptr, bytes.length);
-    exports.dealloc(ptr, bytes.length);
-    return id;
-  },
-  signal_text_get(id) {
-    const len = exports.signal_text_get(id);
-    return decoder.decode(new Uint8Array(memory().buffer, exports.scratch_ptr(), len));
-  },
-  signal_text_set(id, value) {
-    const bytes = encoder.encode(value);
-    const ptr = copyBytes(bytes);
-    const code = exports.signal_text_set(id, ptr, bytes.length);
-    exports.dealloc(ptr, bytes.length);
-    return code;
-  },
-  signal_bool_new: (initial) => exports.signal_bool_new(initial ? 1 : 0),
-  signal_bool_get(id) {
-    const value = exports.signal_bool_get(id);
-    if (value < 0) throw new Error(error() || "bool signal read failed");
-    return value !== 0;
-  },
-  signal_bool_set: (id, value) => exports.signal_bool_set(id, value ? 1 : 0),
+  signal_alloc: exports.signal_alloc,
+  signal_read: exports.signal_read,
+  signal_notify: exports.signal_notify,
   track_begin: exports.track_begin,
   track_end: exports.track_end,
   spawn(parent, spec) {

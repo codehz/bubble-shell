@@ -369,7 +369,8 @@ fn signal_commit_updates_text_and_scrolls() {
 
     let mut shell = Shell::blank().unwrap();
     let mut turn = Turn::new();
-    let count = turn.signal(0.0);
+    let count = turn.alloc_signal();
+    let mut value = 0.0;
     let mut header = NodeDesc::text(0, 1, "Count: 0");
     header.font_size = 24.0;
     let header = turn.spawn(header).unwrap();
@@ -393,7 +394,7 @@ fn signal_commit_updates_text_and_scrolls() {
     assert_eq!((header, button, scroller), (2, 3, 4));
 
     turn.track(1);
-    let value = turn.get(count).unwrap();
+    turn.read(count).unwrap();
     turn.untrack();
     turn.push(Op::SetText {
         handle: header,
@@ -419,11 +420,12 @@ fn signal_commit_updates_text_and_scrolls() {
         .unwrap();
     let (bx, by, _, _) = shell.node_box(button).unwrap();
     assert_eq!(shell.tap(bx + 1.0, by + 1.0), Some(1));
-    turn.set(count, 1.0).unwrap();
+    value = 1.0;
+    turn.notify(count).unwrap();
     let dirty = turn.take_dirty();
     assert_eq!(dirty, vec![1]);
     turn.track(1);
-    let value = turn.get(count).unwrap();
+    turn.read(count).unwrap();
     turn.untrack();
     turn.push(Op::SetText {
         handle: header,
@@ -607,25 +609,23 @@ fn image_node_emits_image_paint() {
 }
 
 #[test]
-fn typed_signals_read_and_write() {
+fn signal_reads_subscribe_and_notify_dirties_once() {
     use bubble_core::Turn;
 
     let mut turn = Turn::new();
-    let text = turn.signal_text("left");
-    let flag = turn.signal_bool(true);
-    let number = turn.signal(1.0);
-    assert_eq!(turn.get_text(text).unwrap(), "left");
-    assert!(turn.get_bool(flag).unwrap());
-    assert_eq!(turn.get(number).unwrap(), 1.0);
-    turn.set_text(text, "center").unwrap();
-    turn.set_bool(flag, false).unwrap();
-    turn.set(number, 2.0).unwrap();
-    assert_eq!(turn.get_text(text).unwrap(), "center");
-    assert!(!turn.get_bool(flag).unwrap());
-    assert_eq!(turn.get(number).unwrap(), 2.0);
-    assert!(turn.get(text).is_err());
-    assert!(turn.get_bool(number).is_err());
-    assert!(turn.get_text(flag).is_err());
+    let id = turn.alloc_signal();
+    assert!(turn.read(0).is_err());
+    assert!(turn.notify(0).is_err());
+    turn.track(1);
+    turn.read(id).unwrap();
+    turn.untrack();
+    turn.notify(id).unwrap();
+    turn.notify(id).unwrap();
+    assert_eq!(turn.take_dirty(), vec![1]);
+    turn.track(1);
+    turn.untrack();
+    turn.notify(id).unwrap();
+    assert!(turn.take_dirty().is_empty());
 }
 
 #[test]
