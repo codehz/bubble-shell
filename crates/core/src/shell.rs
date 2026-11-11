@@ -14,6 +14,65 @@ use taffy::{compute_leaf_layout, NodeId, TaffyTree};
 struct MeasureCtx {
     text: String,
     font_size: f32,
+    line_height: f32,
+    font_weight: u16,
+}
+
+#[derive(Clone, Copy)]
+struct NodeStyle {
+    row: bool,
+    scroll_y: bool,
+    flex_grow: f32,
+    flex_shrink: f32,
+    width: Option<f32>,
+    height: Option<f32>,
+    padding: [f32; 4],
+    margin: [f32; 4],
+    gap: f32,
+    align_items: u8,
+    justify_content: u8,
+    position: u8,
+    inset: [f32; 4],
+}
+
+impl NodeStyle {
+    fn from_node(node: &Node) -> Self {
+        Self {
+            row: node.row,
+            scroll_y: node.scroll_y,
+            flex_grow: node.flex_grow,
+            flex_shrink: node.flex_shrink,
+            width: node.width,
+            height: node.height,
+            padding: node.padding,
+            margin: node.margin,
+            gap: node.gap,
+            align_items: node.align_items,
+            justify_content: node.justify_content,
+            position: node.position,
+            inset: node.inset,
+        }
+    }
+}
+
+impl Default for NodeStyle {
+    fn default() -> Self {
+        Self {
+            row: false,
+            scroll_y: false,
+            flex_grow: 0.0,
+            flex_shrink: 1.0,
+            width: None,
+            height: None,
+            padding: [0.0; 4],
+            margin: [0.0; 4],
+            gap: 0.0,
+            align_items: 0,
+            justify_content: 0,
+            position: 0,
+            inset: [f32::NAN; 4],
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -34,6 +93,15 @@ struct Node {
     flex_shrink: f32,
     row: bool,
     padding: [f32; 4],
+    margin: [f32; 4],
+    gap: f32,
+    align_items: u8,
+    justify_content: u8,
+    position: u8,
+    inset: [f32; 4],
+    line_height: f32,
+    text_align: u8,
+    font_weight: u16,
     text: String,
     taffy: NodeId,
     scroll: f32,
@@ -88,7 +156,7 @@ impl Shell {
     /// Empty viewport root. Function components append children with `spawn`.
     pub fn blank() -> Result<Self, String> {
         let mut taffy: TaffyTree<MeasureCtx> = TaffyTree::new();
-        let style = style_for(false, false, 0.0, 1.0, None, None, [0.0; 4]);
+        let style = style_for(NodeStyle::default());
         let taffy_id = taffy.new_leaf(style).map_err(|err| err.to_string())?;
         Ok(Self {
             nodes: vec![
@@ -110,6 +178,15 @@ impl Shell {
                     flex_shrink: 1.0,
                     row: false,
                     padding: [0.0; 4],
+                    margin: [0.0; 4],
+                    gap: 0.0,
+                    align_items: 0,
+                    justify_content: 0,
+                    position: 0,
+                    inset: [f32::NAN; 4],
+                    line_height: 0.0,
+                    text_align: 0,
+                    font_weight: 400,
                     text: String::new(),
                     taffy: taffy_id,
                     scroll: 0.0,
@@ -161,9 +238,19 @@ impl Shell {
                     }
                     node.text = text.clone();
                     let font_size = node.font_size;
+                    let line_height = node.line_height;
+                    let font_weight = node.font_weight;
                     let taffy_id = node.taffy;
                     self.taffy
-                        .set_node_context(taffy_id, Some(MeasureCtx { text, font_size }))
+                        .set_node_context(
+                            taffy_id,
+                            Some(MeasureCtx {
+                                text,
+                                font_size,
+                                line_height,
+                                font_weight,
+                            }),
+                        )
                         .map_err(|err| err.to_string())?;
                 }
                 Op::SetPropColor { handle, key, rgba } => {
@@ -199,15 +286,10 @@ impl Shell {
         let root = self.node(1)?.taffy;
         let root_style = {
             let root_node = self.node(1)?;
-            style_for(
-                root_node.row,
-                root_node.scroll_y,
-                root_node.flex_grow,
-                root_node.flex_shrink,
-                Some(self.viewport.width),
-                Some(self.viewport.height),
-                root_node.padding,
-            )
+            let mut style = NodeStyle::from_node(root_node);
+            style.width = Some(self.viewport.width);
+            style.height = Some(self.viewport.height);
+            style_for(style)
         };
         self.taffy
             .set_style(root, root_style)
@@ -332,13 +414,27 @@ impl Shell {
                 self.node_mut(id)?.opacity = value.as_f32()?.clamp(0.0, 1.0);
             }
             Prop::FontSize => {
-                let (text, font_size, taffy) = {
+                let (text, font_size, line_height, font_weight, taffy) = {
                     let node = self.node_mut(id)?;
                     node.font_size = value.as_f32()?;
-                    (node.text.clone(), node.font_size, node.taffy)
+                    (
+                        node.text.clone(),
+                        node.font_size,
+                        node.line_height,
+                        node.font_weight,
+                        node.taffy,
+                    )
                 };
                 self.taffy
-                    .set_node_context(taffy, Some(MeasureCtx { text, font_size }))
+                    .set_node_context(
+                        taffy,
+                        Some(MeasureCtx {
+                            text,
+                            font_size,
+                            line_height,
+                            font_weight,
+                        }),
+                    )
                     .map_err(|err| err.to_string())?;
             }
             Prop::PaddingLeft => self.node_mut(id)?.padding[0] = value.as_f32()?,
@@ -351,6 +447,25 @@ impl Shell {
             Prop::FlexShrink => self.node_mut(id)?.flex_shrink = value.as_f32()?,
             Prop::ScrollY => self.node_mut(id)?.scroll_y = value.as_bool()?,
             Prop::Row => self.node_mut(id)?.row = value.as_bool()?,
+            Prop::LineHeight => self.node_mut(id)?.line_height = value.as_f32()?.max(0.0),
+            Prop::TextAlign => self.node_mut(id)?.text_align = text_align(value)?,
+            Prop::FontWeight => {
+                self.node_mut(id)?.font_weight = value.as_u32()?.clamp(1, 1000) as u16
+            }
+            Prop::MarginLeft => self.node_mut(id)?.margin[0] = value.as_f32()?,
+            Prop::MarginRight => self.node_mut(id)?.margin[1] = value.as_f32()?,
+            Prop::MarginTop => self.node_mut(id)?.margin[2] = value.as_f32()?,
+            Prop::MarginBottom => self.node_mut(id)?.margin[3] = value.as_f32()?,
+            Prop::Gap => self.node_mut(id)?.gap = value.as_f32()?.max(0.0),
+            Prop::AlignItems => self.node_mut(id)?.align_items = align_items(value)?,
+            Prop::JustifyContent => self.node_mut(id)?.justify_content = justify_content(value)?,
+            Prop::Position => self.node_mut(id)?.position = position(value)?,
+            Prop::Top => self.node_mut(id)?.inset[0] = value.optional_f32()?.unwrap_or(f32::NAN),
+            Prop::Right => self.node_mut(id)?.inset[1] = value.optional_f32()?.unwrap_or(f32::NAN),
+            Prop::Bottom => {
+                self.node_mut(id)?.inset[2] = value.optional_f32()?.unwrap_or(f32::NAN)
+            }
+            Prop::Left => self.node_mut(id)?.inset[3] = value.optional_f32()?.unwrap_or(f32::NAN),
         }
         self.restyle(id)
     }
@@ -358,18 +473,7 @@ impl Shell {
     fn restyle(&mut self, id: u32) -> Result<(), String> {
         let (taffy, style) = {
             let node = self.node(id)?;
-            (
-                node.taffy,
-                style_for(
-                    node.row,
-                    node.scroll_y,
-                    node.flex_grow,
-                    node.flex_shrink,
-                    node.width,
-                    node.height,
-                    node.padding,
-                ),
-            )
+            (node.taffy, style_for(NodeStyle::from_node(node)))
         };
         self.taffy
             .set_style(taffy, style)
@@ -415,15 +519,16 @@ impl Shell {
         if index > parent_len {
             return Err(format!("index {index} past {parent_len} children"));
         }
-        let style = style_for(
-            desc.row,
-            desc.scroll_y,
-            desc.flex_grow,
-            desc.flex_shrink,
-            desc.width,
-            desc.height,
-            desc.padding,
-        );
+        let style = style_for(NodeStyle {
+            row: desc.row,
+            scroll_y: desc.scroll_y,
+            flex_grow: desc.flex_grow,
+            flex_shrink: desc.flex_shrink,
+            width: desc.width,
+            height: desc.height,
+            padding: desc.padding,
+            ..NodeStyle::default()
+        });
         let taffy_id = if desc.kind == Kind::Text {
             self.taffy
                 .new_leaf_with_context(
@@ -431,6 +536,8 @@ impl Shell {
                     MeasureCtx {
                         text: desc.text.clone(),
                         font_size: desc.font_size,
+                        line_height: 0.0,
+                        font_weight: 400,
                     },
                 )
                 .map_err(|err| err.to_string())?
@@ -457,6 +564,15 @@ impl Shell {
             flex_shrink: desc.flex_shrink,
             row: desc.row,
             padding: desc.padding,
+            margin: [0.0; 4],
+            gap: 0.0,
+            align_items: 0,
+            justify_content: 0,
+            position: 0,
+            inset: [f32::NAN; 4],
+            line_height: 0.0,
+            text_align: 0,
+            font_weight: 400,
             text: desc.text.clone(),
             taffy: taffy_id,
             scroll: 0.0,
@@ -730,42 +846,130 @@ fn nonzero(handler: u32) -> Option<u32> {
     }
 }
 
-fn style_for(
-    row: bool,
-    scroll_y: bool,
-    flex_grow: f32,
-    flex_shrink: f32,
-    width: Option<f32>,
-    height: Option<f32>,
-    padding: [f32; 4],
-) -> Style {
+fn style_for(node: NodeStyle) -> Style {
     let mut style = Style::default();
     style.display = Display::Flex;
-    style.flex_direction = if row {
+    style.flex_direction = if node.row {
         FlexDirection::Row
     } else {
         FlexDirection::Column
     };
-    style.flex_grow = flex_grow;
-    style.flex_shrink = flex_shrink;
+    style.flex_grow = node.flex_grow;
+    style.flex_shrink = node.flex_shrink;
     style.size = Size {
-        width: dim(width),
-        height: dim(height),
+        width: dim(node.width),
+        height: dim(node.height),
     };
     style.padding = Rect {
-        left: length(padding[0]),
-        right: length(padding[1]),
-        top: length(padding[2]),
-        bottom: length(padding[3]),
+        left: length(node.padding[0]),
+        right: length(node.padding[1]),
+        top: length(node.padding[2]),
+        bottom: length(node.padding[3]),
     };
-    if scroll_y || flex_grow > 0.0 {
+    style.margin = Rect {
+        left: length(node.margin[0]),
+        right: length(node.margin[1]),
+        top: length(node.margin[2]),
+        bottom: length(node.margin[3]),
+    };
+    style.gap = Size {
+        width: length(node.gap),
+        height: length(node.gap),
+    };
+    style.align_items = match node.align_items {
+        1 => AlignItems::START,
+        2 => AlignItems::CENTER,
+        3 => AlignItems::END,
+        4 => AlignItems::BASELINE,
+        _ => AlignItems::STRETCH,
+    };
+    style.justify_content = match node.justify_content {
+        1 => JustifyContent::CENTER,
+        2 => JustifyContent::END,
+        3 => JustifyContent::SPACE_BETWEEN,
+        4 => JustifyContent::SPACE_AROUND,
+        5 => JustifyContent::SPACE_EVENLY,
+        _ => JustifyContent::START,
+    };
+    style.position = if node.position == 1 {
+        Position::Absolute
+    } else {
+        Position::Relative
+    };
+    style.inset = Rect {
+        top: inset(node.inset[0]),
+        right: inset(node.inset[1]),
+        bottom: inset(node.inset[2]),
+        left: inset(node.inset[3]),
+    };
+    if node.scroll_y || node.flex_grow > 0.0 {
         style.min_size.height = length(0.0);
     }
-    if scroll_y {
+    if node.scroll_y {
         style.overflow.y = Overflow::Scroll;
         style.scrollbar_width = 0.0;
     }
     style
+}
+
+fn inset(value: f32) -> LengthPercentageAuto {
+    if value.is_finite() {
+        length(value)
+    } else {
+        auto()
+    }
+}
+
+fn text_align(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("textAlign must be a string".into());
+    };
+    match text.as_str() {
+        "left" => Ok(0),
+        "center" => Ok(1),
+        "right" => Ok(2),
+        other => Err(format!("unsupported textAlign {other}")),
+    }
+}
+
+fn align_items(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("alignItems must be a string".into());
+    };
+    match text.as_str() {
+        "stretch" => Ok(0),
+        "start" | "flex-start" => Ok(1),
+        "center" => Ok(2),
+        "end" | "flex-end" => Ok(3),
+        "baseline" => Ok(4),
+        other => Err(format!("unsupported alignItems {other}")),
+    }
+}
+
+fn justify_content(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("justifyContent must be a string".into());
+    };
+    match text.as_str() {
+        "start" | "flex-start" => Ok(0),
+        "center" => Ok(1),
+        "end" | "flex-end" => Ok(2),
+        "space-between" => Ok(3),
+        "space-around" => Ok(4),
+        "space-evenly" => Ok(5),
+        other => Err(format!("unsupported justifyContent {other}")),
+    }
+}
+
+fn position(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("position must be a string".into());
+    };
+    match text.as_str() {
+        "relative" => Ok(0),
+        "absolute" => Ok(1),
+        other => Err(format!("unsupported position {other}")),
+    }
 }
 
 fn dim(value: Option<f32>) -> Dimension {

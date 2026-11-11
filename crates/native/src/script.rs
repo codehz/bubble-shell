@@ -9,7 +9,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use bubble_core::{validate_bundle_hashes, NodeDesc, Op, Turn, Value, SPAWN_PROPS};
+use bubble_core::{validate_bundle_hashes, NodeDesc, Op, Turn, Value, DEFERRED_PROPS, SPAWN_PROPS};
 use rquickjs::{Array, Context, Ctx, Function, Object, Runtime, TypedArray, Value as JsValue};
 use serde::Deserialize;
 
@@ -481,6 +481,10 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
     let api = Object::new(ctx.clone())?;
     api.set("boot", Function::new(ctx.clone(), api_boot)?)?;
     api.set("spawn_props", Function::new(ctx.clone(), api_spawn_props)?)?;
+    api.set(
+        "deferred_props",
+        Function::new(ctx.clone(), api_deferred_props)?,
+    )?;
     api.set("error", Function::new(ctx.clone(), api_error)?)?;
     api.set("signal_new", Function::new(ctx.clone(), api_signal_new)?)?;
     api.set("signal_get", Function::new(ctx.clone(), api_signal_get)?)?;
@@ -549,6 +553,14 @@ fn api_error() -> String {
 fn api_spawn_props(ctx: Ctx) -> rquickjs::Result<Array> {
     let array = Array::new(ctx)?;
     for (index, name) in SPAWN_PROPS.iter().enumerate() {
+        array.set(index, *name)?;
+    }
+    Ok(array)
+}
+
+fn api_deferred_props(ctx: Ctx) -> rquickjs::Result<Array> {
+    let array = Array::new(ctx)?;
+    for (index, name) in DEFERRED_PROPS.iter().enumerate() {
         array.set(index, *name)?;
     }
     Ok(array)

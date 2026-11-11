@@ -339,6 +339,11 @@ fn every_runtime_property_is_dispatchable() {
         let value = match *key {
             "color" | "backgroundColor" => Value::Int(0xff00_0000),
             "scrollY" | "row" => Value::Bool(true),
+            "textAlign" => Value::String("center".into()),
+            "alignItems" => Value::String("center".into()),
+            "justifyContent" => Value::String("space-between".into()),
+            "position" => Value::String("absolute".into()),
+            "top" | "right" | "bottom" | "left" => Value::Float(4.0),
             _ => Value::Float(4.0),
         };
         turn.set_prop(view, *key, value);
@@ -350,6 +355,49 @@ fn every_runtime_property_is_dispatchable() {
     let mut unknown = Turn::new();
     unknown.set_prop(view, "margin", Value::Float(4.0));
     assert!(shell.apply_ops(&unknown.commit().unwrap()).is_err());
+}
+
+#[test]
+fn layout_props_apply_before_the_first_layout() {
+    use bubble_core::{Turn, Value};
+
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 120.0);
+    let mut turn = Turn::new();
+    let row = turn.spawn(NodeDesc::view(0, 1)).unwrap();
+    let mut first = NodeDesc::view(0, row);
+    first.width = Some(20.0);
+    first.height = Some(20.0);
+    let first = turn.spawn(first).unwrap();
+    let mut second = NodeDesc::view(0, row);
+    second.width = Some(20.0);
+    second.height = Some(20.0);
+    let second = turn.spawn(second).unwrap();
+    let mut absolute = NodeDesc::view(0, row);
+    absolute.width = Some(10.0);
+    absolute.height = Some(10.0);
+    let absolute = turn.spawn(absolute).unwrap();
+
+    turn.set_prop(row, "row", Value::Bool(true));
+    turn.set_prop(row, "width", Value::Float(200.0));
+    turn.set_prop(row, "height", Value::Float(100.0));
+    turn.set_prop(row, "gap", Value::Float(10.0));
+    turn.set_prop(row, "alignItems", Value::String("center".into()));
+    turn.set_prop(first, "marginLeft", Value::Float(5.0));
+    turn.set_prop(absolute, "position", Value::String("absolute".into()));
+    turn.set_prop(absolute, "top", Value::Float(12.0));
+    turn.set_prop(absolute, "left", Value::Float(7.0));
+
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    shell.layout(&mut measure).unwrap();
+
+    let (x1, _, _, _) = shell.node_box(first).unwrap();
+    let (x2, _, _, _) = shell.node_box(second).unwrap();
+    assert!((x1 - 5.0).abs() < 0.01, "first x {x1}");
+    assert!((x2 - 35.0).abs() < 0.01, "second x {x2}");
+    let (ax, ay, _, _) = shell.node_box(absolute).unwrap();
+    assert!((ax - 7.0).abs() < 0.01, "absolute x {ax}");
+    assert!((ay - 12.0).abs() < 0.01, "absolute y {ay}");
 }
 
 #[test]

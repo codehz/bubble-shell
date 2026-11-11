@@ -2,9 +2,12 @@
 //!
 //! `SPAWN_PROPS` is the set a `BNOD` descriptor may carry; the JS runtime
 //! fetches it from the host so creation-time validation cannot drift from the
-//! Rust decoder. `SET_PROPS` is the set `Shell::set_prop` accepts at runtime.
-//! `padding` is creation-only in the core: the runtime splits a dynamic
-//! padding array into the four edge properties.
+//! Rust decoder. `DEFERRED_PROPS` are accepted on the JSX element but applied
+//! as `SetProp` ops immediately after `Spawn`, which keeps the descriptor
+//! stable while the style surface grows. `padding`, `margin`, and `inset`
+//! arrays are split into their edge properties by the JS runtime.
+//!
+//! `SET_PROPS` is the set `Shell::set_prop` accepts at runtime.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Prop {
@@ -23,6 +26,21 @@ pub enum Prop {
     FlexShrink,
     ScrollY,
     Row,
+    LineHeight,
+    TextAlign,
+    FontWeight,
+    MarginLeft,
+    MarginRight,
+    MarginTop,
+    MarginBottom,
+    Gap,
+    AlignItems,
+    JustifyContent,
+    Position,
+    Top,
+    Right,
+    Bottom,
+    Left,
 }
 
 impl Prop {
@@ -43,11 +61,27 @@ impl Prop {
             "flexShrink" => Self::FlexShrink,
             "scrollY" => Self::ScrollY,
             "row" => Self::Row,
+            "lineHeight" => Self::LineHeight,
+            "textAlign" => Self::TextAlign,
+            "fontWeight" => Self::FontWeight,
+            "marginLeft" => Self::MarginLeft,
+            "marginRight" => Self::MarginRight,
+            "marginTop" => Self::MarginTop,
+            "marginBottom" => Self::MarginBottom,
+            "gap" => Self::Gap,
+            "alignItems" => Self::AlignItems,
+            "justifyContent" => Self::JustifyContent,
+            "position" => Self::Position,
+            "top" => Self::Top,
+            "right" => Self::Right,
+            "bottom" => Self::Bottom,
+            "left" => Self::Left,
             _ => return None,
         })
     }
 }
 
+/// Properties carried by the `BNOD` descriptor.
 pub const SPAWN_PROPS: &[&str] = &[
     "scrollY",
     "background",
@@ -62,6 +96,19 @@ pub const SPAWN_PROPS: &[&str] = &[
     "row",
     "padding",
     "onPress",
+];
+
+/// Properties applied with `SetProp` immediately after `Spawn`.
+pub const DEFERRED_PROPS: &[&str] = &[
+    "lineHeight",
+    "textAlign",
+    "fontWeight",
+    "margin",
+    "gap",
+    "alignItems",
+    "justifyContent",
+    "position",
+    "inset",
 ];
 
 pub const SET_PROPS: &[&str] = &[
@@ -80,4 +127,19 @@ pub const SET_PROPS: &[&str] = &[
     "flexShrink",
     "scrollY",
     "row",
+    "lineHeight",
+    "textAlign",
+    "fontWeight",
+    "marginLeft",
+    "marginRight",
+    "marginTop",
+    "marginBottom",
+    "gap",
+    "alignItems",
+    "justifyContent",
+    "position",
+    "top",
+    "right",
+    "bottom",
+    "left",
 ];

@@ -80,6 +80,12 @@ setApi({
       .decode(new Uint8Array(memory().buffer, exports.scratch_ptr(), len))
       .split("\n");
   },
+  deferred_props() {
+    const len = exports.deferred_props();
+    return decoder
+      .decode(new Uint8Array(memory().buffer, exports.scratch_ptr(), len))
+      .split("\n");
+  },
   signal_new: exports.signal_new,
   signal_get: exports.signal_get,
   signal_set: exports.signal_set,

@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 
 use bubble_core::{
     encode_paint, encode_set_text, validate_bundle_hashes, NodeDesc, Op, Shell, Turn, Value,
-    SPAWN_PROPS,
+    DEFERRED_PROPS, SPAWN_PROPS,
 };
 
 thread_local! {
@@ -118,6 +118,12 @@ pub extern "C" fn scratch_len() -> u32 {
 #[no_mangle]
 pub extern "C" fn spawn_props() -> u32 {
     store_scratch(SPAWN_PROPS.join("\n").into_bytes())
+}
+
+/// Newline-separated properties applied as `SetProp` right after `Spawn`.
+#[no_mangle]
+pub extern "C" fn deferred_props() -> u32 {
+    store_scratch(DEFERRED_PROPS.join("\n").into_bytes())
 }
 
 #[no_mangle]

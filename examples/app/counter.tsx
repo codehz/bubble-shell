@@ -3,7 +3,7 @@ import { mount, signal, Text, View } from "bubble";
 function Counter() {
   const count = signal(0);
   return (
-    <View background={0xff111111} flexGrow={1} flexShrink={1} padding={[12, 12, 12, 12]}>
+    <View background={0xff111111} flexGrow={1} flexShrink={1} padding={[12, 12, 12, 12]} gap={8}>
       <Text color={0xffffffff} fontSize={24}>Count: {count()}</Text>
       <View
         background={0xff3b82f6}

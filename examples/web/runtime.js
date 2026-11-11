@@ -15,6 +15,7 @@ export function setApi(next) {
 }
 
 let spawnProps;
+let deferredProps;
 
 function allowedSpawnProps() {
   if (!spawnProps) {
@@ -32,6 +33,20 @@ function allowedSpawnProps() {
   return spawnProps;
 }
 
+function allowedDeferredProps() {
+  if (!deferredProps) {
+    if (typeof api.deferred_props !== "function") {
+      throw new Error("host does not expose deferred property names");
+    }
+    deferredProps = new Set(api.deferred_props());
+  }
+  return deferredProps;
+}
+
+function allowedNodeProps() {
+  return new Set([...allowedSpawnProps(), ...allowedDeferredProps()]);
+}
+
 export class Dynamic {
   constructor(run) {
     this.run = run;
@@ -44,7 +59,7 @@ export function dynamic(run) {
 }
 
 function validateProps(kind, props) {
-  const allowed = allowedSpawnProps();
+  const allowed = allowedNodeProps();
   for (const key of Object.keys(props)) {
     if (!allowed.has(key)) {
       throw new Error(`${kind === 2 ? "Text" : "View"} has no property ${key}`);
@@ -179,14 +194,16 @@ function pack(kind, props, text) {
   const parentHandle = parent();
   const cursor = cursors[cursors.length - 1];
   const staticProps = {};
+  const deferredValues = [];
   const dynamics = [];
+  const deferred = allowedDeferredProps();
   for (const key of Object.keys(props)) {
+    validateProps(kind, { [key]: true });
     const value = props[key];
     if (value instanceof Dynamic) dynamics.push([key, value.run]);
+    else if (deferred.has(key)) deferredValues.push([key, value]);
     else staticProps[key] = value;
   }
-  validateProps(kind, staticProps);
-  for (const [key] of dynamics) validateProps(kind, { [key]: true });
   const spec = specBytes(kind, staticProps, text);
   let handle;
   if (cursor && cursor.parent === parentHandle) {
@@ -204,6 +221,7 @@ function pack(kind, props, text) {
     handlers.set(id, props.onPress);
     if (api.bind_event(handle, id) !== 0) throw new Error(api.error() || "bind failed");
   }
+  for (const [key, value] of deferredValues) setProp(handle, key, value);
   for (const [key, run] of dynamics) bindProp(handle, key, run);
   return handle;
 }
@@ -254,12 +272,18 @@ function propParts(value) {
   throw new Error(`unsupported property value ${typeof value}`);
 }
 
+const BOX_PROPS = {
+  padding: ["paddingLeft", "paddingRight", "paddingTop", "paddingBottom"],
+  margin: ["marginLeft", "marginRight", "marginTop", "marginBottom"],
+  inset: ["top", "right", "bottom", "left"],
+};
+
 export function setProp(handle, key, value) {
-  if (key === "padding") {
-    if (!Array.isArray(value)) throw new Error("padding must be an array");
-    const edges = ["paddingLeft", "paddingRight", "paddingTop", "paddingBottom"];
+  const edges = BOX_PROPS[key];
+  if (edges) {
+    if (!Array.isArray(value)) throw new Error(`${key} must be an array`);
     for (let index = 0; index < edges.length; index += 1) {
-      setProp(handle, edges[index], value[index] ?? 0);
+      setProp(handle, edges[index], value[index] ?? (key === "inset" ? null : 0));
     }
     return;
   }
