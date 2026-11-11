@@ -6,6 +6,9 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Typeface
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
@@ -14,7 +17,7 @@ import java.nio.ByteOrder
 
 class BubbleView(context: Context) : View(context) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
     private val path = Path()
     private var paintBytes = ByteArray(0)
     private var family: Typeface = Typeface.DEFAULT
@@ -83,15 +86,39 @@ class BubbleView(context: Context) : View(context) {
                     val x = buffer.float
                     val y = buffer.float
                     val w = buffer.float
+                    val h = buffer.float
                     val font = buffer.float
                     textPaint.color = color(buffer.int)
-                    textPaint.typeface = family
+                    val lineHeight = buffer.float
+                    val weight = buffer.short.toInt() and 0xffff
+                    val align = buffer.get().toInt() and 0xff
+                    textPaint.typeface = if (weight >= 600) Typeface.create(family, Typeface.BOLD) else family
                     textPaint.textSize = font
                     val n = buffer.int
                     val raw = ByteArray(n)
                     buffer.get(raw)
                     val text = String(raw, Charsets.UTF_8)
-                    canvas.drawText(text, x, y + font, textPaint)
+                    if (text.isNotEmpty() && w > 0f) {
+                        val spacing = if (lineHeight > 0f) (lineHeight / font).coerceAtLeast(0.1f) else 1f
+                        val alignment = when (align) {
+                            1 -> Layout.Alignment.ALIGN_CENTER
+                            2 -> Layout.Alignment.ALIGN_OPPOSITE
+                            else -> Layout.Alignment.ALIGN_NORMAL
+                        }
+                        val layout = StaticLayout.Builder
+                            .obtain(text, 0, text.length, textPaint, w.toInt().coerceAtLeast(1))
+                            .setIncludePad(false)
+                            .setLineSpacing(0f, spacing)
+                            .setAlignment(alignment)
+                            .build()
+                        canvas.save()
+                        canvas.translate(x, y)
+                        canvas.clipRect(0f, 0f, w, h)
+                        layout.draw(canvas)
+                        canvas.restore()
+                    } else {
+                        canvas.drawText(text, x, y + font, textPaint)
+                    }
                 }
                 3 -> {
                     val x = buffer.float

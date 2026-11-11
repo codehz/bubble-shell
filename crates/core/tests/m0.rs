@@ -2,8 +2,19 @@ use bubble_core::{
     encode, encode_set_prop_color, encode_set_text, validate_bundle_hashes, NodeDesc, Op, Shell,
 };
 
-fn measure(text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
-    let line = font_size * 1.2;
+fn measure(
+    text: &str,
+    font_size: f32,
+    line_height: f32,
+    weight: u16,
+    max_width: Option<f32>,
+) -> (f32, f32) {
+    let _ = weight;
+    let line = if line_height > 0.0 {
+        line_height
+    } else {
+        font_size * 1.2
+    };
     let width = text.chars().count() as f32 * font_size * 0.5;
     match max_width {
         Some(max) if max > 0.0 && width > max => {
@@ -299,10 +310,11 @@ fn signal_commit_updates_text_and_scrolls() {
 
     shell.set_viewport(200.0, 120.0);
     shell
-        .layout(&mut |text, font, max| {
+        .layout(&mut |text, font, line_height, _weight, max| {
             let width = text.chars().count() as f32 * font * 0.5;
             let width = max.map(|max| width.min(max)).unwrap_or(width);
-            (width, font * 1.2)
+            let line = if line_height > 0.0 { line_height } else { font * 1.2 };
+            (width, line)
         })
         .unwrap();
     let (bx, by, _, _) = shell.node_box(button).unwrap();
@@ -398,6 +410,43 @@ fn layout_props_apply_before_the_first_layout() {
     let (ax, ay, _, _) = shell.node_box(absolute).unwrap();
     assert!((ax - 7.0).abs() < 0.01, "absolute x {ax}");
     assert!((ay - 12.0).abs() < 0.01, "absolute y {ay}");
+}
+
+#[test]
+fn text_style_reaches_layout_and_paint() {
+    use bubble_core::{Turn, Value};
+
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(100.0, 120.0);
+    let mut turn = Turn::new();
+    let label = turn
+        .spawn(NodeDesc::text(0, 1, "A wrapped text node"))
+        .unwrap();
+    turn.set_prop(label, "lineHeight", Value::Float(30.0));
+    turn.set_prop(label, "textAlign", Value::String("center".into()));
+    turn.set_prop(label, "fontWeight", Value::Int(700));
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    shell
+        .layout(&mut |text, font, line_height, _weight, max| {
+            let width = text.chars().count() as f32 * font * 0.5;
+            let width = max.map(|max| width.min(max)).unwrap_or(width);
+            let line = if line_height > 0.0 { line_height } else { font * 1.2 };
+            (width, line)
+        })
+        .unwrap();
+
+    let (_, _, _, h) = shell.node_box(label).unwrap();
+    assert!((h - 30.0).abs() < 0.01, "height {h}");
+    let paint = shell.paint();
+    assert!(paint.iter().any(|cmd| matches!(
+        cmd,
+        bubble_core::PaintCmd::Text {
+            line_height,
+            align: 1,
+            weight: 700,
+            ..
+        } if (*line_height - 30.0).abs() < f32::EPSILON
+    )));
 }
 
 #[test]

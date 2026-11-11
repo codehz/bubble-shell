@@ -135,8 +135,12 @@ pub enum PaintCmd {
         x: f32,
         y: f32,
         w: f32,
+        h: f32,
         font_size: f32,
         color: u32,
+        line_height: f32,
+        weight: u16,
+        align: u8,
         text: String,
     },
     PushClip {
@@ -278,7 +282,7 @@ impl Shell {
 
     pub fn layout(
         &mut self,
-        measure: &mut dyn FnMut(&str, f32, Option<f32>) -> (f32, f32),
+        measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
     ) -> Result<(), String> {
         if self.viewport.width <= 0.0 || self.viewport.height <= 0.0 {
             return Err("viewport is empty".into());
@@ -302,13 +306,22 @@ impl Shell {
                     height: AvailableSpace::Definite(self.viewport.height),
                 },
                 |inputs, _node, ctx, style| {
-                    let measured = ctx.map(|ctx| (ctx.text.clone(), ctx.font_size));
+                    let measured = ctx.map(|ctx| {
+                        (
+                            ctx.text.clone(),
+                            ctx.font_size,
+                            ctx.line_height,
+                            ctx.font_weight,
+                        )
+                    });
                     compute_leaf_layout(
                         inputs,
                         style,
                         |_, _| 0.0,
                         |known, available| {
-                            let Some((text, font_size)) = measured.as_ref() else {
+                            let Some((text, font_size, line_height, font_weight)) =
+                                measured.as_ref()
+                            else {
                                 return Size::ZERO;
                             };
                             if let (Some(width), Some(height)) = (known.width, known.height) {
@@ -318,7 +331,13 @@ impl Shell {
                                 AvailableSpace::Definite(width) => Some(width),
                                 _ => known.width,
                             };
-                            let (width, height) = measure(text, *font_size, max_width);
+                            let (width, height) = measure(
+                                text,
+                                *font_size,
+                                *line_height,
+                                *font_weight,
+                                max_width,
+                            );
                             Size {
                                 width: known.width.unwrap_or(width),
                                 height: known.height.unwrap_or(height),
@@ -414,28 +433,8 @@ impl Shell {
                 self.node_mut(id)?.opacity = value.as_f32()?.clamp(0.0, 1.0);
             }
             Prop::FontSize => {
-                let (text, font_size, line_height, font_weight, taffy) = {
-                    let node = self.node_mut(id)?;
-                    node.font_size = value.as_f32()?;
-                    (
-                        node.text.clone(),
-                        node.font_size,
-                        node.line_height,
-                        node.font_weight,
-                        node.taffy,
-                    )
-                };
-                self.taffy
-                    .set_node_context(
-                        taffy,
-                        Some(MeasureCtx {
-                            text,
-                            font_size,
-                            line_height,
-                            font_weight,
-                        }),
-                    )
-                    .map_err(|err| err.to_string())?;
+                self.node_mut(id)?.font_size = value.as_f32()?;
+                self.refresh_measure(id)?;
             }
             Prop::PaddingLeft => self.node_mut(id)?.padding[0] = value.as_f32()?,
             Prop::PaddingRight => self.node_mut(id)?.padding[1] = value.as_f32()?,
@@ -447,10 +446,14 @@ impl Shell {
             Prop::FlexShrink => self.node_mut(id)?.flex_shrink = value.as_f32()?,
             Prop::ScrollY => self.node_mut(id)?.scroll_y = value.as_bool()?,
             Prop::Row => self.node_mut(id)?.row = value.as_bool()?,
-            Prop::LineHeight => self.node_mut(id)?.line_height = value.as_f32()?.max(0.0),
+            Prop::LineHeight => {
+                self.node_mut(id)?.line_height = value.as_f32()?.max(0.0);
+                self.refresh_measure(id)?;
+            }
             Prop::TextAlign => self.node_mut(id)?.text_align = text_align(value)?,
             Prop::FontWeight => {
-                self.node_mut(id)?.font_weight = value.as_u32()?.clamp(1, 1000) as u16
+                self.node_mut(id)?.font_weight = value.as_u32()?.clamp(1, 1000) as u16;
+                self.refresh_measure(id)?;
             }
             Prop::MarginLeft => self.node_mut(id)?.margin[0] = value.as_f32()?,
             Prop::MarginRight => self.node_mut(id)?.margin[1] = value.as_f32()?,
@@ -477,6 +480,33 @@ impl Shell {
         };
         self.taffy
             .set_style(taffy, style)
+            .map_err(|err| err.to_string())
+    }
+
+    fn refresh_measure(&mut self, id: u32) -> Result<(), String> {
+        let (taffy, text, font_size, line_height, font_weight) = {
+            let node = self.node(id)?;
+            if node.kind != Kind::Text {
+                return Ok(());
+            }
+            (
+                node.taffy,
+                node.text.clone(),
+                node.font_size,
+                node.line_height,
+                node.font_weight,
+            )
+        };
+        self.taffy
+            .set_node_context(
+                taffy,
+                Some(MeasureCtx {
+                    text,
+                    font_size,
+                    line_height,
+                    font_weight,
+                }),
+            )
             .map_err(|err| err.to_string())
     }
 
@@ -730,8 +760,12 @@ impl Shell {
                 x,
                 y,
                 w,
+                h,
                 font_size,
                 color,
+                line_height: node.line_height,
+                weight: node.font_weight,
+                align: node.text_align,
                 text,
             });
         }

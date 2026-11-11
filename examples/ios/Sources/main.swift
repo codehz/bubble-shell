@@ -34,16 +34,18 @@ func bubble_generation() -> UInt32
 func bubble_last_error() -> UnsafePointer<CChar>?
 
 struct BubbleHost {
-    var measure: (@convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, Float, Float, Int32, UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?) -> Void)?
+    var measure: (@convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, Float, Float, UInt16, Float, Int32, UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?) -> Void)?
     var ctx: UnsafeMutableRawPointer?
 }
 
 var hostFamily = "Arial"
 
-let measure: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, Float, Float, Int32, UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?) -> Void = { _, text, len, fontSize, maxWidth, hasMax, outW, outH in
+let measure: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, Float, Float, UInt16, Float, Int32, UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?) -> Void = { _, text, len, fontSize, lineHeight, weight, maxWidth, hasMax, outW, outH in
     let bytes = text.map { Array(UnsafeBufferPointer(start: $0, count: Int(len))) } ?? []
     let string = String(bytes: bytes, encoding: .utf8) ?? ""
-    let size = hostFamily.isEmpty ? UIFont.systemFont(ofSize: CGFloat(fontSize)) : (UIFont(name: hostFamily, size: CGFloat(fontSize)) ?? UIFont.systemFont(ofSize: CGFloat(fontSize)))
+    let size = hostFamily.isEmpty
+        ? UIFont.systemFont(ofSize: CGFloat(fontSize), weight: weight >= 600 ? .semibold : .regular)
+        : (UIFont(name: hostFamily, size: CGFloat(fontSize)) ?? UIFont.systemFont(ofSize: CGFloat(fontSize)))
     let limit = hasMax != 0 ? CGFloat(maxWidth) : CGFloat.greatestFiniteMagnitude
     let rect = (string as NSString).boundingRect(
         with: CGSize(width: limit, height: .greatestFiniteMagnitude),
@@ -52,7 +54,13 @@ let measure: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UI
         context: nil
     )
     outW?.pointee = Float(ceil(rect.width))
-    outH?.pointee = Float(ceil(rect.height))
+    if lineHeight > 0 {
+        let natural = ceil(size.lineHeight)
+        let lines = max(1, ceil(rect.height / natural))
+        outH?.pointee = Float(lines * CGFloat(lineHeight))
+    } else {
+        outH?.pointee = Float(ceil(rect.height))
+    }
 }
 
 final class BubbleView: UIView {
@@ -102,6 +110,14 @@ final class BubbleView: UIView {
             let bits = raw.withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian
             return CGFloat(Float(bitPattern: bits))
         }
+        func u16() -> UInt16? {
+            guard let raw = take(2) else { return nil }
+            return raw.withUnsafeBytes { $0.load(as: UInt16.self) }.littleEndian
+        }
+        func u8() -> UInt8? {
+            guard let raw = take(1) else { return nil }
+            return raw.first
+        }
         guard let count = u32() else { return }
         var alpha: CGFloat = 1
         var alphas: [CGFloat] = []
@@ -114,13 +130,22 @@ final class BubbleView: UIView {
                 colorOf(color).setFill()
                 UIBezierPath(roundedRect: CGRect(x: x, y: y, width: w, height: h), cornerRadius: radius).fill()
             case 2:
-                guard let x = f32(), let y = f32(), let w = f32(), let font = f32(), let color = u32(), let nbytes = u32() else { return }
+                guard let x = f32(), let y = f32(), let w = f32(), let h = f32(), let font = f32(), let color = u32(), let lineHeight = f32(), let weight = u16(), let align = u8(), let nbytes = u32() else { return }
                 guard let raw = take(Int(nbytes)) else { return }
                 let text = String(data: raw, encoding: .utf8) ?? ""
-                let uiFont = UIFont(name: family, size: font) ?? UIFont.systemFont(ofSize: font)
-                (text as NSString).draw(in: CGRect(x: x, y: y, width: max(w, 1), height: font * 2), withAttributes: [
+                let uiFont: UIFont = hostFamily.isEmpty
+                    ? UIFont.systemFont(ofSize: font, weight: weight >= 600 ? .semibold : .regular)
+                    : (UIFont(name: hostFamily, size: font) ?? UIFont.systemFont(ofSize: font))
+                let paragraph = NSMutableParagraphStyle()
+                if lineHeight > 0 {
+                    paragraph.minimumLineHeight = lineHeight
+                    paragraph.maximumLineHeight = lineHeight
+                }
+                paragraph.alignment = align == 1 ? .center : (align == 2 ? .right : .left)
+                (text as NSString).draw(in: CGRect(x: x, y: y, width: max(w, 1), height: max(h, 1)), withAttributes: [
                     .font: uiFont,
                     .foregroundColor: colorOf(color),
+                    .paragraphStyle: paragraph,
                 ])
             case 3:
                 guard let x = f32(), let y = f32(), let w = f32(), let h = f32() else { return }

@@ -30,16 +30,24 @@ pub fn encode_paint(cmds: &[PaintCmd]) -> Vec<u8> {
                 x,
                 y,
                 w,
+                h,
                 font_size,
                 color,
+                line_height,
+                weight,
+                align,
                 text,
             } => {
                 out.push(2);
                 push_f32(&mut out, *x);
                 push_f32(&mut out, *y);
                 push_f32(&mut out, *w);
+                push_f32(&mut out, *h);
                 push_f32(&mut out, *font_size);
                 out.extend_from_slice(&color.to_le_bytes());
+                push_f32(&mut out, *line_height);
+                out.extend_from_slice(&weight.to_le_bytes());
+                out.push(*align);
                 let bytes = text.as_bytes();
                 out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
                 out.extend_from_slice(bytes);

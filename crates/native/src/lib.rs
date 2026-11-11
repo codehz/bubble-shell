@@ -33,7 +33,18 @@ struct HostFns {
 unsafe impl Send for HostFns {}
 unsafe impl Sync for HostFns {}
 
-type MeasureFn = extern "C" fn(*mut c_void, *const u8, u32, f32, f32, i32, *mut f32, *mut f32);
+type MeasureFn = extern "C" fn(
+    *mut c_void,
+    *const u8,
+    u32,
+    f32,
+    f32,
+    u16,
+    f32,
+    i32,
+    *mut f32,
+    *mut f32,
+);
 
 /// Taffy's compact lengths contain tag bits that are not heap pointers in this
 /// build. The tree is only locked by the caller/frame thread.
@@ -262,7 +273,7 @@ pub extern "C" fn bubble_frame(
             .map_err(|_| "tree lock poisoned".to_string())?;
         shell.set_viewport(width, height);
         let host = &engine.shared.host;
-        shell.layout(&mut |text, font_size, max_width| {
+        shell.layout(&mut |text, font_size, line_height, font_weight, max_width| {
             if let Some(measure) = host.measure {
                 let mut w = 0.0f32;
                 let mut h = 0.0f32;
@@ -272,6 +283,8 @@ pub extern "C" fn bubble_frame(
                     text.as_ptr(),
                     text.len() as u32,
                     font_size,
+                    line_height,
+                    font_weight,
                     max_width.unwrap_or(0.0),
                     i32::from(has_max),
                     &mut w,
@@ -279,7 +292,7 @@ pub extern "C" fn bubble_frame(
                 );
                 (w, h)
             } else {
-                fallback_measure(text, font_size)
+                fallback_measure(text, font_size, line_height)
             }
         })?;
         let bytes = encode_paint(&shell.paint());
@@ -633,12 +646,17 @@ fn copy_text(
     finish(result)
 }
 
-fn fallback_measure(text: &str, font_size: f32) -> (f32, f32) {
+fn fallback_measure(text: &str, font_size: f32, line_height: f32) -> (f32, f32) {
     if text.is_empty() {
         return (0.0, 0.0);
     }
     let width = text.chars().count() as f32 * font_size * 0.5;
-    (width, font_size * 1.25)
+    let line = if line_height > 0.0 {
+        line_height
+    } else {
+        font_size * 1.25
+    };
+    (width, line)
 }
 
 #[cfg(target_os = "android")]

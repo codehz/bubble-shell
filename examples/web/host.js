@@ -5,18 +5,56 @@ const ctx = canvas.getContext("2d");
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
+function fontOf(fontSize, weight) {
+  return `${weight || 400} ${fontSize}px sans-serif`;
+}
+
+function lineHeightOf(fontSize, lineHeight) {
+  return lineHeight > 0 ? lineHeight : fontSize * 1.2;
+}
+
+function wrapText(text, fontSize, weight, maxWidth) {
+  ctx.font = fontOf(fontSize, weight);
+  const lines = [];
+  for (const paragraph of text.split("\n")) {
+    if (maxWidth === null || maxWidth <= 0) {
+      lines.push(paragraph);
+      continue;
+    }
+    let line = "";
+    for (const char of paragraph) {
+      const next = line + char;
+      if (line && ctx.measureText(next).width > maxWidth) {
+        const space = line.lastIndexOf(" ");
+        if (space > 0) {
+          lines.push(line.slice(0, space));
+          line = line.slice(space + 1) + char;
+        } else {
+          lines.push(line);
+          line = char;
+        }
+      } else {
+        line = next;
+      }
+    }
+    lines.push(line);
+  }
+  return lines.length ? lines : [""];
+}
+
 const wasm = await WebAssembly.instantiateStreaming(fetch("./bubble.wasm"), {
   env: {
-    host_measure(textPtr, textLen, fontSize, mode, avail, outPtr) {
+    host_measure(textPtr, textLen, fontSize, lineHeight, weight, mode, avail, outPtr) {
       const text = decoder.decode(new Uint8Array(memory().buffer, textPtr, textLen));
-      ctx.font = `${fontSize}px sans-serif`;
-      let width = ctx.measureText(text).width;
-      let height = fontSize * 1.2;
-      if (mode && avail > 0 && width > avail) {
-        const lines = Math.max(1, Math.ceil(width / avail));
-        width = avail;
-        height = lines * height;
+      const maxWidth = mode && avail > 0 ? avail : null;
+      const lines = wrapText(text, fontSize, weight, maxWidth);
+      let width = 0;
+      ctx.font = fontOf(fontSize, weight);
+      for (const line of lines) {
+        width = Math.max(width, ctx.measureText(line).width);
       }
+      if (maxWidth !== null) width = Math.min(width, maxWidth);
+      const height = lines.length * lineHeightOf(fontSize, lineHeight);
       const out = new DataView(memory().buffer, outPtr, 8);
       out.setFloat32(0, width, true);
       out.setFloat32(4, height, true);
@@ -175,17 +213,32 @@ function paint() {
       const x = f32();
       const y = f32();
       const w = f32();
+      const h = f32();
       const fontSize = f32();
       const color = view.getUint32(offset, true);
       offset += 4;
+      const lineHeight = f32();
+      const weight = view.getUint16(offset, true);
+      offset += 2;
+      const align = view.getUint8(offset);
+      offset += 1;
       const textLen = view.getUint32(offset, true);
       offset += 4;
       const text = decoder.decode(new Uint8Array(memory().buffer, exports.scratch_ptr() + offset, textLen));
       offset += textLen;
       ctx.fillStyle = css(color);
-      ctx.font = `${fontSize}px sans-serif`;
+      ctx.font = fontOf(fontSize, weight);
       ctx.textBaseline = "top";
-      ctx.fillText(text, x, y, w);
+      const lineH = lineHeightOf(fontSize, lineHeight);
+      const lines = wrapText(text, fontSize, weight, w > 0 ? w : null);
+      for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index];
+        const lineWidth = ctx.measureText(line).width;
+        let lineX = x;
+        if (align === 1) lineX = x + Math.max(0, (w - lineWidth) / 2);
+        else if (align === 2) lineX = x + Math.max(0, w - lineWidth);
+        if (index * lineH < h || h <= 0) ctx.fillText(line, lineX, y + index * lineH);
+      }
     } else if (tag === 3) {
       const x = f32();
       const y = f32();

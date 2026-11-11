@@ -10,18 +10,16 @@ const encoder = new TextEncoder();
 const started = performance.now();
 const { instance } = await WebAssembly.instantiate(wasmBytes, {
   env: {
-    host_measure(textPtr, textLen, fontSize, mode, avail, outPtr) {
+    host_measure(textPtr, textLen, fontSize, lineHeight, weight, mode, avail, outPtr) {
       const text = decoder.decode(new Uint8Array(memory().buffer, textPtr, textLen));
-      let width = text.length * fontSize * 0.5;
-      let height = fontSize * 1.2;
-      if (mode && avail > 0 && width > avail) {
-        const lines = Math.max(1, Math.ceil(width / avail));
-        width = avail;
-        height = lines * height;
-      }
+      const line = lineHeight > 0 ? lineHeight : fontSize * 1.2;
+      const width = text.length * fontSize * 0.5;
+      const lines = mode && avail > 0 && width > avail
+        ? Math.max(1, Math.ceil(width / avail))
+        : Math.max(1, text.split("\n").length);
       const out = new DataView(memory().buffer, outPtr, 8);
-      out.setFloat32(0, width, true);
-      out.setFloat32(4, height, true);
+      out.setFloat32(0, mode && avail > 0 ? Math.min(width, avail) : width, true);
+      out.setFloat32(4, lines * line, true);
     },
   },
 });
@@ -158,14 +156,20 @@ function paintList() {
       const x = f32();
       const y = f32();
       const w = f32();
+      const h = f32();
       const fontSize = f32();
       const color = view.getUint32(offset, true);
       offset += 4;
+      const lineHeight = f32();
+      const weight = view.getUint16(offset, true);
+      offset += 2;
+      const align = view.getUint8(offset);
+      offset += 1;
       const textLen = view.getUint32(offset, true);
       offset += 4;
       const text = decoder.decode(new Uint8Array(memory().buffer, exports.scratch_ptr() + offset, textLen));
       offset += textLen;
-      cmds.push({ tag, x, y, w, fontSize, color, text });
+      cmds.push({ tag, x, y, w, h, fontSize, color, lineHeight, weight, align, text });
     } else if (tag === 3) {
       const x = f32();
       const y = f32();

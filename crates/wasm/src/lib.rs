@@ -27,6 +27,8 @@ unsafe extern "C" {
         text_ptr: u32,
         text_len: u32,
         font_size: f32,
+        line_height: f32,
+        weight: u32,
         mode: u32,
         avail: f32,
         out_ptr: u32,
@@ -388,13 +390,15 @@ pub extern "C" fn commit() -> u32 {
 pub extern "C" fn layout() -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            shell.layout(&mut |text, font_size, max_width| {
+            shell.layout(&mut |text, font_size, line_height, font_weight, max_width| {
                 let mut out = [0f32; 2];
                 unsafe {
                     host_measure(
                         text.as_ptr() as u32,
                         text.len() as u32,
                         font_size,
+                        line_height,
+                        font_weight as u32,
                         u32::from(max_width.is_some()),
                         max_width.unwrap_or(0.0),
                         out.as_mut_ptr() as u32,
