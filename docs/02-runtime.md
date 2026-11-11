@@ -23,7 +23,7 @@ mount(() => <Counter />);
 ```
 
 - 组件函数只执行一次，不在状态变化时重建树。
-- `signal` 的值留在脚本侧（JS 引用），Rust 图只记录订阅。比较用 `===`（`equals: false` 每次写入都通知，`equals(a, b)` 返回真表示相同）。数组和对象按引用持有，不复制进 Rust；原地修改不会通知，要 `set` 一个新值。`computed` / `effect` 是 JS 在现有绑定图上的薄封装：`computed` 用 effect 写一个派生 signal；不引入 `solid-js`，也不在 JS 里维护第二套订阅。
+- `signal` 的值留在脚本侧（JS 引用），Rust 图只调度。比较用 `===`（`equals: false` 每次写入都通知，`equals(a, b)` 返回真表示相同）。数组和对象按引用持有，不复制进 Rust；原地修改不会通知，要 `set` 一个新值。`computed` 是图上的 memo，一次变化只跑一遍，并且先于 effect。渲染绑定是 render effect，`effect` 是 user effect，排在渲染绑定之后。`cleanup` 挂在当前 owner 上，owner 重跑或销毁时先执行。不引入 `solid-js`。
 - 一次 Oxc pass 去掉 TypeScript，把 JSX 降成原生渲染模块的调用：静态属性和子节点设一次；会读信号的表达式登记为绑定。
 - 绑定重跑时，原生渲染器直接产出对应 op（`SetText` / `SetProp` / 插入 / 移动 / 销毁）。没有 VDOM diff，也没有「模板 IR + 按绑定生成的 JS 更新函数」。
 - `<If>` / `<Each>` 是运行时原语：按真值和 key 创建、移动、销毁，不在编译期把列表展开成静态节点。

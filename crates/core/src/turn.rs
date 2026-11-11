@@ -5,24 +5,15 @@
 //! dirty on write, and coalesces the ops pushed while rerunning them. `commit`
 //! only swaps buffers and encodes a batch; it never mutates the tree.
 
-use std::collections::HashSet;
+use crate::reactive::{self, Graph, Kind, Sched};
 
 use crate::gesture::GestureKind;
 use crate::ir::NodeDesc;
 use crate::ops::{encode, Op, Value};
 
-/// Signal values stay in the script host. The graph only records which
-/// binding read which signal and which bindings a write dirtied. Equality
-/// is the host's (`===` for JS): an array or object is a reference, never
-/// a copy stored here.
-
 pub struct Turn {
-    /// Index 0 is unused so a zero id is never a live signal.
-    subs: Vec<HashSet<u32>>,
-    reads: Vec<Vec<u32>>,
-    tracking: Option<u32>,
-    dirty: Vec<u32>,
-    dirty_set: HashSet<u32>,
+    /// Values stay in the script host. [`Graph`] schedules memos and effects.
+    graph: Graph,
     bufs: [Vec<Op>; 2],
     write: usize,
     seq: u32,
@@ -33,11 +24,7 @@ pub struct Turn {
 impl Turn {
     pub fn new() -> Self {
         Self {
-            subs: vec![HashSet::new()],
-            reads: vec![Vec::new()],
-            tracking: None,
-            dirty: Vec::new(),
-            dirty_set: HashSet::new(),
+            graph: Graph::new(),
             bufs: [Vec::new(), Vec::new()],
             write: 0,
             seq: 0,
@@ -50,62 +37,47 @@ impl Turn {
         self.next_handle
     }
 
-    /// A new signal id. The host stores the value.
     pub fn alloc_signal(&mut self) -> u32 {
-        let id = self.subs.len() as u32;
-        self.subs.push(HashSet::new());
-        id
+        self.graph.alloc_signal()
     }
 
-    pub fn track(&mut self, binding: u32) {
-        if self.reads.len() <= binding as usize {
-            self.reads.resize(binding as usize + 1, Vec::new());
-        }
-        for signal in self.reads[binding as usize].drain(..) {
-            self.subs[signal as usize].remove(&binding);
-        }
-        self.tracking = Some(binding);
+    pub fn alloc_computation(&mut self, kind: Kind) -> Result<u32, String> {
+        self.graph.alloc_computation(kind)
     }
 
-    pub fn untrack(&mut self) {
-        self.tracking = None;
+    pub fn mount_computation(&mut self, id: u32, host: &mut dyn Sched) -> Result<(), String> {
+        let graph = &mut self.graph as *mut Graph;
+        reactive::mount(graph, id, host)
     }
 
-    /// Subscribe the tracking binding to `id`. Does not return the value.
-    pub fn read(&mut self, id: u32) -> Result<(), String> {
-        self.live(id)?;
-        self.record_read(id);
-        Ok(())
+    pub fn read(&mut self, id: u32, host: &mut dyn Sched) -> Result<(), String> {
+        let graph = &mut self.graph as *mut Graph;
+        reactive::read(graph, id, host)
     }
 
-    /// The host already decided the value changed. Mark subscribers dirty.
-    pub fn notify(&mut self, id: u32) -> Result<(), String> {
-        self.live(id)?;
-        for binding in &self.subs[id as usize] {
-            if self.dirty_set.insert(*binding) {
-                self.dirty.push(*binding);
-            }
-        }
-        Ok(())
+    pub fn notify(&mut self, id: u32, host: &mut dyn Sched) -> Result<(), String> {
+        let graph = &mut self.graph as *mut Graph;
+        reactive::notify(graph, id, host)
     }
 
-    fn live(&self, id: u32) -> Result<(), String> {
-        if id == 0 || self.subs.get(id as usize).is_none() {
-            return Err(format!("unknown signal {id}"));
-        }
-        Ok(())
+    pub fn on_cleanup(&mut self, id: u32) -> bool {
+        reactive::on_cleanup(&mut self.graph as *mut Graph, id)
     }
 
-    fn record_read(&mut self, id: u32) {
-        if let Some(binding) = self.tracking {
-            self.subs[id as usize].insert(binding);
-            self.reads[binding as usize].push(id);
-        }
+    pub fn dispose_computation(&mut self, id: u32, host: &mut dyn Sched) {
+        reactive::dispose(&mut self.graph as *mut Graph, id, host);
     }
 
-    pub fn take_dirty(&mut self) -> Vec<u32> {
-        self.dirty_set.clear();
-        std::mem::take(&mut self.dirty)
+    pub fn run_scheduled(&mut self, init: bool, host: &mut dyn Sched) {
+        reactive::run_scheduled(&mut self.graph as *mut Graph, init, host);
+    }
+
+    pub fn graph_error(&self) -> Option<&str> {
+        self.graph.error.as_deref()
+    }
+
+    pub fn take_graph_error(&mut self) -> Option<String> {
+        self.graph.error.take()
     }
 
     /// Allocate a handle and queue the node for insertion. The op is applied

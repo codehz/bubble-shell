@@ -2,7 +2,7 @@
 //! the op buffer; the tree is owned by the host/frame thread, so a dead loop
 //! cannot stall layout.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -10,7 +10,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bubble_core::{
-    validate_bundle_hashes, GestureKind, NodeDesc, Op, Turn, Value, DEFERRED_PROPS, SPAWN_PROPS,
+    validate_bundle_hashes, ComputationKind, GestureKind, NodeDesc, Op, Sched, Turn, Value,
+    DEFERRED_PROPS, SPAWN_PROPS,
 };
 use rquickjs::{Array, Context, Ctx, Function, Object, Runtime, TypedArray, Value as JsValue};
 use serde::Deserialize;
@@ -29,6 +30,7 @@ static MONO_BASE: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 thread_local! {
     static TURN: RefCell<Option<Turn>> = const { RefCell::new(None) };
+    static ACTIVE: Cell<*mut Turn> = const { Cell::new(std::ptr::null_mut()) };
     static SHARED: RefCell<Option<Arc<Shared>>> = const { RefCell::new(None) };
     static ERROR: RefCell<String> = const { RefCell::new(String::new()) };
     static TIMERS: RefCell<Vec<Timer>> = const { RefCell::new(Vec::new()) };
@@ -496,12 +498,24 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
         Function::new(ctx.clone(), api_deferred_props)?,
     )?;
     api.set("error", Function::new(ctx.clone(), api_error)?)?;
-    api.set("signal_alloc", Function::new(ctx.clone(), api_signal_alloc)?)?;
+    api.set(
+        "signal_alloc",
+        Function::new(ctx.clone(), api_signal_alloc)?,
+    )?;
     api.set("signal_read", Function::new(ctx.clone(), api_signal_read)?)?;
-    api.set("signal_notify", Function::new(ctx.clone(), api_signal_notify)?)?;
-    api.set("track_begin", Function::new(ctx.clone(), api_track_begin)?)?;
-    api.set("track_end", Function::new(ctx.clone(), api_track_end)?)?;
-    api.set("takeDirty", Function::new(ctx.clone(), api_take_dirty)?)?;
+    api.set(
+        "signal_notify",
+        Function::new(ctx.clone(), api_signal_notify)?,
+    )?;
+    api.set("alloc_node", Function::new(ctx.clone(), api_alloc_node)?)?;
+    api.set("mount_node", Function::new(ctx.clone(), api_mount_node)?)?;
+    api.set(
+        "dispose_node",
+        Function::new(ctx.clone(), api_dispose_node)?,
+    )?;
+    api.set("on_cleanup", Function::new(ctx.clone(), api_on_cleanup)?)?;
+    api.set("run_init", Function::new(ctx.clone(), api_run_init)?)?;
+    api.set("run_updates", Function::new(ctx.clone(), api_run_updates)?)?;
     api.set("spawn", Function::new(ctx.clone(), api_spawn)?)?;
     api.set("spawn_at", Function::new(ctx.clone(), api_spawn_at)?)?;
     api.set("dispose", Function::new(ctx.clone(), api_dispose)?)?;
@@ -541,12 +555,20 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
 }
 
 fn with_turn<T>(body: impl FnOnce(&mut Turn) -> Result<T, String>) -> Result<T, String> {
+    let active = ACTIVE.with(|cell| cell.get());
+    if !active.is_null() {
+        return body(unsafe { &mut *active });
+    }
     TURN.with(|slot| {
         let mut slot = slot.borrow_mut();
         let turn = slot
             .as_mut()
             .ok_or_else(|| "shell is not mounted".to_string())?;
-        body(turn)
+        let ptr = turn as *mut Turn;
+        ACTIVE.with(|cell| cell.set(ptr));
+        let result = body(unsafe { &mut *ptr });
+        ACTIVE.with(|cell| cell.set(std::ptr::null_mut()));
+        result
     })
 }
 
@@ -600,8 +622,84 @@ fn api_signal_alloc() -> u32 {
     with_turn(|turn| Ok(turn.alloc_signal())).unwrap_or(0)
 }
 
-fn api_signal_read(id: f64) -> i32 {
-    match with_turn(|turn| turn.read(id as u32)) {
+fn api_signal_read(ctx: Ctx, id: f64) -> i32 {
+    graph_call(&ctx, |turn, host| {
+        turn.read(id as u32, host)?;
+        note_graph(turn)
+    })
+}
+
+fn api_signal_notify(ctx: Ctx, id: f64) -> i32 {
+    graph_call(&ctx, |turn, host| {
+        turn.notify(id as u32, host)?;
+        note_graph(turn)
+    })
+}
+
+fn api_alloc_node(kind: f64) -> u32 {
+    let kind = match kind as u32 {
+        1 => ComputationKind::Memo,
+        2 => ComputationKind::Effect,
+        3 => ComputationKind::UserEffect,
+        other => {
+            set_api_error(format!("bad computation kind {other}"));
+            return 0;
+        }
+    };
+    match with_turn(|turn| turn.alloc_computation(kind)) {
+        Ok(id) => id,
+        Err(err) => {
+            set_api_error(err);
+            0
+        }
+    }
+}
+
+fn api_mount_node(ctx: Ctx, id: f64) -> i32 {
+    graph_call(&ctx, |turn, host| {
+        turn.mount_computation(id as u32, host)?;
+        note_graph(turn)
+    })
+}
+
+fn api_dispose_node(ctx: Ctx, id: f64) -> i32 {
+    graph_call(&ctx, |turn, host| {
+        turn.dispose_computation(id as u32, host);
+        note_graph(turn)
+    })
+}
+
+fn api_on_cleanup(id: f64) -> i32 {
+    match with_turn(|turn| Ok(turn.on_cleanup(id as u32))) {
+        Ok(true) => 0,
+        _ => 1,
+    }
+}
+
+fn api_run_init(ctx: Ctx) -> i32 {
+    graph_call(&ctx, |turn, host| {
+        turn.run_scheduled(true, host);
+        note_graph(turn)
+    })
+}
+
+fn api_run_updates(ctx: Ctx) -> i32 {
+    graph_call(&ctx, |turn, host| {
+        turn.run_scheduled(false, host);
+        note_graph(turn)
+    })
+}
+
+fn note_graph(turn: &mut Turn) -> Result<(), String> {
+    match turn.take_graph_error() {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
+fn graph_call(ctx: &Ctx, body: impl FnOnce(&mut Turn, &mut JsHost) -> Result<(), String>) -> i32 {
+    let mut host = JsHost { ctx: ctx.clone() };
+    match with_turn(|turn| body(turn, &mut host)) {
         Ok(()) => 0,
         Err(err) => {
             set_api_error(err);
@@ -610,37 +708,29 @@ fn api_signal_read(id: f64) -> i32 {
     }
 }
 
-fn api_signal_notify(id: f64) -> i32 {
-    match with_turn(|turn| turn.notify(id as u32)) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_api_error(err);
-            1
-        }
+struct JsHost<'a> {
+    ctx: Ctx<'a>,
+}
+
+impl Sched for JsHost<'_> {
+    fn body(&mut self) {
+        let Ok(func) = self.ctx.globals().get::<_, Function>("__bubbleBody") else {
+            return;
+        };
+        let _ = func.call::<_, ()>(());
     }
-}
-
-fn api_track_begin(binding: f64) {
-    let _ = with_turn(|turn| {
-        turn.track(binding as u32);
-        Ok(())
-    });
-}
-
-fn api_track_end() {
-    let _ = with_turn(|turn| {
-        turn.untrack();
-        Ok(())
-    });
-}
-
-fn api_take_dirty(ctx: Ctx) -> rquickjs::Result<Array> {
-    let ids = with_turn(|turn| Ok(turn.take_dirty())).unwrap_or_default();
-    let array = Array::new(ctx)?;
-    for (index, id) in ids.iter().enumerate() {
-        array.set(index, *id)?;
+    fn run(&mut self, id: u32) -> i32 {
+        let Ok(func) = self.ctx.globals().get::<_, Function>("__bubbleRun") else {
+            return -1;
+        };
+        func.call((id,)).unwrap_or(-1)
     }
-    Ok(array)
+    fn cleanup(&mut self, id: u32) {
+        let Ok(func) = self.ctx.globals().get::<_, Function>("__bubbleCleanup") else {
+            return;
+        };
+        let _ = func.call::<_, ()>((id,));
+    }
 }
 
 fn read_spawn(parent: f64, spec: TypedArray<'_, u8>) -> Result<NodeDesc, String> {
@@ -777,13 +867,7 @@ fn api_spawn_gesture(target: f64, kind: f64, index: f64) -> u32 {
     }
 }
 
-fn api_set_gesture_prop(
-    handle: f64,
-    key: String,
-    tag: f64,
-    number: f64,
-    text: String,
-) -> i32 {
+fn api_set_gesture_prop(handle: f64, key: String, tag: f64, number: f64, text: String) -> i32 {
     let value = match tag as u32 {
         0 => Value::Null,
         1 => Value::Bool(number != 0.0),

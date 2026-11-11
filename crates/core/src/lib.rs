@@ -12,6 +12,7 @@ mod manifest;
 mod ops;
 mod paint;
 mod props;
+mod reactive;
 mod shell;
 mod turn;
 
@@ -24,5 +25,6 @@ pub use manifest::validate_bundle_hashes;
 pub use ops::{decode_ops, encode, encode_set_prop_color, encode_set_text, Op, Value};
 pub use paint::encode_paint;
 pub use props::{Prop, DEFERRED_PROPS, SET_PROPS, SPAWN_PROPS};
+pub use reactive::{Kind as ComputationKind, Sched};
 pub use shell::{PaintCmd, ScrollOutcome, Shell};
 pub use turn::Turn;

@@ -75,6 +75,9 @@ const wasm = await WebAssembly.instantiateStreaming(fetch("./bubble.wasm"), {
       out.setFloat32(0, width, true);
       out.setFloat32(4, height, true);
     },
+    host_run: (id) => globalThis.__bubbleRun?.(id) ?? 0,
+    host_cleanup: (id) => globalThis.__bubbleCleanup?.(id),
+    host_body: () => globalThis.__bubbleBody?.(),
   },
 });
 
@@ -143,8 +146,12 @@ setApi({
   signal_alloc: exports.signal_alloc,
   signal_read: exports.signal_read,
   signal_notify: exports.signal_notify,
-  track_begin: exports.track_begin,
-  track_end: exports.track_end,
+  alloc_node: exports.alloc_node,
+  mount_node: exports.mount_node,
+  dispose_node: exports.dispose_node,
+  on_cleanup: exports.on_cleanup,
+  run_init: exports.run_init,
+  run_updates: exports.run_updates,
   spawn(parent, spec) {
     const ptr = copyBytes(spec);
     const handle = exports.spawn(parent, ptr, spec.length);
@@ -201,16 +208,7 @@ setApi({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     exports.set_viewport(width, height);
   },
-  takeDirty() {
-    const len = exports.take_dirty();
-    const view = scratch(len);
-    const count = view.getUint32(0, true);
-    const ids = [];
-    for (let index = 0; index < count; index += 1) {
-      ids.push(view.getUint32(4 + index * 4, true));
-    }
-    return ids;
-  },
+
 });
 
 function resize() {

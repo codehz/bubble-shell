@@ -5,17 +5,18 @@
 //! pending queue; layout/paint/hit-test drain that queue into the `Shell`
 //! first. This keeps the tree-owning code on one side of the JS boundary.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
 use bubble_core::{
-    encode_events, encode_paint, encode_set_text, validate_bundle_hashes, GestureEvent,
-    GestureKind, NodeDesc, Op, PointerAction, PointerInput, Shell, Turn, Value, DEFERRED_PROPS,
-    SPAWN_PROPS,
+    encode_events, encode_paint, encode_set_text, validate_bundle_hashes, ComputationKind,
+    GestureEvent, GestureKind, NodeDesc, Op, PointerAction, PointerInput, Sched, Shell, Turn,
+    Value, DEFERRED_PROPS, SPAWN_PROPS,
 };
 
 thread_local! {
     static TURN: RefCell<Option<Turn>> = const { RefCell::new(None) };
+    static ACTIVE: Cell<*mut Turn> = const { Cell::new(std::ptr::null_mut()) };
     static SHELL: RefCell<Option<Shell>> = const { RefCell::new(None) };
     static PENDING: RefCell<VecDeque<Vec<u8>>> = const { RefCell::new(VecDeque::new()) };
     static SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -35,6 +36,22 @@ unsafe extern "C" {
         avail: f32,
         out_ptr: u32,
     );
+    fn host_run(id: u32) -> i32;
+    fn host_cleanup(id: u32);
+    fn host_body();
+}
+
+struct WasmHost;
+impl Sched for WasmHost {
+    fn body(&mut self) {
+        unsafe { host_body() }
+    }
+    fn run(&mut self, id: u32) -> i32 {
+        unsafe { host_run(id) }
+    }
+    fn cleanup(&mut self, id: u32) {
+        unsafe { host_cleanup(id) }
+    }
 }
 
 fn set_error(message: String) {
@@ -48,13 +65,28 @@ fn store_scratch(bytes: Vec<u8>) -> u32 {
 }
 
 fn with_turn<T>(body: impl FnOnce(&mut Turn) -> Result<T, String>) -> Result<T, String> {
+    let active = ACTIVE.with(|cell| cell.get());
+    if !active.is_null() {
+        return body(unsafe { &mut *active });
+    }
     TURN.with(|slot| {
         let mut slot = slot.borrow_mut();
         let turn = slot
             .as_mut()
             .ok_or_else(|| "shell is not mounted".to_string())?;
-        body(turn)
+        let ptr = turn as *mut Turn;
+        ACTIVE.with(|cell| cell.set(ptr));
+        let result = body(unsafe { &mut *ptr });
+        ACTIVE.with(|cell| cell.set(std::ptr::null_mut()));
+        result
     })
+}
+
+fn note_graph(turn: &mut Turn) -> Result<(), String> {
+    match turn.take_graph_error() {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 fn with_shell<T>(body: impl FnOnce(&mut Shell) -> Result<T, String>) -> Result<T, String> {
@@ -277,7 +309,10 @@ pub extern "C" fn signal_alloc() -> u32 {
 /// Records a read. Returns 0, or 1 when `id` is not a signal.
 #[no_mangle]
 pub extern "C" fn signal_read(id: u32) -> i32 {
-    match with_turn(|turn| turn.read(id)) {
+    match with_turn(|turn| {
+        turn.read(id, &mut WasmHost)?;
+        note_graph(turn)
+    }) {
         Ok(()) => 0,
         Err(err) => {
             set_error(err);
@@ -286,11 +321,47 @@ pub extern "C" fn signal_read(id: u32) -> i32 {
     }
 }
 
-/// Marks subscribers dirty. The host compared the value. Returns 0, or 1
-/// when `id` is not a signal.
 #[no_mangle]
 pub extern "C" fn signal_notify(id: u32) -> i32 {
-    match with_turn(|turn| turn.notify(id)) {
+    match with_turn(|turn| {
+        turn.notify(id, &mut WasmHost)?;
+        note_graph(turn)
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+/// `kind`: 1 memo, 2 render effect, 3 user effect.
+#[no_mangle]
+pub extern "C" fn alloc_node(kind: u32) -> u32 {
+    let kind = match kind {
+        1 => ComputationKind::Memo,
+        2 => ComputationKind::Effect,
+        3 => ComputationKind::UserEffect,
+        _ => {
+            set_error(format!("bad computation kind {kind}"));
+            return 0;
+        }
+    };
+    match with_turn(|turn| turn.alloc_computation(kind)) {
+        Ok(id) => id,
+        Err(err) => {
+            set_error(err);
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn mount_node(id: u32) -> i32 {
+    match with_turn(|turn| {
+        turn.mount_computation(id, &mut WasmHost)?;
+        note_graph(turn)
+    }) {
         Ok(()) => 0,
         Err(err) => {
             set_error(err);
@@ -300,31 +371,54 @@ pub extern "C" fn signal_notify(id: u32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn track_begin(binding: u32) {
-    let _ = with_turn(|turn| {
-        turn.track(binding);
-        Ok(())
-    });
-}
-
-#[no_mangle]
-pub extern "C" fn track_end() {
-    let _ = with_turn(|turn| {
-        turn.untrack();
-        Ok(())
-    });
-}
-
-/// Writes `u32 count + count * u32` into scratch. Returns the byte length.
-#[no_mangle]
-pub extern "C" fn take_dirty() -> u32 {
-    let ids = with_turn(|turn| Ok(turn.take_dirty())).unwrap_or_default();
-    let mut bytes = Vec::with_capacity(4 + ids.len() * 4);
-    bytes.extend_from_slice(&(ids.len() as u32).to_le_bytes());
-    for id in ids {
-        bytes.extend_from_slice(&id.to_le_bytes());
+pub extern "C" fn dispose_node(id: u32) -> i32 {
+    match with_turn(|turn| {
+        turn.dispose_computation(id, &mut WasmHost);
+        note_graph(turn)
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
     }
-    store_scratch(bytes)
+}
+
+/// Stores cleanup `id` on the running owner. Returns 0, or 1 when there is
+/// no owner and the host should run it now.
+#[no_mangle]
+pub extern "C" fn on_cleanup(id: u32) -> i32 {
+    match with_turn(|turn| Ok(turn.on_cleanup(id))) {
+        Ok(true) => 0,
+        Ok(false) => 1,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn run_init() -> i32 {
+    scheduled(true)
+}
+
+#[no_mangle]
+pub extern "C" fn run_updates() -> i32 {
+    scheduled(false)
+}
+
+fn scheduled(init: bool) -> i32 {
+    match with_turn(|turn| {
+        turn.run_scheduled(init, &mut WasmHost);
+        note_graph(turn)
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
 }
 
 /// `ptr/len` is a `BNOD` version 1 descriptor. The handle is allocated by Rust.
@@ -613,22 +707,24 @@ pub extern "C" fn commit() -> u32 {
 pub extern "C" fn layout() -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            shell.layout(&mut |text, font_size, line_height, font_weight, max_width| {
-                let mut out = [0f32; 2];
-                unsafe {
-                    host_measure(
-                        text.as_ptr() as u32,
-                        text.len() as u32,
-                        font_size,
-                        line_height,
-                        font_weight as u32,
-                        u32::from(max_width.is_some()),
-                        max_width.unwrap_or(0.0),
-                        out.as_mut_ptr() as u32,
-                    );
-                }
-                (out[0], out[1])
-            })
+            shell.layout(
+                &mut |text, font_size, line_height, font_weight, max_width| {
+                    let mut out = [0f32; 2];
+                    unsafe {
+                        host_measure(
+                            text.as_ptr() as u32,
+                            text.len() as u32,
+                            font_size,
+                            line_height,
+                            font_weight as u32,
+                            u32::from(max_width.is_some()),
+                            max_width.unwrap_or(0.0),
+                            out.as_mut_ptr() as u32,
+                        );
+                    }
+                    (out[0], out[1])
+                },
+            )
         })
     });
     match result {

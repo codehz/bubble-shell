@@ -370,7 +370,25 @@ fn signal_commit_updates_text_and_scrolls() {
     let mut shell = Shell::blank().unwrap();
     let mut turn = Turn::new();
     let count = turn.alloc_signal();
-    let mut value = 0.0;
+    struct Host {
+        turn: *mut bubble_core::Turn,
+        count: u32,
+        header: u32,
+        value: f64,
+    }
+    impl bubble_core::Sched for Host {
+        fn run(&mut self, _: u32) -> i32 {
+            let turn = unsafe { &mut *self.turn };
+            turn.read(self.count, self).unwrap();
+            let value = self.value;
+            turn.push(bubble_core::Op::SetText {
+                handle: self.header,
+                text: format!("Count: {value}"),
+            });
+            0
+        }
+        fn cleanup(&mut self, _: u32) {}
+    }
     let mut header = NodeDesc::text(0, 1, "Count: 0");
     header.font_size = 24.0;
     let header = turn.spawn(header).unwrap();
@@ -393,17 +411,16 @@ fn signal_commit_updates_text_and_scrolls() {
     shell.apply_ops(&turn.commit().unwrap()).unwrap();
     assert_eq!((header, button, scroller), (2, 3, 4));
 
-    turn.track(1);
-    turn.read(count).unwrap();
-    turn.untrack();
-    turn.push(Op::SetText {
-        handle: header,
-        text: format!("Count: {value}"),
-    });
-    turn.push(Op::SetText {
-        handle: header,
-        text: "Count: 0".into(),
-    });
+    let mut host = Host {
+        turn: &mut turn as *mut bubble_core::Turn,
+        count,
+        header,
+        value: 0.0,
+    };
+    let binding = turn
+        .alloc_computation(bubble_core::ComputationKind::Effect)
+        .unwrap();
+    turn.mount_computation(binding, &mut host).unwrap();
     let batch = turn.commit().unwrap();
     let (_, ops) = bubble_core::decode_ops(&batch).unwrap();
     assert_eq!(ops.len(), 1);
@@ -414,23 +431,18 @@ fn signal_commit_updates_text_and_scrolls() {
         .layout(&mut |text, font, line_height, _weight, max| {
             let width = text.chars().count() as f32 * font * 0.5;
             let width = max.map(|max| width.min(max)).unwrap_or(width);
-            let line = if line_height > 0.0 { line_height } else { font * 1.2 };
+            let line = if line_height > 0.0 {
+                line_height
+            } else {
+                font * 1.2
+            };
             (width, line)
         })
         .unwrap();
     let (bx, by, _, _) = shell.node_box(button).unwrap();
     assert_eq!(shell.tap(bx + 1.0, by + 1.0), Some(1));
-    value = 1.0;
-    turn.notify(count).unwrap();
-    let dirty = turn.take_dirty();
-    assert_eq!(dirty, vec![1]);
-    turn.track(1);
-    turn.read(count).unwrap();
-    turn.untrack();
-    turn.push(Op::SetText {
-        handle: header,
-        text: format!("Count: {value}"),
-    });
+    host.value = 1.0;
+    turn.notify(count, &mut host).unwrap();
     shell.apply_ops(&turn.commit().unwrap()).unwrap();
     assert_eq!(shell.text(header).unwrap(), "Count: 1");
     let (x, y, _, _) = shell.node_box(scroller).unwrap();
@@ -440,7 +452,7 @@ fn signal_commit_updates_text_and_scrolls() {
 
 #[test]
 fn every_runtime_property_is_dispatchable() {
-    use bubble_core::{Turn, Value, Prop, SET_PROPS};
+    use bubble_core::{Prop, Turn, Value, SET_PROPS};
 
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 120.0);
@@ -535,7 +547,11 @@ fn text_style_reaches_layout_and_paint() {
         .layout(&mut |text, font, line_height, _weight, max| {
             let width = text.chars().count() as f32 * font * 0.5;
             let width = max.map(|max| width.min(max)).unwrap_or(width);
-            let line = if line_height > 0.0 { line_height } else { font * 1.2 };
+            let line = if line_height > 0.0 {
+                line_height
+            } else {
+                font * 1.2
+            };
             (width, line)
         })
         .unwrap();
@@ -609,23 +625,23 @@ fn image_node_emits_image_paint() {
 }
 
 #[test]
-fn signal_reads_subscribe_and_notify_dirties_once() {
+fn unknown_signals_fail() {
     use bubble_core::Turn;
 
+    struct Host;
+    impl bubble_core::Sched for Host {
+        fn run(&mut self, _: u32) -> i32 {
+            0
+        }
+        fn cleanup(&mut self, _: u32) {}
+    }
     let mut turn = Turn::new();
+    let mut host = Host;
+    assert!(turn.read(0, &mut host).is_err());
+    assert!(turn.notify(0, &mut host).is_err());
     let id = turn.alloc_signal();
-    assert!(turn.read(0).is_err());
-    assert!(turn.notify(0).is_err());
-    turn.track(1);
-    turn.read(id).unwrap();
-    turn.untrack();
-    turn.notify(id).unwrap();
-    turn.notify(id).unwrap();
-    assert_eq!(turn.take_dirty(), vec![1]);
-    turn.track(1);
-    turn.untrack();
-    turn.notify(id).unwrap();
-    assert!(turn.take_dirty().is_empty());
+    turn.read(id, &mut host).unwrap();
+    turn.notify(id, &mut host).unwrap();
 }
 
 #[test]

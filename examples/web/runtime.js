@@ -2,7 +2,7 @@ let api;
 const parents = [1];
 const handlers = new Map();
 const handlersOfNode = new Map();
-const bindings = [];
+
 const bindingHandles = new Map();
 const childrenOf = new Map([[1, []]]);
 const parentOf = new Map();
@@ -78,6 +78,10 @@ function validateProps(kind, props) {
 }
 
 const signalValues = [undefined];
+const computations = new Map();
+const cleanups = [];
+let bodyFn = null;
+let bodyError = null;
 
 function signalChanged(equals, prev, next) {
   if (equals === false) return true;
@@ -109,22 +113,83 @@ export function signal(initial, options) {
   return read;
 }
 
+function createComputation(kind, run, equals) {
+  const id = api.alloc_node(kind);
+  if (!id) throw new Error(api.error() || "alloc_node failed");
+  computations.set(id, { kind, run, equals, value: undefined, ready: false });
+  if (api.mount_node(id) !== 0) throw new Error(api.error() || "mount_node failed");
+  return id;
+}
+
 export function effect(run) {
-  const id = addBinding(() => run(), null);
-  runBinding(id);
+  const id = createComputation(3, run);
   return () => {
-    const binding = bindings[id - 1];
-    if (binding) binding.active = false;
+    if (api.dispose_node(id) !== 0) throw new Error(api.error() || "dispose_node failed");
   };
 }
 
-export function computed(run) {
-  const out = signal(run());
-  effect(() => {
-    out.update(() => run());
-  });
-  return out;
+export function computed(run, options) {
+  const id = createComputation(1, run, options && options.equals);
+  const read = () => {
+    if (api.signal_read(id) !== 0) throw new Error(api.error() || "computed read failed");
+    return computations.get(id).value;
+  };
+  read.id = id;
+  return read;
 }
+
+export function cleanup(fn) {
+  const id = cleanups.length;
+  cleanups.push(fn);
+  if (api.on_cleanup(id) !== 0) fn();
+}
+
+export function batch(fn) {
+  const previous = bodyFn;
+  bodyFn = fn;
+  try {
+    if (api.run_updates() !== 0) throw new Error(api.error() || "batch failed");
+    if (bodyError) {
+      const error = bodyError;
+      bodyError = null;
+      throw error;
+    }
+  } finally {
+    bodyFn = previous;
+  }
+}
+
+globalThis.__bubbleBody = () => {
+  try {
+    bodyFn?.();
+  } catch (error) {
+    bodyError = error;
+  }
+};
+
+globalThis.__bubbleRun = (id) => {
+  const node = computations.get(id);
+  if (!node) return 0;
+  try {
+    if (node.kind === 1) {
+      const next = node.run(node.ready ? node.value : undefined);
+      const changed = node.ready && signalChanged(node.equals, node.value, next);
+      node.value = next;
+      node.ready = true;
+      return changed ? 1 : 0;
+    }
+    node.run();
+    return 0;
+  } catch (error) {
+    bodyError = error;
+    return -1;
+  }
+};
+
+globalThis.__bubbleCleanup = (id) => {
+  const fn = cleanups[id];
+  if (fn) fn();
+};
 
 function parent() {
   return parents[parents.length - 1];
@@ -378,7 +443,7 @@ function bindGestureProp(handle, key, fn) {
   }
   const id = addBinding(() => setGestureProp(handle, key, fn()), null);
   set.add(id);
-  runBinding(id);
+
 }
 
 function registerGesture(target, kind) {
@@ -527,13 +592,11 @@ export function setProp(handle, key, value) {
 }
 
 export function bindProp(handle, key, fn) {
-  const id = addBinding(() => setProp(handle, key, fn()), handle);
-  runBinding(id);
+  addBinding(() => setProp(handle, key, fn()), handle);
 }
 
 function addBinding(run, handle) {
-  const id = bindings.length + 1;
-  bindings.push({ run, active: true });
+  const id = createComputation(2, run);
   if (handle != null) {
     let set = bindingHandles.get(handle);
     if (!set) {
@@ -545,30 +608,17 @@ function addBinding(run, handle) {
   return id;
 }
 
-function runBinding(id) {
-  const binding = bindings[id - 1];
-  if (!binding || !binding.active) return;
-  api.track_begin(id);
-  try {
-    binding.run();
-  } finally {
-    api.track_end();
-  }
-}
-
 function deactivateHandleBindings(handle) {
   const set = bindingHandles.get(handle);
   if (!set) return;
   for (const id of set) {
-    const binding = bindings[id - 1];
-    if (binding) binding.active = false;
+    if (api.dispose_node(id) !== 0) throw new Error(api.error() || "dispose_node failed");
   }
   bindingHandles.delete(handle);
 }
 
 function bind(handle, fn) {
-  const id = addBinding(() => writeText(handle, String(fn())), handle);
-  runBinding(id);
+  addBinding(() => writeText(handle, String(fn())), handle);
 }
 
 function writeText(handle, value) {
@@ -587,8 +637,7 @@ function deactivateGestureBindings(id) {
   const set = gestureBindings.get(id);
   if (!set) return;
   for (const binding of set) {
-    const entry = bindings[binding - 1];
-    if (entry) entry.active = false;
+    if (api.dispose_node(binding) !== 0) throw new Error(api.error() || "dispose_node failed");
   }
   gestureBindings.delete(id);
 }
@@ -739,7 +788,7 @@ export function when(cond, thenBranch, elseBranch) {
       }
     }
   };
-  runBinding(addBinding(render, anchor));
+  addBinding(render, anchor);
   return anchor;
 }
 
@@ -790,7 +839,7 @@ export function each(items, key, render) {
     }
     reorderScopedGestures(rank);
   };
-  runBinding(addBinding(renderList, anchor));
+  addBinding(renderList, anchor);
   return anchor;
 }
 
@@ -827,21 +876,26 @@ function reorderScopedGestures(rank) {
 }
 
 export function flush() {
-  for (let guard = 0; guard < 8; guard += 1) {
-    const ids = api.takeDirty();
-    if (ids.length === 0) break;
-    for (const id of ids) runBinding(id);
+  if (bodyError) {
+    const error = bodyError;
+    bodyError = null;
+    throw error;
   }
   if (api.commit() === 0 && api.error()) throw new Error(api.error());
   if (typeof api.layout === "function" && api.layout() !== 0) throw new Error(api.error() || "layout failed");
 }
 
 export function mount(component) {
+  computations.clear();
+  cleanups.length = 0;
   if (api.boot() !== 0) throw new Error(api.error() || "boot failed");
   api.prepare?.();
-  parents.length = 0;
-  parents.push(1);
-  component();
+  bodyFn = () => {
+    parents.length = 0;
+    parents.push(1);
+    component();
+  };
+  if (api.run_init() !== 0) throw new Error(api.error() || "run_init failed");
   flush();
 }
 
@@ -851,7 +905,7 @@ export function press(handler, x, y) {
   const event = x && typeof x === "object"
     ? x
     : { type: "tap", x: x ?? 0, y: y ?? 0 };
-  fn(event);
+  batch(() => fn(event));
   flush();
   return true;
 }
@@ -916,12 +970,14 @@ function decodeGestureEvents(bytes) {
 export function dispatchGestureEvents(bytes) {
   const events = bytes instanceof Uint8Array ? decodeGestureEvents(bytes) : bytes;
   let ran = false;
-  for (const event of events) {
-    const fn = gestureHandlers.get(event.handler);
-    if (!fn) continue;
-    ran = true;
-    fn(event);
-  }
+  batch(() => {
+    for (const event of events) {
+      const fn = gestureHandlers.get(event.handler);
+      if (!fn) continue;
+      ran = true;
+      fn(event);
+    }
+  });
   if (ran) flush();
   if (retiredGestureHandlers.size > 0) {
     for (const ids of retiredGestureHandlers.values()) {
