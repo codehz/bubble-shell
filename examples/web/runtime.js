@@ -16,6 +16,7 @@ const gestureParentOf = new Map();
 const gestureBindings = new Map();
 const gestureHandlerIds = new Map();
 const retiredGestureHandlers = new Map();
+const gestureOwners = new Map();
 const sugarTargets = new Set();
 const encoder = typeof TextEncoder === "function" ? new TextEncoder() : null;
 
@@ -396,6 +397,7 @@ function registerGesture(target, kind) {
   }
   list.push(id);
   gestureParentOf.set(id, target);
+  gestureOwners.set(id, collectors[collectors.length - 1] ?? null);
   // Nested If/Each branches can target the same surviving ancestor; every
   // such scope must be able to dispose the declaration it created.
   for (const collector of collectors) {
@@ -591,6 +593,7 @@ function disposeGesture(id) {
   if (!gestureParentOf.has(id)) return;
   const target = gestureParentOf.get(id);
   gestureParentOf.delete(id);
+  gestureOwners.delete(id);
   deactivateGestureBindings(id);
   const handlers = gestureHandlerIds.get(id);
   if (handlers) {
@@ -740,6 +743,7 @@ export function each(items, key, render) {
       }
     }
     let index = anchorIndex(parentHandle, anchor);
+    const rank = new Map();
     for (const entry of next) {
       let group = groups.get(entry.key);
       if (group === undefined) {
@@ -752,10 +756,44 @@ export function each(items, key, render) {
           index += 1;
         }
       }
+      rank.set(group, rank.size);
     }
+    reorderScopedGestures(rank);
   };
   runBinding(addBinding(renderList, anchor));
   return anchor;
+}
+
+// A reordered Each keeps each group's declarations together but places the
+// groups in virtual child order for the next touch sequence.
+function reorderScopedGestures(rank) {
+  if (rank.size < 2) return;
+  for (const [target, list] of gestureOrderOfTarget) {
+    const slots = [];
+    for (let index = 0; index < list.length; index += 1) {
+      const owner = gestureOwners.get(list[index]);
+      if (owner && rank.has(owner)) slots.push(index);
+    }
+    if (slots.length < 2) continue;
+    const ids = slots.map((slot) => list[slot]);
+    ids.sort((a, b) => {
+      const ownerA = gestureOwners.get(a);
+      const ownerB = gestureOwners.get(b);
+      const rankA = rank.get(ownerA);
+      const rankB = rank.get(ownerB);
+      if (rankA !== rankB) return rankA - rankB;
+      return ownerA.gestures.indexOf(a) - ownerB.gestures.indexOf(b);
+    });
+    for (let index = 0; index < slots.length; index += 1) {
+      const gesture = ids[index];
+      if (list[slots[index]] !== gesture) {
+        if (api.move_gesture(gesture, target, slots[index]) !== 0) {
+          throw new Error(api.error() || "move gesture failed");
+        }
+      }
+      list[slots[index]] = gesture;
+    }
+  }
 }
 
 export function flush() {
