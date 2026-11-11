@@ -9,8 +9,8 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use bubble_core::{
-    encode_paint, encode_set_text, validate_bundle_hashes, NodeDesc, Op, Shell, Turn, Value,
-    DEFERRED_PROPS, SPAWN_PROPS,
+    encode_events, encode_paint, encode_set_text, validate_bundle_hashes, GestureEvent,
+    NodeDesc, Op, PointerAction, PointerInput, Shell, Turn, Value, DEFERRED_PROPS, SPAWN_PROPS,
 };
 
 thread_local! {
@@ -19,6 +19,7 @@ thread_local! {
     static PENDING: RefCell<VecDeque<Vec<u8>>> = const { RefCell::new(VecDeque::new()) };
     static SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static ERROR: RefCell<String> = const { RefCell::new(String::new()) };
+    static GESTURES: RefCell<Vec<GestureEvent>> = const { RefCell::new(Vec::new()) };
 }
 
 #[link(wasm_import_module = "env")]
@@ -75,8 +76,87 @@ fn drain_pending() -> Result<(), String> {
         for bytes in batches {
             shell.apply_ops(&bytes)?;
         }
+        collect_events(shell);
         Ok(())
     })
+}
+
+fn collect_events(shell: &mut Shell) {
+    let events = shell.take_gesture_events();
+    if events.is_empty() {
+        return;
+    }
+    GESTURES.with(|queue| queue.borrow_mut().extend(events));
+}
+
+/// `action` 0 down, 1 move, 2 up, 3 cancel. Returns 0 on success.
+#[no_mangle]
+pub extern "C" fn pointer(
+    action: u32,
+    id: u32,
+    x: f32,
+    y: f32,
+    time_ms: f64,
+    pointer_kind: u32,
+    buttons: u32,
+) -> i32 {
+    let Some(action) = PointerAction::parse(action) else {
+        set_error(format!("bad pointer action {action}"));
+        return 1;
+    };
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            shell.pointer(PointerInput {
+                action,
+                id,
+                x,
+                y,
+                time_ms,
+                buttons,
+                pointer_kind: pointer_kind.min(255) as u8,
+                path: Vec::new(),
+            });
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+/// Advance UI-thread gesture timers (long press, double-tap window).
+#[no_mangle]
+pub extern "C" fn tick(time_ms: f64) -> i32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            shell.advance_gestures(time_ms);
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+/// Encoded `BSGE` batch of events since the last drain; 0 bytes when empty.
+#[no_mangle]
+pub extern "C" fn take_gesture_events() -> u32 {
+    let events = GESTURES.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
+    if events.is_empty() {
+        store_scratch(Vec::new())
+    } else {
+        store_scratch(encode_events(&events))
+    }
 }
 
 #[no_mangle]
