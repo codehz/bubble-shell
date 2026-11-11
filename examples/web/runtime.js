@@ -3,7 +3,15 @@
 (() => {
   const encoder = new TextEncoder();
   const pending = new Map();
+  const order = [];
   let seq = 1;
+  let nextHandle = 1;
+  let structSeq = 1;
+
+  function record(key, op) {
+    if (!pending.has(key)) order.push(key);
+    pending.set(key, op);
+  }
 
   function signal(initial) {
     let value = initial;
@@ -46,11 +54,36 @@
   }
 
   function setText(handle, text) {
-    pending.set(`t:${handle}`, { kind: "text", handle, text: String(text) });
+    record(`t:${handle}`, { kind: "text", handle, text: String(text) });
   }
 
   function setColor(handle, key, rgba) {
-    pending.set(`c:${handle}:${key}`, { kind: "color", handle, key, rgba: rgba >>> 0 });
+    record(`c:${handle}:${key}`, { kind: "color", handle, key, rgba: rgba >>> 0 });
+  }
+
+  function configure(start) {
+    nextHandle = start >>> 0;
+  }
+
+  function create(templateId, parent, index) {
+    const handle = nextHandle;
+    nextHandle += 1;
+    const key = `s:${structSeq}`;
+    structSeq += 1;
+    record(key, {
+      kind: "create",
+      handle,
+      templateId: templateId >>> 0,
+      parent: parent >>> 0,
+      index: index >>> 0,
+    });
+    return handle;
+  }
+
+  function dispose(handle) {
+    const key = `s:${structSeq}`;
+    structSeq += 1;
+    record(key, { kind: "dispose", handle: handle >>> 0 });
   }
 
   function u32(value) {
@@ -60,9 +93,10 @@
   }
 
   function flush() {
-    if (pending.size === 0) return null;
-    const ops = [...pending.values()];
+    if (order.length === 0) return null;
+    const ops = order.map((key) => pending.get(key));
     pending.clear();
+    order.length = 0;
     const strings = [];
     const ids = new Map();
     const intern = (value) => {
@@ -84,10 +118,19 @@
         pushU32(intern(op.key));
         payload.push(5);
         pushU32(op.rgba);
-      } else {
+      } else if (op.kind === "text") {
         payload.push(2);
         pushU32(op.handle);
         pushU32(intern(op.text));
+      } else if (op.kind === "create") {
+        payload.push(3);
+        pushU32(op.handle);
+        pushU32(op.templateId);
+        pushU32(op.parent);
+        pushU32(op.index);
+      } else if (op.kind === "dispose") {
+        payload.push(4);
+        pushU32(op.handle);
       }
     }
     const table = [];
@@ -112,5 +155,5 @@
     return out;
   }
 
-  self.bubble = { signal, effect, setText, setColor, flush };
+  self.bubble = { signal, effect, setText, setColor, create, dispose, configure, flush };
 })();

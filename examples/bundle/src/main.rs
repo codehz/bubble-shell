@@ -4,6 +4,8 @@ use std::fs;
 use std::path::PathBuf;
 
 const HEADER: u32 = 2;
+const COLUMN: u32 = 6;
+const ROW: u32 = 7;
 const BUTTON_HANDLER: u32 = 1;
 
 fn main() {
@@ -11,12 +13,16 @@ fn main() {
     let ir = template.encode();
     let js = format!(
         r#"const [count, setCount] = bubble.signal(0);
+const [added, setAdded] = bubble.signal(0);
 bubble.effect(() => {{
   bubble.setText({HEADER}, "Count: " + count());
 }});
 self.onTap = (handlerId) => {{
   if (handlerId !== {BUTTON_HANDLER}) return;
   setCount(count() + 1);
+  const row = bubble.create({ROW}, {COLUMN}, 0);
+  setAdded(added() + 1);
+  bubble.setText(row, "Added " + added());
 }};
 "#
     );

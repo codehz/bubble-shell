@@ -267,5 +267,5 @@ worker.onmessage = (event) => {
     dirty = true;
   }
 };
-worker.postMessage({ type: "boot", wasm: wasmBytes, runtime: new URL("./runtime.js", import.meta.url).href, entry: new URL("./bundle/main.js", import.meta.url).href }, [wasmBytes]);
+worker.postMessage({ type: "boot", wasm: wasmBytes, runtime: new URL("./runtime.js", import.meta.url).href, entry: new URL("./bundle/main.js", import.meta.url).href, nextHandle: wasm.next_handle() }, [wasmBytes]);
 requestAnimationFrame(frame);

@@ -8,6 +8,14 @@ use std::io::{Cursor, Read};
 pub enum Op {
     SetPropColor { handle: u32, key: String, rgba: u32 },
     SetText { handle: u32, text: String },
+    /// `template_id` selects the mounted template node's defaults.
+    CreateNode {
+        handle: u32,
+        template_id: u32,
+        parent: u32,
+        index: u32,
+    },
+    DisposeNode { handle: u32 },
 }
 
 pub fn encode_set_text(seq: u32, handle: u32, text: &str) -> Vec<u8> {
@@ -51,6 +59,22 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.push(2);
                 payload.extend_from_slice(&handle.to_le_bytes());
                 payload.extend_from_slice(&text_id.to_le_bytes());
+            }
+            Op::CreateNode {
+                handle,
+                template_id,
+                parent,
+                index,
+            } => {
+                payload.push(3);
+                payload.extend_from_slice(&handle.to_le_bytes());
+                payload.extend_from_slice(&template_id.to_le_bytes());
+                payload.extend_from_slice(&parent.to_le_bytes());
+                payload.extend_from_slice(&index.to_le_bytes());
+            }
+            Op::DisposeNode { handle } => {
+                payload.push(4);
+                payload.extend_from_slice(&handle.to_le_bytes());
             }
         }
     }
@@ -119,6 +143,17 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                 let text = strings.get(text_id).ok_or("text out of range")?.clone();
                 ops.push(Op::SetText { handle, text });
             }
+            3 => {
+                ops.push(Op::CreateNode {
+                    handle: read_u32(&mut payload_cur)?,
+                    template_id: read_u32(&mut payload_cur)?,
+                    parent: read_u32(&mut payload_cur)?,
+                    index: read_u32(&mut payload_cur)?,
+                });
+            }
+            4 => ops.push(Op::DisposeNode {
+                handle: read_u32(&mut payload_cur)?,
+            }),
             other => return Err(format!("unknown op tag {other}")),
         }
     }

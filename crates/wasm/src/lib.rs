@@ -76,6 +76,10 @@ pub extern "C" fn set_viewport(width: f32, height: f32) {
         }
     });
 }
+#[no_mangle]
+pub extern "C" fn next_handle() -> u32 {
+    SHELL.with(|slot| slot.borrow().as_ref().map(|shell| shell.next_handle()).unwrap_or(0))
+}
 
 #[no_mangle]
 pub extern "C" fn layout() -> i32 {

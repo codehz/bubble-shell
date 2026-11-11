@@ -1,6 +1,8 @@
 //! Retained tree. Taffy owns flex; this type owns scroll offsets, hit testing, and paint order.
 
-use crate::ir::{Kind, Template};
+use std::collections::HashSet;
+
+use crate::ir::{Kind, NodeDesc, Template};
 use crate::ops::{decode_ops, Op};
 use taffy::prelude::*;
 use taffy::style::Overflow;
@@ -39,7 +41,10 @@ struct Node {
 }
 
 pub struct Shell {
-    nodes: Vec<Node>,
+    nodes: Vec<Option<Node>>,
+    prototypes: Vec<NodeDesc>,
+    retired: HashSet<u32>,
+    high_water: u32,
     taffy: TaffyTree<MeasureCtx>,
     viewport: Size<f32>,
 }
@@ -78,7 +83,7 @@ impl Shell {
             return Err("template is empty".into());
         }
         let mut taffy: TaffyTree<MeasureCtx> = TaffyTree::new();
-        let mut nodes = Vec::with_capacity(template.nodes.len());
+        let mut nodes = vec![None];
         for desc in &template.nodes {
             let style = style_for(
                 desc.row,
@@ -102,7 +107,7 @@ impl Shell {
             } else {
                 taffy.new_leaf(style).map_err(|err| err.to_string())?
             };
-            nodes.push(Node {
+            nodes.push(Some(Node {
                 parent: desc.parent,
                 children: Vec::new(),
                 kind: desc.kind,
@@ -125,29 +130,33 @@ impl Shell {
                 y: 0.0,
                 w: 0.0,
                 h: 0.0,
-            });
+            }));
         }
-        for index in 0..nodes.len() {
-            let parent = nodes[index].parent;
+        for id in 1..nodes.len() {
+            let parent = nodes[id].as_ref().unwrap().parent;
             if parent != 0 {
-                nodes[(parent - 1) as usize].children.push((index as u32) + 1);
+                nodes[parent as usize].as_mut().unwrap().children.push(id as u32);
             }
         }
-        for node in &nodes {
+        for node in nodes.iter().flatten() {
             if node.children.is_empty() {
                 continue;
             }
             let children: Vec<NodeId> = node
                 .children
                 .iter()
-                .map(|id| nodes[(id - 1) as usize].taffy)
+                .map(|id| nodes[*id as usize].as_ref().unwrap().taffy)
                 .collect();
             taffy
                 .set_children(node.taffy, &children)
                 .map_err(|err| err.to_string())?;
         }
+        let high_water = (nodes.len() - 1) as u32;
         Ok(Self {
             nodes,
+            prototypes: template.nodes,
+            retired: HashSet::new(),
+            high_water,
             taffy,
             viewport: Size::ZERO,
         })
@@ -181,6 +190,13 @@ impl Shell {
                         other => return Err(format!("unsupported prop {other}")),
                     }
                 }
+                Op::CreateNode {
+                    handle,
+                    template_id,
+                    parent,
+                    index,
+                } => self.create_node(handle, template_id, parent, index)?,
+                Op::DisposeNode { handle } => self.dispose_node(handle)?,
             }
         }
         Ok(seq)
@@ -193,16 +209,19 @@ impl Shell {
         if self.viewport.width <= 0.0 || self.viewport.height <= 0.0 {
             return Err("viewport is empty".into());
         }
-        let root = self.nodes[0].taffy;
-        let root_style = style_for(
-            self.nodes[0].row,
-            self.nodes[0].scroll_y,
-            self.nodes[0].flex_grow,
-            self.nodes[0].flex_shrink,
-            Some(self.viewport.width),
-            Some(self.viewport.height),
-            self.nodes[0].padding,
-        );
+        let root = self.node(1)?.taffy;
+        let root_style = {
+            let root_node = self.node(1)?;
+            style_for(
+                root_node.row,
+                root_node.scroll_y,
+                root_node.flex_grow,
+                root_node.flex_shrink,
+                Some(self.viewport.width),
+                Some(self.viewport.height),
+                root_node.padding,
+            )
+        };
         self.taffy
             .set_style(root, root_style)
             .map_err(|err| err.to_string())?;
@@ -236,14 +255,20 @@ impl Shell {
             )
             .map_err(|err| err.to_string())?;
         self.place(1, 0.0, 0.0)?;
-        let limits: Vec<f32> = self
+        let limits: Vec<(usize, f32)> = self
             .nodes
             .iter()
-            .map(|node| if node.scroll_y { self.max_scroll(node) } else { 0.0 })
+            .enumerate()
+            .filter_map(|(index, node)| {
+                let node = node.as_ref()?;
+                Some((index, if node.scroll_y { self.max_scroll(node) } else { 0.0 }))
+            })
             .collect();
-        for (node, limit) in self.nodes.iter_mut().zip(limits) {
-            if node.scroll_y {
-                node.scroll = node.scroll.clamp(0.0, limit);
+        for (index, limit) in limits {
+            if let Some(node) = &mut self.nodes[index] {
+                if node.scroll_y {
+                    node.scroll = node.scroll.clamp(0.0, limit);
+                }
             }
         }
         Ok(())
@@ -293,17 +318,130 @@ impl Shell {
         Ok(self.node(id)?.scroll)
     }
 
+    pub fn next_handle(&self) -> u32 {
+        self.high_water + 1
+    }
+
     fn node(&self, id: u32) -> Result<&Node, String> {
         self.nodes
-            .get((id as usize).wrapping_sub(1))
+            .get(id as usize)
+            .and_then(Option::as_ref)
             .ok_or_else(|| format!("bad handle {id}"))
     }
 
     fn node_mut(&mut self, id: u32) -> Result<&mut Node, String> {
         self.nodes
-            .get_mut((id as usize).wrapping_sub(1))
+            .get_mut(id as usize)
+            .and_then(Option::as_mut)
             .ok_or_else(|| format!("bad handle {id}"))
     }
+    fn create_node(&mut self, handle: u32, template_id: u32, parent: u32, index: u32) -> Result<(), String> {
+        if handle == 0 || self.retired.contains(&handle) || self.node(handle).is_ok() {
+            return Err(format!("handle {handle} is not free"));
+        }
+        let proto = self
+            .prototypes
+            .iter()
+            .find(|node| node.id == template_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown template {template_id}"))?;
+        let parent_len = self.node(parent)?.children.len() as u32;
+        if index > parent_len {
+            return Err(format!("index {index} past {parent_len} children"));
+        }
+        let style = style_for(
+            proto.row,
+            proto.scroll_y,
+            proto.flex_grow,
+            proto.flex_shrink,
+            proto.width,
+            proto.height,
+            proto.padding,
+        );
+        let taffy_id = if proto.kind == Kind::Text {
+            self.taffy
+                .new_leaf_with_context(
+                    style,
+                    MeasureCtx {
+                        text: proto.text.clone(),
+                        font_size: proto.font_size,
+                    },
+                )
+                .map_err(|err| err.to_string())?
+        } else {
+            self.taffy.new_leaf(style).map_err(|err| err.to_string())?
+        };
+        if self.nodes.len() <= handle as usize {
+            self.nodes.resize_with(handle as usize + 1, || None);
+        }
+        self.nodes[handle as usize] = Some(Node {
+            parent,
+            children: Vec::new(),
+            kind: proto.kind,
+            scroll_y: proto.scroll_y,
+            background: proto.background,
+            color: proto.color,
+            font_size: proto.font_size,
+            radius: proto.radius,
+            handler: proto.handler,
+            width: proto.width,
+            height: proto.height,
+            flex_grow: proto.flex_grow,
+            flex_shrink: proto.flex_shrink,
+            row: proto.row,
+            padding: proto.padding,
+            text: proto.text,
+            taffy: taffy_id,
+            scroll: 0.0,
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+        });
+        self.node_mut(parent)?.children.insert(index as usize, handle);
+        self.sync_children(parent)?;
+        self.high_water = self.high_water.max(handle);
+        Ok(())
+    }
+
+    fn dispose_node(&mut self, handle: u32) -> Result<(), String> {
+        if handle <= 1 {
+            return Err("cannot dispose the root".into());
+        }
+        let parent = self.node(handle)?.parent;
+        let children = self.node_mut(parent)?.children.clone();
+        let Some(pos) = children.iter().position(|id| *id == handle) else {
+            return Err(format!("handle {handle} is not a child"));
+        };
+        self.node_mut(parent)?.children.remove(pos);
+        self.sync_children(parent)?;
+        self.destroy_subtree(handle)
+    }
+
+    fn destroy_subtree(&mut self, handle: u32) -> Result<(), String> {
+        let children = self.node(handle)?.children.clone();
+        for child in children {
+            self.destroy_subtree(child)?;
+        }
+        let taffy_id = self.node(handle)?.taffy;
+        self.taffy.remove(taffy_id).map_err(|err| err.to_string())?;
+        self.nodes[handle as usize] = None;
+        self.retired.insert(handle);
+        Ok(())
+    }
+
+    fn sync_children(&mut self, parent: u32) -> Result<(), String> {
+        let child_ids = self.node(parent)?.children.clone();
+        let mut taffy_children = Vec::with_capacity(child_ids.len());
+        for id in child_ids {
+            taffy_children.push(self.node(id)?.taffy);
+        }
+        let parent_id = self.node(parent)?.taffy;
+        self.taffy
+            .set_children(parent_id, &taffy_children)
+            .map_err(|err| err.to_string())
+    }
+
 
     fn place(&mut self, id: u32, origin_x: f32, origin_y: f32) -> Result<(), String> {
         let taffy_id = self.node(id)?.taffy;
@@ -335,7 +473,7 @@ impl Shell {
     }
 
     fn paint_node(&self, id: u32, out: &mut Vec<PaintCmd>) {
-        let node = &self.nodes[(id - 1) as usize];
+        let node = self.node(id).expect("paint handle");
         let x = node.x;
         let y = node.y;
         let w = node.w;
@@ -386,7 +524,7 @@ impl Shell {
     }
 
     fn pads(&self, id: u32) -> [f32; 4] {
-        let node = &self.nodes[(id - 1) as usize];
+        let node = self.node(id).expect("pad handle");
         match self.taffy.layout(node.taffy) {
             Ok(layout) => [
                 layout.padding.left,
@@ -399,7 +537,7 @@ impl Shell {
     }
 
     fn hit(&self, id: u32, x: f32, y: f32) -> Hit {
-        let node = &self.nodes[(id - 1) as usize];
+        let node = self.node(id).expect("hit handle");
         let nx = node.x;
         let ny = node.y;
         let nw = node.w;
@@ -441,7 +579,7 @@ impl Shell {
     }
 
     fn scroll_target(&self, id: u32, x: f32, y: f32) -> Option<u32> {
-        let node = &self.nodes[(id - 1) as usize];
+        let node = self.node(id).expect("scroll handle");
         if x < node.x || y < node.y || x >= node.x + node.w || y >= node.y + node.h {
             return None;
         }
@@ -451,7 +589,7 @@ impl Shell {
                 return Some(found);
             }
         }
-        let node = &self.nodes[(id - 1) as usize];
+        let node = self.node(id).expect("scroll handle");
         if node.scroll_y && self.max_scroll(node) > 0.0 {
             Some(id)
         } else {

@@ -1,4 +1,4 @@
-use bubble_core::{encode_set_prop_color, encode_set_text, validate_bundle_hashes, Kind, NodeDesc, Shell, Template};
+use bubble_core::{encode, encode_set_prop_color, encode_set_text, validate_bundle_hashes, Kind, NodeDesc, Op, Shell, Template};
 
 fn measure(text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
     let line = font_size * 1.2;
@@ -103,6 +103,45 @@ fn click_scroll_and_paint() {
     assert!(paint.iter().any(|cmd| matches!(cmd, bubble_core::PaintCmd::Text { text, .. } if text == "Count: 0")));
     assert!(paint.iter().any(|cmd| matches!(cmd, bubble_core::PaintCmd::PushClip { .. })));
 }
+#[test]
+fn create_prepends_and_refuses_a_retired_handle() {
+    let mut shell = laid_out();
+    let handle = shell.next_handle();
+    let batch = encode(
+        2,
+        &[
+            Op::CreateNode {
+                handle,
+                template_id: 7,
+                parent: 6,
+                index: 0,
+            },
+            Op::SetText {
+                handle,
+                text: "Added 1".into(),
+            },
+        ],
+    );
+    shell.apply_ops(&batch).unwrap();
+    shell.layout(&mut measure).unwrap();
+    assert_eq!(shell.text(handle).unwrap(), "Added 1");
+    assert!(shell.paint().iter().any(|cmd| matches!(cmd, bubble_core::PaintCmd::Text { text, .. } if text == "Added 1")));
+    shell
+        .apply_ops(&encode(3, &[Op::DisposeNode { handle }]))
+        .unwrap();
+    assert!(shell.text(handle).is_err());
+    let again = encode(
+        4,
+        &[Op::CreateNode {
+            handle,
+            template_id: 7,
+            parent: 6,
+            index: 0,
+        }],
+    );
+    assert!(shell.apply_ops(&again).is_err());
+}
+
 
 #[test]
 fn manifest_checks_hashes_and_placeholder_signature() {

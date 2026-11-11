@@ -23,6 +23,7 @@ self.onmessage = async (event) => {
       wasm = instantiated.instance.exports;
       self.wasm = wasm;
       importScripts(event.data.runtime);
+      self.bubble.configure(event.data.nextHandle);
       importScripts(event.data.entry);
       postBatch();
       return;
