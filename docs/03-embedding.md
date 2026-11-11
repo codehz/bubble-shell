@@ -82,7 +82,7 @@ Cancel   { id }
 ### 跨线程代理
 
 - Native：脚本线程 → C ABI → UI 线程/宿主线程；结果回调脚本线程。
-- Web：Worker → `postMessage` → 主线程 → 宿主；`ArrayBuffer` 用 transferable。
+- Web：同线程调用宿主 API，结果用 Promise 回到这次事件循环。没有 `postMessage`。
 - 不做同步调用；脚本需要布局结果时读上一帧缓存或 await。
 
 ## 3. 导航
@@ -191,6 +191,6 @@ EditingState {
 - TLS；宿主可选择证书 pinning。
 - v1 ambient 能力是明确接受的临时风险；后续加 manifest 允许列表与宿主授权。
 - 脚本不能直接调用原生 FFI；只能走能力桥。
-- QuickJS 内存/栈/超时限制；Web Worker 可终止。
+- QuickJS 内存/栈/超时限制。Web 主线程脚本没有等效的硬终止。
 - FFI 使用安全封装、fuzz、边界隔离；native 不做强沙箱。
 - App Store：不使用 JIT；远程 JS 为第一方签名内容；准备 data-only 降级模式并提前做合规评估。

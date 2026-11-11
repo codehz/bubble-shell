@@ -5,7 +5,7 @@
 | 风险 | 级别 | 影响 | 缓解 |
 |---|---|---|---|
 | QuickJS 事件循环、async、调试器需自建 | 高 | 开发效率与线上排障 | 基于 quickjs-ng/libc；先做最小事件循环；后续接调试协议；三端 conformance |
-| Web Worker + Canvas2D + ARIA 覆盖层组合复杂 | 高 | Web 端体验与性能 | 最早做端到端原型；真实读屏/IME 设备验收；保留主线程渲染降级路径 |
+| 主线程脚本卡住绘制 | 中 | Web 长任务掉帧，且无法强杀 | 接受。软预算只埋点；不做 Worker、不做切片 |
 | a11y/IME 是最大平台差异面 | 高 | 产品可用性与合规 | 每端独立适配层；VoiceOver/TalkBack/NVDA 自动化 + 手工回归 |
 | 全表面重绘性能 | 中 | 60fps 门槛 | 脏矩形、静态子树缓存、帧耗时埋点；复杂列表虚拟化 |
 | 远程 JS 的 App Store 合规 | 高 | iOS 上线 | 第一方签名、无 JIT；准备 data-only 降级；提前审核沟通 |
@@ -28,10 +28,10 @@
 范围：
 
 - bundle/manifest 加载与验签占位。
-- 编译器 MVP：TSX → template IR + JS。
+- 编译器 MVP：TSX 函数组件 → 原生渲染调用（Oxc）。信号图在 Rust。不做模板 IR。
 - Rust 保留树 + Taffy 布局。
 - op 协议 + 双缓冲提交。
-- Web Worker 脚本 + Canvas2D painter + 事件命中。
+- Web：主线程一份 WASM + JS 回放 `PaintCmd`。无 Worker。
 
 验收：
 
@@ -86,9 +86,9 @@
 
 ## 4. 测试策略
 
-- **conformance**：ES 子集在 QuickJS 与 Chromium/Safari/Firefox Worker 上跑同一套用例；统一 polyfill。
-- **golden**：template IR、布局树、三端绘制快照；文本差异单独标注。
-- **fuzz**：manifest/parser、op decoder、模板 IR 校验器。
+- **conformance**：ES 子集在 QuickJS 与浏览器主线程上跑同一套用例；统一 polyfill。
+- **golden**：布局树、三端绘制快照；文本差异单独标注。
+- **fuzz**：manifest/parser、op decoder。
 - **a11y**：语义树快照、焦点顺序、读屏设备回归。
 - **update**：坏签名、坏哈希、版本回放、挂载失败回退、kill switch。
 - **perf**：启动、首帧、帧耗时、内存、包体；真机 CI 基线。
@@ -102,7 +102,7 @@
 - 宿主原生组件嵌入。
 - 统一调试器与 QuickJS debug 适配。
 - 桌面端（同一 Rust core + 平台 painter）。
-- 编译器实现语言（Rust/oxc vs Node/Babel）与类型检查链路。
+- Web 主线程脚本无法硬终止。已接受，不单列方案。
 - 超时/内存配额的最终数值。
 - Web 带凭证请求的宿主代理协议。
 - App Store 合规结论与 data-only 降级的产品边界。

@@ -36,16 +36,16 @@ flowchart TB
 
   subgraph UI["UI thread · runtime-owned vsync"]
     S["Frame scheduler"]
-    R["Rust core<br/>retained tree · Taffy flex · animation · hit-test · semantics"]
-    P["Platform painter<br/>CoreGraphics / Canvas / Canvas2D"]
+    R["Retained tree + Taffy<br/>native: UI thread · web: main-thread WASM"]
+    P["Platform painter<br/>CoreGraphics / Canvas / Canvas2D JS"]
     E["Editing state<br/>text · selection · composition"]
   end
 
   subgraph JS["Script thread"]
     L["Event loop<br/>timers · promises · microtasks"]
-    Q["QuickJS (native)<br/>Worker JS (web)"]
+    Q["Browser JS (web) / QuickJS (native)<br/>signal graph in Rust"]
     G["Signals + components<br/>run once"]
-    O["Template IR + compiled update fns"]
+    O["JSX → native renderer calls<br/>bindings emit ops"]
   end
 
   subgraph Upd["Update plane"]
@@ -70,8 +70,8 @@ flowchart TB
 
 关键点：
 
-- 脚本线程拥有应用状态，产出细粒度 op；UI 线程的 Rust 保留树是唯一的视觉树副本。
-- UI 线程本地执行动画、手势、滚动、命中与文本编辑，不等脚本线程。
+- native：脚本线程拥有应用状态并产出 op；UI 线程的保留树是唯一视觉树，本地做动画、手势、滚动、命中与文本编辑，不等脚本。
+- Web：没有 Worker。浏览器 JS 与一份 WASM 都在主线程（信号图、树、布局、命中、滚动）。绘制仍是 JS 回放 `PaintCmd`。脚本长任务卡住该帧，不另做让出。
 - 宿主能力全部异步；脚本线程不直接碰 DOM、原生 UI 或画布。
 
 ## 4. 一次交互
@@ -86,7 +86,7 @@ sequenceDiagram
   H->>U: touch / scroll / key / IME
   U->>U: hit-test · local gesture/scroll/animation · editing state
   U->>J: event(handlerId, nodeHandle, payload)
-  J->>J: signal updates → compiled update fns
+  J->>J: signal write → native bindings
   J->>U: op batch(seq, node handles)
   U->>U: apply at vsync · layout (platform text) · paint
   J->>H: capability request (async, id)
@@ -100,9 +100,9 @@ sequenceDiagram
 | 维度 | v1 定稿 |
 |---|---|
 | 信任边界 | 第一方内容；Ed25519 签名包；能力权限 v1 先 ambient，桥接点保留 |
-| 作者模型 | TSX/组件 → 模板 IR + JS；组件只跑一次；Solid 式信号；无 VDOM diff |
-| 脚本运行时 | native 双端 QuickJS/PrimJS；Web 用 Worker 内浏览器 JS |
-| 线程 | 脚本线程 / UI 线程；脚本产二进制 op；runtime 自持 vsync |
+| 作者模型 | TSX 函数组件；Oxc 把 JSX 降成原生渲染调用；信号图在 Rust；组件只跑一次；细粒度绑定；无 VDOM、无模板 IR |
+| 脚本运行时 | native：QuickJS/PrimJS。Web：主线程浏览器 JS 调 Rust 信号图（WASM）。不在 JS 里实现信号 |
+| 线程 | native：脚本线程产 op，UI 线程持有树并布局。Web：单线程；无 Worker、无跨线程 op |
 | 核心 | Rust 保留树 + Taffy flex；平台文本/绘制；无高级合成 |
 | 文本 | 平台全权（整形、换行、bidi、回退）；接受三端差异；字体宿主注入 |
 | 输入 | UI 线程编辑状态 + 平台原生输入代理；iOS/Android 原生手柄与菜单 |
@@ -128,12 +128,12 @@ sequenceDiagram
 
 | 术语 | 含义 |
 |---|---|
-| Bundle | 远程内容包：manifest + 模板 IR + JS + 资源 |
+| Bundle | 远程内容包：manifest + 应用 ES 模块 + 资源。运行时（信号图、渲染器）不打进包 |
 | Manifest | 版本、兼容性、文件哈希、签名等元数据 |
-| Template IR | 编译器产出的静态结构、属性槽、绑定槽、事件表 |
+| 渲染调用 | 编译器产出的 `rt` 调用：建节点、设静态属性、登记绑定。动态值不是 IR 槽 |
 | Op | 脚本线程发往 UI 线程的细粒度变更指令 |
 | Handle | 脚本线程在实例作用域内分配的 u32 节点标识；Rust 校验并持有映射 |
 | LKG | Last-known-good，上一个验证通过且能正常挂载的 bundle |
 | Host bridge | 脚本访问 fetch/storage/navigation 等宿主能力的异步桥 |
-| Script thread | 跑 QuickJS / Web Worker 的线程，拥有应用状态 |
+| Script thread | native 上跑 QuickJS 的线程，拥有应用状态。Web 没有这条线程 |
 | UI thread | 跑 Rust 树、布局、绘制、动画、命中、无障碍的线程 |

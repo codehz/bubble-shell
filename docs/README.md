@@ -15,4 +15,4 @@
 
 - 版本：v1 架构草案
 - 日期：2026-11-11
-- 前提：第一方内容、单实例嵌入、native QuickJS + Web Worker、平台文本渲染
+- 前提：第一方内容、单实例嵌入、native QuickJS、Web 主线程 JS + WASM、平台文本渲染

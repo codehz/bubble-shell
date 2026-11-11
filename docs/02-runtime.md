@@ -4,23 +4,37 @@
 
 ### 编译期
 
-输入是 TSX / 组件源码，输出两个产物：
+作者写的是函数组件，不是一份静态 JSX 树。参照 nsh（`docs/dev/native-pipeline.md`）：
 
-- `template.ir.bin`：静态结构、属性、样式槽、动态绑定槽、事件 handler 表、scope 映射。
-- `main.js`：组件初始化与更新函数，目标为 QuickJS 与浏览器 Worker 的公共子集。
+```tsx
+import { mount, signal, Text, View } from "bubble";
 
-采用 Solid 式模型：
+function Counter() {
+  const count = signal(0);
+  return (
+    <View onPress={() => count.update((c) => c + 1)}>
+      <Text>Count: {count()}</Text>
+    </View>
+  );
+}
 
-- 组件只执行一次，不在每次状态变化时重建虚拟树。
-- 状态用信号（signal）表达；编译后的表达式订阅信号，变更时直接产出细粒度 op。
-- 没有 VDOM diff。`For` / `Show` 等控制流编译成显式的 keyed 创建、插入、移动、销毁。
-- 编译器给静态节点分配模板内 ID；runtime 挂载时返回 `静态 ID → handle` 映射。
+mount(() => <Counter />);
+
+```
+
+- 组件函数只执行一次，不在状态变化时重建树。
+- `signal` / `computed` / `effect` 是 Rust 里的图，JS 只是调用入口。不引入 `solid-js`，也不在 JS 里维护订阅。
+- 一次 Oxc pass 去掉 TypeScript，把 JSX 降成原生渲染模块的调用：静态属性和子节点设一次；会读信号的表达式登记为绑定。
+- 绑定重跑时，原生渲染器直接产出对应 op（`SetText` / `SetProp` / 插入 / 移动 / 销毁）。没有 VDOM diff，也没有「模板 IR + 按绑定生成的 JS 更新函数」。
+- `<If>` / `<Each>` 是运行时原语：按真值和 key 创建、移动、销毁，不在编译期把列表展开成静态节点。
+
+`examples/bundle` 里把 raw JSX 解析成 `template.ir.bin` 的解析器是偏离上述模型的临时代码，不是本契约。
 
 ### 运行时
 
-1. Rust 按模板 IR 实例化静态节点，返回 handle 映射。
-2. 脚本执行组件初始化，把信号绑定到 handle 槽位，注册事件 handler。
-3. 信号变化时，编译后的更新函数把变更写入 op 批次。
+1. 脚本线程执行应用模块。`mount` 调用组件一次，渲染器按调用创建节点并登记绑定，产出首批 op。
+2. 事件到达已登记的 handler；handler 写信号。
+3. 图只重跑读过该信号的绑定，把变更写入 op 批次。
 4. 批次在帧边界合并、压缩，提交给 UI 线程。
 5. UI 线程按序应用 op，标记布局/绘制脏区。
 
@@ -32,7 +46,6 @@
 
 ```
 manifest.json
-template.ir.bin
 main.js
 assets/
   <sha256>...
@@ -49,7 +62,6 @@ assets/
   "platforms": ["web", "ios", "android"],
   "entry": "main.js",
   "files": [
-    { "path": "template.ir.bin", "sha256": "...", "size": 12345 },
     { "path": "main.js", "sha256": "...", "size": 6789 }
   ],
   "keyId": "release-2026",
@@ -77,7 +89,7 @@ assets/
 - 值使用 tagged union：null / bool / i64 / f64 / string / array / map / handle / color / dimension。
 - 不传 JSON；热路径不分配临时对象。
 - 每帧一个 arena，双缓冲；生产端按 `(handle, key)` 合并重复 `SetProp`。
-- UI 线程按序应用，不丢 op；队列高水位时脚本线程让出执行权（QuickJS interrupt / Worker 消息节流）。
+- native：UI 线程按序应用，不丢 op；队列高水位时 QuickJS interrupt 让出。Web 同线程，无队列。
 
 ### Handle 分配
 
@@ -155,17 +167,17 @@ SetEditingValue {
 
 ### Web
 
-- Rust core 编译为 WASM，跑在主线程（UI 线程）。
-- 脚本跑在 Web Worker；`postMessage` + transferable `ArrayBuffer` 传 op/事件。
-- Worker 内没有 DOM；剪贴板、焦点、ARIA 覆盖层、Canvas2D 都在主线程，由 runtime 代理。
-- Worker 超时用 `terminate()` + 重建；不依赖 SharedArrayBuffer（避免 COOP/COEP 部署要求）。
+- 没有 Worker，没有第二份 WASM。主线程：浏览器 JS + 一份 WASM（信号图、保留树、Taffy、命中、滚动）。
+- 信号更新直接改树上的节点，同一轮接着布局。绘制仍把 `PaintCmd` 交给 JS 回放。文本测量用页面 Canvas 的 `measureText`。
+- 主线程 JS 同时回放绘制、同步 ARIA、接指针/滚轮/IME。
+- 脚本长任务卡住绘制和滚动，直到这次调用返回。不做切片，不把滚动留在另一线程。
 
 ### 启动序列
 
 1. 宿主创建 surface，传入尺寸、insets、scale、能力实现。
 2. runtime 加载并验签 bundle，或使用 LKG。
-3. 初始化引擎（QuickJS context / Worker + WASM）。
-4. 执行 `main.js`，挂载模板，拿到静态 handle 映射。
+3. 初始化引擎（native：QuickJS context；Web：主线程 WASM）。
+4. 执行 `main.js`：`mount` 跑根组件一次，渲染器建树并登记绑定。
 5. 首批 op 提交；UI 线程布局、绘制首帧。
 
 ### 帧循环
@@ -234,7 +246,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 - 脚本单事件软预算 32ms（仅埋点），硬超时 1s（中断）；初始值，可按实测调整。
 - QuickJS 内存上限初始 64MB，栈上限单独设置；超限视为脚本故障。
 - 故障处理：上报 → 销毁 context → 重建 → 重新挂载 bundle → 错误占位与重试。应用状态丢失，内容级恢复。
-- Web：`Worker.terminate()` 后重建；主线程 UI 不受影响。
+- Web：一次调用返回前页面卡住；无法像 Worker 那样 `terminate()`。硬超时只存在于 native QuickJS。
 - FFI 边界 `catch_unwind`，不允许 Rust panic 跨 C ABI；QuickJS 绑定用安全封装并 fuzz。
 - native 为进程内运行，没有强沙箱；依靠签名内容、内存配额、边界隔离降低风险。
 - 配额：图片缓存、bundle 磁盘、网络并发；超限淘汰最旧资源。
