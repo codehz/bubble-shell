@@ -1,0 +1,13 @@
+[package]
+name = "bubble-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "wasm32 C ABI for the M0 web shell"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+bubble-core = { path = "../core" }
