@@ -54,6 +54,37 @@
 - 脚本死循环能被中断并恢复，宿主 UI 不卡。
 - 简单页面 60fps。
 
+#### M1 本机验证记录（2026-11-11）
+
+同一份 `examples/web/bundle`（`manifest.json` + `main.js`）分别装入 iOS 与 Android 模拟器宿主；两端的设备内驱动完成「点击 → `Count: 1` → 注入死循环 → 1s 中断并重挂载 → 断言 `Count: 0`」流程。
+
+| 环境 | 配置 |
+|---|---|
+| 主机 | Apple M2，macOS 27.0.0 arm64 |
+| iOS | iPhone 18 Pro 模拟器，iOS 27.2，arm64 iOS 17.0 模拟器构建 |
+| Android | `sdk_phone64_arm64` 模拟器，Android 16（SDK 36），arm64-v8a，1080×2400 / 420dpi / 60Hz，Metal 硬件加速 |
+
+| 检查 | iOS | Android |
+|---|---|---|
+| remount text | `Count: 0` | `Count: 0` |
+| faults | 1 | 1 |
+| frames during hang | 61 | 61 |
+| frame budget | 16.67 ms | 16.65 / 16.67 ms |
+| font epoch | 1 | 1 |
+
+复现命令：
+
+```sh
+cargo run -q -p bubble-eval -- ios
+cargo run -q -p bubble-eval -- android
+```
+
+说明：
+
+- Android 硬件加速前后差异明显：SwiftShader 软件渲染时 frame budget 为 38.76 / 35.32 ms、死循环期间仅 30–31 帧；切换为 Metal 后为 16.65 / 16.67 ms、61 帧。`dumpsys gfxinfo` 显示 82 帧中 2 帧 janky（2.44%），`Missed Vsync` 为 0。此前的不达标是模拟器软件光栅化导致，不是运行时缺陷。
+- 以上仅为模拟器结果，真机 60fps 基线仍需补测；iOS 滚动手势尚未接入，设备套件也未覆盖滚动。
+- headless 套件 `cargo test -p bubble-eval --test m1_report` 通过；`crates/native/tests/m1.rs` 共用进程级单例，默认并行运行会互相干扰，需加 `--test-threads=1`。
+
 ### M2 · 输入与无障碍
 
 范围：
