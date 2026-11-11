@@ -38,6 +38,35 @@ function error() {
 function scratch(len) {
   return new DataView(memory().buffer, exports.scratch_ptr(), len);
 }
+function copyBytes(bytes) {
+  const ptr = exports.alloc(bytes.length);
+  new Uint8Array(memory().buffer, ptr, bytes.length).set(bytes);
+  return ptr;
+}
+
+function packFile(path, data) {
+  const name = new TextEncoder().encode(path);
+  const packed = new Uint8Array(8 + name.length + data.length);
+  const view = new DataView(packed.buffer);
+  view.setUint32(0, name.length, true);
+  packed.set(name, 4);
+  view.setUint32(4 + name.length, data.length, true);
+  packed.set(data, 8 + name.length);
+  return packed;
+}
+
+async function checkBundle() {
+  const manifest = new Uint8Array(await (await fetch("./bundle/manifest.json")).arrayBuffer());
+  const main = new Uint8Array(await (await fetch("./bundle/main.js")).arrayBuffer());
+  const files = packFile("main.js", main);
+  const manifestPtr = copyBytes(manifest);
+  const filesPtr = copyBytes(files);
+  const failed = exports.validate(manifestPtr, manifest.length, filesPtr, files.length);
+  exports.dealloc(manifestPtr, manifest.length);
+  exports.dealloc(filesPtr, files.length);
+  if (failed) throw new Error(error() || "bundle rejected");
+}
+
 
 setApi({
   memory: exports.memory,
@@ -174,7 +203,7 @@ canvas.addEventListener(
     const [x, y] = point(event);
     if (exports.scroll_wheel(x, y, event.deltaY)) {
       event.preventDefault();
-      paint();
+      if (exports.layout() === 0) paint();
     }
   },
   { passive: false },
@@ -182,5 +211,10 @@ canvas.addEventListener(
 
 window.addEventListener("resize", resize);
 
+const started = performance.now();
+await checkBundle();
 await import("./bundle/main.js");
 paint();
+const firstFrameMs = performance.now() - started;
+console.info(`first frame ${firstFrameMs.toFixed(1)} ms`);
+if (firstFrameMs >= 400) console.error("first frame exceeded 400 ms");
