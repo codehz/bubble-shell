@@ -57,6 +57,7 @@ pub enum PaintCmd {
     Text {
         x: f32,
         y: f32,
+        w: f32,
         font_size: f32,
         color: u32,
         text: String,
@@ -362,6 +363,7 @@ impl Shell {
             out.push(PaintCmd::Text {
                 x,
                 y,
+                w,
                 font_size,
                 color,
                 text,

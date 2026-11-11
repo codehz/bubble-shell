@@ -50,6 +50,38 @@ function cssColor(rgba) {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
 
+const LINE = 1.2;
+
+function wrapLines(text, maxWidth) {
+  const paragraphs = text.split("\n");
+  if (!(maxWidth > 0)) return paragraphs;
+  const lines = [];
+  for (const paragraph of paragraphs) {
+    if (paragraph === "" || ctx.measureText(paragraph).width <= maxWidth) {
+      lines.push(paragraph);
+      continue;
+    }
+    let line = "";
+    let lastBreak = -1;
+    for (const ch of paragraph) {
+      line += ch;
+      if (ch === " ") lastBreak = line.length - 1;
+      if (ctx.measureText(line).width <= maxWidth) continue;
+      if (lastBreak > 0) {
+        lines.push(line.slice(0, lastBreak));
+        line = line.slice(lastBreak + 1);
+        lastBreak = line.lastIndexOf(" ");
+      } else if (line.length > 1) {
+        lines.push(line.slice(0, -1));
+        line = ch;
+        lastBreak = -1;
+      }
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
 function paint() {
   const len = wasm.paint();
   const bytes = new Uint8Array(wasm.memory.buffer, wasm.scratch_ptr(), len).slice();
@@ -81,6 +113,7 @@ function paint() {
     } else if (tag === 2) {
       const x = view.getFloat32(offset, true); offset += 4;
       const y = view.getFloat32(offset, true); offset += 4;
+      const maxWidth = view.getFloat32(offset, true); offset += 4;
       const fontSize = view.getFloat32(offset, true); offset += 4;
       const color = view.getUint32(offset, true); offset += 4;
       const textLen = view.getUint32(offset, true); offset += 4;
@@ -89,7 +122,10 @@ function paint() {
       ctx.fillStyle = cssColor(color);
       ctx.font = `${fontSize}px sans-serif`;
       ctx.textBaseline = "top";
-      ctx.fillText(text, x, y);
+      const lines = wrapLines(text, maxWidth);
+      for (let line = 0; line < lines.length; line += 1) {
+        ctx.fillText(lines[line], x, y + line * fontSize * LINE);
+      }
     } else if (tag === 3) {
       const x = view.getFloat32(offset, true); offset += 4;
       const y = view.getFloat32(offset, true); offset += 4;
@@ -186,17 +222,13 @@ const instantiated = await WebAssembly.instantiate(wasmBytes, {
     host_measure(ptr, len, fontSize, mode, avail, outPtr) {
       const text = decoder.decode(new Uint8Array(wasm.memory.buffer, ptr, len));
       ctx.font = `${fontSize}px sans-serif`;
-      const natural = ctx.measureText(text).width;
-      const line = fontSize * 1.2;
-      let width = natural;
-      let height = line;
-      if (mode && avail > 0 && natural > avail) {
-        width = avail;
-        height = Math.ceil(natural / avail) * line;
-      }
+      const maxWidth = mode && avail > 0 ? avail : 0;
+      const lines = wrapLines(text, maxWidth);
+      let width = 0;
+      for (const line of lines) width = Math.max(width, ctx.measureText(line).width);
       const floats = new Float32Array(wasm.memory.buffer);
       floats[outPtr >> 2] = width;
-      floats[(outPtr >> 2) + 1] = height;
+      floats[(outPtr >> 2) + 1] = lines.length * fontSize * LINE;
     },
   },
 });
@@ -226,10 +258,14 @@ new ResizeObserver(resize).observe(canvas);
 
 worker = new Worker("./worker.js");
 worker.onmessage = (event) => {
+  if (event.data.type === "error") {
+    showError(event.data.message);
+    return;
+  }
   if (event.data.type === "ops") {
     queue.push(event.data.buffer);
     dirty = true;
   }
 };
-worker.postMessage({ type: "boot", wasm: wasmBytes, entry: new URL("./bundle/main.js", import.meta.url).href }, [wasmBytes]);
+worker.postMessage({ type: "boot", wasm: wasmBytes, runtime: new URL("./runtime.js", import.meta.url).href, entry: new URL("./bundle/main.js", import.meta.url).href }, [wasmBytes]);
 requestAnimationFrame(frame);

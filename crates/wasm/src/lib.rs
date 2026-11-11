@@ -240,10 +240,11 @@ fn encode_paint(cmds: &[PaintCmd]) -> Vec<u8> {
                 push_f32(&mut out, *radius);
                 out.extend_from_slice(&color.to_le_bytes());
             }
-            PaintCmd::Text { x, y, font_size, color, text } => {
+            PaintCmd::Text { x, y, w, font_size, color, text } => {
                 out.push(2);
                 push_f32(&mut out, *x);
                 push_f32(&mut out, *y);
+                push_f32(&mut out, *w);
                 push_f32(&mut out, *font_size);
                 out.extend_from_slice(&color.to_le_bytes());
                 let bytes = text.as_bytes();

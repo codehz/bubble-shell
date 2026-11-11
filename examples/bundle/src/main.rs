@@ -10,16 +10,13 @@ fn main() {
     let template = demo();
     let ir = template.encode();
     let js = format!(
-        r#"let count = 0;
-let seq = 1;
+        r#"const [count, setCount] = bubble.signal(0);
+bubble.effect(() => {{
+  bubble.setText({HEADER}, "Count: " + count());
+}});
 self.onTap = (handlerId) => {{
   if (handlerId !== {BUTTON_HANDLER}) return;
-  count += 1;
-  const text = "Count: " + count;
-  const bytes = new TextEncoder().encode(text);
-  const len = wasm.encode_text_op(seq++, {HEADER}, pass(bytes), bytes.length);
-  const copy = new Uint8Array(memory().buffer, wasm.scratch_ptr(), len).slice();
-  postMessage({{ type: "ops", buffer: copy.buffer }}, [copy.buffer]);
+  setCount(count() + 1);
 }};
 "#
     );
