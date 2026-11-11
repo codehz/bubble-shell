@@ -100,6 +100,11 @@
     structSeq += 1;
     record(key, { kind: "bind", handle: handle >>> 0, handler: handlerId >>> 0 });
   }
+  function scrollTo(handle, y) {
+    const key = `s:${structSeq}`;
+    structSeq += 1;
+    record(key, { kind: "scroll", handle: handle >>> 0, y });
+  }
 
   function u32(value) {
     const bytes = new Uint8Array(4);
@@ -125,6 +130,11 @@
     const payload = [];
     const pushU32 = (value) => {
       for (const byte of u32(value)) payload.push(byte);
+    };
+    const pushF32 = (value) => {
+      const bytes = new Uint8Array(4);
+      new DataView(bytes.buffer).setFloat32(0, value, true);
+      for (const byte of bytes) payload.push(byte);
     };
     for (const op of ops) {
       if (op.kind === "color") {
@@ -155,6 +165,10 @@
         payload.push(6);
         pushU32(op.handle);
         pushU32(op.handler);
+      } else if (op.kind === "scroll") {
+        payload.push(7);
+        pushU32(op.handle);
+        pushF32(op.y);
       }
     }
     const table = [];
@@ -179,5 +193,5 @@
     return out;
   }
 
-  self.bubble = { signal, effect, setText, setColor, create, dispose, move, bind, configure, flush };
+  self.bubble = { signal, effect, setText, setColor, create, dispose, move, bind, scrollTo, configure, flush };
 })();

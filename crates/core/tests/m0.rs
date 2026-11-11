@@ -223,6 +223,23 @@ fn bind_event_hits_the_node_until_cleared() {
         .unwrap();
     assert_eq!(shell.tap(x + w / 2.0, y + h / 2.0), None);
 }
+#[test]
+fn scroll_to_clamps_and_rejects_a_plain_node() {
+    let mut shell = laid_out();
+    shell
+        .apply_ops(&encode(2, &[Op::ScrollTo { handle: 5, y: 10_000.0 }]))
+        .unwrap();
+    let scrolled = shell.scroll_of(5).unwrap();
+    assert!(scrolled > 0.0);
+    shell
+        .apply_ops(&encode(3, &[Op::ScrollTo { handle: 5, y: 0.0 }]))
+        .unwrap();
+    assert_eq!(shell.scroll_of(5).unwrap(), 0.0);
+    assert!(shell
+        .apply_ops(&encode(4, &[Op::ScrollTo { handle: 2, y: 1.0 }]))
+        .is_err());
+}
+
 
 
 

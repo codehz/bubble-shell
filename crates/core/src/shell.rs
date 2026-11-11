@@ -199,6 +199,7 @@ impl Shell {
                 Op::DisposeNode { handle } => self.dispose_node(handle)?,
                 Op::MoveNode { handle, parent, index } => self.move_node(handle, parent, index)?,
                 Op::BindEvent { handle, handler } => self.node_mut(handle)?.handler = handler,
+                Op::ScrollTo { handle, y } => self.scroll_to(handle, y)?,
             }
         }
         Ok(seq)
@@ -305,6 +306,15 @@ impl Shell {
         }
         node.scroll = next;
         true
+    }
+
+    fn scroll_to(&mut self, id: u32, y: f32) -> Result<(), String> {
+        if !self.node(id)?.scroll_y {
+            return Err(format!("handle {id} is not a scroll container"));
+        }
+        let limit = self.max_scroll(self.node(id)?);
+        self.node_mut(id)?.scroll = y.clamp(0.0, limit);
+        Ok(())
     }
 
     pub fn node_box(&self, id: u32) -> Result<(f32, f32, f32, f32), String> {

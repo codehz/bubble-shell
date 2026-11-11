@@ -20,6 +20,8 @@ pub enum Op {
     MoveNode { handle: u32, parent: u32, index: u32 },
     /// `handler` 0 clears the binding.
     BindEvent { handle: u32, handler: u32 },
+    /// Instant vertical scroll. `y` is clamped to the container's range.
+    ScrollTo { handle: u32, y: f32 },
 }
 
 pub fn encode_set_text(seq: u32, handle: u32, text: &str) -> Vec<u8> {
@@ -90,6 +92,11 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.push(6);
                 payload.extend_from_slice(&handle.to_le_bytes());
                 payload.extend_from_slice(&handler.to_le_bytes());
+            }
+            Op::ScrollTo { handle, y } => {
+                payload.push(7);
+                payload.extend_from_slice(&handle.to_le_bytes());
+                payload.extend_from_slice(&y.to_le_bytes());
             }
         }
     }
@@ -178,6 +185,10 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                 handle: read_u32(&mut payload_cur)?,
                 handler: read_u32(&mut payload_cur)?,
             }),
+            7 => ops.push(Op::ScrollTo {
+                handle: read_u32(&mut payload_cur)?,
+                y: read_f32(&mut payload_cur)?,
+            }),
             other => return Err(format!("unknown op tag {other}")),
         }
     }
@@ -215,4 +226,10 @@ fn read_u32(cur: &mut Cursor<&[u8]>) -> Result<u32, String> {
     let mut buf = [0u8; 4];
     cur.read_exact(&mut buf).map_err(|_| "truncated ops")?;
     Ok(u32::from_le_bytes(buf))
+}
+
+fn read_f32(cur: &mut Cursor<&[u8]>) -> Result<f32, String> {
+    let mut buf = [0u8; 4];
+    cur.read_exact(&mut buf).map_err(|_| "truncated ops")?;
+    Ok(f32::from_le_bytes(buf))
 }
