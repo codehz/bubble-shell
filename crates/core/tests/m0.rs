@@ -141,6 +141,63 @@ fn create_prepends_and_refuses_a_retired_handle() {
     );
     assert!(shell.apply_ops(&again).is_err());
 }
+#[test]
+fn move_reorders_and_rejects_a_cycle() {
+    let mut shell = laid_out();
+    let first = shell.next_handle();
+    shell
+        .apply_ops(&encode(
+            2,
+            &[
+                Op::CreateNode {
+                    handle: first,
+                    template_id: 7,
+                    parent: 6,
+                    index: 0,
+                },
+                Op::SetText {
+                    handle: first,
+                    text: "First".into(),
+                },
+                Op::CreateNode {
+                    handle: first + 1,
+                    template_id: 7,
+                    parent: 6,
+                    index: 1,
+                },
+                Op::SetText {
+                    handle: first + 1,
+                    text: "Second".into(),
+                },
+            ],
+        ))
+        .unwrap();
+    shell
+        .apply_ops(&encode(
+            3,
+            &[Op::MoveNode {
+                handle: first,
+                parent: 6,
+                index: 1,
+            }],
+        ))
+        .unwrap();
+    shell.layout(&mut measure).unwrap();
+    let (_, first_y, _, _) = shell.node_box(first).unwrap();
+    let (_, second_y, _, _) = shell.node_box(first + 1).unwrap();
+    assert!(second_y < first_y);
+    assert!(shell
+        .apply_ops(&encode(
+            4,
+            &[Op::MoveNode {
+                handle: 6,
+                parent: first,
+                index: 0,
+            }],
+        ))
+        .is_err());
+}
+
 
 
 #[test]

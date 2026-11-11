@@ -85,6 +85,16 @@
     structSeq += 1;
     record(key, { kind: "dispose", handle: handle >>> 0 });
   }
+  function move(handle, parent, index) {
+    const key = `s:${structSeq}`;
+    structSeq += 1;
+    record(key, {
+      kind: "move",
+      handle: handle >>> 0,
+      parent: parent >>> 0,
+      index: index >>> 0,
+    });
+  }
 
   function u32(value) {
     const bytes = new Uint8Array(4);
@@ -131,6 +141,11 @@
       } else if (op.kind === "dispose") {
         payload.push(4);
         pushU32(op.handle);
+      } else if (op.kind === "move") {
+        payload.push(5);
+        pushU32(op.handle);
+        pushU32(op.parent);
+        pushU32(op.index);
       }
     }
     const table = [];
@@ -155,5 +170,5 @@
     return out;
   }
 
-  self.bubble = { signal, effect, setText, setColor, create, dispose, configure, flush };
+  self.bubble = { signal, effect, setText, setColor, create, dispose, move, configure, flush };
 })();

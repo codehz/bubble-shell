@@ -16,6 +16,8 @@ pub enum Op {
         index: u32,
     },
     DisposeNode { handle: u32 },
+    /// Final child index after the node is detached from its old parent.
+    MoveNode { handle: u32, parent: u32, index: u32 },
 }
 
 pub fn encode_set_text(seq: u32, handle: u32, text: &str) -> Vec<u8> {
@@ -75,6 +77,12 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
             Op::DisposeNode { handle } => {
                 payload.push(4);
                 payload.extend_from_slice(&handle.to_le_bytes());
+            }
+            Op::MoveNode { handle, parent, index } => {
+                payload.push(5);
+                payload.extend_from_slice(&handle.to_le_bytes());
+                payload.extend_from_slice(&parent.to_le_bytes());
+                payload.extend_from_slice(&index.to_le_bytes());
             }
         }
     }
@@ -153,6 +161,11 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
             }
             4 => ops.push(Op::DisposeNode {
                 handle: read_u32(&mut payload_cur)?,
+            }),
+            5 => ops.push(Op::MoveNode {
+                handle: read_u32(&mut payload_cur)?,
+                parent: read_u32(&mut payload_cur)?,
+                index: read_u32(&mut payload_cur)?,
             }),
             other => return Err(format!("unknown op tag {other}")),
         }

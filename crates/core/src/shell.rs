@@ -197,6 +197,7 @@ impl Shell {
                     index,
                 } => self.create_node(handle, template_id, parent, index)?,
                 Op::DisposeNode { handle } => self.dispose_node(handle)?,
+                Op::MoveNode { handle, parent, index } => self.move_node(handle, parent, index)?,
             }
         }
         Ok(seq)
@@ -417,6 +418,45 @@ impl Shell {
         self.sync_children(parent)?;
         self.destroy_subtree(handle)
     }
+    fn move_node(&mut self, handle: u32, parent: u32, index: u32) -> Result<(), String> {
+        if handle <= 1 {
+            return Err("cannot move the root".into());
+        }
+        if self.contains(handle, parent) {
+            return Err("cannot move a node under itself".into());
+        }
+        let old_parent = self.node(handle)?.parent;
+        let old_children = self.node(old_parent)?.children.clone();
+        let Some(pos) = old_children.iter().position(|id| *id == handle) else {
+            return Err(format!("handle {handle} is not a child"));
+        };
+        let same = old_parent == parent;
+        let dest_len = self.node(parent)?.children.len() as u32 - u32::from(same);
+        if index > dest_len {
+            return Err(format!("index {index} past {dest_len} children"));
+        }
+        self.node_mut(old_parent)?.children.remove(pos);
+        self.node_mut(parent)?.children.insert(index as usize, handle);
+        self.node_mut(handle)?.parent = parent;
+        if same {
+            self.sync_children(parent)?;
+        } else {
+            self.sync_children(old_parent)?;
+            self.sync_children(parent)?;
+        }
+        Ok(())
+    }
+
+    fn contains(&self, ancestor: u32, mut id: u32) -> bool {
+        while id != 0 {
+            if id == ancestor {
+                return true;
+            }
+            id = self.node(id).map(|node| node.parent).unwrap_or(0);
+        }
+        false
+    }
+
 
     fn destroy_subtree(&mut self, handle: u32) -> Result<(), String> {
         let children = self.node(handle)?.children.clone();
