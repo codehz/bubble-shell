@@ -106,9 +106,9 @@ export function effect(run) {
 }
 
 export function computed(run) {
-  const out = signal(0);
+  const out = signal(run());
   effect(() => {
-    api.signal_set(out.id, run());
+    out.update(() => run());
   });
   return out;
 }
