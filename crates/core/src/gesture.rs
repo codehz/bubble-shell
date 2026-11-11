@@ -152,7 +152,7 @@ pub struct GestureEvent {
 }
 
 impl GestureEvent {
-    fn new(time_ms: f64) -> Self {
+    pub fn new(time_ms: f64) -> Self {
         Self {
             slot: 0,
             gesture: 0,

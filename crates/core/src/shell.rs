@@ -3,6 +3,7 @@
 use std::cell::{Cell, Ref, RefCell};
 use std::collections::HashSet;
 
+use crate::gesture::{GestureEvent, GestureKind, PointerAction, PointerInput, Recognizer};
 use crate::ir::{Kind, NodeDesc};
 use crate::ops::{decode_ops, Op, Value};
 use crate::props::Prop;
@@ -112,6 +113,8 @@ struct Node {
     taffy: NodeId,
     scroll_left: f32,
     scroll_top: f32,
+    chain_x: bool,
+    chain_y: bool,
     x: f32,
     y: f32,
     w: f32,
@@ -126,6 +129,25 @@ pub struct Shell {
     viewport: Size<f32>,
     paint_cache: RefCell<Vec<PaintCmd>>,
     paint_dirty: Cell<bool>,
+    recognizer: Recognizer,
+}
+
+/// Per-axis result of routing a wheel or touch delta through the hit path.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ScrollOutcome {
+    pub consumed_x: f32,
+    pub consumed_y: f32,
+    pub remaining_x: f32,
+    pub remaining_y: f32,
+    /// A `contain` boundary stopped the axis.
+    pub truncated_x: bool,
+    pub truncated_y: bool,
+}
+
+impl ScrollOutcome {
+    pub fn changed(&self) -> bool {
+        self.consumed_x != 0.0 || self.consumed_y != 0.0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -214,6 +236,8 @@ impl Shell {
                     taffy: taffy_id,
                     scroll_left: 0.0,
                     scroll_top: 0.0,
+                    chain_x: false,
+                    chain_y: false,
                     x: 0.0,
                     y: 0.0,
                     w: 0.0,
@@ -226,6 +250,7 @@ impl Shell {
             viewport: Size::ZERO,
             paint_cache: RefCell::new(Vec::new()),
             paint_dirty: Cell::new(true),
+            recognizer: Recognizer::new(),
         })
     }
 
@@ -294,6 +319,39 @@ impl Shell {
                     let parent = desc.parent;
                     self.insert_node(desc, parent, index)?
                 }
+                Op::SpawnGesture {
+                    gesture,
+                    target,
+                    kind,
+                    index,
+                } => {
+                    self.node(target)?;
+                    if self.node(gesture).is_ok() {
+                        return Err(format!("handle {gesture} is not free"));
+                    }
+                    let kind = GestureKind::parse(kind)
+                        .ok_or_else(|| format!("bad gesture kind {kind}"))?;
+                    self.recognizer.spawn(gesture, target, kind, index)?;
+                }
+                Op::SetGestureProp {
+                    gesture,
+                    key,
+                    value,
+                } => self.recognizer.set_prop(gesture, &key, &value)?,
+                Op::MoveGesture {
+                    gesture,
+                    target,
+                    index,
+                } => {
+                    self.node(target)?;
+                    self.recognizer.move_decl(gesture, target, index)?;
+                }
+                Op::DisposeGesture { gesture } => self.recognizer.dispose(gesture)?,
+                Op::BindGestureEvent {
+                    gesture,
+                    slot,
+                    handler,
+                } => self.recognizer.bind(gesture, slot, handler)?,
             }
         }
         self.paint_dirty.set(true);
@@ -428,33 +486,139 @@ impl Shell {
         }
     }
 
-    pub fn scroll_wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
-        let Some(id) = self.scroll_target(1, x, y, dx, dy) else {
-            return false;
-        };
-        let node = self.node(id).expect("scroll target");
-        let limit_x = if node.scroll_x {
-            self.max_scroll_x(node)
-        } else {
-            0.0
-        };
-        let limit_y = if node.scroll_y {
-            self.max_scroll_y(node)
-        } else {
-            0.0
-        };
-        let node = self.node_mut(id).expect("scroll target");
-        let next_x = (node.scroll_left + dx).clamp(0.0, limit_x);
-        let next_y = (node.scroll_top + dy).clamp(0.0, limit_y);
-        if (next_x - node.scroll_left).abs() < f32::EPSILON
-            && (next_y - node.scroll_top).abs() < f32::EPSILON
-        {
+    /// Feed one normalized pointer sample. `Down` fixes the real hit path;
+    /// move/up/cancel reuse it. Scroll deltas produced by the recognizer are
+    /// applied to the frozen chain immediately, before the host reads paint.
+    pub fn pointer(&mut self, mut input: PointerInput) {
+        if input.action == PointerAction::Down {
+            input.path.clear();
+            self.hit_path(1, input.x, input.y, &mut input.path);
+        }
+        self.recognizer.pointer(input);
+        self.flush_gesture_scroll();
+    }
+
+    /// UI-thread timer tick for long press and the double-tap window.
+    pub fn advance_gestures(&mut self, now_ms: f64) {
+        self.recognizer.advance(now_ms);
+        self.flush_gesture_scroll();
+    }
+
+    /// Drain recognition events in order. The host dispatches them to the
+    /// script thread; nothing here calls JS.
+    pub fn take_gesture_events(&mut self) -> Vec<GestureEvent> {
+        self.recognizer.drain_events()
+    }
+
+    fn flush_gesture_scroll(&mut self) {
+        let requests = self.recognizer.drain_scroll();
+        for request in requests {
+            self.scroll_path(&request.path, request.dx, request.dy);
+        }
+    }
+
+    /// Nodes under the point from deepest to root, matching `hit` occlusion.
+    fn hit_path(&self, id: u32, x: f32, y: f32, out: &mut Vec<u32>) -> bool {
+        let node = self.node(id).expect("hit path handle");
+        let nx = node.x;
+        let ny = node.y;
+        let nw = node.w;
+        let nh = node.h;
+        if x < nx || y < ny || x >= nx + nw || y >= ny + nh {
             return false;
         }
-        node.scroll_left = next_x;
-        node.scroll_top = next_y;
-        self.paint_dirty.set(true);
+        if node.scroll_x || node.scroll_y {
+            let pads = self.pads(id);
+            let left = nx + pads[0];
+            let top = ny + pads[2];
+            let right = nx + nw - pads[1];
+            let bottom = ny + nh - pads[3];
+            if x < left || y < top || x >= right || y >= bottom {
+                out.push(id);
+                return true;
+            }
+        }
+        let children = node.children.clone();
+        for child in children.iter().rev() {
+            if self.hit_path(*child, x, y, out) {
+                out.push(id);
+                return true;
+            }
+        }
+        out.push(id);
         true
+    }
+
+    /// Wheel/trackpad input: route each axis through the hit path from the
+    /// deepest scroll container outward. Returns whether an offset changed.
+    pub fn scroll_wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        self.scroll_chain(x, y, dx, dy).changed()
+    }
+
+    /// Route a normalized delta through the real hit path. x and y are
+    /// independent; each container consumes only its own enabled axis and a
+    /// `contain` boundary stops that axis after its own consumption.
+    pub fn scroll_chain(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> ScrollOutcome {
+        let mut path = Vec::new();
+        if !self.hit_path(1, x, y, &mut path) {
+            return ScrollOutcome {
+                remaining_x: dx,
+                remaining_y: dy,
+                ..ScrollOutcome::default()
+            };
+        }
+        self.scroll_path(&path, dx, dy)
+    }
+
+    /// Apply an already-frozen path. Used by touch scrolling after the down
+    /// sample fixed the target chain.
+    pub fn scroll_path(&mut self, path: &[u32], dx: f32, dy: f32) -> ScrollOutcome {
+        let mut outcome = ScrollOutcome {
+            remaining_x: dx,
+            remaining_y: dy,
+            ..ScrollOutcome::default()
+        };
+        for id in path {
+            let Ok(node) = self.node(*id) else {
+                continue;
+            };
+            let scroll_x = node.scroll_x;
+            let scroll_y = node.scroll_y;
+            let chain_x = node.chain_x;
+            let chain_y = node.chain_y;
+            let limit_x = if scroll_x { self.max_scroll_x(node) } else { 0.0 };
+            let limit_y = if scroll_y { self.max_scroll_y(node) } else { 0.0 };
+            if scroll_x && outcome.remaining_x != 0.0 {
+                let node = self.node_mut(*id).expect("scroll node");
+                let before = node.scroll_left;
+                let next = (before + outcome.remaining_x).clamp(0.0, limit_x);
+                node.scroll_left = next;
+                let consumed = next - before;
+                outcome.consumed_x += consumed;
+                outcome.remaining_x -= consumed;
+            }
+            if scroll_y && outcome.remaining_y != 0.0 {
+                let node = self.node_mut(*id).expect("scroll node");
+                let before = node.scroll_top;
+                let next = (before + outcome.remaining_y).clamp(0.0, limit_y);
+                node.scroll_top = next;
+                let consumed = next - before;
+                outcome.consumed_y += consumed;
+                outcome.remaining_y -= consumed;
+            }
+            if chain_x && scroll_x {
+                outcome.truncated_x = true;
+                outcome.remaining_x = 0.0;
+            }
+            if chain_y && scroll_y {
+                outcome.truncated_y = true;
+                outcome.remaining_y = 0.0;
+            }
+        }
+        if outcome.changed() {
+            self.paint_dirty.set(true);
+        }
+        outcome
     }
 
     fn scroll_to(&mut self, id: u32, x: f32, y: f32) -> Result<(), String> {
@@ -531,6 +695,8 @@ impl Shell {
                 self.node_mut(id)?.inset[2] = value.optional_f32()?.unwrap_or(f32::NAN)
             }
             Prop::Left => self.node_mut(id)?.inset[3] = value.optional_f32()?.unwrap_or(f32::NAN),
+            Prop::ScrollChainX => self.node_mut(id)?.chain_x = chain_policy(value)?,
+            Prop::ScrollChainY => self.node_mut(id)?.chain_y = chain_policy(value)?,
             Prop::Src => {
                 let Value::String(source) = value else {
                     return Err("src must be a string".into());
@@ -613,7 +779,11 @@ impl Shell {
     }
     fn insert_node(&mut self, desc: NodeDesc, parent: u32, index: u32) -> Result<(), String> {
         let handle = desc.id;
-        if handle == 0 || self.retired.contains(&handle) || self.node(handle).is_ok() {
+        if handle == 0
+            || self.retired.contains(&handle)
+            || self.node(handle).is_ok()
+            || self.recognizer.decl(handle).is_some()
+        {
             return Err(format!("handle {handle} is not free"));
         }
         let parent_len = self.node(parent)?.children.len() as u32;
@@ -682,6 +852,8 @@ impl Shell {
             taffy: taffy_id,
             scroll_left: 0.0,
             scroll_top: 0.0,
+            chain_x: false,
+            chain_y: false,
             x: 0.0,
             y: 0.0,
             w: 0.0,
@@ -706,6 +878,7 @@ impl Shell {
         };
         self.node_mut(parent)?.children.remove(pos);
         self.sync_children(parent)?;
+        self.cancel_gestures_in_subtree(handle);
         self.destroy_subtree(handle)
     }
     fn move_node(&mut self, handle: u32, parent: u32, index: u32) -> Result<(), String> {
@@ -747,6 +920,17 @@ impl Shell {
             id = self.node(id).map(|node| node.parent).unwrap_or(0);
         }
         false
+    }
+
+    fn cancel_gestures_in_subtree(&mut self, handle: u32) {
+        self.recognizer.target_disposed(handle);
+        let Some(node) = self.nodes.get(handle as usize).and_then(Option::as_ref) else {
+            return;
+        };
+        let children = node.children.clone();
+        for child in children {
+            self.cancel_gestures_in_subtree(child);
+        }
     }
 
     fn destroy_subtree(&mut self, handle: u32) -> Result<(), String> {
@@ -943,26 +1127,6 @@ impl Shell {
         }
     }
 
-    fn scroll_target(&self, id: u32, x: f32, y: f32, dx: f32, dy: f32) -> Option<u32> {
-        let node = self.node(id).expect("scroll handle");
-        if x < node.x || y < node.y || x >= node.x + node.w || y >= node.y + node.h {
-            return None;
-        }
-        let children = node.children.clone();
-        for child in children.iter().rev() {
-            if let Some(found) = self.scroll_target(*child, x, y, dx, dy) {
-                return Some(found);
-            }
-        }
-        let node = self.node(id).expect("scroll handle");
-        let can_x = dx != 0.0 && node.scroll_x && self.max_scroll_x(node) > 0.0;
-        let can_y = dy != 0.0 && node.scroll_y && self.max_scroll_y(node) > 0.0;
-        if can_x || can_y {
-            Some(id)
-        } else {
-            None
-        }
-    }
 }
 
 enum Hit {
@@ -1121,6 +1285,17 @@ fn image_fit(value: &Value) -> Result<u8, String> {
         "cover" => Ok(1),
         "fill" => Ok(2),
         other => Err(format!("unsupported fit {other}")),
+    }
+}
+
+fn chain_policy(value: &Value) -> Result<bool, String> {
+    let Value::String(text) = value else {
+        return Err("scroll chain policy must be a string".into());
+    };
+    match text.as_str() {
+        "auto" => Ok(false),
+        "contain" => Ok(true),
+        other => Err(format!("unsupported scroll chain policy {other}")),
     }
 }
 

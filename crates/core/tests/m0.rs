@@ -457,6 +457,7 @@ fn every_runtime_property_is_dispatchable() {
             "position" => Value::String("absolute".into()),
             "src" => Value::String("logo.png".into()),
             "fit" => Value::String("cover".into()),
+            "scrollChainX" | "scrollChainY" => Value::String("contain".into()),
             "top" | "right" | "bottom" | "left" => Value::Float(4.0),
             _ => Value::Float(4.0),
         };

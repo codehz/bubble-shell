@@ -44,6 +44,8 @@ pub enum Prop {
     Left,
     Src,
     Fit,
+    ScrollChainX,
+    ScrollChainY,
 }
 
 impl Prop {
@@ -82,6 +84,8 @@ impl Prop {
             "left" => Self::Left,
             "src" => Self::Src,
             "fit" => Self::Fit,
+            "scrollChainX" => Self::ScrollChainX,
+            "scrollChainY" => Self::ScrollChainY,
             _ => return None,
         })
     }
@@ -118,6 +122,8 @@ pub const DEFERRED_PROPS: &[&str] = &[
     "inset",
     "src",
     "fit",
+    "scrollChainX",
+    "scrollChainY",
 ];
 
 pub const SET_PROPS: &[&str] = &[
@@ -154,4 +160,6 @@ pub const SET_PROPS: &[&str] = &[
     "left",
     "src",
     "fit",
+    "scrollChainX",
+    "scrollChainY",
 ];

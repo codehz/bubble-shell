@@ -1,4 +1,4 @@
-//! `BSOP` version 1. Little-endian batch with a string table.
+//! `BSOP` version 3. Little-endian batch with a string table.
 //! `Turn` coalesces repeated `SetText` / `SetProp` before encoding.
 //! Applied batches still run in order.
 
@@ -92,6 +92,34 @@ pub enum Op {
     SpawnAt {
         desc: NodeDesc,
         index: u32,
+    },
+    /// Virtual gesture declaration attached to `target`; `index` is its
+    /// position among that target's declarations.
+    SpawnGesture {
+        gesture: u32,
+        target: u32,
+        kind: u32,
+        index: u32,
+    },
+    /// One recognition property. Unknown keys are rejected by the shell.
+    SetGestureProp {
+        gesture: u32,
+        key: String,
+        value: Value,
+    },
+    MoveGesture {
+        gesture: u32,
+        target: u32,
+        index: u32,
+    },
+    DisposeGesture {
+        gesture: u32,
+    },
+    /// `slot` is the gesture event kind; handler 0 clears the binding.
+    BindGestureEvent {
+        gesture: u32,
+        slot: u8,
+        handler: u32,
     },
 }
 
@@ -203,6 +231,72 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 desc.write_body(&mut payload);
                 payload.extend_from_slice(&index.to_le_bytes());
             }
+            Op::SpawnGesture {
+                gesture,
+                target,
+                kind,
+                index,
+            } => {
+                payload.push(11);
+                payload.extend_from_slice(&gesture.to_le_bytes());
+                payload.extend_from_slice(&target.to_le_bytes());
+                payload.push(*kind as u8);
+                payload.extend_from_slice(&index.to_le_bytes());
+            }
+            Op::SetGestureProp {
+                gesture,
+                key,
+                value,
+            } => {
+                let key_id = intern(key);
+                payload.push(12);
+                payload.extend_from_slice(&gesture.to_le_bytes());
+                payload.extend_from_slice(&key_id.to_le_bytes());
+                match value {
+                    Value::Null => payload.push(0),
+                    Value::Bool(value) => {
+                        payload.push(1);
+                        payload.push(u8::from(*value));
+                    }
+                    Value::Int(value) => {
+                        payload.push(2);
+                        payload.extend_from_slice(&value.to_le_bytes());
+                    }
+                    Value::Float(value) => {
+                        payload.push(3);
+                        payload.extend_from_slice(&value.to_le_bytes());
+                    }
+                    Value::String(value) => {
+                        let value_id = intern(value);
+                        payload.push(4);
+                        payload.extend_from_slice(&value_id.to_le_bytes());
+                    }
+                }
+            }
+            Op::MoveGesture {
+                gesture,
+                target,
+                index,
+            } => {
+                payload.push(13);
+                payload.extend_from_slice(&gesture.to_le_bytes());
+                payload.extend_from_slice(&target.to_le_bytes());
+                payload.extend_from_slice(&index.to_le_bytes());
+            }
+            Op::DisposeGesture { gesture } => {
+                payload.push(14);
+                payload.extend_from_slice(&gesture.to_le_bytes());
+            }
+            Op::BindGestureEvent {
+                gesture,
+                slot,
+                handler,
+            } => {
+                payload.push(15);
+                payload.extend_from_slice(&gesture.to_le_bytes());
+                payload.push(*slot);
+                payload.extend_from_slice(&handler.to_le_bytes());
+            }
         }
     }
 
@@ -215,7 +309,7 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
 
     let mut out = Vec::new();
     out.extend_from_slice(b"BSOP");
-    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&3u16.to_le_bytes());
     out.extend_from_slice(&seq.to_le_bytes());
     out.extend_from_slice(&(ops.len() as u32).to_le_bytes());
     out.extend_from_slice(&(table.len() as u32).to_le_bytes());
@@ -234,7 +328,7 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
         return Err("bad op magic".into());
     }
     let version = read_u16(&mut cur)?;
-    if version != 2 {
+    if version != 3 {
         return Err(format!("unsupported op version {version}"));
     }
     let seq = read_u32(&mut cur)?;
@@ -319,6 +413,62 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                 desc: NodeDesc::read_body(&mut payload_cur, NODE_VERSION)?,
                 index: read_u32(&mut payload_cur)?,
             }),
+            11 => {
+                let gesture = read_u32(&mut payload_cur)?;
+                let target = read_u32(&mut payload_cur)?;
+                let kind = read_u8(&mut payload_cur)? as u32;
+                let index = read_u32(&mut payload_cur)?;
+                ops.push(Op::SpawnGesture {
+                    gesture,
+                    target,
+                    kind,
+                    index,
+                });
+            }
+            12 => {
+                let gesture = read_u32(&mut payload_cur)?;
+                let key_id = read_u32(&mut payload_cur)? as usize;
+                let key = strings.get(key_id).ok_or("gesture key out of range")?.clone();
+                let value = match read_u8(&mut payload_cur)? {
+                    0 => Value::Null,
+                    1 => Value::Bool(read_u8(&mut payload_cur)? != 0),
+                    2 => Value::Int(read_i64(&mut payload_cur)?),
+                    3 => Value::Float(read_f64(&mut payload_cur)?),
+                    4 => {
+                        let value_id = read_u32(&mut payload_cur)? as usize;
+                        Value::String(
+                            strings
+                                .get(value_id)
+                                .ok_or("gesture value out of range")?
+                                .clone(),
+                        )
+                    }
+                    other => return Err(format!("unsupported prop value tag {other}")),
+                };
+                ops.push(Op::SetGestureProp {
+                    gesture,
+                    key,
+                    value,
+                });
+            }
+            13 => ops.push(Op::MoveGesture {
+                gesture: read_u32(&mut payload_cur)?,
+                target: read_u32(&mut payload_cur)?,
+                index: read_u32(&mut payload_cur)?,
+            }),
+            14 => ops.push(Op::DisposeGesture {
+                gesture: read_u32(&mut payload_cur)?,
+            }),
+            15 => {
+                let gesture = read_u32(&mut payload_cur)?;
+                let slot = read_u8(&mut payload_cur)?;
+                let handler = read_u32(&mut payload_cur)?;
+                ops.push(Op::BindGestureEvent {
+                    gesture,
+                    slot,
+                    handler,
+                });
+            }
             other => return Err(format!("unknown op tag {other}")),
         }
     }

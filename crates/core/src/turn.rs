@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 
+use crate::gesture::GestureKind;
 use crate::ir::NodeDesc;
 use crate::ops::{encode, Op, Value};
 
@@ -206,6 +207,51 @@ impl Turn {
         self.push(Op::BindEvent { handle, handler });
     }
 
+    /// Allocate a gesture id and queue its declaration under `target`.
+    pub fn spawn_gesture(
+        &mut self,
+        target: u32,
+        kind: GestureKind,
+        index: u32,
+    ) -> Result<u32, String> {
+        let gesture = self.allocate_handle()?;
+        self.push(Op::SpawnGesture {
+            gesture,
+            target,
+            kind: kind as u32,
+            index,
+        });
+        Ok(gesture)
+    }
+
+    pub fn set_gesture_prop(&mut self, gesture: u32, key: impl Into<String>, value: Value) {
+        self.push(Op::SetGestureProp {
+            gesture,
+            key: key.into(),
+            value,
+        });
+    }
+
+    pub fn bind_gesture_event(&mut self, gesture: u32, slot: u8, handler: u32) {
+        self.push(Op::BindGestureEvent {
+            gesture,
+            slot,
+            handler,
+        });
+    }
+
+    pub fn move_gesture(&mut self, gesture: u32, target: u32, index: u32) {
+        self.push(Op::MoveGesture {
+            gesture,
+            target,
+            index,
+        });
+    }
+
+    pub fn dispose_gesture(&mut self, gesture: u32) {
+        self.push(Op::DisposeGesture { gesture });
+    }
+
     pub fn set_prop(&mut self, handle: u32, key: impl Into<String>, value: Value) {
         self.push(Op::SetProp {
             handle,
@@ -272,6 +318,26 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
                         key: existing_key,
                         value: slot,
                     } if existing == handle && existing_key == key => {
+                        *slot = value.clone();
+                        return;
+                    }
+                    Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } => {}
+                    _ => break,
+                }
+            }
+        }
+        Op::SetGestureProp {
+            gesture,
+            key,
+            value,
+        } => {
+            for item in buf.iter_mut().rev() {
+                match item {
+                    Op::SetGestureProp {
+                        gesture: existing,
+                        key: existing_key,
+                        value: slot,
+                    } if existing == gesture && existing_key == key => {
                         *slot = value.clone();
                         return;
                     }
