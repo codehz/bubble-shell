@@ -129,40 +129,6 @@ pub extern "C" fn boot() -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn mount(ptr: *const u8, len: u32) -> i32 {
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
-    match Shell::mount(bytes) {
-        Ok(shell) => {
-            let next_handle = shell.next_handle();
-            TURN.with(|slot| *slot.borrow_mut() = Some(Turn::with_next_handle(next_handle)));
-            SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
-            PENDING.with(|queue| queue.borrow_mut().clear());
-            0
-        }
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn register_template(ptr: *const u8, len: u32) -> i32 {
-    if let Err(err) = drain_pending() {
-        set_error(err);
-        return 1;
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
-    match with_shell(|shell| shell.register_template(bytes)) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
-}
-
-#[no_mangle]
 pub extern "C" fn set_viewport(width: f32, height: f32) {
     if let Err(err) = with_shell(|shell| {
         shell.set_viewport(width, height);
@@ -303,17 +269,6 @@ pub extern "C" fn move_node(handle: u32, parent: u32, index: u32) -> i32 {
         Err(err) => {
             set_error(err);
             1
-        }
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn create_node(template_id: u32, parent: u32, index: u32) -> u32 {
-    match with_turn(|turn| turn.create_node(template_id, parent, index)) {
-        Ok(handle) => handle,
-        Err(err) => {
-            set_error(err);
-            0
         }
     }
 }

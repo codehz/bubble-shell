@@ -491,7 +491,6 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
     api.set("spawn_at", Function::new(ctx.clone(), api_spawn_at)?)?;
     api.set("dispose", Function::new(ctx.clone(), api_dispose)?)?;
     api.set("move_node", Function::new(ctx.clone(), api_move_node)?)?;
-    api.set("create_node", Function::new(ctx.clone(), api_create_node)?)?;
     api.set("set_prop", Function::new(ctx.clone(), api_set_prop)?)?;
     api.set(
         "queue_text_utf8",
@@ -656,16 +655,6 @@ fn api_move_node(handle: f64, parent: f64, index: f64) -> i32 {
         Err(err) => {
             set_api_error(err);
             1
-        }
-    }
-}
-
-fn api_create_node(template_id: f64, parent: f64, index: f64) -> u32 {
-    match with_turn(|turn| turn.create_node(template_id as u32, parent as u32, index as u32)) {
-        Ok(handle) => handle,
-        Err(err) => {
-            set_api_error(err);
-            0
         }
     }
 }

@@ -243,25 +243,6 @@ pub extern "C" fn bubble_load(
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_register_template(data: *const u8, len: u32) -> i32 {
-    let result = catch(|| {
-        let engine = engine()?;
-        if data.is_null() && len != 0 {
-            return Err("template pointer is null".into());
-        }
-        let bytes = unsafe { std::slice::from_raw_parts(data, len as usize) };
-        drain_pending(&engine.shared)?;
-        let mut shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
-        shell.register_template(bytes)
-    });
-    finish(result)
-}
-
-#[no_mangle]
 pub extern "C" fn bubble_frame(
     width: f32,
     height: f32,

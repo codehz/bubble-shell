@@ -25,12 +25,6 @@ pub struct Turn {
 
 impl Turn {
     pub fn new() -> Self {
-        Self::with_next_handle(2)
-    }
-
-    /// Start allocating handles at `next_handle`; used after mounting a
-    /// template that already reserved ids.
-    pub fn with_next_handle(next_handle: u32) -> Self {
         Self {
             values: vec![0.0],
             subs: vec![HashSet::new()],
@@ -41,7 +35,7 @@ impl Turn {
             bufs: [Vec::new(), Vec::new()],
             write: 0,
             seq: 0,
-            next_handle: next_handle.max(2),
+            next_handle: 2,
         }
     }
 
@@ -124,22 +118,6 @@ impl Turn {
 
     pub fn dispose(&mut self, handle: u32) {
         self.push(Op::DisposeNode { handle });
-    }
-
-    pub fn create_node(
-        &mut self,
-        template_id: u32,
-        parent: u32,
-        index: u32,
-    ) -> Result<u32, String> {
-        let handle = self.allocate_handle()?;
-        self.push(Op::CreateNode {
-            handle,
-            template_id,
-            parent,
-            index,
-        });
-        Ok(handle)
     }
 
     pub fn move_node(&mut self, handle: u32, parent: u32, index: u32) {

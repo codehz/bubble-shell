@@ -24,7 +24,6 @@ fn lowers_a_signal_text_binding() {
     assert!(js.contains("() => \"Count: \" + count()"));
     assert!(js.contains("onPress: () => count.update((c) => c + 1)"));
     assert!(js.contains("mount(Counter);"));
-    assert!(!js.contains("BTIR"));
     assert!(!js.contains("from \"bubble\""));
 }
 

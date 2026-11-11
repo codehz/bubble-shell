@@ -202,13 +202,6 @@ export function bindProp(handle, key, fn) {
   runBinding(id);
 }
 
-export function createNode(templateId, parentHandle, index) {
-  const handle = api.create_node(templateId, parentHandle, index);
-  if (!handle) throw new Error(api.error() || "create_node failed");
-  registerChild(parentHandle, handle, index);
-  return handle;
-}
-
 function addBinding(run, handle) {
   const id = bindings.length + 1;
   bindings.push({ run, active: true });

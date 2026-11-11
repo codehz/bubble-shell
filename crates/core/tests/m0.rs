@@ -1,6 +1,5 @@
 use bubble_core::{
-    encode, encode_set_prop_color, encode_set_text, validate_bundle_hashes, Kind, NodeDesc, Op,
-    Shell, Template,
+    encode, encode_set_prop_color, encode_set_text, validate_bundle_hashes, NodeDesc, Op, Shell,
 };
 
 fn measure(text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
@@ -15,11 +14,7 @@ fn measure(text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
     }
 }
 
-fn demo_template() -> Template {
-    let mut root = NodeDesc::view(1, 0);
-    root.background = 0xff11_1111;
-    root.padding = [12.0, 12.0, 12.0, 12.0];
-
+fn demo_ops() -> Vec<Op> {
     let mut header = NodeDesc::text(2, 1, "Count: 0");
     header.font_size = 24.0;
     header.color = 0xffff_ffff;
@@ -40,35 +35,35 @@ fn demo_template() -> Template {
     scroller.flex_shrink = 1.0;
 
     let column = NodeDesc::view(6, 5);
-    let mut nodes = vec![root, header, button, label, scroller, column];
+    let mut ops = vec![
+        Op::Spawn { desc: header },
+        Op::Spawn { desc: button },
+        Op::Spawn { desc: label },
+        Op::Spawn { desc: scroller },
+        Op::Spawn { desc: column },
+    ];
     for index in 0..30 {
         let mut row = NodeDesc::text(7 + index, 6, format!("Row {index:02}"));
         row.font_size = 16.0;
         row.color = 0xffdd_dddd;
         row.padding = [0.0, 4.0, 0.0, 4.0];
-        nodes.push(row);
+        ops.push(Op::Spawn { desc: row });
     }
-    let _ = Kind::Text;
-    Template { nodes }
+    ops
 }
 
 fn laid_out() -> Shell {
-    let bytes = demo_template().encode();
-    let mut shell = Shell::mount(&bytes).unwrap();
+    let mut shell = Shell::blank().unwrap();
     shell.set_viewport(320.0, 480.0);
+    shell.apply_ops(&encode(1, &demo_ops())).unwrap();
     shell.layout(&mut measure).unwrap();
     shell
 }
 
 #[test]
-fn template_and_ops_roundtrip() {
-    let bytes = demo_template().encode();
-    let decoded = Template::decode(&bytes).unwrap();
-    assert_eq!(decoded.nodes.len(), 36);
-    assert_eq!(decoded.nodes[1].text, "Count: 0");
-
+fn spawned_nodes_accept_updates() {
+    let mut shell = laid_out();
     let batch = encode_set_text(7, 2, "Count: 3");
-    let mut shell = Shell::mount(&bytes).unwrap();
     assert_eq!(shell.apply_ops(&batch).unwrap(), 7);
     assert_eq!(shell.text(2).unwrap(), "Count: 3");
 
@@ -78,9 +73,10 @@ fn template_and_ops_roundtrip() {
 }
 
 #[test]
-fn rejects_bad_magic_and_dense_ids() {
-    assert!(Template::decode(b"NOPE").is_err());
-    assert!(Shell::mount(&encode_set_text(1, 1, "x")).is_err());
+fn rejects_bad_op_magic_and_text_on_a_view() {
+    assert!(bubble_core::decode_ops(b"NOPE").is_err());
+    let mut shell = Shell::blank().unwrap();
+    assert!(shell.apply_ops(&encode_set_text(1, 1, "x")).is_err());
 }
 
 #[test]
@@ -114,16 +110,14 @@ fn click_scroll_and_paint() {
         .any(|cmd| matches!(cmd, bubble_core::PaintCmd::PushClip { .. })));
 }
 #[test]
-fn create_prepends_and_refuses_a_retired_handle() {
+fn spawn_at_prepends_and_refuses_a_retired_handle() {
     let mut shell = laid_out();
     let handle = shell.next_handle();
     let batch = encode(
         2,
         &[
-            Op::CreateNode {
-                handle,
-                template_id: 7,
-                parent: 6,
+            Op::SpawnAt {
+                desc: NodeDesc::text(handle, 6, ""),
                 index: 0,
             },
             Op::SetText {
@@ -145,10 +139,8 @@ fn create_prepends_and_refuses_a_retired_handle() {
     assert!(shell.text(handle).is_err());
     let again = encode(
         4,
-        &[Op::CreateNode {
-            handle,
-            template_id: 7,
-            parent: 6,
+        &[Op::SpawnAt {
+            desc: NodeDesc::text(handle, 6, ""),
             index: 0,
         }],
     );
@@ -162,25 +154,13 @@ fn move_reorders_and_rejects_a_cycle() {
         .apply_ops(&encode(
             2,
             &[
-                Op::CreateNode {
-                    handle: first,
-                    template_id: 7,
-                    parent: 6,
+                Op::SpawnAt {
+                    desc: NodeDesc::text(first, 6, "First"),
                     index: 0,
                 },
-                Op::SetText {
-                    handle: first,
-                    text: "First".into(),
-                },
-                Op::CreateNode {
-                    handle: first + 1,
-                    template_id: 7,
-                    parent: 6,
+                Op::SpawnAt {
+                    desc: NodeDesc::text(first + 1, 6, "Second"),
                     index: 1,
-                },
-                Op::SetText {
-                    handle: first + 1,
-                    text: "Second".into(),
                 },
             ],
         ))
@@ -218,10 +198,8 @@ fn bind_event_hits_the_node_until_cleared() {
         .apply_ops(&encode(
             2,
             &[
-                Op::CreateNode {
-                    handle,
-                    template_id: 7,
-                    parent: 6,
+                Op::SpawnAt {
+                    desc: NodeDesc::text(handle, 6, "bound"),
                     index: 0,
                 },
                 Op::BindEvent { handle, handler: 9 },
@@ -454,31 +432,4 @@ fn generic_set_prop_updates_style_and_paint() {
         value: Value::Null,
     });
     assert!(shell.apply_ops(&turn.commit().unwrap()).is_err());
-}
-
-#[test]
-fn registered_template_can_be_created_repeatedly() {
-    use bubble_core::{Turn, Value};
-
-    let template = Template {
-        nodes: vec![NodeDesc::text(1, 0, "T")],
-    };
-    let mut shell = Shell::blank().unwrap();
-    shell.register_template(&template.encode()).unwrap();
-    shell.set_viewport(100.0, 100.0);
-    let mut turn = Turn::new();
-    let first = turn.create_node(1, 1, 0).unwrap();
-    let second = turn.create_node(1, 1, 1).unwrap();
-    shell.apply_ops(&turn.commit().unwrap()).unwrap();
-    assert_eq!(shell.text(first).unwrap(), "T");
-    assert_eq!(shell.text(second).unwrap(), "T");
-    turn.set_prop(first, "color", Value::Int(0xffff_0000));
-    shell.apply_ops(&turn.commit().unwrap()).unwrap();
-    assert!(shell.paint().iter().any(|cmd| matches!(
-        cmd,
-        bubble_core::PaintCmd::Text {
-            color: 0xffff_0000,
-            ..
-        }
-    )));
 }

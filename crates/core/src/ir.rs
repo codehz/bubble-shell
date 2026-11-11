@@ -1,7 +1,7 @@
-//! `BTIR` version 1. Little-endian. Parents appear before children. Ids are dense from 1.
+//! Node descriptors. Little-endian. `BNOD` version 1 wraps one descriptor;
+//! `Spawn` ops reuse the same body layout.
 //!
-//! A single node uses the `BNOD` version 1 envelope. The body layout is shared
-//! with `BTIR`, so `Spawn` ops and templates cannot drift.
+//! The descriptor is a transport format, not an authoring or mount template.
 
 use std::io::{Cursor, Read};
 
@@ -91,7 +91,7 @@ impl NodeDesc {
         Ok(node)
     }
 
-    /// Shared with `BTIR`; no magic or version.
+    /// Shared by the `BNOD` envelope and `Spawn` payloads; no magic or version.
     pub fn write_body(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.id.to_le_bytes());
         out.extend_from_slice(&self.parent.to_le_bytes());
@@ -172,63 +172,6 @@ impl NodeDesc {
             padding,
             text,
         })
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Template {
-    pub nodes: Vec<NodeDesc>,
-}
-
-impl Template {
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(b"BTIR");
-        out.extend_from_slice(&1u16.to_le_bytes());
-        out.extend_from_slice(&(self.nodes.len() as u32).to_le_bytes());
-        for node in &self.nodes {
-            node.write_body(&mut out);
-        }
-        out
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        let mut cur = Cursor::new(bytes);
-        let mut magic = [0u8; 4];
-        cur.read_exact(&mut magic).map_err(|_| "truncated header")?;
-        if &magic != b"BTIR" {
-            return Err("bad template magic".into());
-        }
-        let version = read_u16(&mut cur)?;
-        if version != 1 {
-            return Err(format!("unsupported template version {version}"));
-        }
-        let count = read_u32(&mut cur)? as usize;
-        let mut nodes = Vec::with_capacity(count);
-        for index in 0..count {
-            let node = NodeDesc::read_body(&mut cur)?;
-            if node.id as usize != index + 1 {
-                return Err(format!(
-                    "node id {} is not dense (expected {})",
-                    node.id,
-                    index + 1
-                ));
-            }
-            if index == 0 && node.parent != 0 {
-                return Err("root parent must be 0".into());
-            }
-            if index > 0 && (node.parent == 0 || node.parent >= node.id) {
-                return Err(format!(
-                    "node {} parent {} is missing",
-                    node.id, node.parent
-                ));
-            }
-            nodes.push(node);
-        }
-        if cur.position() != bytes.len() as u64 {
-            return Err("trailing template bytes".into());
-        }
-        Ok(Self { nodes })
     }
 }
 

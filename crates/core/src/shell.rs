@@ -3,7 +3,7 @@
 use std::cell::{Cell, Ref, RefCell};
 use std::collections::HashSet;
 
-use crate::ir::{Kind, NodeDesc, Template};
+use crate::ir::{Kind, NodeDesc};
 use crate::ops::{decode_ops, Op, Value};
 use taffy::prelude::*;
 use taffy::style::Overflow;
@@ -44,7 +44,6 @@ struct Node {
 
 pub struct Shell {
     nodes: Vec<Option<Node>>,
-    prototypes: Vec<NodeDesc>,
     retired: HashSet<u32>,
     high_water: u32,
     taffy: TaffyTree<MeasureCtx>,
@@ -119,7 +118,6 @@ impl Shell {
                     h: 0.0,
                 }),
             ],
-            prototypes: Vec::new(),
             retired: HashSet::new(),
             high_water: 1,
             taffy,
@@ -144,114 +142,11 @@ impl Shell {
         self.insert_node(desc, parent, index)
     }
 
-    pub fn mount(bytes: &[u8]) -> Result<Self, String> {
-        let template = Template::decode(bytes)?;
-        if template.nodes.is_empty() {
-            return Err("template is empty".into());
-        }
-        let mut taffy: TaffyTree<MeasureCtx> = TaffyTree::new();
-        let mut nodes = vec![None];
-        for desc in &template.nodes {
-            let style = style_for(
-                desc.row,
-                desc.scroll_y,
-                desc.flex_grow,
-                desc.flex_shrink,
-                desc.width,
-                desc.height,
-                desc.padding,
-            );
-            let taffy_id = if desc.kind == Kind::Text {
-                taffy
-                    .new_leaf_with_context(
-                        style,
-                        MeasureCtx {
-                            text: desc.text.clone(),
-                            font_size: desc.font_size,
-                        },
-                    )
-                    .map_err(|err| err.to_string())?
-            } else {
-                taffy.new_leaf(style).map_err(|err| err.to_string())?
-            };
-            nodes.push(Some(Node {
-                parent: desc.parent,
-                children: Vec::new(),
-                kind: desc.kind,
-                scroll_y: desc.scroll_y,
-                background: desc.background,
-                color: desc.color,
-                font_size: desc.font_size,
-                radius: desc.radius,
-                opacity: desc.opacity,
-                handler: desc.handler,
-                width: desc.width,
-                height: desc.height,
-                flex_grow: desc.flex_grow,
-                flex_shrink: desc.flex_shrink,
-                row: desc.row,
-                padding: desc.padding,
-                text: desc.text.clone(),
-                taffy: taffy_id,
-                scroll: 0.0,
-                x: 0.0,
-                y: 0.0,
-                w: 0.0,
-                h: 0.0,
-            }));
-        }
-        for id in 1..nodes.len() {
-            let parent = nodes[id].as_ref().unwrap().parent;
-            if parent != 0 {
-                nodes[parent as usize]
-                    .as_mut()
-                    .unwrap()
-                    .children
-                    .push(id as u32);
-            }
-        }
-        for node in nodes.iter().flatten() {
-            if node.children.is_empty() {
-                continue;
-            }
-            let children: Vec<NodeId> = node
-                .children
-                .iter()
-                .map(|id| nodes[*id as usize].as_ref().unwrap().taffy)
-                .collect();
-            taffy
-                .set_children(node.taffy, &children)
-                .map_err(|err| err.to_string())?;
-        }
-        let high_water = (nodes.len() - 1) as u32;
-        Ok(Self {
-            nodes,
-            prototypes: template.nodes,
-            retired: HashSet::new(),
-            high_water,
-            taffy,
-            viewport: Size::ZERO,
-            paint_cache: RefCell::new(Vec::new()),
-            paint_dirty: Cell::new(true),
-        })
-    }
-
     pub fn set_viewport(&mut self, width: f32, height: f32) {
         if self.viewport.width != width || self.viewport.height != height {
             self.viewport = Size { width, height };
             self.paint_dirty.set(true);
         }
-    }
-
-    /// Replace the node prototypes used by `CreateNode`. A template node can
-    /// be cloned with a new handle; child relationships are not cloned.
-    pub fn register_template(&mut self, bytes: &[u8]) -> Result<(), String> {
-        let template = Template::decode(bytes)?;
-        if template.nodes.is_empty() {
-            return Err("template is empty".into());
-        }
-        self.prototypes = template.nodes;
-        Ok(())
     }
 
     pub fn apply_ops(&mut self, bytes: &[u8]) -> Result<u32, String> {
@@ -274,12 +169,6 @@ impl Shell {
                     self.set_prop(handle, &key, &Value::Int(rgba as i64))?
                 }
                 Op::SetProp { handle, key, value } => self.set_prop(handle, &key, &value)?,
-                Op::CreateNode {
-                    handle,
-                    template_id,
-                    parent,
-                    index,
-                } => self.create_node(handle, template_id, parent, index)?,
                 Op::DisposeNode { handle } => self.dispose_node(handle)?,
                 Op::MoveNode {
                     handle,
@@ -510,24 +399,6 @@ impl Shell {
             .and_then(Option::as_mut)
             .ok_or_else(|| format!("bad handle {id}"))
     }
-    fn create_node(
-        &mut self,
-        handle: u32,
-        template_id: u32,
-        parent: u32,
-        index: u32,
-    ) -> Result<(), String> {
-        let mut proto = self
-            .prototypes
-            .iter()
-            .find(|node| node.id == template_id)
-            .cloned()
-            .ok_or_else(|| format!("unknown template {template_id}"))?;
-        proto.id = handle;
-        proto.parent = parent;
-        self.insert_node(proto, parent, index)
-    }
-
     fn insert_node(&mut self, desc: NodeDesc, parent: u32, index: u32) -> Result<(), String> {
         let handle = desc.id;
         if handle == 0 || self.retired.contains(&handle) || self.node(handle).is_ok() {

@@ -93,7 +93,6 @@ setApi({
   },
   dispose: exports.dispose,
   move_node: exports.move_node,
-  create_node: exports.create_node,
   set_prop(handle, key, tag, number, text) {
     const keyBytes = encoder.encode(key);
     const textBytes = tag === 4 ? encoder.encode(text) : new Uint8Array(0);
