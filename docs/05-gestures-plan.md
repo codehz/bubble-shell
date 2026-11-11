@@ -31,7 +31,7 @@
 | iOS / Android / Web 示例宿主 | iOS 使用 UIKit pan，Android move 直接滚动，Web pointerdown 直接 tap，wheel 单独传入 | 三端接完整触点生命周期，由 Rust 统一识别，移除重复平台识别 |
 | `docs/04-risks-roadmap.md` | M2 目前从编辑状态、输入代理、焦点与无障碍开始 | 增加本前置阶段作为输入控件实施门槛 |
 
-本次仅通过源码与文档检查确认现状，未运行程序或测试。
+本节记录实现前的源码与文档检查结论；实现后的验证见第 8、9 节。
 
 ## 3. 声明式 API
 
