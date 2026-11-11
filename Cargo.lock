@@ -79,6 +79,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bubble-eval"
+version = "0.1.0"
+dependencies = [
+ "bubble-ffi",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bubble-ffi"
 version = "0.1.0"
 dependencies = [
