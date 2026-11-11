@@ -1,10 +1,10 @@
 //! C ABI around one QuickJS script thread and one retained tree.
 //!
 //! `bubble_frame`, hit testing, and scrolling run on the caller thread.
-//! Script evaluation does not. A one-second interrupt rebuilds the context
-//! and remounts the loaded bundle.
+//! Script evaluation does not. The script thread only produces op batches;
+//! the caller/frame thread owns the `Shell` and applies pending batches.
+//! A one-second interrupt rebuilds the context and remounts the loaded bundle.
 
-mod paint;
 mod script;
 
 use std::collections::VecDeque;
@@ -15,7 +15,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use bubble_core::{Shell, Turn};
+use bubble_core::{encode_paint, Shell};
 
 use script::Cmd;
 
@@ -44,14 +44,26 @@ type MeasureFn = extern "C" fn(
     *mut f32,
 );
 
-pub struct ShareTurn(Turn);
+/// Taffy's compact lengths contain tag bits that are not heap pointers in this
+/// build. The tree is only locked by the caller/frame thread.
+pub struct ShellSlot(Mutex<Shell>);
 
-// Taffy packs lengths in a tagged pointer. This build does not enable `calc`,
-// so those bits are not heap pointers and the tree can move between threads.
-unsafe impl Send for ShareTurn {}
+unsafe impl Send for ShellSlot {}
+unsafe impl Sync for ShellSlot {}
+
+impl std::ops::Deref for ShellSlot {
+    type Target = Mutex<Shell>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 pub struct Shared {
-    turn: Arc<Mutex<ShareTurn>>,
+    shell: ShellSlot,
+    pending: Mutex<VecDeque<Vec<u8>>>,
+    reset: AtomicBool,
+    viewport: Mutex<(f32, f32)>,
     host: HostFns,
     last_error: Mutex<String>,
     paint: Mutex<Vec<u8>>,
@@ -114,6 +126,21 @@ fn catch<T>(body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     }
 }
 
+/// Apply committed op batches on the caller/frame thread. A reset request
+/// swaps in a fresh root before the new batch is applied.
+fn drain_pending(shared: &Shared) -> Result<(), String> {
+    let reset = shared.reset.swap(false, Ordering::SeqCst);
+    let mut queue = shared.pending.lock().map_err(|_| "op queue poisoned".to_string())?;
+    let mut shell = shared.shell.lock().map_err(|_| "tree lock poisoned".to_string())?;
+    if reset {
+        *shell = Shell::blank()?;
+    }
+    while let Some(bytes) = queue.pop_front() {
+        shell.apply_ops(&bytes)?;
+    }
+    Ok(())
+}
+
 #[no_mangle]
 pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
     let result = catch(|| {
@@ -128,9 +155,12 @@ pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
                 ((*host).measure, (*host).ctx as usize)
             }
         };
-        let turn = ShareTurn(Turn::new(Shell::blank().map_err(|err| err)?));
+        let shell = Shell::blank().map_err(|err| err)?;
         let shared = Arc::new(Shared {
-            turn: Arc::new(Mutex::new(turn)),
+            shell: ShellSlot(Mutex::new(shell)),
+            pending: Mutex::new(VecDeque::new()),
+            reset: AtomicBool::new(false),
+            viewport: Mutex::new((0.0, 0.0)),
             host: HostFns { measure, ctx },
             last_error: Mutex::new(String::new()),
             paint: Mutex::new(Vec::new()),
@@ -176,6 +206,13 @@ pub extern "C" fn bubble_load(manifest_json: *const c_char, entry: *const u8, en
             return Err("entry pointer is null".into());
         }
         let bytes = unsafe { std::slice::from_raw_parts(entry, entry_len as usize) }.to_vec();
+        {
+            let mut pending = engine.shared.pending.lock().map_err(|_| "op queue poisoned".to_string())?;
+            pending.clear();
+            let mut shell = engine.shared.shell.lock().map_err(|_| "tree lock poisoned".to_string())?;
+            *shell = Shell::blank()?;
+            engine.shared.reset.store(false, Ordering::SeqCst);
+        }
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
         engine
             .tx
@@ -190,10 +227,14 @@ pub extern "C" fn bubble_load(manifest_json: *const c_char, entry: *const u8, en
 pub extern "C" fn bubble_frame(width: f32, height: f32, paint: *mut *const u8, paint_len: *mut u32) -> i32 {
     let result = catch(|| {
         let engine = engine()?;
-        let mut turn = engine.shared.turn.lock().map_err(|_| "tree lock poisoned".to_string())?;
-        turn.0.shell_mut().set_viewport(width, height);
+        drain_pending(&engine.shared)?;
+        if let Ok(mut viewport) = engine.shared.viewport.lock() {
+            *viewport = (width, height);
+        }
+        let mut shell = engine.shared.shell.lock().map_err(|_| "tree lock poisoned".to_string())?;
+        shell.set_viewport(width, height);
         let host = &engine.shared.host;
-        turn.0.shell_mut().layout(&mut |text, font_size, max_width| {
+        shell.layout(&mut |text, font_size, max_width| {
             if let Some(measure) = host.measure {
                 let mut w = 0.0f32;
                 let mut h = 0.0f32;
@@ -213,8 +254,8 @@ pub extern "C" fn bubble_frame(width: f32, height: f32, paint: *mut *const u8, p
                 fallback_measure(text, font_size)
             }
         })?;
-        let bytes = paint::encode_paint(&turn.0.shell().paint());
-        drop(turn);
+        let bytes = encode_paint(&shell.paint());
+        drop(shell);
         let mut slot = engine.shared.paint.lock().map_err(|_| "paint lock poisoned".to_string())?;
         *slot = bytes;
         if !paint.is_null() {
@@ -232,9 +273,10 @@ pub extern "C" fn bubble_frame(width: f32, height: f32, paint: *mut *const u8, p
 pub extern "C" fn bubble_pointer_down(x: f32, y: f32) {
     let _ = catch(|| {
         let engine = engine()?;
+        drain_pending(&engine.shared)?;
         let handler = {
-            let turn = engine.shared.turn.lock().map_err(|_| "tree lock poisoned".to_string())?;
-            turn.0.shell().tap(x, y)
+            let shell = engine.shared.shell.lock().map_err(|_| "tree lock poisoned".to_string())?;
+            shell.tap(x, y)
         };
         if let Some(handler) = handler {
             engine.tx.send(Cmd::Press { handler }).map_err(|_| "script thread is gone".to_string())?;
@@ -247,8 +289,9 @@ pub extern "C" fn bubble_pointer_down(x: f32, y: f32) {
 pub extern "C" fn bubble_scroll(x: f32, y: f32, dy: f32) {
     let _ = catch(|| {
         let engine = engine()?;
-        let mut turn = engine.shared.turn.lock().map_err(|_| "tree lock poisoned".to_string())?;
-        turn.0.shell_mut().scroll_wheel(x, y, dy);
+        drain_pending(&engine.shared)?;
+        let mut shell = engine.shared.shell.lock().map_err(|_| "tree lock poisoned".to_string())?;
+        shell.scroll_wheel(x, y, dy);
         Ok(())
     });
 }
@@ -294,8 +337,9 @@ pub extern "C" fn bubble_font_count() -> u32 {
 #[no_mangle]
 pub extern "C" fn bubble_node_text(handle: u32, buf: *mut c_char, cap: u32) -> i32 {
     copy_text(buf, cap, |engine| {
-        let turn = engine.shared.turn.lock().map_err(|_| "tree lock poisoned".to_string())?;
-        turn.0.shell().text(handle).map(|text| text.to_owned())
+        drain_pending(&engine.shared)?;
+        let shell = engine.shared.shell.lock().map_err(|_| "tree lock poisoned".to_string())?;
+        shell.text(handle).map(|text| text.to_owned())
     })
 }
 
@@ -303,8 +347,9 @@ pub extern "C" fn bubble_node_text(handle: u32, buf: *mut c_char, cap: u32) -> i
 pub extern "C" fn bubble_node_box(handle: u32, x: *mut f32, y: *mut f32, w: *mut f32, h: *mut f32) -> i32 {
     let result = catch(|| {
         let engine = engine()?;
-        let turn = engine.shared.turn.lock().map_err(|_| "tree lock poisoned".to_string())?;
-        let (nx, ny, nw, nh) = turn.0.shell().node_box(handle)?;
+        drain_pending(&engine.shared)?;
+        let shell = engine.shared.shell.lock().map_err(|_| "tree lock poisoned".to_string())?;
+        let (nx, ny, nw, nh) = shell.node_box(handle)?;
         unsafe {
             if !x.is_null() { *x = nx; }
             if !y.is_null() { *y = ny; }
@@ -321,8 +366,9 @@ pub extern "C" fn bubble_scroll_of(handle: u32) -> f32 {
     engine()
         .ok()
         .and_then(|engine| {
-            let turn = engine.shared.turn.lock().ok()?;
-            turn.0.shell().scroll_of(handle).ok()
+            drain_pending(&engine.shared).ok()?;
+            let shell = engine.shared.shell.lock().ok()?;
+            shell.scroll_of(handle).ok()
         })
         .unwrap_or(f32::NAN)
 }

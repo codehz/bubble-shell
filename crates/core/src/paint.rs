@@ -1,4 +1,9 @@
-use bubble_core::PaintCmd;
+//! Versioned binary encoding of `PaintCmd` for host painters.
+//!
+//! `tag u8` + little-endian payloads; the list is prefixed with its command
+//! count. Hosts decode the same bytes on web, iOS, and Android.
+
+use crate::shell::PaintCmd;
 
 pub fn encode_paint(cmds: &[PaintCmd]) -> Vec<u8> {
     let mut out = Vec::new();

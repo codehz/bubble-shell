@@ -28,7 +28,9 @@ pub fn compile(source: &str) -> Result<String, String> {
 }
 
 fn emit_program(program: &Program<'_>) -> Result<String, String> {
-    let mut out = String::from("import { signal, view, text, mount } from \"../runtime.js\";\n\n");
+    let mut out = String::from(
+        "import { signal, view, text, mount, component } from \"../runtime.js\";\n\n",
+    );
     for stmt in &program.body {
         match stmt {
             Statement::ImportDeclaration(_) => {}
@@ -43,7 +45,17 @@ fn emit_program(program: &Program<'_>) -> Result<String, String> {
                 };
                 out.push_str("function ");
                 out.push_str(name);
-                out.push_str("() {\n");
+                out.push('(');
+                for (index, param) in func.params.items.iter().enumerate() {
+                    if index > 0 {
+                        out.push_str(", ");
+                    }
+                    let BindingPatternKind::BindingIdentifier(param) = &param.pattern.kind else {
+                        return Err("component parameters must be plain identifiers".into());
+                    };
+                    out.push_str(&param.name);
+                }
+                out.push_str(") {\n");
                 emit_body(&mut out, body, 1)?;
                 out.push_str("}\n\n");
             }
@@ -195,6 +207,27 @@ fn emit_expr(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
             emit_expr(out, &binary.right)?;
             Ok(())
         }
+        Expression::LogicalExpression(logical) => {
+            emit_expr(out, &logical.left)?;
+            out.push(' ');
+            out.push_str(logical.operator.as_str());
+            out.push(' ');
+            emit_expr(out, &logical.right)?;
+            Ok(())
+        }
+        Expression::ConditionalExpression(conditional) => {
+            emit_expr(out, &conditional.test)?;
+            out.push_str(" ? ");
+            emit_expr(out, &conditional.consequent)?;
+            out.push_str(" : ");
+            emit_expr(out, &conditional.alternate)?;
+            Ok(())
+        }
+        Expression::UnaryExpression(unary) => {
+            out.push_str(unary.operator.as_str());
+            emit_expr(out, &unary.argument)?;
+            Ok(())
+        }
         Expression::ParenthesizedExpression(paren) => {
             out.push('(');
             emit_expr(out, &paren.expression)?;
@@ -223,15 +256,55 @@ fn emit_expr(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
 fn emit_jsx(out: &mut String, element: &JSXElement<'_>) -> Result<(), String> {
     let name = jsx_name(&element.opening_element.name)?;
     if let Some(component) = name.strip_prefix("component:") {
+        out.push_str("component(");
         out.push_str(component);
-        out.push_str("()");
+        out.push_str(", ");
+        emit_attrs(out, &element.opening_element.attributes)?;
+        if has_children(&element.children) {
+            out.push_str(", () => {\n");
+            emit_children(out, &element.children)?;
+            out.push('}');
+        }
+        out.push(')');
         return Ok(());
     }
     let text = name == "Text";
     out.push_str(if text { "text" } else { "view" });
-    out.push_str("({");
+    out.push('(');
+    emit_attrs(out, &element.opening_element.attributes)?;
+    out.push_str(", ");
+    if text {
+        emit_text_content(out, &element.children)?;
+    } else {
+        out.push_str("() => {\n");
+        emit_children(out, &element.children)?;
+        out.push('}');
+    }
+    out.push(')');
+    Ok(())
+}
+
+fn has_children(children: &[JSXChild<'_>]) -> bool {
+    children.iter().any(|child| match child {
+        JSXChild::Text(text) => !text.value.trim().is_empty(),
+        _ => true,
+    })
+}
+
+fn is_children_call(expr: &Expression<'_>) -> bool {
+    let Expression::CallExpression(call) = expr else {
+        return false;
+    };
+    matches!(
+        &call.callee,
+        Expression::StaticMemberExpression(member) if member.property.name == "children"
+    )
+}
+
+fn emit_attrs(out: &mut String, attributes: &[JSXAttributeItem<'_>]) -> Result<(), String> {
+    out.push('{');
     let mut wrote = false;
-    for attr in &element.opening_element.attributes {
+    for attr in attributes {
         let JSXAttributeItem::Attribute(attr) = attr else {
             return Err("JSX spread is not supported".into());
         };
@@ -254,29 +327,37 @@ fn emit_jsx(out: &mut String, element: &JSXElement<'_>) -> Result<(), String> {
             Some(_) => return Err("unsupported JSX attribute value".into()),
         }
     }
-    out.push_str("}, ");
-    if text {
-        emit_text_content(out, &element.children)?;
-    } else {
-        out.push_str("() => {\n");
-        for child in &element.children {
-            match child {
-                JSXChild::Element(child) => {
-                    out.push_str("  ");
-                    emit_jsx(out, child)?;
-                    out.push_str(";\n");
-                }
-                JSXChild::Text(text) if text.value.trim().is_empty() => {}
-                JSXChild::ExpressionContainer(_) => {
-                    return Err("expression children belong on Text".into());
-                }
-                JSXChild::Text(_) => return Err("text nodes belong on Text".into()),
-                _ => return Err("unsupported JSX child".into()),
+    out.push('}');
+    Ok(())
+}
+
+fn emit_children(out: &mut String, children: &[JSXChild<'_>]) -> Result<(), String> {
+    for child in children {
+        match child {
+            JSXChild::Element(child) => {
+                out.push_str("  ");
+                emit_jsx(out, child)?;
+                out.push_str(";\n");
             }
+            JSXChild::Text(text) if text.value.trim().is_empty() => {}
+            JSXChild::ExpressionContainer(container) => {
+                let Some(expr) = container.expression.as_expression() else {
+                    return Err("empty JSX expression".into());
+                };
+                if matches!(expr, Expression::JSXElement(_)) || is_children_call(expr) {
+                    out.push_str("  ");
+                    emit_expr(out, expr)?;
+                    out.push_str(";\n");
+                } else {
+                    out.push_str("  text({}, () => String(");
+                    emit_expr(out, expr)?;
+                    out.push_str("));\n");
+                }
+            }
+            JSXChild::Text(_) => return Err("text nodes belong on Text".into()),
+            _ => return Err("unsupported JSX child".into()),
         }
-        out.push('}');
     }
-    out.push(')');
     Ok(())
 }
 
@@ -333,7 +414,10 @@ fn jsx_name(name: &JSXElementName<'_>) -> Result<String, String> {
     match raw {
         "View" => Ok("View".into()),
         "Text" => Ok("Text".into()),
-        other => Ok(format!("component:{other}")),
+        other if other.chars().next().is_some_and(char::is_uppercase) => {
+            Ok(format!("component:{other}"))
+        }
+        other => Err(format!("unknown primitive <{other}>; use View, Text, or a capitalized component")),
     }
 }
 

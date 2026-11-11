@@ -120,6 +120,11 @@ impl Shell {
 
     /// Append `desc` under `desc.parent`. `desc.id` is the caller-allocated handle.
     pub fn spawn(&mut self, desc: NodeDesc) -> Result<(), String> {
+        self.spawn_desc(desc)
+    }
+
+    /// Append a dynamic node from a `Spawn` op.
+    pub fn spawn_desc(&mut self, desc: NodeDesc) -> Result<(), String> {
         let parent = desc.parent;
         if parent == 0 {
             return Err("spawn requires a parent".into());
@@ -251,6 +256,7 @@ impl Shell {
                 Op::MoveNode { handle, parent, index } => self.move_node(handle, parent, index)?,
                 Op::BindEvent { handle, handler } => self.node_mut(handle)?.handler = handler,
                 Op::ScrollTo { handle, y } => self.scroll_to(handle, y)?,
+                Op::Spawn { desc } => self.spawn_desc(desc)?,
             }
         }
         Ok(seq)

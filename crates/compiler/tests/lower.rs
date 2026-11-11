@@ -27,3 +27,35 @@ fn lowers_a_signal_text_binding() {
     assert!(!js.contains("BTIR"));
     assert!(!js.contains("from \"bubble\""));
 }
+
+#[test]
+fn lowers_component_props_children_and_conditionals() {
+    let js = compile(
+        r#"
+        import { mount, Text, View } from "bubble";
+        function Card(props) {
+          return (
+            <View background={props.background ?? 0xff000000}>
+              <Text>{props.title}</Text>
+              {props.children()}
+            </View>
+          );
+        }
+        function App() {
+          const enabled = true;
+          return (
+            <Card title={enabled ? "On" : "Off"} background={enabled ? 0xff112233 : 0xff445566}>
+              <Text>Body</Text>
+            </Card>
+          );
+        }
+        mount(App);
+        "#,
+    )
+    .unwrap();
+    assert!(js.contains("function Card(props) {"));
+    assert!(js.contains("component(Card, {title: enabled ? \"On\" : \"Off\", background: enabled ? 4279312947 : 4282668390}, () => {"));
+    assert!(js.contains("text({}, () => props.title);"));
+    assert!(js.contains("props.children();"));
+    assert!(js.contains("text({}, \"Body\");"));
+}

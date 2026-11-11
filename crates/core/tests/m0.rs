@@ -263,53 +263,57 @@ fn manifest_checks_hashes_and_placeholder_signature() {
 fn signal_commit_updates_text_and_scrolls() {
     use bubble_core::Turn;
 
-    let mut turn = Turn::new(Shell::blank().unwrap());
+    let mut shell = Shell::blank().unwrap();
+    let mut turn = Turn::new();
     let count = turn.signal(0.0);
-    let mut header = NodeDesc::text(2, 1, "Count: 0");
+    let mut header = NodeDesc::text(0, 1, "Count: 0");
     header.font_size = 24.0;
-    turn.shell_mut().spawn(header).unwrap();
-    let mut button = NodeDesc::view(3, 1);
+    let header = turn.spawn(header).unwrap();
+    let mut button = NodeDesc::view(0, 1);
     button.handler = 1;
     button.background = 0xff3b_82f6;
     button.height = Some(32.0);
-    turn.shell_mut().spawn(button).unwrap();
-    let mut scroller = NodeDesc::view(4, 1);
+    let button = turn.spawn(button).unwrap();
+    let mut scroller = NodeDesc::view(0, 1);
     scroller.scroll_y = true;
     scroller.flex_grow = 1.0;
     scroller.height = Some(80.0);
-    turn.shell_mut().spawn(scroller).unwrap();
-    let mut row = NodeDesc::text(5, 4, "row");
+    let scroller = turn.spawn(scroller).unwrap();
+    let mut row = NodeDesc::text(0, scroller, "row");
     row.font_size = 40.0;
-    turn.shell_mut().spawn(row).unwrap();
-    let mut row = NodeDesc::text(6, 4, "row");
+    turn.spawn(row).unwrap();
+    let mut row = NodeDesc::text(0, scroller, "row");
     row.font_size = 40.0;
-    turn.shell_mut().spawn(row).unwrap();
+    turn.spawn(row).unwrap();
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    assert_eq!((header, button, scroller), (2, 3, 4));
 
     turn.track(1);
     let value = turn.get(count).unwrap();
     turn.untrack();
     turn.push(Op::SetText {
-        handle: 2,
+        handle: header,
         text: format!("Count: {value}"),
     });
     turn.push(Op::SetText {
-        handle: 2,
+        handle: header,
         text: "Count: 0".into(),
     });
     let batch = turn.commit().unwrap();
     let (_, ops) = bubble_core::decode_ops(&batch).unwrap();
     assert_eq!(ops.len(), 1);
+    shell.apply_ops(&batch).unwrap();
 
-    turn.shell_mut().set_viewport(200.0, 120.0);
-    turn.shell_mut()
+    shell.set_viewport(200.0, 120.0);
+    shell
         .layout(&mut |text, font, max| {
             let width = text.chars().count() as f32 * font * 0.5;
             let width = max.map(|max| width.min(max)).unwrap_or(width);
             (width, font * 1.2)
         })
         .unwrap();
-    let (bx, by, _, _) = turn.shell().node_box(3).unwrap();
-    assert_eq!(turn.shell().tap(bx + 1.0, by + 1.0), Some(1));
+    let (bx, by, _, _) = shell.node_box(button).unwrap();
+    assert_eq!(shell.tap(bx + 1.0, by + 1.0), Some(1));
     turn.set(count, 1.0).unwrap();
     let dirty = turn.take_dirty();
     assert_eq!(dirty, vec![1]);
@@ -317,12 +321,38 @@ fn signal_commit_updates_text_and_scrolls() {
     let value = turn.get(count).unwrap();
     turn.untrack();
     turn.push(Op::SetText {
-        handle: 2,
+        handle: header,
         text: format!("Count: {value}"),
     });
-    turn.commit().unwrap();
-    assert_eq!(turn.shell().text(2).unwrap(), "Count: 1");
-    let (x, y, _, _) = turn.shell().node_box(4).unwrap();
-    assert!(turn.shell_mut().scroll_wheel(x + 1.0, y + 1.0, 50.0));
-    assert!(turn.shell().scroll_of(4).unwrap() > 0.0);
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    assert_eq!(shell.text(header).unwrap(), "Count: 1");
+    let (x, y, _, _) = shell.node_box(scroller).unwrap();
+    assert!(shell.scroll_wheel(x + 1.0, y + 1.0, 50.0));
+    assert!(shell.scroll_of(scroller).unwrap() > 0.0);
+}
+
+#[test]
+fn node_descriptor_and_spawn_op_roundtrip() {
+    let mut node = NodeDesc::text(9, 4, "hello");
+    node.scroll_y = true;
+    node.row = true;
+    node.background = 0x1122_3344;
+    node.color = 0xffff_ffff;
+    node.font_size = 18.0;
+    node.radius = 3.0;
+    node.handler = 7;
+    node.width = Some(120.0);
+    node.height = None;
+    node.flex_grow = 1.0;
+    node.flex_shrink = 0.5;
+    node.padding = [1.0, 2.0, 3.0, 4.0];
+
+    let bytes = node.encode();
+    assert_eq!(NodeDesc::decode(&bytes).unwrap(), node);
+    assert!(NodeDesc::decode(&bytes[..bytes.len() - 1]).is_err());
+
+    let batch = encode(12, &[Op::Spawn { desc: node.clone() }]);
+    let (seq, ops) = bubble_core::decode_ops(&batch).unwrap();
+    assert_eq!(seq, 12);
+    assert_eq!(ops, vec![Op::Spawn { desc: node }]);
 }

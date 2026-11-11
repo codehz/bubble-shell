@@ -78,7 +78,12 @@ setApi({
   signal_set: exports.signal_set,
   track_begin: exports.track_begin,
   track_end: exports.track_end,
-  spawn: exports.spawn,
+  spawn(parent, spec) {
+    const ptr = copyBytes(spec);
+    const handle = exports.spawn(parent, ptr, spec.length);
+    exports.dealloc(ptr, spec.length);
+    return handle;
+  },
   bind_event: exports.bind_event,
   queue_text: exports.queue_text,
   commit: exports.commit,

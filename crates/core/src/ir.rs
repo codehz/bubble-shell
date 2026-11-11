@@ -1,4 +1,7 @@
 //! `BTIR` version 1. Little-endian. Parents appear before children. Ids are dense from 1.
+//!
+//! A single node uses the `BNOD` version 1 envelope. The body layout is shared
+//! with `BTIR`, so `Spawn` ops and templates cannot drift.
 
 use std::io::{Cursor, Read};
 
@@ -8,7 +11,7 @@ pub enum Kind {
     Text = 2,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NodeDesc {
     pub id: u32,
     pub parent: u32,
@@ -57,6 +60,112 @@ impl NodeDesc {
         node.text = text.into();
         node
     }
+
+    /// `BNOD` version 1 envelope for one node.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"BNOD");
+        out.extend_from_slice(&1u16.to_le_bytes());
+        self.write_body(&mut out);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        let mut cur = Cursor::new(bytes);
+        let mut magic = [0u8; 4];
+        cur.read_exact(&mut magic).map_err(|_| "truncated node header")?;
+        if &magic != b"BNOD" {
+            return Err("bad node magic".into());
+        }
+        let version = read_u16(&mut cur)?;
+        if version != 1 {
+            return Err(format!("unsupported node version {version}"));
+        }
+        let node = Self::read_body(&mut cur)?;
+        if cur.position() != bytes.len() as u64 {
+            return Err("trailing node bytes".into());
+        }
+        Ok(node)
+    }
+
+    /// Shared with `BTIR`; no magic or version.
+    pub fn write_body(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.id.to_le_bytes());
+        out.extend_from_slice(&self.parent.to_le_bytes());
+        out.push(self.kind as u8);
+        out.push(u8::from(self.scroll_y));
+        out.extend_from_slice(&self.background.to_le_bytes());
+        out.extend_from_slice(&self.color.to_le_bytes());
+        push_f32(out, self.font_size);
+        push_f32(out, self.radius);
+        out.extend_from_slice(&self.handler.to_le_bytes());
+        push_f32(out, self.width.unwrap_or(f32::NAN));
+        push_f32(out, self.height.unwrap_or(f32::NAN));
+        push_f32(out, self.flex_grow);
+        push_f32(out, self.flex_shrink);
+        out.push(u8::from(self.row));
+        for value in self.padding {
+            push_f32(out, value);
+        }
+        let text = self.text.as_bytes();
+        out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        out.extend_from_slice(text);
+    }
+
+    pub fn read_body(cur: &mut Cursor<&[u8]>) -> Result<Self, String> {
+        let id = read_u32(cur)?;
+        let parent = read_u32(cur)?;
+        let kind = match read_u8(cur)? {
+            1 => Kind::View,
+            2 => Kind::Text,
+            other => return Err(format!("bad node kind {other}")),
+        };
+        let scroll_y = match read_u8(cur)? {
+            0 => false,
+            1 => true,
+            other => return Err(format!("bad scroll flag {other}")),
+        };
+        let background = read_u32(cur)?;
+        let color = read_u32(cur)?;
+        let font_size = read_f32(cur)?;
+        let radius = read_f32(cur)?;
+        let handler = read_u32(cur)?;
+        let width = optional_f32(read_f32(cur)?);
+        let height = optional_f32(read_f32(cur)?);
+        let flex_grow = read_f32(cur)?;
+        let flex_shrink = read_f32(cur)?;
+        let row = match read_u8(cur)? {
+            0 => false,
+            1 => true,
+            other => return Err(format!("bad flex direction {other}")),
+        };
+        let mut padding = [0f32; 4];
+        for slot in &mut padding {
+            *slot = read_f32(cur)?;
+        }
+        let text_len = read_u32(cur)? as usize;
+        let mut text_bytes = vec![0u8; text_len];
+        cur.read_exact(&mut text_bytes).map_err(|_| "truncated node text")?;
+        let text = String::from_utf8(text_bytes).map_err(|_| "text is not utf-8")?;
+        Ok(Self {
+            id,
+            parent,
+            kind,
+            scroll_y,
+            background,
+            color,
+            font_size,
+            radius,
+            handler,
+            width,
+            height,
+            flex_grow,
+            flex_shrink,
+            row,
+            padding,
+            text,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -71,26 +180,7 @@ impl Template {
         out.extend_from_slice(&1u16.to_le_bytes());
         out.extend_from_slice(&(self.nodes.len() as u32).to_le_bytes());
         for node in &self.nodes {
-            out.extend_from_slice(&node.id.to_le_bytes());
-            out.extend_from_slice(&node.parent.to_le_bytes());
-            out.push(node.kind as u8);
-            out.push(u8::from(node.scroll_y));
-            out.extend_from_slice(&node.background.to_le_bytes());
-            out.extend_from_slice(&node.color.to_le_bytes());
-            push_f32(&mut out, node.font_size);
-            push_f32(&mut out, node.radius);
-            out.extend_from_slice(&node.handler.to_le_bytes());
-            push_f32(&mut out, node.width.unwrap_or(f32::NAN));
-            push_f32(&mut out, node.height.unwrap_or(f32::NAN));
-            push_f32(&mut out, node.flex_grow);
-            push_f32(&mut out, node.flex_shrink);
-            out.push(u8::from(node.row));
-            for value in node.padding {
-                push_f32(&mut out, value);
-            }
-            let text = node.text.as_bytes();
-            out.extend_from_slice(&(text.len() as u32).to_le_bytes());
-            out.extend_from_slice(text);
+            node.write_body(&mut out);
         }
         out
     }
@@ -109,67 +199,21 @@ impl Template {
         let count = read_u32(&mut cur)? as usize;
         let mut nodes = Vec::with_capacity(count);
         for index in 0..count {
-            let id = read_u32(&mut cur)?;
-            let parent = read_u32(&mut cur)?;
-            let kind = match read_u8(&mut cur)? {
-                1 => Kind::View,
-                2 => Kind::Text,
-                other => return Err(format!("bad node kind {other}")),
-            };
-            let scroll_y = match read_u8(&mut cur)? {
-                0 => false,
-                1 => true,
-                other => return Err(format!("bad scroll flag {other}")),
-            };
-            let background = read_u32(&mut cur)?;
-            let color = read_u32(&mut cur)?;
-            let font_size = read_f32(&mut cur)?;
-            let radius = read_f32(&mut cur)?;
-            let handler = read_u32(&mut cur)?;
-            let width = optional_f32(read_f32(&mut cur)?);
-            let height = optional_f32(read_f32(&mut cur)?);
-            let flex_grow = read_f32(&mut cur)?;
-            let flex_shrink = read_f32(&mut cur)?;
-            let row = match read_u8(&mut cur)? {
-                0 => false,
-                1 => true,
-                other => return Err(format!("bad flex direction {other}")),
-            };
-            let mut padding = [0f32; 4];
-            for slot in &mut padding {
-                *slot = read_f32(&mut cur)?;
+            let node = NodeDesc::read_body(&mut cur)?;
+            if node.id as usize != index + 1 {
+                return Err(format!(
+                    "node id {} is not dense (expected {})",
+                    node.id,
+                    index + 1
+                ));
             }
-            let text_len = read_u32(&mut cur)? as usize;
-            let mut text_bytes = vec![0u8; text_len];
-            cur.read_exact(&mut text_bytes).map_err(|_| "truncated text")?;
-            let text = String::from_utf8(text_bytes).map_err(|_| "text is not utf-8")?;
-            if id as usize != index + 1 {
-                return Err(format!("node id {id} is not dense (expected {})", index + 1));
-            }
-            if index == 0 && parent != 0 {
+            if index == 0 && node.parent != 0 {
                 return Err("root parent must be 0".into());
             }
-            if index > 0 && (parent == 0 || parent >= id) {
-                return Err(format!("node {id} parent {parent} is missing"));
+            if index > 0 && (node.parent == 0 || node.parent >= node.id) {
+                return Err(format!("node {} parent {} is missing", node.id, node.parent));
             }
-            nodes.push(NodeDesc {
-                id,
-                parent,
-                kind,
-                scroll_y,
-                background,
-                color,
-                font_size,
-                radius,
-                handler,
-                width,
-                height,
-                flex_grow,
-                flex_shrink,
-                row,
-                padding,
-                text,
-            });
+            nodes.push(node);
         }
         if cur.position() != bytes.len() as u64 {
             return Err("trailing template bytes".into());
@@ -192,24 +236,24 @@ fn push_f32(out: &mut Vec<u8>, value: f32) {
 
 fn read_u8(cur: &mut Cursor<&[u8]>) -> Result<u8, String> {
     let mut buf = [0u8; 1];
-    cur.read_exact(&mut buf).map_err(|_| "truncated template")?;
+    cur.read_exact(&mut buf).map_err(|_| "truncated node")?;
     Ok(buf[0])
 }
 
 fn read_u16(cur: &mut Cursor<&[u8]>) -> Result<u16, String> {
     let mut buf = [0u8; 2];
-    cur.read_exact(&mut buf).map_err(|_| "truncated template")?;
+    cur.read_exact(&mut buf).map_err(|_| "truncated node")?;
     Ok(u16::from_le_bytes(buf))
 }
 
 fn read_u32(cur: &mut Cursor<&[u8]>) -> Result<u32, String> {
     let mut buf = [0u8; 4];
-    cur.read_exact(&mut buf).map_err(|_| "truncated template")?;
+    cur.read_exact(&mut buf).map_err(|_| "truncated node")?;
     Ok(u32::from_le_bytes(buf))
 }
 
 fn read_f32(cur: &mut Cursor<&[u8]>) -> Result<f32, String> {
     let mut buf = [0u8; 4];
-    cur.read_exact(&mut buf).map_err(|_| "truncated template")?;
+    cur.read_exact(&mut buf).map_err(|_| "truncated node")?;
     Ok(f32::from_le_bytes(buf))
 }

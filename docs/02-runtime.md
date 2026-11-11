@@ -92,14 +92,15 @@ assets/
 ### Handle 分配
 
 - handle 是 u32，0 保留；脚本线程在实例作用域内单调分配。
-- Rust 校验唯一性并持有 `handle → node` 映射；不重用已销毁 handle，避免悬空引用。
-- 静态挂载时 Rust 返回 `模板 ID → handle`；动态节点由脚本分配后 `CreateNode`。
+- 动态节点由脚本分配 handle 后发送 `Spawn`，载荷带完整 `BNOD` 描述符；Rust 校验后插入树。
+- 模板挂载仍返回 `模板 ID → handle`；`CreateNode` 用于从模板派生节点，当前主要保留给测试与后续组件复用。
 
 ### Op 列表
 
 | Op | 载荷 | 说明 |
 |---|---|---|
-| `CreateNode` | handle, templateId, parent, index | 创建节点；templateId 提供默认属性 |
+| `Spawn` | `BNOD` 描述符 | 动态节点；`id`/`parent` 由脚本填写，Rust 校验 handle |
+| `CreateNode` | handle, templateId, parent, index | 从模板创建节点；templateId 提供默认属性 |
 | `DisposeNode` | handle | 销毁子树 |
 | `InsertNode` | handle, parent, index | 插入已存在节点 |
 | `MoveNode` | handle, parent, index | 移动节点 |
@@ -113,6 +114,8 @@ assets/
 | `Focus` | handle | 焦点 |
 | `SetEditingValue` | handle, epoch, value, selection | 受控文本 |
 | `SetAsset` | handle, contentHash | 图片/资源 |
+
+当前 M1 实现覆盖 `Spawn`、`CreateNode`、`DisposeNode`、`MoveNode`、`SetText`、`SetPropColor`、`BindEvent`、`ScrollTo`；其余 op 随组件/输入/更新里程碑补齐。脚本线程只产 op，UI/帧线程在 drain 时应用。
 
 ### 事件协议
 

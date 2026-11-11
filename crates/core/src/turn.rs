@@ -1,16 +1,16 @@
 //! Signal graph plus a double-buffered op batch.
 //!
-//! Bindings live in the host. This type only records which binding read which
-//! signal, marks those bindings dirty on write, and coalesces the ops the host
-//! pushes while rerunning them. `commit` swaps buffers and applies one batch.
+//! Scripts own a `Turn`; the host owns `Shell`. Bindings live in the host.
+//! This type records which binding read which signal, marks those bindings
+//! dirty on write, and coalesces the ops pushed while rerunning them. `commit`
+//! only swaps buffers and encodes a batch; it never mutates the tree.
 
 use std::collections::HashSet;
 
+use crate::ir::NodeDesc;
 use crate::ops::{encode, Op};
-use crate::shell::Shell;
 
 pub struct Turn {
-    shell: Shell,
     values: Vec<f64>,
     subs: Vec<HashSet<u32>>,
     reads: Vec<Vec<u32>>,
@@ -20,12 +20,18 @@ pub struct Turn {
     bufs: [Vec<Op>; 2],
     write: usize,
     seq: u32,
+    next_handle: u32,
 }
 
 impl Turn {
-    pub fn new(shell: Shell) -> Self {
+    pub fn new() -> Self {
+        Self::with_next_handle(2)
+    }
+
+    /// Start allocating handles at `next_handle`; used after mounting a
+    /// template that already reserved ids.
+    pub fn with_next_handle(next_handle: u32) -> Self {
         Self {
-            shell,
             values: vec![0.0],
             subs: vec![HashSet::new()],
             reads: vec![Vec::new()],
@@ -35,15 +41,12 @@ impl Turn {
             bufs: [Vec::new(), Vec::new()],
             write: 0,
             seq: 0,
+            next_handle: next_handle.max(2),
         }
     }
 
-    pub fn shell(&self) -> &Shell {
-        &self.shell
-    }
-
-    pub fn shell_mut(&mut self) -> &mut Shell {
-        &mut self.shell
+    pub fn next_handle(&self) -> u32 {
+        self.next_handle
     }
 
     pub fn signal(&mut self, initial: f64) -> u32 {
@@ -101,18 +104,36 @@ impl Turn {
         std::mem::take(&mut self.dirty)
     }
 
+    /// Allocate a handle and queue the node for insertion. The op is applied
+    /// by the host, so callers may build children under the returned handle
+    /// before the parent exists in the tree.
+    pub fn spawn(&mut self, mut desc: NodeDesc) -> Result<u32, String> {
+        let handle = self.next_handle;
+        self.next_handle = self
+            .next_handle
+            .checked_add(1)
+            .ok_or_else(|| "handle space exhausted".to_string())?;
+        desc.id = handle;
+        self.push(Op::Spawn { desc });
+        Ok(handle)
+    }
+
+    pub fn bind_event(&mut self, handle: u32, handler: u32) {
+        self.push(Op::BindEvent { handle, handler });
+    }
+
     pub fn push(&mut self, op: Op) {
         coalesce(&mut self.bufs[self.write], op);
     }
 
-    /// Swap the write buffer out, apply it, and return the encoded batch.
+    /// Swap the write buffer out and encode it. The caller applies the batch
+    /// to the tree on the host/frame thread.
     pub fn commit(&mut self) -> Result<Vec<u8>, String> {
         let read = self.write;
         self.write ^= 1;
         self.bufs[self.write].clear();
         self.seq += 1;
         let bytes = encode(self.seq, &self.bufs[read]);
-        self.shell.apply_ops(&bytes)?;
         self.bufs[read].clear();
         Ok(bytes)
     }

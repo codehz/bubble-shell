@@ -1,5 +1,6 @@
-//! QuickJS on a private thread. The tree lock is taken only inside native
-//! calls, never across user JavaScript, so a dead loop cannot stall layout.
+//! QuickJS on a private thread. Script calls only touch the signal graph and
+//! the op buffer; the tree is owned by the host/frame thread, so a dead loop
+//! cannot stall layout.
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -8,8 +9,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use bubble_core::{validate_bundle_hashes, Kind, NodeDesc, Op, Shell, Turn};
-use rquickjs::{Array, Context, Ctx, Function, Object, Runtime, Value};
+use bubble_core::{validate_bundle_hashes, NodeDesc, Op, Turn};
+use rquickjs::{Array, Context, Ctx, Function, Object, Runtime, TypedArray, Value};
 use serde::Deserialize;
 
 use crate::Shared;
@@ -25,7 +26,8 @@ static STOP_WATCH: AtomicBool = AtomicBool::new(false);
 static MONO_BASE: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 thread_local! {
-    static TURN: RefCell<Option<Arc<Mutex<crate::ShareTurn>>>> = const { RefCell::new(None) };
+    static TURN: RefCell<Option<Turn>> = const { RefCell::new(None) };
+    static SHARED: RefCell<Option<Arc<Shared>>> = const { RefCell::new(None) };
     static ERROR: RefCell<String> = const { RefCell::new(String::new()) };
     static TIMERS: RefCell<Vec<Timer>> = const { RefCell::new(Vec::new()) };
     static REQUESTS: RefCell<Option<Arc<Mutex<std::collections::VecDeque<crate::HostRequest>>>>> =
@@ -114,7 +116,8 @@ struct Session {
 }
 
 fn script_main(rx: Receiver<Cmd>, shared: Arc<Shared>) {
-    TURN.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&shared.turn)));
+    TURN.with(|slot| *slot.borrow_mut() = Some(Turn::new()));
+    SHARED.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&shared)));
     REQUESTS.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&shared.requests)));
     let mut session = Session {
         shared,
@@ -471,7 +474,7 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
     api.set("track_begin", Function::new(ctx.clone(), api_track_begin)?)?;
     api.set("track_end", Function::new(ctx.clone(), api_track_end)?)?;
     api.set("takeDirty", Function::new(ctx.clone(), api_take_dirty)?)?;
-    api.set("spawn_text", Function::new(ctx.clone(), api_spawn)?)?;
+    api.set("spawn", Function::new(ctx.clone(), api_spawn)?)?;
     api.set("queue_text_utf8", Function::new(ctx.clone(), api_queue_text)?)?;
     api.set("bind_event", Function::new(ctx.clone(), api_bind)?)?;
     api.set("commit", Function::new(ctx.clone(), api_commit)?)?;
@@ -483,12 +486,11 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
 }
 
 fn with_turn<T>(body: impl FnOnce(&mut Turn) -> Result<T, String>) -> Result<T, String> {
-    let turn = TURN.with(|slot| slot.borrow().clone());
-    let Some(turn) = turn else {
-        return Err("shell is not mounted".into());
-    };
-    let mut turn = turn.lock().map_err(|_| "tree lock poisoned".to_string())?;
-    body(&mut turn.0)
+    TURN.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let turn = slot.as_mut().ok_or_else(|| "shell is not mounted".to_string())?;
+        body(turn)
+    })
 }
 
 fn set_api_error(message: String) {
@@ -496,11 +498,20 @@ fn set_api_error(message: String) {
 }
 
 fn api_boot() -> i32 {
-    match with_turn(|turn| {
-        *turn = Turn::new(Shell::blank()?);
+    let result = with_turn(|turn| {
+        *turn = Turn::new();
         Ok(())
-    }) {
-        Ok(()) => 0,
+    });
+    match result {
+        Ok(()) => {
+            if let Some(shared) = SHARED.with(|slot| slot.borrow().clone()) {
+                if let Ok(mut queue) = shared.pending.lock() {
+                    queue.clear();
+                }
+                shared.reset.store(true, Ordering::SeqCst);
+            }
+            0
+        }
         Err(err) => {
             set_api_error(err);
             1
@@ -559,49 +570,23 @@ fn api_take_dirty(ctx: Ctx) -> rquickjs::Result<Array> {
     Ok(array)
 }
 
-fn api_spawn(props: Object<'_>) -> u32 {
-    let result = with_turn(|turn| {
-        let kind_n = num(&props, "kind");
-        let parent = num(&props, "parent") as u32;
-        let flags = num(&props, "flags") as u32;
-        let text: String = props.get("text").unwrap_or_default();
-        let handle = turn.shell().next_handle();
-        let kind = if kind_n as u32 == Kind::Text as u32 { Kind::Text } else { Kind::View };
-        let mut desc = if kind == Kind::Text {
-            NodeDesc::text(handle, parent, text)
-        } else {
-            NodeDesc::view(handle, parent)
-        };
-        desc.scroll_y = flags & 1 != 0;
-        desc.row = flags & 2 != 0;
-        desc.background = num(&props, "background") as u32;
-        desc.color = num(&props, "color") as u32;
-        desc.font_size = num(&props, "fontSize") as f32;
-        desc.radius = num(&props, "radius") as f32;
-        desc.width = finite(num(&props, "width"));
-        desc.height = finite(num(&props, "height"));
-        desc.flex_grow = num(&props, "flexGrow") as f32;
-        desc.flex_shrink = num(&props, "flexShrink") as f32;
-        desc.padding = [
-            num(&props, "p0") as f32,
-            num(&props, "p1") as f32,
-            num(&props, "p2") as f32,
-            num(&props, "p3") as f32,
-        ];
-        turn.shell_mut().spawn(desc)?;
-        Ok(handle)
-    });
-    match result {
+fn api_spawn(parent: f64, spec: TypedArray<'_, u8>) -> u32 {
+    let bytes = unsafe { spec.as_slice() };
+    let mut desc = match NodeDesc::decode(bytes) {
+        Ok(desc) => desc,
+        Err(err) => {
+            set_api_error(err);
+            return 0;
+        }
+    };
+    desc.parent = parent as u32;
+    match with_turn(|turn| turn.spawn(desc)) {
         Ok(handle) => handle,
         Err(err) => {
             set_api_error(err);
             0
         }
     }
-}
-
-fn num(props: &Object, key: &str) -> f64 {
-    props.get(key).unwrap_or(f64::NAN)
 }
 
 fn api_queue_text(handle: f64, text: String) -> i32 {
@@ -619,10 +604,7 @@ fn api_queue_text(handle: f64, text: String) -> i32 {
 
 fn api_bind(handle: f64, handler: f64) -> i32 {
     match with_turn(|turn| {
-        turn.shell_mut().apply_ops(&bubble_core::encode(
-            0,
-            &[Op::BindEvent { handle: handle as u32, handler: handler as u32 }],
-        ))?;
+        turn.bind_event(handle as u32, handler as u32);
         Ok(())
     }) {
         Ok(()) => 0,
@@ -634,8 +616,29 @@ fn api_bind(handle: f64, handler: f64) -> i32 {
 }
 
 fn api_commit() -> i32 {
-    match with_turn(|turn| turn.commit().map(|bytes| bytes.len())) {
-        Ok(len) => len as i32,
+    let result = with_turn(|turn| turn.commit());
+    match result {
+        Ok(bytes) => {
+            let len = bytes.len();
+            let Some(shared) = SHARED.with(|slot| slot.borrow().clone()) else {
+                set_api_error("shell is not mounted".into());
+                return 0;
+            };
+            let pushed = match shared.pending.lock() {
+                Ok(mut queue) => {
+                    queue.push_back(bytes);
+                    Ok(())
+                }
+                Err(_) => Err("op queue poisoned".to_string()),
+            };
+            match pushed {
+                Ok(()) => len as i32,
+                Err(err) => {
+                    set_api_error(err);
+                    0
+                }
+            }
+        }
         Err(err) => {
             set_api_error(err);
             0
@@ -670,10 +673,6 @@ fn api_schedule(id: f64, ms: f64) {
 fn api_cancel(id: f64) {
     let id = id as u32;
     TIMERS.with(|slot| slot.borrow_mut().retain(|timer| timer.id != id));
-}
-
-fn finite(value: f64) -> Option<f32> {
-    if value.is_finite() { Some(value as f32) } else { None }
 }
 
 fn check_manifest(manifest: &str, entry: &[u8]) -> Result<(), String> {
