@@ -28,7 +28,7 @@
 范围：
 
 - bundle/manifest 加载与验签占位。
-- 编译器 MVP：TSX 函数组件 → 原生渲染调用（Oxc）。信号图在 Rust。不做模板 IR。
+- 编译器 MVP：TSX 函数组件 → 原生渲染调用（Oxc）。信号图在 Rust。不做 VDOM、模板 IR 或预编译子树。
 - Rust 保留树 + Taffy 布局。
 - op 协议 + 双缓冲提交。
 - Web：主线程一份 WASM + JS 回放 `PaintCmd`。无 Worker。

@@ -5,7 +5,7 @@
 Bubble Shell 是一个可嵌入宿主 App 的自绘 UI 运行时，用来承载**远程更新、带交互**的动态内容，定位接近 WebView，但不依赖 Web 渲染。
 
 - **自绘**：布局、动画、命中、绘制由 runtime 控制。Web 宿主用 Canvas2D，iOS 用 CoreGraphics，Android 用 Canvas。
-- **跨端**：同一份模板与脚本运行在 web / Android / iOS。文本允许平台差异。
+- **跨端**：同一份 bundle 与脚本运行在 web / Android / iOS。文本允许平台差异。
 - **远程更新**：签名 bundle、内容寻址、原子激活、last-known-good 回滚。
 - **交互完整**：事件、手势、滚动、动画、文本输入、焦点、无障碍。
 - **可嵌入**：宿主提供 surface、能力和导航；runtime 自持 vsync；v1 单实例。
@@ -100,7 +100,7 @@ sequenceDiagram
 | 维度 | v1 定稿 |
 |---|---|
 | 信任边界 | 第一方内容；Ed25519 签名包；能力权限 v1 先 ambient，桥接点保留 |
-| 作者模型 | TSX 函数组件；Oxc 把 JSX 降成原生渲染调用；信号图在 Rust；组件只跑一次；细粒度绑定；无 VDOM、无模板 IR |
+| 作者模型 | TSX 函数组件；Oxc 把 JSX 降成原生渲染调用；信号图在 Rust；组件只跑一次；细粒度绑定；无 VDOM、无模板 IR、无预编译子树 |
 | 脚本运行时 | native：QuickJS/PrimJS。Web：主线程浏览器 JS 调 Rust 信号图（WASM）。不在 JS 里实现信号 |
 | 线程 | native：脚本线程产 op，UI 线程持有树并布局。Web：单线程；无 Worker、无跨线程 op |
 | 核心 | Rust 保留树 + Taffy flex；平台文本/绘制；无高级合成 |

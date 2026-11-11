@@ -93,7 +93,7 @@ assets/
 
 - handle 是 u32，0 保留；脚本线程在实例作用域内单调分配。
 - 动态节点由脚本分配 handle 后发送 `Spawn`，载荷带完整 `BNOD` 描述符；Rust 校验后插入树。
-- 模板注册返回 `模板 ID`；`CreateNode` 按模板 ID 在父节点下派生节点。当前 `CreateNode` 只派生单个节点，不复制子树；运行时已暴露 `createNode`，模板二进制由宿主经 `register_template` ABI 注入。
+- 节点只由函数组件首次执行时的 `Spawn` / `SpawnAt` 创建；`when` / `each` 只移动、插入或销毁。函数组件没有复用的模板注册表，也不预编译子树。
 
 ### Op 列表
 
@@ -101,7 +101,6 @@ assets/
 |---|---|---|
 | `Spawn` | `BNOD` 描述符 | 动态节点；`id`/`parent` 由脚本填写，Rust 校验 handle |
 | `SpawnAt` | `BNOD` 描述符 + index | 在指定子索引插入；fragment 锚点使用 |
-| `CreateNode` | handle, templateId, parent, index | 从模板创建节点；templateId 提供默认属性 |
 | `DisposeNode` | handle | 销毁子树 |
 | `InsertNode` | handle, parent, index | 插入已存在节点 |
 | `MoveNode` | handle, parent, index | 移动节点 |
@@ -116,9 +115,9 @@ assets/
 | `SetEditingValue` | handle, epoch, value, selection | 受控文本 |
 | `SetAsset` | handle, contentHash | 图片/资源 |
 
-当前 M1 实现覆盖 `Spawn`、`SpawnAt`、`CreateNode`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`；其余 op（含 `InsertNode`、动画、语义）随组件/输入/更新里程碑补齐。脚本线程只产 op，UI/帧线程在 drain 时应用。
+当前 M1 实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`；其余 op（含 `InsertNode`、动画、语义）随组件/输入/更新里程碑补齐。脚本线程只产 op，UI/帧线程在 drain 时应用。
 
-`when` / `each` 采用透明 fragment：在父节点下创建一个零尺寸、无背景、无 handler 的 anchor，分支/列表节点通过 `SpawnAt` 插到 anchor 之前；重跑时先 `DisposeNode`，再用 `MoveNode` 复用 keyed item。组件树不额外增加布局包装节点。
+`when` / `each` 采用透明 fragment：在父节点下创建一个零尺寸、无背景、无 handler 的 anchor，分支/列表节点通过 `SpawnAt` 插到 anchor 之前。`when` 重跑时销毁旧分支并按条件重建；`each` 对消失的 key 销毁，对已有 key 按新顺序 `MoveNode`，对新 key 在目标位置 `SpawnAt`。组件树不额外增加布局包装节点。
 
 ### 事件协议
 
@@ -230,7 +229,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
   - Web：Canvas2D `measureText` + 浏览器整形。
 - 缓存 key：`(text, style, maxWidth, fontEpoch)`。
 - 宿主注入字体时递增 `fontEpoch`，清空文本缓存。
-- 三端换行/基线差异是接受的；模板避免依赖固定文本高度。
+- 三端换行/基线差异是接受的；内容避免依赖固定文本高度。
 
 ### 绘制
 

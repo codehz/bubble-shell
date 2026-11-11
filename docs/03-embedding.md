@@ -176,7 +176,7 @@ EditingState {
 - 脚本：error、timeout、OOM、restart、事件耗时。
 - 桥：method、耗时、错误码、超时、取消。
 - 帧：build、layout、paint、a11y 同步、op 队列深度。
-- 内容：版本、模板 ID、页面/路由、a11y 节点数。
+- 内容：版本、页面/路由、a11y 节点数。
 
 要求：
 
