@@ -10,6 +10,7 @@
 | [02-runtime.md](02-runtime.md) | 编译管线、bundle、op 协议、双线程、布局/绘制/文本、故障处理 |
 | [03-embedding.md](03-embedding.md) | 宿主能力桥、嵌入生命周期、导航、无障碍、文本输入、更新、可观测性 |
 | [04-risks-roadmap.md](04-risks-roadmap.md) | 风险、v1 非目标、里程碑、测试策略、待定项 |
+| [05-gestures-plan.md](05-gestures-plan.md) | M2 输入控件前置计划：虚拟手势节点、声明式协商、双指 transform、按轴滚动级联与验收 |
 
 ## 状态
 
