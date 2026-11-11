@@ -1,9 +1,10 @@
-//! M0 web slice: static template IR, op batches, Taffy layout, hit-test, paint list.
+//! Retained tree, op batches, Taffy layout, hit-test, and paint list.
 //!
-//! Assumptions locked for this slice:
-//! - static handles equal template ids (dense, starting at 1)
-//! - dynamic handles are script-allocated, checked for uniqueness, and never reused
-//! - signature must be non-empty but is not cryptographically verified
+//! `Template` is the node list `Shell::mount` reads. It is not an authoring format:
+//! apps are function components, and the signal graph is not implemented here.
+//! Handles of nodes created at mount match their template ids. Dynamic handles are
+//! caller-allocated, unique, and never reused. A bundle signature must be non-empty;
+//! it is not verified cryptographically yet.
 
 mod ir;
 mod manifest;
