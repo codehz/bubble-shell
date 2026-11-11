@@ -48,6 +48,8 @@ pub enum Cmd {
     },
     Press {
         handler: u32,
+        x: f32,
+        y: f32,
     },
     Eval {
         source: String,
@@ -165,8 +167,8 @@ impl Session {
                 let _ = ack.send(result);
                 true
             }
-            Cmd::Press { handler } => {
-                if self.press(handler).is_ok() {
+            Cmd::Press { handler, x, y } => {
+                if self.press(handler, x, y).is_ok() {
                     self.shared.generation.fetch_add(1, Ordering::Relaxed);
                 }
                 true
@@ -239,11 +241,11 @@ impl Session {
         }
     }
 
-    fn press(&mut self, handler: u32) -> Result<(), String> {
+    fn press(&mut self, handler: u32, x: f32, y: f32) -> Result<(), String> {
         let Some(vm) = self.vm.as_ref() else {
             return Err("bundle is not loaded".into());
         };
-        match guarded(|| press_in(vm, handler)) {
+        match guarded(|| press_in(vm, handler, x, y)) {
             Ok(()) => Ok(()),
             Err(err) => {
                 if fatal(&err) {
@@ -382,11 +384,11 @@ fn eval_in(vm: &Vm, source: &str) -> Result<String, String> {
     result.map_err(|err: rquickjs::Error| format_eval(vm, err))
 }
 
-fn press_in(vm: &Vm, handler: u32) -> Result<(), String> {
+fn press_in(vm: &Vm, handler: u32, x: f32, y: f32) -> Result<(), String> {
     enter_js();
     let result = vm.context.with(|ctx| {
         let press: Function = ctx.globals().get("__bubblePress")?;
-        press.call::<_, ()>((handler,))?;
+        press.call::<_, ()>((handler, x, y))?;
         pump(&ctx);
         Ok(())
     });

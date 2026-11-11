@@ -289,7 +289,7 @@ function point(event) {
 canvas.addEventListener("pointerdown", (event) => {
   const [x, y] = point(event);
   const handler = exports.tap(x, y);
-  if (handler && press(handler)) paint();
+  if (handler && press(handler, x, y)) paint();
 });
 
 canvas.addEventListener(

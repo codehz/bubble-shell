@@ -330,7 +330,7 @@ pub extern "C" fn bubble_pointer_down(x: f32, y: f32) {
         if let Some(handler) = handler {
             engine
                 .tx
-                .send(Cmd::Press { handler })
+                .send(Cmd::Press { handler, x, y })
                 .map_err(|_| "script thread is gone".to_string())?;
         }
         Ok(())

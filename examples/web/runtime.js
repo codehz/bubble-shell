@@ -1,6 +1,7 @@
 let api;
 const parents = [1];
 const handlers = new Map();
+const handlersOfNode = new Map();
 const bindings = [];
 const bindingHandles = new Map();
 const childrenOf = new Map([[1, []]]);
@@ -219,6 +220,12 @@ function pack(kind, props, text) {
   if (props.onPress) {
     const id = nextHandler++;
     handlers.set(id, props.onPress);
+    let owned = handlersOfNode.get(handle);
+    if (!owned) {
+      owned = new Set();
+      handlersOfNode.set(handle, owned);
+    }
+    owned.add(id);
     if (api.bind_event(handle, id) !== 0) throw new Error(api.error() || "bind failed");
   }
   for (const [key, value] of deferredValues) setProp(handle, key, value);
@@ -353,6 +360,11 @@ function writeText(handle, value) {
 function disposeHandle(handle) {
   if (handle === 1) return;
   deactivateHandleBindings(handle);
+  const owned = handlersOfNode.get(handle);
+  if (owned) {
+    for (const id of owned) handlers.delete(id);
+    handlersOfNode.delete(handle);
+  }
   const kids = childrenOf.get(handle);
   if (kids) {
     for (const kid of [...kids]) disposeHandle(kid);
@@ -492,10 +504,13 @@ export function mount(component) {
   flush();
 }
 
-export function press(handler) {
+export function press(handler, x, y) {
   const fn = handlers.get(handler);
   if (!fn) return false;
-  fn();
+  const event = x && typeof x === "object"
+    ? x
+    : { type: "tap", x: x ?? 0, y: y ?? 0 };
+  fn(event);
   flush();
   return true;
 }
