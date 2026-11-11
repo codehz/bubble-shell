@@ -4,6 +4,22 @@ const canvas = document.querySelector("canvas");
 const ctx = canvas.getContext("2d");
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
+const images = new Map();
+
+function imageFor(src) {
+  let entry = images.get(src);
+  if (!entry) {
+    const img = new Image();
+    entry = { img, ready: false };
+    img.onload = () => {
+      entry.ready = true;
+      requestAnimationFrame(() => paint());
+    };
+    img.src = src;
+    images.set(src, entry);
+  }
+  return entry;
+}
 
 function fontOf(fontSize, weight) {
   return `${weight || 400} ${fontSize}px sans-serif`;
@@ -263,6 +279,51 @@ function paint() {
         if (align === 1) lineX = x + Math.max(0, (w - lineWidth) / 2);
         else if (align === 2) lineX = x + Math.max(0, w - lineWidth);
         if (index * lineH < h || h <= 0) ctx.fillText(line, lineX, y + index * lineH);
+      }
+    } else if (tag === 7) {
+      const x = f32();
+      const y = f32();
+      const w = f32();
+      const h = f32();
+      const radius = f32();
+      const fit = view.getUint8(offset);
+      offset += 1;
+      const srcLen = view.getUint32(offset, true);
+      offset += 4;
+      const src = decoder.decode(new Uint8Array(memory().buffer, exports.scratch_ptr() + offset, srcLen));
+      offset += srcLen;
+      const entry = imageFor(src);
+      if (entry.ready) {
+        const img = entry.img;
+        const iw = img.naturalWidth;
+        const ih = img.naturalHeight;
+        let sx = 0;
+        let sy = 0;
+        let sw = iw;
+        let sh = ih;
+        let dx = x;
+        let dy = y;
+        let dw = w;
+        let dh = h;
+        if (fit === 0) {
+          const scale = Math.min(w / iw, h / ih);
+          dw = iw * scale;
+          dh = ih * scale;
+          dx = x + (w - dw) / 2;
+          dy = y + (h - dh) / 2;
+        } else if (fit === 1) {
+          const scale = Math.max(w / iw, h / ih);
+          sw = w / scale;
+          sh = h / scale;
+          sx = (iw - sw) / 2;
+          sy = (ih - sh) / 2;
+        }
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, h, radius);
+        ctx.clip();
+        ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+        ctx.restore();
       }
     } else if (tag === 3) {
       const x = f32();

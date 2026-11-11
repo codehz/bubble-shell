@@ -300,7 +300,7 @@ fn emit_jsx(
     }
     let text = name == "Text";
     out.push_str("primitive(");
-    out.push_str(&js_string(if text { "Text" } else { "View" }));
+    out.push_str(&js_string(&name));
     out.push_str(", ");
     emit_attrs(out, &element.opening_element.attributes, signals)?;
     out.push_str(", ");
@@ -570,6 +570,7 @@ fn jsx_name(name: &JSXElementName<'_>) -> Result<String, String> {
     match raw {
         "View" => Ok("View".into()),
         "Text" => Ok("Text".into()),
+        "Image" => Ok("Image".into()),
         other if other.chars().next().is_some_and(char::is_uppercase) => {
             Ok(format!("component:{other}"))
         }

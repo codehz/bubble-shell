@@ -66,6 +66,19 @@ let measure: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UI
 final class BubbleView: UIView {
     var paint = Data()
     var family = "Arial"
+    private var imageCache: [String: UIImage] = [:]
+
+    private func imageFor(_ src: String) -> UIImage? {
+        if let image = imageCache[src] {
+            return image
+        }
+        let path = src.hasPrefix("/") ? src : (Bundle.main.path(forResource: src, ofType: nil) ?? "")
+        guard let image = UIImage(contentsOfFile: path) else {
+            return nil
+        }
+        imageCache[src] = image
+        return image
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -147,6 +160,30 @@ final class BubbleView: UIView {
                     .foregroundColor: colorOf(color),
                     .paragraphStyle: paragraph,
                 ])
+            case 7:
+                guard let x = f32(), let y = f32(), let w = f32(), let h = f32(), let radius = f32(), let fit = u8(), let nbytes = u32() else { return }
+                guard let raw = take(Int(nbytes)) else { return }
+                let src = String(data: raw, encoding: .utf8) ?? ""
+                guard let image = imageFor(src) else {
+                    break
+                }
+                let size = image.size
+                var rect = CGRect(x: x, y: y, width: w, height: h)
+                if fit == 0 {
+                    let scale = min(w / max(size.width, 1), h / max(size.height, 1))
+                    let dw = size.width * scale
+                    let dh = size.height * scale
+                    rect = CGRect(x: x + (w - dw) / 2, y: y + (h - dh) / 2, width: dw, height: dh)
+                } else if fit == 1 {
+                    let scale = max(w / max(size.width, 1), h / max(size.height, 1))
+                    let dw = size.width * scale
+                    let dh = size.height * scale
+                    rect = CGRect(x: x + (w - dw) / 2, y: y + (h - dh) / 2, width: dw, height: dh)
+                }
+                ctx.saveGState()
+                UIBezierPath(roundedRect: CGRect(x: x, y: y, width: w, height: h), cornerRadius: radius).addClip()
+                image.draw(in: rect)
+                ctx.restoreGState()
             case 3:
                 guard let x = f32(), let y = f32(), let w = f32(), let h = f32() else { return }
                 ctx.saveGState()

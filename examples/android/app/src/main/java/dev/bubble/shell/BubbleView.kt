@@ -1,10 +1,13 @@
 package dev.bubble.shell
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.text.Layout
 import android.text.StaticLayout
@@ -18,7 +21,9 @@ import java.nio.ByteOrder
 class BubbleView(context: Context) : View(context) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+    private val imagePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFilterBitmap = true }
     private val path = Path()
+    private val images = HashMap<String, Bitmap?>()
     private var paintBytes = ByteArray(0)
     private var family: Typeface = Typeface.DEFAULT
     private var lastY = 0f
@@ -118,6 +123,41 @@ class BubbleView(context: Context) : View(context) {
                         canvas.restore()
                     } else {
                         canvas.drawText(text, x, y + font, textPaint)
+                    }
+                }
+                7 -> {
+                    val x = buffer.float
+                    val y = buffer.float
+                    val w = buffer.float
+                    val h = buffer.float
+                    val radius = buffer.float
+                    val fit = buffer.get().toInt() and 0xff
+                    val n = buffer.int
+                    val raw = ByteArray(n)
+                    buffer.get(raw)
+                    val src = String(raw, Charsets.UTF_8)
+                    val bitmap = images.getOrPut(src) { BitmapFactory.decodeFile(src) }
+                    if (bitmap != null && w > 0f && h > 0f) {
+                        val scale = if (fit == 0) {
+                            minOf(w / bitmap.width, h / bitmap.height)
+                        } else if (fit == 1) {
+                            maxOf(w / bitmap.width, h / bitmap.height)
+                        } else {
+                            0f
+                        }
+                        val dst = if (scale > 0f) {
+                            val dw = bitmap.width * scale
+                            val dh = bitmap.height * scale
+                            RectF(x + (w - dw) / 2, y + (h - dh) / 2, x + (w + dw) / 2, y + (h + dh) / 2)
+                        } else {
+                            RectF(x, y, x + w, y + h)
+                        }
+                        canvas.save()
+                        path.reset()
+                        path.addRoundRect(x, y, x + w, y + h, radius, radius, Path.Direction.CW)
+                        canvas.clipPath(path)
+                        canvas.drawBitmap(bitmap, null, dst, imagePaint)
+                        canvas.restore()
                     }
                 }
                 3 -> {

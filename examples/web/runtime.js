@@ -286,6 +286,10 @@ export function text(props, content) {
   return pack(2, props, content == null ? "" : String(content));
 }
 
+export function image(props) {
+  return pack(3, props, "");
+}
+
 export function component(type, props, children) {
   if (typeof type !== "function") throw new Error(`${String(type)} is not a component`);
   return type({ ...(props ?? {}), children });
@@ -306,6 +310,7 @@ export function primitive(name, props, children) {
 
 registerPrimitive("View", view);
 registerPrimitive("Text", text);
+registerPrimitive("Image", image);
 
 function propParts(value) {
   if (value == null) return [0, 0, ""];

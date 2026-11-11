@@ -87,6 +87,25 @@ fn lowers_signal_reading_attributes_to_dynamic_bindings() {
 }
 
 #[test]
+fn lowers_image_primitive() {
+    let js = compile(
+        r#"
+        import { mount, Image, View } from "bubble";
+        function App() {
+          return (
+            <View>
+              <Image src="logo.png" width={40} height={30} fit="cover" />
+            </View>
+          );
+        }
+        mount(App);
+        "#,
+    )
+    .unwrap();
+    assert!(js.contains("primitive(\"Image\", {src: \"logo.png\", width: 40, height: 30, fit: \"cover\"}, "));
+}
+
+#[test]
 fn lowers_computed_values_as_signal_sources() {
     let js = compile(
         r#"

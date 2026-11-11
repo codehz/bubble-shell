@@ -41,6 +41,8 @@ pub enum Prop {
     Right,
     Bottom,
     Left,
+    Src,
+    Fit,
 }
 
 impl Prop {
@@ -76,6 +78,8 @@ impl Prop {
             "right" => Self::Right,
             "bottom" => Self::Bottom,
             "left" => Self::Left,
+            "src" => Self::Src,
+            "fit" => Self::Fit,
             _ => return None,
         })
     }
@@ -109,6 +113,8 @@ pub const DEFERRED_PROPS: &[&str] = &[
     "justifyContent",
     "position",
     "inset",
+    "src",
+    "fit",
 ];
 
 pub const SET_PROPS: &[&str] = &[
@@ -142,4 +148,6 @@ pub const SET_PROPS: &[&str] = &[
     "right",
     "bottom",
     "left",
+    "src",
+    "fit",
 ];

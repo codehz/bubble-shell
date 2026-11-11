@@ -102,6 +102,8 @@ struct Node {
     line_height: f32,
     text_align: u8,
     font_weight: u16,
+    src: String,
+    fit: u8,
     text: String,
     taffy: NodeId,
     scroll: f32,
@@ -142,6 +144,15 @@ pub enum PaintCmd {
         weight: u16,
         align: u8,
         text: String,
+    },
+    Image {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: f32,
+        fit: u8,
+        src: String,
     },
     PushClip {
         x: f32,
@@ -191,6 +202,8 @@ impl Shell {
                     line_height: 0.0,
                     text_align: 0,
                     font_weight: 400,
+                    src: String::new(),
+                    fit: 0,
                     text: String::new(),
                     taffy: taffy_id,
                     scroll: 0.0,
@@ -469,6 +482,13 @@ impl Shell {
                 self.node_mut(id)?.inset[2] = value.optional_f32()?.unwrap_or(f32::NAN)
             }
             Prop::Left => self.node_mut(id)?.inset[3] = value.optional_f32()?.unwrap_or(f32::NAN),
+            Prop::Src => {
+                let Value::String(source) = value else {
+                    return Err("src must be a string".into());
+                };
+                self.node_mut(id)?.src = source.clone();
+            }
+            Prop::Fit => self.node_mut(id)?.fit = image_fit(value)?,
         }
         self.restyle(id)
     }
@@ -603,6 +623,8 @@ impl Shell {
             line_height: 0.0,
             text_align: 0,
             font_weight: 400,
+            src: String::new(),
+            fit: 0,
             text: desc.text.clone(),
             taffy: taffy_id,
             scroll: 0.0,
@@ -767,6 +789,16 @@ impl Shell {
                 weight: node.font_weight,
                 align: node.text_align,
                 text,
+            });
+        } else if kind == Kind::Image && !node.src.is_empty() {
+            out.push(PaintCmd::Image {
+                x,
+                y,
+                w,
+                h,
+                radius,
+                fit: node.fit,
+                src: node.src.clone(),
             });
         }
         if scroll_y {
@@ -1003,6 +1035,18 @@ fn position(value: &Value) -> Result<u8, String> {
         "relative" => Ok(0),
         "absolute" => Ok(1),
         other => Err(format!("unsupported position {other}")),
+    }
+}
+
+fn image_fit(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("fit must be a string".into());
+    };
+    match text.as_str() {
+        "contain" => Ok(0),
+        "cover" => Ok(1),
+        "fill" => Ok(2),
+        other => Err(format!("unsupported fit {other}")),
     }
 }
 

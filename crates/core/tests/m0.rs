@@ -355,6 +355,8 @@ fn every_runtime_property_is_dispatchable() {
             "alignItems" => Value::String("center".into()),
             "justifyContent" => Value::String("space-between".into()),
             "position" => Value::String("absolute".into()),
+            "src" => Value::String("logo.png".into()),
+            "fit" => Value::String("cover".into()),
             "top" | "right" | "bottom" | "left" => Value::Float(4.0),
             _ => Value::Float(4.0),
         };
@@ -476,6 +478,31 @@ fn set_prop_updates_padding_edges() {
     let (x, y, _, _) = shell.node_box(label).unwrap();
     assert!((x - base_x - 11.0).abs() < 0.01, "{base_x} -> {x}");
     assert!((y - base_y - 7.0).abs() < 0.01, "{base_y} -> {y}");
+}
+
+#[test]
+fn image_node_emits_image_paint() {
+    use bubble_core::{Kind, Turn, Value};
+
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(100.0, 100.0);
+    let mut turn = Turn::new();
+    let mut desc = NodeDesc::view(0, 1);
+    desc.kind = Kind::Image;
+    desc.width = Some(40.0);
+    desc.height = Some(30.0);
+    let image = turn.spawn(desc).unwrap();
+    turn.set_prop(image, "src", Value::String("logo.png".into()));
+    turn.set_prop(image, "fit", Value::String("cover".into()));
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    shell.layout(&mut measure).unwrap();
+
+    let paint = shell.paint();
+    assert!(paint.iter().any(|cmd| matches!(
+        cmd,
+        bubble_core::PaintCmd::Image { src, fit: 1, w, h, .. }
+            if src == "logo.png" && (*w - 40.0).abs() < f32::EPSILON && (*h - 30.0).abs() < f32::EPSILON
+    )));
 }
 
 #[test]

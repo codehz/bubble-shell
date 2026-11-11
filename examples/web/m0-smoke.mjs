@@ -201,6 +201,19 @@ function paintList() {
       const w = f32();
       const h = f32();
       cmds.push({ tag, x, y, w, h });
+    } else if (tag === 7) {
+      const x = f32();
+      const y = f32();
+      const w = f32();
+      const h = f32();
+      const radius = f32();
+      const fit = view.getUint8(offset);
+      offset += 1;
+      const srcLen = view.getUint32(offset, true);
+      offset += 4;
+      const src = decoder.decode(new Uint8Array(memory().buffer, exports.scratch_ptr() + offset, srcLen));
+      offset += srcLen;
+      cmds.push({ tag, x, y, w, h, radius, fit, src });
     } else if (tag === 4) {
       cmds.push({ tag });
     } else if (tag === 5) {

@@ -9,6 +9,7 @@ use std::io::{Cursor, Read};
 pub enum Kind {
     View = 1,
     Text = 2,
+    Image = 3,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -122,6 +123,7 @@ impl NodeDesc {
         let kind = match read_u8(cur)? {
             1 => Kind::View,
             2 => Kind::Text,
+            3 => Kind::Image,
             other => return Err(format!("bad node kind {other}")),
         };
         let scroll_y = match read_u8(cur)? {
