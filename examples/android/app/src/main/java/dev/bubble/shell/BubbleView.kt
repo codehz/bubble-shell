@@ -26,9 +26,7 @@ class BubbleView(context: Context) : View(context) {
     private val images = HashMap<String, Bitmap?>()
     private var paintBytes = ByteArray(0)
     private var family: Typeface = Typeface.DEFAULT
-    private var lastX = 0f
-    private var lastY = 0f
-    private var tracking = false
+    private val activePointers = LinkedHashSet<Int>()
 
     init {
         setBackgroundColor(Color.BLACK)
@@ -42,6 +40,7 @@ class BubbleView(context: Context) : View(context) {
     fun paintSize(): Int = paintBytes.size
 
     fun refresh() {
+        BubbleNative.tick(System.nanoTime() / 1_000_000.0)
         val size = contentSize()
         paintBytes = BubbleNative.frame(size[0], size[1])
         invalidate()
@@ -193,27 +192,50 @@ class BubbleView(context: Context) : View(context) {
         }
     }
 
+    private fun sendPointer(action: Int, index: Int, event: MotionEvent) {
+        val id = event.getPointerId(index)
+        if (action == 2 || action == 3) activePointers.remove(id) else activePointers.add(id)
+        BubbleNative.pointer(
+            action,
+            id,
+            localX(event.getX(index)),
+            localY(event.getY(index)),
+            event.eventTime.toDouble(),
+            0,
+            if (action == 2 || action == 3) 0 else 1,
+        )
+        refresh()
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                tracking = true
-                lastX = event.x
-                lastY = event.y
-                BubbleNative.pointerDown(localX(event.x), localY(event.y))
-            }
-            MotionEvent.ACTION_MOVE -> if (tracking) {
-                val density = resources.displayMetrics.density
-                BubbleNative.scroll(
-                    localX(event.x),
-                    localY(event.y),
-                    (lastX - event.x) / density,
-                    (lastY - event.y) / density,
-                )
-                lastX = event.x
-                lastY = event.y
+            MotionEvent.ACTION_DOWN -> sendPointer(0, event.actionIndex, event)
+            MotionEvent.ACTION_POINTER_DOWN -> sendPointer(0, event.actionIndex, event)
+            MotionEvent.ACTION_MOVE -> {
+                for (index in 0 until event.pointerCount) {
+                    val id = event.getPointerId(index)
+                    if (!activePointers.contains(id)) continue
+                    BubbleNative.pointer(
+                        1,
+                        id,
+                        localX(event.getX(index)),
+                        localY(event.getY(index)),
+                        event.eventTime.toDouble(),
+                        0,
+                        1,
+                    )
+                }
                 refresh()
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> tracking = false
+            MotionEvent.ACTION_POINTER_UP -> sendPointer(2, event.actionIndex, event)
+            MotionEvent.ACTION_UP -> sendPointer(2, event.actionIndex, event)
+            MotionEvent.ACTION_CANCEL -> {
+                for (id in activePointers.toList()) {
+                    BubbleNative.pointer(3, id, 0f, 0f, event.eventTime.toDouble(), 0, 0)
+                }
+                activePointers.clear()
+                refresh()
+            }
         }
         return true
     }

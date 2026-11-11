@@ -9,7 +9,8 @@ object BubbleNative {
     external fun destroy()
     external fun load(manifest: String, entry: ByteArray): Int
     external fun frame(width: Float, height: Float): ByteArray
-    external fun pointerDown(x: Float, y: Float)
+    external fun pointer(action: Int, id: Int, x: Float, y: Float, timeMs: Double, pointerKind: Int, buttons: Int): Int
+    external fun tick(timeMs: Double): Int
     external fun scroll(x: Float, y: Float, dx: Float, dy: Float)
     external fun scrollXOf(handle: Int): Float
     external fun scrollYOf(handle: Int): Float

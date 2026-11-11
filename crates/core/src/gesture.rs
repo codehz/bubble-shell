@@ -508,6 +508,19 @@ impl Recognizer {
         self.sequence.is_some()
     }
 
+    /// True while a touch sequence or a pending double-tap timer still needs
+    /// UI-thread ticks.
+    pub fn pending(&self) -> bool {
+        self.sequence.is_some() || self.pending_tap.is_some()
+    }
+
+    /// Drop the live sequence and emit cancel for any winner. Timers clear;
+    /// buffered reserved deltas are discarded.
+    pub fn cancel(&mut self, reason: u8) {
+        self.pending_tap = None;
+        self.cancel_sequence(reason);
+    }
+
     pub fn pointer(&mut self, input: PointerInput) {
         match input.action {
             PointerAction::Down => self.down(input),
@@ -894,6 +907,9 @@ impl Recognizer {
                     let dt = (time_ms - cand.last_t).max(1.0) as f32;
                     cand.velocity_x = (x - cand.last_x) / dt * 1000.0;
                     cand.velocity_y = (y - cand.last_y) / dt * 1000.0;
+                    cand.last_x = x;
+                    cand.last_y = y;
+                    cand.last_t = time_ms;
                     cand.state = CandState::Accepted;
                     seq.axes_owned |= bit;
                     accepted.push(index);
@@ -909,6 +925,7 @@ impl Recognizer {
         if (x - seq.start_x).hypot(y - seq.start_y) > TAP_SLOP {
             fail_tap = true;
         }
+        let just_accepted = accepted.clone();
         for index in accepted {
             let cand = &mut seq.cands[index];
             let id = cand.decl;
@@ -925,6 +942,46 @@ impl Recognizer {
                 event.y = y;
                 event.translation_x = x - start_x;
                 event.translation_y = y - start_y;
+                event.velocity_x = vx;
+                event.velocity_y = vy;
+            });
+        }
+        let mut updates = Vec::new();
+        for (index, cand) in seq.cands.iter_mut().enumerate() {
+            if cand.state != CandState::Accepted
+                || cand.kind != GestureKind::Pan
+                || just_accepted.contains(&index)
+            {
+                continue;
+            }
+            let dt = (time_ms - cand.last_t).max(1.0) as f32;
+            let vx = (x - cand.last_x) / dt * 1000.0;
+            let vy = (y - cand.last_y) / dt * 1000.0;
+            let delta_x = x - cand.last_x;
+            let delta_y = y - cand.last_y;
+            let translation_x = x - cand.start_x;
+            let translation_y = y - cand.start_y;
+            cand.last_x = x;
+            cand.last_y = y;
+            cand.last_t = time_ms;
+            cand.velocity_x = vx;
+            cand.velocity_y = vy;
+            updates.push((cand.decl, translation_x, translation_y, delta_x, delta_y, vx, vy));
+        }
+        for (id, tx, ty, dx, dy, vx, vy) in updates {
+            let target = decls
+                .get(id as usize)
+                .and_then(Option::as_ref)
+                .map(|decl| decl.target)
+                .unwrap_or(0);
+            push_event(events, decls, id, SLOT_UPDATE, seq.id, time_ms, |event| {
+                event.target = target;
+                event.x = x;
+                event.y = y;
+                event.translation_x = tx;
+                event.translation_y = ty;
+                event.delta_x = dx;
+                event.delta_y = dy;
                 event.velocity_x = vx;
                 event.velocity_y = vy;
             });
@@ -1968,6 +2025,13 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.slot == SLOT_START && event.gesture == 3));
+    }
+
+    #[test]
+    fn rotation_delta_wraps_across_the_seam() {
+        let delta = wrap_offset(3.0, -3.0);
+        assert!((delta - (std::f64::consts::TAU - 6.0)).abs() < 1e-9);
+        assert!(delta > 0.0 && delta < std::f64::consts::PI);
     }
 
     #[test]

@@ -211,6 +211,7 @@ setApi({
   move_gesture: exports.move_gesture,
   pointer: exports.pointer,
   tick: exports.tick,
+  gesture_pending: exports.gesture_pending,
   take_gesture_events: exports.take_gesture_events,
   queue_text: exports.queue_text,
   commit: exports.commit,
@@ -411,8 +412,11 @@ function gestureFrame() {
   exports.tick(performance.now());
   pumpGestures();
   if (exports.layout() === 0) paint();
-  if (activePointers.size > 0) requestAnimationFrame(gestureFrame);
-  else ticking = false;
+  if (activePointers.size > 0 || exports.gesture_pending() !== 0) {
+    requestAnimationFrame(gestureFrame);
+  } else {
+    ticking = false;
+  }
 }
 
 function startTicking() {
@@ -457,6 +461,20 @@ function releasePointer(action, event) {
 
 canvas.addEventListener("pointerup", (event) => releasePointer(2, event));
 canvas.addEventListener("pointercancel", (event) => releasePointer(3, event));
+
+function cancelPointers() {
+  for (const id of activePointers) {
+    exports.pointer(3, id, 0, 0, performance.now(), 0, 0);
+  }
+  activePointers.clear();
+  pumpGestures();
+  if (exports.layout() === 0) paint();
+}
+
+window.addEventListener("blur", cancelPointers);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") cancelPointers();
+});
 
 function wheelDelta(event, extent) {
   if (event.deltaMode === 1) return event.deltaY * 16;

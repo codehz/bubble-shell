@@ -149,6 +149,14 @@ pub extern "C" fn tick(time_ms: f64) -> i32 {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn gesture_pending() -> i32 {
+    drain_pending().ok();
+    with_shell(|shell| Ok(shell.gestures_pending()))
+        .map(i32::from)
+        .unwrap_or(0)
+}
+
 /// Encoded `BSGE` batch of events since the last drain; 0 bytes when empty.
 #[no_mangle]
 pub extern "C" fn take_gesture_events() -> u32 {

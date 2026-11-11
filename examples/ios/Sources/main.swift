@@ -10,8 +10,10 @@ func bubble_destroy()
 func bubble_load(_ manifest: UnsafePointer<CChar>?, _ entry: UnsafePointer<UInt8>?, _ entryLen: UInt32) -> Int32
 @_silgen_name("bubble_frame")
 func bubble_frame(_ width: Float, _ height: Float, _ paint: UnsafeMutablePointer<UnsafePointer<UInt8>?>?, _ paintLen: UnsafeMutablePointer<UInt32>?) -> Int32
-@_silgen_name("bubble_pointer_down")
-func bubble_pointer_down(_ x: Float, _ y: Float)
+@_silgen_name("bubble_pointer")
+func bubble_pointer(_ action: UInt32, _ id: UInt32, _ x: Float, _ y: Float, _ timeMs: Double, _ pointerKind: UInt32, _ buttons: UInt32) -> Int32
+@_silgen_name("bubble_tick")
+func bubble_tick(_ timeMs: Double) -> Int32
 @_silgen_name("bubble_scroll")
 func bubble_scroll(_ x: Float, _ y: Float, _ dx: Float, _ dy: Float)
 @_silgen_name("bubble_scroll_x_of")
@@ -87,7 +89,6 @@ final class BubbleView: UIView {
         isMultipleTouchEnabled = true
         contentMode = .redraw
         backgroundColor = .black
-        addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:))))
     }
 
     required init?(coder: NSCoder) { nil }
@@ -96,7 +97,35 @@ final class BubbleView: UIView {
         return CGSize(width: max(1, bounds.width - inset.left - inset.right), height: max(1, bounds.height - inset.top - inset.bottom))
     }
 
+    private var pointerIds: [ObjectIdentifier: UInt32] = [:]
+    private var nextPointerId: UInt32 = 1
+
+    private func pointerId(_ touch: UITouch) -> UInt32 {
+        let key = ObjectIdentifier(touch)
+        if let id = pointerIds[key] {
+            return id
+        }
+        let id = nextPointerId
+        nextPointerId += 1
+        pointerIds[key] = id
+        return id
+    }
+
+    private func sendPointer(_ action: UInt32, _ touch: UITouch) {
+        let point = touch.location(in: self)
+        _ = bubble_pointer(
+            action,
+            pointerId(touch),
+            Float(point.x - safeAreaInsets.left),
+            Float(point.y - safeAreaInsets.top),
+            CACurrentMediaTime() * 1000,
+            0,
+            action == 2 || action == 3 ? 0 : 1
+        )
+    }
+
     func refresh() {
+        _ = bubble_tick(CACurrentMediaTime() * 1000)
         var ptr: UnsafePointer<UInt8>?
         var len: UInt32 = 0
         let size = contentSize()
@@ -208,25 +237,29 @@ final class BubbleView: UIView {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let point = touches.first?.location(in: self) else { return }
-        bubble_pointer_down(Float(point.x - safeAreaInsets.left), Float(point.y - safeAreaInsets.top))
+        for touch in touches {
+            sendPointer(0, touch)
+        }
     }
 
-    func scroll(dx: CGFloat, dy: CGFloat, at point: CGPoint) {
-        bubble_scroll(
-            Float(point.x - safeAreaInsets.left),
-            Float(point.y - safeAreaInsets.top),
-            Float(dx),
-            Float(dy)
-        )
-        refresh()
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for touch in touches {
+            sendPointer(1, touch)
+        }
     }
 
-    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-        let point = gesture.location(in: self)
-        let translation = gesture.translation(in: self)
-        gesture.setTranslation(.zero, in: self)
-        scroll(dx: -translation.x, dy: -translation.y, at: point)
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for touch in touches {
+            sendPointer(2, touch)
+            pointerIds.removeValue(forKey: ObjectIdentifier(touch))
+        }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for touch in touches {
+            sendPointer(3, touch)
+            pointerIds.removeValue(forKey: ObjectIdentifier(touch))
+        }
     }
 }
 
@@ -323,7 +356,9 @@ final class AppDriver {
         if phase == 0 && frames == 20 {
             var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
             _ = bubble_node_box(4, &x, &y, &w, &h)
-            bubble_pointer_down(x + w / 2, y + h / 2)
+            let (px, py) = (x + w / 2, y + h / 2)
+            _ = bubble_pointer(0, 1, px, py, CACurrentMediaTime() * 1000, 0, 1)
+            _ = bubble_pointer(2, 1, px, py, CACurrentMediaTime() * 1000 + 20, 0, 0)
             phase = 1
         } else if phase == 1 && nodeText(3) == "Count: 1" {
             bubble_post_eval("while (true) {}")

@@ -234,6 +234,107 @@ fn disposing_a_gesture_cancels_an_active_sequence() {
 }
 
 #[test]
+fn pan_reports_start_update_and_end_geometry() {
+    let mut shell = tap_shell();
+    shell
+        .apply_ops(&encode(
+            2,
+            &[
+                Op::SpawnGesture {
+                    gesture: 12,
+                    target: 2,
+                    kind: 4,
+                    index: 0,
+                },
+                Op::BindGestureEvent {
+                    gesture: 12,
+                    slot: 6,
+                    handler: 1,
+                },
+                Op::BindGestureEvent {
+                    gesture: 12,
+                    slot: 7,
+                    handler: 2,
+                },
+                Op::BindGestureEvent {
+                    gesture: 12,
+                    slot: 8,
+                    handler: 3,
+                },
+                Op::SetGestureProp {
+                    gesture: 12,
+                    key: "axis".into(),
+                    value: Value::String("x".into()),
+                },
+            ],
+        ))
+        .unwrap();
+    shell.pointer(input(PointerAction::Down, 20.0, 50.0, 0.0));
+    shell.pointer(input(PointerAction::Move, 40.0, 50.0, 10.0));
+    shell.pointer(input(PointerAction::Move, 70.0, 50.0, 20.0));
+    shell.pointer(input(PointerAction::Up, 70.0, 50.0, 30.0));
+    let events = shell.take_gesture_events();
+    let start = events.iter().find(|event| event.slot == 6).unwrap();
+    assert_eq!(start.translation_x, 20.0);
+    let update = events.iter().find(|event| event.slot == 7).unwrap();
+    assert_eq!(update.translation_x, 50.0);
+    assert_eq!(update.delta_x, 30.0);
+    let end = events.iter().find(|event| event.slot == 8).unwrap();
+    assert_eq!(end.translation_x, 50.0);
+}
+
+#[test]
+fn transform_scale_is_stable_when_the_baseline_has_no_distance() {
+    let mut shell = tap_shell();
+    shell
+        .apply_ops(&encode(
+            2,
+            &[
+                Op::SpawnGesture {
+                    gesture: 13,
+                    target: 2,
+                    kind: 5,
+                    index: 0,
+                },
+                Op::SetGestureProp {
+                    gesture: 13,
+                    key: "pinch".into(),
+                    value: Value::Bool(true),
+                },
+                Op::BindGestureEvent {
+                    gesture: 13,
+                    slot: 6,
+                    handler: 1,
+                },
+                Op::BindGestureEvent {
+                    gesture: 13,
+                    slot: 7,
+                    handler: 2,
+                },
+            ],
+        ))
+        .unwrap();
+    let mut first = input(PointerAction::Down, 50.0, 50.0, 0.0);
+    first.id = 1;
+    shell.pointer(first);
+    let mut second = input(PointerAction::Down, 50.0, 50.0, 5.0);
+    second.id = 2;
+    shell.pointer(second);
+    let mut moved = input(PointerAction::Move, 70.0, 50.0, 10.0);
+    moved.id = 2;
+    shell.pointer(moved);
+    let mut moved = input(PointerAction::Move, 90.0, 50.0, 15.0);
+    moved.id = 2;
+    shell.pointer(moved);
+    let events = shell.take_gesture_events();
+    assert!(events.iter().any(|event| event.slot == 6));
+    for event in &events {
+        assert!(event.scale.is_finite());
+        assert!(event.rotation.is_finite());
+    }
+}
+
+#[test]
 fn encoded_batch_carries_the_handler_and_slot() {
     let events = vec![GestureEvent {
         slot: 4,

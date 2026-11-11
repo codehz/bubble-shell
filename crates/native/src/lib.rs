@@ -419,6 +419,13 @@ pub extern "C" fn bubble_scroll(x: f32, y: f32, dx: f32, dy: f32) {
 pub extern "C" fn bubble_set_visible(visible: i32) {
     if let Ok(engine) = engine() {
         engine.shared.visible.store(visible != 0, Ordering::Relaxed);
+        if visible == 0 {
+            if let Ok(mut shell) = engine.shared.shell.lock() {
+                let events = shell.cancel_gestures(bubble_core::REASON_HOST_CANCEL);
+                drop(shell);
+                send_events(&engine.shared, events);
+            }
+        }
         let _ = engine.tx.send(Cmd::Wake);
     }
 }

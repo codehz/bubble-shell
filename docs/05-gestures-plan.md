@@ -1,6 +1,8 @@
 # 05 · M2 前置：手势与滚动协商计划
 
-状态：设计讨论已收敛，尚未实现。本文记录 2026-11-11 确认的行为契约与实施顺序；API 字段名为草案。只新增计划文档，不代表运行时已支持下述能力。
+状态：A-D 已实现，E 中的设备交互验收与协商 trace 尚未完成。本文记录 2026-11-11 确认的行为契约与实施顺序；字段名已落到实现。
+
+实现落点：`crates/core/src/gesture.rs`（识别状态机）、`crates/core/src/shell.rs`（命中路径、逐轴滚动链、声明生命周期）、`crates/core/src/ops.rs`（BSOP v3 手势 op）、`crates/wasm` / `crates/native`（pointer/tick ABI）、`examples/web/runtime.js`（五种虚拟原语与事件分发）、三端宿主输入适配。Web 端已由 `examples/web/m0-smoke.mjs` 覆盖按下-抬起、事件分发与滚动；iOS/Android 需要真机或模拟器交互验收。
 
 ## 1. 目标与边界
 
@@ -187,7 +189,15 @@
 
 ## 8. 实施顺序
 
-各阶段均属于后续实现，本次不执行。
+各阶段均属于后续实现，本次不执行。当前状态见下表。
+
+| 阶段 | 状态 |
+|---|---|
+| A 输入和协议契约 | 已实现：BSOP v3、手势声明／配置／移动／销毁 op、`bubble_pointer`／`bubble_tick`、`pointer`／`tick` wasm 导出 |
+| B 虚拟节点与 JSX 运行时 | 已实现：五种原语、If/Each 归属与清理、onPress 语法糖与冲突校验 |
+| C Rust 识别和协商 | 已实现：单指、点击族、reserveScroll、双指 transform、结构事件与取消清理 |
+| D 滚动消费与三端接入 | 已实现：逐轴链、auto/contain、三端触点生命周期；设备交互验收待做 |
+| E 验证与文档切换 | 进行中：核心与 wasm smoke 已覆盖；设备矩阵与可选 trace 未完成 |
 
 ### A. 输入和协议契约
 

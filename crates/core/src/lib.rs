@@ -17,7 +17,7 @@ mod turn;
 
 pub use gesture::{
     encode_events, GestureConfig, GestureDecl, GestureEvent, GestureKind, PointerAction,
-    PointerInput, Recognizer, ScrollRequest,
+    PointerInput, Recognizer, ScrollRequest, REASON_HOST_CANCEL,
 };
 pub use ir::{Extension, Kind, NodeDesc, NODE_VERSION};
 pub use manifest::validate_bundle_hashes;

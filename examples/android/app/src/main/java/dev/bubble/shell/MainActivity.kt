@@ -50,7 +50,10 @@ class MainActivity : Activity() {
             when (phase) {
                 0 -> if (frames == 20) {
                     val box = BubbleNative.nodeBox(4)
-                    BubbleNative.pointerDown(box[0] + box[2] / 2f, box[1] + box[3] / 2f)
+                    val x = box[0] + box[2] / 2f
+                    val y = box[1] + box[3] / 2f
+                    BubbleNative.pointer(0, 1, x, y, 0.0, 0, 1)
+                    BubbleNative.pointer(2, 1, x, y, 20.0, 0, 0)
                     phase = 1
                 }
                 1 -> if (BubbleNative.nodeText(3) == "Count: 1") {

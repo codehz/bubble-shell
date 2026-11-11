@@ -121,6 +121,8 @@ assets/
 
 属性分两类：
 
+- 手势是虚拟子节点：`TapGesture`、`DoubleTapGesture`、`LongPressGesture`、`PanGesture`、`TransformGesture`。它们不创建布局盒，绑定最近的实际 UI 祖先；配置与事件通过 BSOP v3 的 `SpawnGesture`／`SetGestureProp`／`BindGestureEvent` 传递。识别与滚动消费都在 UI 线程完成，脚本只收到有序事件。
+- `onPress` 是 `TapGesture onTap` 的语法糖，成功抬起才触发；与同目标显式 `TapGesture` 同时出现会报配置冲突。
 - `SPAWN_PROPS`：直接编码进 `BNOD`，当前为 `scrollX`、`scrollY`、`background`、`color`、`fontSize`、`radius`、`opacity`、`width`、`height`、`flexGrow`、`flexShrink`、`row`、`padding`、`onPress`。
 - `DEFERRED_PROPS`：JSX 接受但由 `Spawn` 后立即发送 `SetProp`，当前为 `lineHeight`、`textAlign`、`fontWeight`、`margin`、`gap`、`alignItems`、`justifyContent`、`position`、`inset`、`src`、`fit`。这样样式面扩展不需要每次改描述符版本。
 

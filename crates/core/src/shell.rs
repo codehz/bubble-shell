@@ -503,6 +503,18 @@ impl Shell {
 
     /// Drain recognition events in order. The host dispatches them to the
     /// script thread; nothing here calls JS.
+    /// Host pause/focus loss: drop touches, timers, reserves, and ownership.
+    pub fn cancel_gestures(&mut self, reason: u8) -> Vec<GestureEvent> {
+        self.recognizer.cancel(reason);
+        self.flush_gesture_scroll();
+        self.take_gesture_events()
+    }
+
+    /// Whether timers still need `advance_gestures` calls.
+    pub fn gestures_pending(&self) -> bool {
+        self.recognizer.pending()
+    }
+
     pub fn take_gesture_events(&mut self) -> Vec<GestureEvent> {
         self.recognizer.drain_events()
     }
