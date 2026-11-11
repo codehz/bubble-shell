@@ -14,7 +14,7 @@ mod props;
 mod shell;
 mod turn;
 
-pub use ir::{Kind, NodeDesc};
+pub use ir::{Extension, Kind, NodeDesc, NODE_VERSION};
 pub use manifest::validate_bundle_hashes;
 pub use ops::{decode_ops, encode, encode_set_prop_color, encode_set_text, Op, Value};
 pub use paint::encode_paint;

@@ -542,6 +542,10 @@ fn node_descriptor_and_spawn_op_roundtrip() {
     node.flex_grow = 1.0;
     node.flex_shrink = 0.5;
     node.padding = [1.0, 2.0, 3.0, 4.0];
+    node.extensions.push(bubble_core::Extension {
+        tag: 7,
+        data: vec![1, 2, 3],
+    });
 
     let bytes = node.encode();
     assert_eq!(NodeDesc::decode(&bytes).unwrap(), node);

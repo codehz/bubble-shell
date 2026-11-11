@@ -4,7 +4,7 @@
 
 use std::io::{Cursor, Read};
 
-use crate::ir::NodeDesc;
+use crate::ir::{NodeDesc, NODE_VERSION};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -212,7 +212,7 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
 
     let mut out = Vec::new();
     out.extend_from_slice(b"BSOP");
-    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
     out.extend_from_slice(&seq.to_le_bytes());
     out.extend_from_slice(&(ops.len() as u32).to_le_bytes());
     out.extend_from_slice(&(table.len() as u32).to_le_bytes());
@@ -231,7 +231,7 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
         return Err("bad op magic".into());
     }
     let version = read_u16(&mut cur)?;
-    if version != 1 {
+    if version != 2 {
         return Err(format!("unsupported op version {version}"));
     }
     let seq = read_u32(&mut cur)?;
@@ -309,10 +309,10 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                 y: read_f32(&mut payload_cur)?,
             }),
             8 => ops.push(Op::Spawn {
-                desc: NodeDesc::read_body(&mut payload_cur)?,
+                desc: NodeDesc::read_body(&mut payload_cur, NODE_VERSION)?,
             }),
             9 => ops.push(Op::SpawnAt {
-                desc: NodeDesc::read_body(&mut payload_cur)?,
+                desc: NodeDesc::read_body(&mut payload_cur, NODE_VERSION)?,
                 index: read_u32(&mut payload_cur)?,
             }),
             other => return Err(format!("unknown op tag {other}")),

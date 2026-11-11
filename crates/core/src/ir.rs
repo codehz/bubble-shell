@@ -1,9 +1,16 @@
-//! Node descriptors. Little-endian. `BNOD` version 1 wraps one descriptor;
-//! `Spawn` ops reuse the same body layout.
-//!
-//! The descriptor is a transport format, not an authoring or mount template.
+//! Node descriptors. Little-endian. `BNOD` version 2 wraps one descriptor;
+//! `Spawn` ops reuse the same body layout. Version 2 appends a TLV extension
+//! block after the text so new fields do not shift existing offsets.
 
 use std::io::{Cursor, Read};
+
+pub const NODE_VERSION: u16 = 2;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Extension {
+    pub tag: u8,
+    pub data: Vec<u8>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -32,6 +39,7 @@ pub struct NodeDesc {
     pub row: bool,
     pub padding: [f32; 4],
     pub text: String,
+    pub extensions: Vec<Extension>,
 }
 
 impl NodeDesc {
@@ -54,6 +62,7 @@ impl NodeDesc {
             row: false,
             padding: [0.0; 4],
             text: String::new(),
+            extensions: Vec::new(),
         }
     }
 
@@ -64,11 +73,11 @@ impl NodeDesc {
         node
     }
 
-    /// `BNOD` version 1 envelope for one node.
+    /// `BNOD` version 2 envelope for one node.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"BNOD");
-        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&NODE_VERSION.to_le_bytes());
         self.write_body(&mut out);
         out
     }
@@ -82,10 +91,10 @@ impl NodeDesc {
             return Err("bad node magic".into());
         }
         let version = read_u16(&mut cur)?;
-        if version != 1 {
+        if version != NODE_VERSION {
             return Err(format!("unsupported node version {version}"));
         }
-        let node = Self::read_body(&mut cur)?;
+        let node = Self::read_body(&mut cur, version)?;
         if cur.position() != bytes.len() as u64 {
             return Err("trailing node bytes".into());
         }
@@ -115,9 +124,17 @@ impl NodeDesc {
         let text = self.text.as_bytes();
         out.extend_from_slice(&(text.len() as u32).to_le_bytes());
         out.extend_from_slice(text);
+        let mut extensions = Vec::new();
+        for extension in &self.extensions {
+            extensions.push(extension.tag);
+            extensions.extend_from_slice(&(extension.data.len() as u32).to_le_bytes());
+            extensions.extend_from_slice(&extension.data);
+        }
+        out.extend_from_slice(&(extensions.len() as u32).to_le_bytes());
+        out.extend_from_slice(&extensions);
     }
 
-    pub fn read_body(cur: &mut Cursor<&[u8]>) -> Result<Self, String> {
+    pub fn read_body(cur: &mut Cursor<&[u8]>, version: u16) -> Result<Self, String> {
         let id = read_u32(cur)?;
         let parent = read_u32(cur)?;
         let kind = match read_u8(cur)? {
@@ -155,6 +172,23 @@ impl NodeDesc {
         cur.read_exact(&mut text_bytes)
             .map_err(|_| "truncated node text")?;
         let text = String::from_utf8(text_bytes).map_err(|_| "text is not utf-8")?;
+        let mut extensions = Vec::new();
+        if version >= 2 {
+            let ext_len = read_u32(cur)? as usize;
+            let mut ext_bytes = vec![0u8; ext_len];
+            cur.read_exact(&mut ext_bytes)
+                .map_err(|_| "truncated node extensions")?;
+            let mut ext_cur = Cursor::new(ext_bytes.as_slice());
+            while ext_cur.position() < ext_len as u64 {
+                let tag = read_u8(&mut ext_cur)?;
+                let len = read_u32(&mut ext_cur)? as usize;
+                let mut data = vec![0u8; len];
+                ext_cur
+                    .read_exact(&mut data)
+                    .map_err(|_| "truncated extension payload")?;
+                extensions.push(Extension { tag, data });
+            }
+        }
         Ok(Self {
             id,
             parent,
@@ -173,6 +207,7 @@ impl NodeDesc {
             row,
             padding,
             text,
+            extensions,
         })
     }
 }

@@ -140,7 +140,7 @@ function utf8(value) {
   return Uint8Array.from(out);
 }
 
-// BNOD version 1: header (magic + u16 version) + the `NodeDesc` body.
+// BNOD version 2: header (magic + u16 version) + the `NodeDesc` body + TLV.
 // `id`, `parent`, and `handler` are zero; Rust assigns the handle and parent.
 const SPEC_PROPS = new Set([
   "scrollY",
@@ -160,13 +160,13 @@ const SPEC_PROPS = new Set([
 
 function specBytes(kind, props, text) {
   const bytes = utf8(text);
-  const buffer = new Uint8Array(6 + 71 + bytes.length);
+  const buffer = new Uint8Array(6 + 71 + 4 + bytes.length);
   buffer[0] = 0x42;
   buffer[1] = 0x4e;
   buffer[2] = 0x4f;
   buffer[3] = 0x44;
   const view = new DataView(buffer.buffer);
-  view.setUint16(4, 1, true);
+  view.setUint16(4, 2, true);
   let offset = 6;
   view.setUint32(offset, 0, true);
   offset += 4;
@@ -206,6 +206,8 @@ function specBytes(kind, props, text) {
   view.setUint32(offset, bytes.length, true);
   offset += 4;
   buffer.set(bytes, offset);
+  offset += bytes.length;
+  view.setUint32(offset, 0, true);
   return buffer;
 }
 
