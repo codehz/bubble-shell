@@ -416,6 +416,35 @@ pub extern "C" fn bubble_scroll(x: f32, y: f32, dx: f32, dy: f32) {
 }
 
 #[no_mangle]
+pub extern "C" fn bubble_set_gesture_trace(enabled: i32) {
+    let _ = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let mut shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        shell.set_gesture_trace(enabled != 0);
+        Ok(())
+    });
+}
+
+/// Newline-separated trace lines. Empty when tracing is off.
+#[no_mangle]
+pub extern "C" fn bubble_take_gesture_trace(buf: *mut c_char, cap: u32) -> i32 {
+    copy_text(buf, cap, |engine| {
+        drain_pending(&engine.shared)?;
+        let mut shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        Ok(shell.take_gesture_trace().join("\n"))
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn bubble_set_visible(visible: i32) {
     if let Ok(engine) = engine() {
         engine.shared.visible.store(visible != 0, Ordering::Relaxed);

@@ -335,6 +335,138 @@ fn transform_scale_is_stable_when_the_baseline_has_no_distance() {
 }
 
 #[test]
+fn a_second_finger_without_a_transform_cancels_the_started_pan() {
+    let mut shell = tap_shell();
+    shell
+        .apply_ops(&encode(
+            2,
+            &[
+                Op::SpawnGesture {
+                    gesture: 15,
+                    target: 2,
+                    kind: 4,
+                    index: 0,
+                },
+                Op::BindGestureEvent {
+                    gesture: 15,
+                    slot: 6,
+                    handler: 1,
+                },
+                Op::BindGestureEvent {
+                    gesture: 15,
+                    slot: 9,
+                    handler: 2,
+                },
+            ],
+        ))
+        .unwrap();
+    shell.pointer(input(PointerAction::Down, 20.0, 50.0, 0.0));
+    shell.pointer(input(PointerAction::Move, 60.0, 50.0, 10.0));
+    assert!(shell
+        .take_gesture_events()
+        .iter()
+        .any(|event| event.slot == 6));
+    let mut second = input(PointerAction::Down, 100.0, 100.0, 20.0);
+    second.id = 2;
+    shell.pointer(second);
+    let mut lift = input(PointerAction::Up, 100.0, 100.0, 30.0);
+    lift.id = 2;
+    shell.pointer(lift);
+    let events = shell.take_gesture_events();
+    assert!(events
+        .iter()
+        .any(|event| event.slot == 9 && event.gesture == 15));
+}
+
+#[test]
+fn a_child_tap_fires_immediately_despite_an_ancestor_double_tap() {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 200.0);
+    let mut outer = NodeDesc::view(2, 1);
+    outer.width = Some(200.0);
+    outer.height = Some(200.0);
+    let mut child = NodeDesc::view(3, 2);
+    child.width = Some(100.0);
+    child.height = Some(100.0);
+    child.flex_shrink = 0.0;
+    shell
+        .apply_ops(&encode(
+            1,
+            &[
+                Op::Spawn { desc: outer },
+                Op::Spawn { desc: child },
+                Op::SpawnGesture {
+                    gesture: 16,
+                    target: 3,
+                    kind: 1,
+                    index: 0,
+                },
+                Op::BindGestureEvent {
+                    gesture: 16,
+                    slot: 4,
+                    handler: 1,
+                },
+                Op::SpawnGesture {
+                    gesture: 17,
+                    target: 2,
+                    kind: 2,
+                    index: 0,
+                },
+                Op::BindGestureEvent {
+                    gesture: 17,
+                    slot: 5,
+                    handler: 2,
+                },
+            ],
+        ))
+        .unwrap();
+    shell.layout(&mut measure).unwrap();
+    shell.pointer(input(PointerAction::Down, 20.0, 20.0, 0.0));
+    shell.pointer(input(PointerAction::Up, 20.0, 20.0, 20.0));
+    let events = shell.take_gesture_events();
+    assert!(events.iter().any(|event| event.slot == 4));
+    shell.advance_gestures(1000.0);
+    assert!(shell
+        .take_gesture_events()
+        .iter()
+        .all(|event| event.slot != 4));
+}
+
+#[test]
+fn negotiation_trace_is_opt_in() {
+    let mut shell = tap_shell();
+    shell
+        .apply_ops(&encode(
+            2,
+            &[
+                Op::SpawnGesture {
+                    gesture: 18,
+                    target: 2,
+                    kind: 4,
+                    index: 0,
+                },
+                Op::BindGestureEvent {
+                    gesture: 18,
+                    slot: 6,
+                    handler: 1,
+                },
+            ],
+        ))
+        .unwrap();
+    shell.pointer(input(PointerAction::Down, 20.0, 50.0, 0.0));
+    shell.pointer(input(PointerAction::Move, 60.0, 50.0, 10.0));
+    assert!(shell.take_gesture_trace().is_empty());
+    shell.pointer(input(PointerAction::Up, 60.0, 50.0, 20.0));
+    shell.set_gesture_trace(true);
+    shell.pointer(input(PointerAction::Down, 20.0, 50.0, 100.0));
+    shell.pointer(input(PointerAction::Move, 60.0, 50.0, 110.0));
+    let lines = shell.take_gesture_trace();
+    assert!(lines.iter().any(|line| line.contains("accept axes=")));
+    shell.set_gesture_trace(false);
+    assert!(shell.take_gesture_trace().is_empty());
+}
+
+#[test]
 fn encoded_batch_carries_the_handler_and_slot() {
     let events = vec![GestureEvent {
         slot: 4,

@@ -150,6 +150,26 @@ pub extern "C" fn tick(time_ms: f64) -> i32 {
 }
 
 #[no_mangle]
+pub extern "C" fn set_gesture_trace(enabled: u32) {
+    if let Err(err) = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            shell.set_gesture_trace(enabled != 0);
+            Ok(())
+        })
+    }) {
+        set_error(err);
+    }
+}
+
+/// Newline-separated negotiation trace lines. Empty when tracing is off.
+#[no_mangle]
+pub extern "C" fn take_gesture_trace() -> u32 {
+    drain_pending().ok();
+    let lines = with_shell(|shell| Ok(shell.take_gesture_trace())).unwrap_or_default();
+    store_scratch(lines.join("\n").into_bytes())
+}
+
+#[no_mangle]
 pub extern "C" fn gesture_pending() -> i32 {
     drain_pending().ok();
     with_shell(|shell| Ok(shell.gestures_pending()))

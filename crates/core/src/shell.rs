@@ -510,6 +510,14 @@ impl Shell {
         self.take_gesture_events()
     }
 
+    pub fn set_gesture_trace(&mut self, enabled: bool) {
+        self.recognizer.set_trace(enabled);
+    }
+
+    pub fn take_gesture_trace(&mut self) -> Vec<String> {
+        self.recognizer.take_trace()
+    }
+
     /// Whether timers still need `advance_gestures` calls.
     pub fn gestures_pending(&self) -> bool {
         self.recognizer.pending()
@@ -626,6 +634,20 @@ impl Shell {
         }
         if outcome.changed() {
             self.paint_dirty.set(true);
+        }
+        if self.recognizer.is_tracing() {
+            let trace = outcome;
+            self.recognizer.trace(|| {
+                format!(
+                    "scroll consumed x={} y={} remaining x={} y={} truncated x={} y={}",
+                    trace.consumed_x,
+                    trace.consumed_y,
+                    trace.remaining_x,
+                    trace.remaining_y,
+                    trace.truncated_x,
+                    trace.truncated_y
+                )
+            });
         }
         outcome
     }

@@ -115,6 +115,8 @@ pub struct GestureDecl {
     pub target: u32,
     pub kind: GestureKind,
     pub config: GestureConfig,
+    /// Incremented on every accepted configuration update.
+    pub version: u32,
     pub events: [u32; 10],
 }
 
@@ -326,6 +328,8 @@ pub struct Recognizer {
     next_sequence: u32,
     events: Vec<GestureEvent>,
     scroll_out: Vec<ScrollRequest>,
+    trace_on: bool,
+    trace_lines: Vec<String>,
 }
 
 impl Default for Recognizer {
@@ -345,6 +349,8 @@ impl Recognizer {
             next_sequence: 0,
             events: Vec::new(),
             scroll_out: Vec::new(),
+            trace_on: false,
+            trace_lines: Vec::new(),
         }
     }
 
@@ -374,6 +380,7 @@ impl Recognizer {
             target,
             kind,
             config: GestureConfig::defaults(kind),
+            version: 1,
             events: [0; 10],
         });
         Ok(())
@@ -390,6 +397,7 @@ impl Recognizer {
             .and_then(Option::as_mut)
             .ok_or_else(|| format!("unknown gesture {id}"))?;
         let kind = decl.kind;
+        decl.version = decl.version.wrapping_add(1);
         let config = &mut decl.config;
         match (kind, key) {
             (_, "enabled") => config.enabled = value.as_bool()?,
@@ -514,6 +522,29 @@ impl Recognizer {
         self.sequence.is_some() || self.pending_tap.is_some()
     }
 
+    /// Optional, default-off negotiation trace. Strings are only built while
+    /// tracing is enabled.
+    pub fn set_trace(&mut self, enabled: bool) {
+        self.trace_on = enabled;
+        if !enabled {
+            self.trace_lines.clear();
+        }
+    }
+
+    pub fn is_tracing(&self) -> bool {
+        self.trace_on
+    }
+
+    pub fn trace(&mut self, line: impl FnOnce() -> String) {
+        if self.trace_on {
+            self.trace_lines.push(line());
+        }
+    }
+
+    pub fn take_trace(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.trace_lines)
+    }
+
     /// Drop the live sequence and emit cancel for any winner. Timers clear;
     /// buffered reserved deltas are discarded.
     pub fn cancel(&mut self, reason: u8) {
@@ -562,11 +593,20 @@ impl Recognizer {
                 accepts.push(index);
             }
         }
-        for index in accepts {
+        for index in accepts.into_iter().take(1) {
             if let Some(cand) = seq.cands.get_mut(index) {
                 if cand.state == CandState::Pending {
                     cand.state = CandState::Accepted;
                     cand.last_t = now_ms;
+                }
+            }
+            let won = seq.cands[index].decl;
+            for cand in &mut seq.cands {
+                if cand.decl != won
+                    && cand.kind == GestureKind::LongPress
+                    && cand.state == CandState::Pending
+                {
+                    cand.state = CandState::Failed;
                 }
             }
             let id = seq.cands[index].decl;
@@ -855,8 +895,11 @@ impl Recognizer {
             decls,
             sequence,
             events,
+            trace_on,
+            trace_lines,
             ..
         } = self;
+        let trace_on = *trace_on;
         let Some(seq) = sequence.as_mut() else {
             return;
         };
@@ -888,6 +931,18 @@ impl Recognizer {
                     if config.direction != 0 && !direction_matches(config.direction, config.axis, dx, dy)
                     {
                         cand.state = CandState::Failed;
+                        let id = cand.decl;
+                        let target = decls
+                            .get(id as usize)
+                            .and_then(Option::as_ref)
+                            .map(|decl| decl.target)
+                            .unwrap_or(0);
+                        if trace_on {
+                            trace_lines.push(format!(
+                                "seq {} gesture {id} target {target} fail direction",
+                                seq.id
+                            ));
+                        }
                         continue;
                     }
                     if config.fail_cross_distance.is_finite()
@@ -895,6 +950,13 @@ impl Recognizer {
                         && cross.abs() > config.fail_cross_distance
                     {
                         cand.state = CandState::Failed;
+                        let id = cand.decl;
+                        if trace_on {
+                            trace_lines.push(format!(
+                                "seq {} gesture {id} fail cross-distance",
+                                seq.id
+                            ));
+                        }
                         continue;
                     }
                     if main.abs() < config.min_distance {
@@ -902,6 +964,10 @@ impl Recognizer {
                     }
                     if seq.axes_owned & bit != 0 {
                         cand.state = CandState::Failed;
+                        let id = cand.decl;
+                        if trace_on {
+                            trace_lines.push(format!("seq {} gesture {id} fail axis-taken", seq.id));
+                        }
                         continue;
                     }
                     let dt = (time_ms - cand.last_t).max(1.0) as f32;
@@ -945,6 +1011,12 @@ impl Recognizer {
                 event.velocity_x = vx;
                 event.velocity_y = vy;
             });
+            if trace_on {
+                trace_lines.push(format!(
+                    "seq {} gesture {id} target {target} accept axes={}",
+                    seq.id, seq.axes_owned
+                ));
+            }
         }
         let mut updates = Vec::new();
         for (index, cand) in seq.cands.iter_mut().enumerate() {
@@ -1097,8 +1169,11 @@ impl Recognizer {
             decls,
             sequence,
             scroll_out,
+            trace_on,
+            trace_lines,
             ..
         } = self;
+        let trace_on = *trace_on;
         let Some(seq) = sequence.as_mut() else {
             return;
         };
@@ -1125,6 +1200,12 @@ impl Recognizer {
             }
             if seq.reserved & bit != 0 {
                 seq.buffer[axis] += delta;
+                if trace_on {
+                    trace_lines.push(format!(
+                        "seq {} axis {axis} reserve buffer {}",
+                        seq.id, seq.buffer[axis]
+                    ));
+                }
                 continue;
             }
             // Scrolling starting on an axis beats a still-pending pan.
@@ -1240,7 +1321,13 @@ impl Recognizer {
     }
 
     fn up(&mut self, input: PointerInput) {
-        let Some(seq) = &mut self.sequence else {
+        let Self {
+            decls,
+            sequence,
+            events,
+            ..
+        } = self;
+        let Some(seq) = sequence.as_mut() else {
             return;
         };
         {
@@ -1264,6 +1351,25 @@ impl Recognizer {
             if in_pair {
                 seq.pair.retain(|pointer| pointer.id != input.id);
                 seq.dead = true;
+                let accepted: Vec<u32> = seq
+                    .cands
+                    .iter()
+                    .filter(|cand| cand.state == CandState::Accepted)
+                    .map(|cand| cand.decl)
+                    .collect();
+                for id in accepted {
+                    let target = decls
+                        .get(id as usize)
+                        .and_then(Option::as_ref)
+                        .map(|decl| decl.target)
+                        .unwrap_or(0);
+                    push_event(events, decls, id, SLOT_CANCEL, seq.id, input.time_ms, |event| {
+                        event.target = target;
+                        event.x = input.x;
+                        event.y = input.y;
+                        event.reason = REASON_SECOND_POINTER;
+                    });
+                }
             }
         } else if seq.pair.first().is_some_and(|pointer| pointer.id == input.id) {
             self.finish_single(input.time_ms, input.x, input.y);
@@ -1504,15 +1610,17 @@ impl Recognizer {
         if seq.transform_decl == Some(id) {
             seq.transform_decl = None;
             seq.dead = true;
-            let target = decls
-                .get(id as usize)
-                .and_then(Option::as_ref)
-                .map(|decl| decl.target)
-                .unwrap_or(0);
-            push_event(events, decls, id, SLOT_CANCEL, seq.id, time, |event| {
-                event.target = target;
-                event.reason = reason;
-            });
+            if !canceled {
+                let target = decls
+                    .get(id as usize)
+                    .and_then(Option::as_ref)
+                    .map(|decl| decl.target)
+                    .unwrap_or(0);
+                push_event(events, decls, id, SLOT_CANCEL, seq.id, time, |event| {
+                    event.target = target;
+                    event.reason = reason;
+                });
+            }
         }
         if press_cancel {
             seq.press_active = false;
@@ -1579,8 +1687,11 @@ impl Recognizer {
             decls,
             sequence,
             scroll_out,
+            trace_on,
+            trace_lines,
             ..
         } = self;
+        let trace_on = *trace_on;
         let Some(seq) = sequence.as_mut() else {
             return;
         };
@@ -1604,8 +1715,23 @@ impl Recognizer {
             }
             let buffered = seq.buffer[axis];
             seq.buffer[axis] = 0.0;
+            if seq.axes_owned & bit != 0 {
+                if trace_on {
+                    trace_lines.push(format!(
+                        "seq {} axis {axis} accept drops buffered {buffered}",
+                        seq.id
+                    ));
+                }
+                continue;
+            }
             if buffered.abs() < f32::EPSILON {
                 continue;
+            }
+            if trace_on {
+                trace_lines.push(format!(
+                    "seq {} axis {axis} replay buffered {buffered}",
+                    seq.id
+                ));
             }
             let amount = -buffered;
             let (dx, dy) = if axis == 0 {
@@ -2025,6 +2151,26 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.slot == SLOT_START && event.gesture == 3));
+    }
+
+    #[test]
+    fn an_accepted_pan_discards_its_reserved_delta() {
+        let mut rec = Recognizer::new();
+        rec.spawn(2, 10, GestureKind::Pan, 0).unwrap();
+        rec.bind(2, SLOT_START, 4).unwrap();
+        rec.set_prop(2, "axis", &Value::String("x".into())).unwrap();
+        rec.set_prop(2, "minDistance", &Value::Int(100)).unwrap();
+        rec.set_prop(2, "reserveScroll", &Value::String("x".into()))
+            .unwrap();
+        rec.pointer(down(0.0, 0.0, &[10, 1]));
+        rec.pointer(mv(10.0, 0.0, 10.0));
+        assert!(rec.drain_scroll().is_empty());
+        rec.pointer(mv(110.0, 0.0, 20.0));
+        assert!(rec
+            .drain_events()
+            .iter()
+            .any(|event| event.slot == SLOT_START));
+        assert!(rec.drain_scroll().is_empty());
     }
 
     #[test]
