@@ -704,10 +704,36 @@ export function when(cond, thenBranch, elseBranch) {
     branch = { parent: parentHandle, handles: [], gestures: [] };
   };
   const render = () => {
+    const anchors = new Map();
+    for (const gesture of branch.gestures) {
+      const target = gestureParentOf.get(gesture);
+      const list = gestureOrderOfTarget.get(target);
+      const index = list ? list.indexOf(gesture) : -1;
+      if (index >= 0) anchors.set(target, Math.min(anchors.get(target) ?? index, index));
+    }
     disposeBranch();
     const next = condFn() ? thenBranch : elseBranch;
     if (typeof next !== "function") return;
     branch = renderAt(parentHandle, anchorIndex(parentHandle, anchor), next);
+    for (const [target, at] of anchors) {
+      const list = gestureOrderOfTarget.get(target);
+      if (!list) continue;
+      const created = [...new Set(branch.gestures)].filter(
+        (gesture) => gestureParentOf.get(gesture) === target,
+      );
+      for (let offset = 0; offset < created.length; offset += 1) {
+        const gesture = created[offset];
+        const from = list.indexOf(gesture);
+        if (from < 0) continue;
+        const to = Math.min(at + offset, list.length - 1);
+        if (from === to) continue;
+        list.splice(from, 1);
+        list.splice(to, 0, gesture);
+        if (api.move_gesture(gesture, target, to) !== 0) {
+          throw new Error(api.error() || "move gesture failed");
+        }
+      }
+    }
   };
   runBinding(addBinding(render, anchor));
   return anchor;
