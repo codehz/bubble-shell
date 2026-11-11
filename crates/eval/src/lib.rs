@@ -6,11 +6,12 @@
 //! build. Device painters stay outside this crate: a later host driver can
 //! implement the same steps.
 
+mod device;
 mod driver;
 mod report;
 mod suite;
 
-pub use driver::{HostRequest, Session};
+pub use device::{android, ios};
 pub use report::{Check, Probe, ScenarioReport, SuiteReport};
 pub use suite::m1;
 

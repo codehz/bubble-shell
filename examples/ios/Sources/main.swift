@@ -255,11 +255,22 @@ final class AppDriver {
     func finish() {
         let samples = max(frames - 5, 1)
         let average = frameMs / Double(samples)
-        let ok = nodeText(3) == "Count: 0" && bubble_faults() > 0 && hangFrames >= 10 && average < 20 && bubble_font_epoch() > 0
-        let text = "ok=\(ok) avg_ms=\(String(format: "%.2f", average)) hang_frames=\(hangFrames) faults=\(bubble_faults()) epoch=\(bubble_font_epoch()) text=\(nodeText(3))\n"
-        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("m1-result.txt")
-        try? text.data(using: .utf8)?.write(to: url)
-        NSLog("bubble %@", text)
+        let text = nodeText(3)
+        let checks: [(String, Bool, String)] = [
+            ("remount text", text == "Count: 0", text),
+            ("faults", bubble_faults() > 0, "\(bubble_faults())"),
+            ("frames during hang", hangFrames >= 10, "\(hangFrames)"),
+            ("frame budget", average < 20, String(format: "%.2f", average)),
+            ("font epoch", bubble_font_epoch() > 0, "\(bubble_font_epoch())"),
+        ]
+        let ok = checks.allSatisfy { $0.1 }
+        let body = checks.map { name, passed, detail in
+            #"{"name":"\#(name)","ok":\#(passed),"detail":"\#(detail)"}"#
+        }.joined(separator: ",")
+        let json = #"{"suite":"m1.ios","ok":\#(ok),"checks":[\#(body)]}"#
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("m1-result.json")
+        try? json.data(using: .utf8)?.write(to: url)
+        NSLog("BUBBLE_EVAL %@", json)
     }
 }
 

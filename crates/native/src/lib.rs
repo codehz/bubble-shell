@@ -586,6 +586,62 @@ mod android {
     }
 
     #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_nodeText<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        handle: jint,
+    ) -> JString<'a> {
+        let mut buf = [0 as std::os::raw::c_char; 256];
+        let code = super::bubble_node_text(handle as u32, buf.as_mut_ptr(), buf.len() as u32);
+        let text = if code == 0 {
+            unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
+        } else {
+            String::new()
+        };
+        env.new_string(text).unwrap_or_else(|_| env.new_string("").unwrap())
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_nodeBox<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        handle: jint,
+    ) -> jni::objects::JFloatArray<'a> {
+        let (mut x, mut y, mut w, mut h) = (0.0f32, 0.0, 0.0, 0.0);
+        let _ = super::bubble_node_box(handle as u32, &mut x, &mut y, &mut w, &mut h);
+        let array = env.new_float_array(4).expect("float array");
+        let _ = env.set_float_array_region(&array, 0, &[x, y, w, h]);
+        array
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_postEval<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        source: JString<'a>,
+    ) {
+        let Ok(source) = env.get_string(&source) else { return };
+        let source = super::CString_from(&source.to_string_lossy());
+        super::bubble_post_eval(source.as_ptr());
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_faults<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+    ) -> jint {
+        super::bubble_faults() as jint
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_generation<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+    ) -> jint {
+        super::bubble_generation() as jint
+    }
+
+    #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_fontEpoch<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,

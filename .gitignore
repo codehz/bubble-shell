@@ -3,3 +3,4 @@
 examples/web/bundle/
 examples/android/build/
 examples/android/debug.keystore
+examples/ios/BubbleShell.app/

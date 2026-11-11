@@ -13,5 +13,10 @@ object BubbleNative {
     external fun scroll(x: Float, y: Float, dy: Float)
     external fun setVisible(visible: Int)
     external fun registerFont(family: String, data: ByteArray)
+    external fun nodeText(handle: Int): String
+    external fun nodeBox(handle: Int): FloatArray
+    external fun postEval(source: String)
+    external fun faults(): Int
+    external fun generation(): Int
     external fun fontEpoch(): Int
 }
