@@ -15,6 +15,7 @@ const gestureOrderOfTarget = new Map();
 const gestureParentOf = new Map();
 const gestureBindings = new Map();
 const gestureHandlerIds = new Map();
+const retiredGestureHandlers = new Map();
 const sugarTargets = new Set();
 const encoder = typeof TextEncoder === "function" ? new TextEncoder() : null;
 
@@ -395,8 +396,11 @@ function registerGesture(target, kind) {
   }
   list.push(id);
   gestureParentOf.set(id, target);
-  const collector = collectors[collectors.length - 1];
-  if (collector && collector.parent === target) collector.gestures.push(id);
+  // Nested If/Each branches can target the same surviving ancestor; every
+  // such scope must be able to dispose the declaration it created.
+  for (const collector of collectors) {
+    if (collector.parent === target) collector.gestures.push(id);
+  }
   return { id };
 }
 
@@ -590,7 +594,9 @@ function disposeGesture(id) {
   deactivateGestureBindings(id);
   const handlers = gestureHandlerIds.get(id);
   if (handlers) {
-    for (const handler of handlers) gestureHandlers.delete(handler);
+    // Keep the handlers alive until the cancel batch from the shell has been
+    // dispatched; otherwise a terminal notification would be dropped.
+    retiredGestureHandlers.set(id, handlers);
     gestureHandlerIds.delete(id);
   }
   const order = gestureOrderOfTarget.get(target);
@@ -849,6 +855,12 @@ export function dispatchGestureEvents(bytes) {
     fn(event);
   }
   if (ran) flush();
+  if (retiredGestureHandlers.size > 0) {
+    for (const ids of retiredGestureHandlers.values()) {
+      for (const handler of ids) gestureHandlers.delete(handler);
+    }
+    retiredGestureHandlers.clear();
+  }
   return events.length;
 }
 

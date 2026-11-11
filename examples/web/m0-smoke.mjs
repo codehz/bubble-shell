@@ -261,17 +261,46 @@ const firstFrameMs = performance.now() - started;
 textOf(first, "Count: 0");
 const button = first.find((cmd) => cmd.tag === 1 && cmd.color === 0xff3b82f6);
 if (!button) throw new Error("increment button was not painted");
+function pumpGestures() {
+  let len = exports.take_gesture_events();
+  while (len > 0) {
+    dispatchGestureEvents(new Uint8Array(memory().buffer, exports.scratch_ptr(), len).slice());
+    len = exports.take_gesture_events();
+  }
+}
+
+function sendPointer(action, id, x, y, time) {
+  if (exports.pointer(action, id, x, y, time, 0, action === 2 || action === 3 ? 0 : 1) !== 0) {
+    throw new Error(error() || "pointer failed");
+  }
+  pumpGestures();
+}
+
 const x = button.x + button.w / 2;
 const y = button.y + button.h / 2;
-if (exports.pointer(0, 1, x, y, 0, 0, 1) !== 0) throw new Error(error() || "pointer down failed");
-if (exports.pointer(2, 1, x, y, 20, 0, 0) !== 0) throw new Error(error() || "pointer up failed");
-let len = exports.take_gesture_events();
-if (len === 0) throw new Error("tap produced no gesture events");
-while (len > 0) {
-  dispatchGestureEvents(new Uint8Array(memory().buffer, exports.scratch_ptr(), len).slice());
-  len = exports.take_gesture_events();
-}
+sendPointer(0, 1, x, y, 0);
+sendPointer(2, 1, x, y, 20);
 textOf(paintList(), "Count: 1");
+
+const pad = paintList().find((cmd) => cmd.tag === 1 && cmd.color === 0xff222222);
+if (!pad) throw new Error("gesture pad was not painted");
+const px = pad.x + pad.w / 2;
+const py = pad.y + pad.h / 2;
+sendPointer(0, 2, px, py, 100);
+sendPointer(2, 2, px, py, 120);
+textOf(paintList(), "tap");
+sendPointer(0, 3, px, py, 1000);
+if (exports.tick(1500) !== 0) throw new Error(error() || "tick failed");
+pumpGestures();
+textOf(paintList(), "long");
+sendPointer(2, 3, px, py, 1600);
+textOf(paintList(), "long");
+sendPointer(0, 4, px - 30, py, 2000);
+sendPointer(1, 4, px, py, 2010);
+sendPointer(1, 4, px + 20, py, 2020);
+textOf(paintList(), "pan 50");
+sendPointer(2, 4, px + 20, py, 2030);
+textOf(paintList(), "pan end");
 
 const before = textOf(paintList(), "Alpha");
 const scrolled = exports.scroll_wheel(before.x + 4, before.y + 4, 0, 80);

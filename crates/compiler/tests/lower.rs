@@ -28,6 +28,30 @@ fn lowers_a_signal_text_binding() {
 }
 
 #[test]
+fn lowers_gesture_virtual_nodes_and_dynamic_config() {
+    let js = compile(
+        r#"
+        import { mount, signal, Text, View, PanGesture, TransformGesture } from "bubble";
+        function App() {
+          const editing = signal(false);
+          const update = () => {};
+          return (
+            <View>
+              <PanGesture axis="x" minDistance={12} enabled={editing()} onUpdate={update} />
+              <TransformGesture pan pinch rotate onUpdate={update} />
+              <Text>Body</Text>
+            </View>
+          );
+        }
+        mount(App);
+        "#,
+    )
+    .unwrap();
+    assert!(js.contains("primitive(\"PanGesture\", {axis: \"x\", minDistance: 12, enabled: dynamic(() => editing()), onUpdate: update}, () => {"));
+    assert!(js.contains("primitive(\"TransformGesture\", {pan: true, pinch: true, rotate: true, onUpdate: update}, () => {"));
+}
+
+#[test]
 fn lowers_component_props_children_and_conditionals() {
     let js = compile(
         r#"
