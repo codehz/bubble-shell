@@ -103,6 +103,8 @@ final class BubbleView: UIView {
             return CGFloat(Float(bitPattern: bits))
         }
         guard let count = u32() else { return }
+        var alpha: CGFloat = 1
+        var alphas: [CGFloat] = []
         for _ in 0..<count {
             guard let tag = paint.indices.contains(cursor) ? paint[cursor] : nil else { return }
             cursor += 1
@@ -126,6 +128,15 @@ final class BubbleView: UIView {
                 ctx.clip(to: CGRect(x: x, y: y, width: w, height: h))
             case 4:
                 ctx.restoreGState()
+            case 5:
+                guard let opacity = f32() else { return }
+                alphas.append(alpha)
+                alpha *= opacity
+                ctx.saveGState()
+                ctx.setAlpha(alpha)
+            case 6:
+                ctx.restoreGState()
+                alpha = alphas.popLast() ?? 1
             default:
                 return
             }

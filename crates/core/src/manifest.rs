@@ -33,7 +33,10 @@ pub fn validate_bundle_hashes(manifest_json: &str, files: &[(&str, &[u8])]) -> R
     for entry in &manifest.files {
         if entry.path.is_empty()
             || entry.path.starts_with('/')
-            || entry.path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+            || entry
+                .path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
         {
             return Err(format!("illegal bundle path {}", entry.path));
         }

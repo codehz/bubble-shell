@@ -6,10 +6,11 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use bubble_ffi::{
-    bubble_create, bubble_destroy, bubble_eval, bubble_faults, bubble_finish_request, bubble_font_count,
-    bubble_font_epoch, bubble_frame, bubble_generation, bubble_last_error, bubble_load, bubble_node_box,
-    bubble_node_text, bubble_pointer_down, bubble_poll_request, bubble_post_eval, bubble_register_font,
-    bubble_scroll, bubble_scroll_of, bubble_set_visible, bubble_status,
+    bubble_create, bubble_destroy, bubble_eval, bubble_faults, bubble_finish_request,
+    bubble_font_count, bubble_font_epoch, bubble_frame, bubble_generation, bubble_last_error,
+    bubble_load, bubble_node_box, bubble_node_text, bubble_pointer_down, bubble_poll_request,
+    bubble_post_eval, bubble_register_font, bubble_scroll, bubble_scroll_of, bubble_set_visible,
+    bubble_status,
 };
 
 fn c_string(text: &str) -> Result<CString, String> {
@@ -45,7 +46,11 @@ impl Session {
     pub fn load(&mut self, manifest_json: &str, entry: &[u8]) -> Result<(), String> {
         let manifest = c_string(manifest_json)?;
         let code = unsafe { bubble_load(manifest.as_ptr(), entry.as_ptr(), entry.len() as u32) };
-        if code != 0 { Err(last_error()) } else { Ok(()) }
+        if code != 0 {
+            Err(last_error())
+        } else {
+            Ok(())
+        }
     }
 
     pub fn frame(&mut self, width: f32, height: f32) -> Result<Vec<u8>, String> {
@@ -95,7 +100,11 @@ impl Session {
     pub fn node_box(&mut self, handle: u32) -> Result<(f32, f32, f32, f32), String> {
         let (mut x, mut y, mut w, mut h) = (0.0, 0.0, 0.0, 0.0);
         let code = unsafe { bubble_node_box(handle, &mut x, &mut y, &mut w, &mut h) };
-        if code != 0 { Err(last_error()) } else { Ok((x, y, w, h)) }
+        if code != 0 {
+            Err(last_error())
+        } else {
+            Ok((x, y, w, h))
+        }
     }
     pub fn eval(&mut self, source: &str) -> Result<String, String> {
         let source = c_string(source)?;
@@ -159,8 +168,16 @@ impl Session {
         }
         Ok(Some(HostRequest {
             id,
-            method: unsafe { CStr::from_ptr(method.as_ptr()).to_string_lossy().into_owned() },
-            params: unsafe { CStr::from_ptr(params.as_ptr()).to_string_lossy().into_owned() },
+            method: unsafe {
+                CStr::from_ptr(method.as_ptr())
+                    .to_string_lossy()
+                    .into_owned()
+            },
+            params: unsafe {
+                CStr::from_ptr(params.as_ptr())
+                    .to_string_lossy()
+                    .into_owned()
+            },
         }))
     }
 
@@ -171,7 +188,11 @@ impl Session {
     }
 
     /// Poll `pred` until it is true or `timeout` elapses. Sleeps 10ms.
-    pub fn wait_until(&mut self, timeout: Duration, mut pred: impl FnMut(&mut Self) -> bool) -> bool {
+    pub fn wait_until(
+        &mut self,
+        timeout: Duration,
+        mut pred: impl FnMut(&mut Self) -> bool,
+    ) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
             if pred(self) {
@@ -191,7 +212,11 @@ pub fn frame_detached(width: f32, height: f32) -> Result<(), String> {
     let mut paint = ptr::null();
     let mut len = 0u32;
     let code = unsafe { bubble_frame(width, height, &mut paint, &mut len) };
-    if code != 0 { Err(last_error()) } else { Ok(()) }
+    if code != 0 {
+        Err(last_error())
+    } else {
+        Ok(())
+    }
 }
 
 impl Drop for Session {

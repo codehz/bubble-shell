@@ -4,10 +4,11 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use bubble_ffi::{
-    bubble_create, bubble_destroy, bubble_eval, bubble_faults, bubble_finish_request, bubble_font_count,
-    bubble_font_epoch, bubble_frame, bubble_generation, bubble_last_error, bubble_load, bubble_node_box,
-    bubble_node_text, bubble_pointer_down, bubble_poll_request, bubble_post_eval, bubble_register_font,
-    bubble_scroll, bubble_scroll_of, bubble_set_visible, bubble_status,
+    bubble_create, bubble_destroy, bubble_eval, bubble_faults, bubble_finish_request,
+    bubble_font_count, bubble_font_epoch, bubble_frame, bubble_generation, bubble_last_error,
+    bubble_load, bubble_node_box, bubble_node_text, bubble_pointer_down, bubble_poll_request,
+    bubble_post_eval, bubble_register_font, bubble_scroll, bubble_scroll_of, bubble_set_visible,
+    bubble_status,
 };
 
 // The C ABI owns one process-global shell. Cargo runs tests in one process in
@@ -15,7 +16,9 @@ use bubble_ffi::{
 static SHELL: Mutex<()> = Mutex::new(());
 
 fn exclusive() -> MutexGuard<'static, ()> {
-    SHELL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SHELL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn c(text: &str) -> CString {
@@ -27,20 +30,31 @@ fn error() -> String {
     if ptr.is_null() {
         return String::new();
     }
-    unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned()
+    unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn text(handle: u32) -> String {
     let mut buf = [0i8; 256];
     let code = bubble_node_text(handle, buf.as_mut_ptr(), buf.len() as u32);
     assert_eq!(code, 0, "{}", error());
-    unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
+    unsafe { CStr::from_ptr(buf.as_ptr()) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn status() -> String {
     let mut buf = [0i8; 64];
-    assert_eq!(bubble_status(buf.as_mut_ptr(), buf.len() as u32), 0, "{}", error());
-    unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
+    assert_eq!(
+        bubble_status(buf.as_mut_ptr(), buf.len() as u32),
+        0,
+        "{}",
+        error()
+    );
+    unsafe { CStr::from_ptr(buf.as_ptr()) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn try_eval(source: &str) -> Result<String, String> {
@@ -50,7 +64,9 @@ fn try_eval(source: &str) -> Result<String, String> {
     if code != 0 {
         return Err(error());
     }
-    Ok(unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned())
+    Ok(unsafe { CStr::from_ptr(buf.as_ptr()) }
+        .to_string_lossy()
+        .into_owned())
 }
 
 fn eval(source: &str) -> String {
@@ -73,11 +89,21 @@ fn counter_tap_scroll_and_font_epoch() {
     load_counter();
     let mut paint = ptr::null();
     let mut len = 0u32;
-    assert_eq!(bubble_frame(320.0, 180.0, &mut paint, &mut len), 0, "{}", error());
+    assert_eq!(
+        bubble_frame(320.0, 180.0, &mut paint, &mut len),
+        0,
+        "{}",
+        error()
+    );
     assert!(len > 16, "paint bytes {len}");
     assert_eq!(text(3), "Count: 0");
     let (mut x, mut y, mut w, mut h) = (0.0, 0.0, 0.0, 0.0);
-    assert_eq!(bubble_node_box(4, &mut x, &mut y, &mut w, &mut h), 0, "{}", error());
+    assert_eq!(
+        bubble_node_box(4, &mut x, &mut y, &mut w, &mut h),
+        0,
+        "{}",
+        error()
+    );
     assert!(w > 0.0 && h > 0.0, "button box {x},{y} {w}x{h}");
     let generation = bubble_generation();
     bubble_pointer_down(x + w / 2.0, y + h / 2.0);
@@ -85,7 +111,11 @@ fn counter_tap_scroll_and_font_epoch() {
     while bubble_generation() == generation && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_ne!(bubble_generation(), generation, "tap did not reach the script");
+    assert_ne!(
+        bubble_generation(),
+        generation,
+        "tap did not reach the script"
+    );
     assert_eq!(text(3), "Count: 1");
     let (mut sx, mut sy, mut sw, mut sh) = (0.0, 0.0, 0.0, 0.0);
     assert_eq!(bubble_node_box(6, &mut sx, &mut sy, &mut sw, &mut sh), 0);
@@ -128,7 +158,10 @@ fn dead_loop_is_interrupted_without_blocking_frames() {
     });
     assert!(bubble_faults() >= 1, "status {}", status());
     assert_eq!(status(), "running");
-    assert!(frames.load(std::sync::atomic::Ordering::Relaxed) >= 10, "ui frames stalled");
+    assert!(
+        frames.load(std::sync::atomic::Ordering::Relaxed) >= 10,
+        "ui frames stalled"
+    );
     assert_eq!(eval("1 + 1"), "2");
     bubble_destroy();
 }
@@ -140,7 +173,10 @@ fn timers_pause_while_hidden_and_host_calls_roundtrip() {
     assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
     load_counter();
     bubble_set_visible(0);
-    assert_eq!(eval("globalThis.ticks = 0; setTimeout(() => { globalThis.ticks = 1 }, 0); 'armed'"), "armed");
+    assert_eq!(
+        eval("globalThis.ticks = 0; setTimeout(() => { globalThis.ticks = 1 }, 0); 'armed'"),
+        "armed"
+    );
     assert_eq!(eval("String(globalThis.ticks)"), "0");
     bubble_set_visible(1);
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -168,9 +204,13 @@ fn timers_pause_while_hidden_and_host_calls_roundtrip() {
         params.len() as u32,
     );
     assert_eq!(polled, 1, "{}", error());
-    let method = unsafe { CStr::from_ptr(method.as_ptr()) }.to_string_lossy().into_owned();
+    let method = unsafe { CStr::from_ptr(method.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
     assert_eq!(method, "toast");
-    let params = unsafe { CStr::from_ptr(params.as_ptr()) }.to_string_lossy().into_owned();
+    let params = unsafe { CStr::from_ptr(params.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
     assert_eq!(params, "{\"message\":\"hi\"}");
     let payload = c("{\"ok\":true}");
     bubble_finish_request(id, 1, payload.as_ptr());
@@ -196,12 +236,20 @@ fn a_second_shell_or_a_bad_manifest_is_rejected() {
     assert!(error().contains("already exists"), "{}", error());
     let manifest = c(r#"{"entry":"main.js","files":[]}"#);
     let entry = b"x";
-    assert_eq!(bubble_load(manifest.as_ptr(), entry.as_ptr(), entry.len() as u32), 1);
+    assert_eq!(
+        bubble_load(manifest.as_ptr(), entry.as_ptr(), entry.len() as u32),
+        1
+    );
     assert!(!error().is_empty());
     load_counter();
     let mut paint = ptr::null();
     let mut len = 0u32;
-    assert_eq!(bubble_frame(320.0, 180.0, &mut paint, &mut len), 0, "{}", error());
+    assert_eq!(
+        bubble_frame(320.0, 180.0, &mut paint, &mut len),
+        0,
+        "{}",
+        error()
+    );
     assert_eq!(text(3), "Count: 0");
     bubble_destroy();
 }

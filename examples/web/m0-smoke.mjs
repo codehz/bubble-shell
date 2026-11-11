@@ -5,6 +5,7 @@ const wasmBytes = readFileSync(new URL("./bubble.wasm", import.meta.url));
 const manifest = readFileSync(new URL("./bundle/manifest.json", import.meta.url));
 const main = readFileSync(new URL("./bundle/main.js", import.meta.url));
 const decoder = new TextDecoder();
+const encoder = new TextEncoder();
 
 const started = performance.now();
 const { instance } = await WebAssembly.instantiate(wasmBytes, {
@@ -90,6 +91,17 @@ setApi({
   },
   dispose: exports.dispose,
   move_node: exports.move_node,
+  create_node: exports.create_node,
+  set_prop(handle, key, tag, number, text) {
+    const keyBytes = encoder.encode(key);
+    const textBytes = tag === 4 ? encoder.encode(text) : new Uint8Array(0);
+    const keyPtr = copyBytes(keyBytes);
+    const textPtr = textBytes.length ? copyBytes(textBytes) : 0;
+    const code = exports.set_prop(handle, keyPtr, keyBytes.length, tag, number, textPtr, textBytes.length);
+    exports.dealloc(keyPtr, keyBytes.length);
+    if (textBytes.length) exports.dealloc(textPtr, textBytes.length);
+    return code;
+  },
   bind_event: exports.bind_event,
   queue_text: exports.queue_text,
   commit: exports.commit,
@@ -150,6 +162,11 @@ function paintList() {
       const h = f32();
       cmds.push({ tag, x, y, w, h });
     } else if (tag === 4) {
+      cmds.push({ tag });
+    } else if (tag === 5) {
+      const opacity = f32();
+      cmds.push({ tag, opacity });
+    } else if (tag === 6) {
       cmds.push({ tag });
     } else {
       throw new Error(`unknown paint tag ${tag}`);

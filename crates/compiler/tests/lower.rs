@@ -55,9 +55,9 @@ fn lowers_component_props_children_and_conditionals() {
     .unwrap();
     assert!(js.contains("function Card(props) {"));
     assert!(js.contains("component(Card, {title: enabled ? \"On\" : \"Off\", background: enabled ? 4279312947 : 4282668390}, () => {"));
-    assert!(js.contains("text({}, () => props.title);"));
+    assert!(js.contains("primitive(\"Text\", {}, () => props.title);"));
     assert!(js.contains("props.children();"));
-    assert!(js.contains("text({}, \"Body\");"));
+    assert!(js.contains("primitive(\"Text\", {}, \"Body\");"));
 }
 
 #[test]
@@ -81,5 +81,5 @@ fn lowers_conditional_children_and_each() {
     .unwrap();
     assert!(js.contains("when(() => (show), () => {"));
     assert!(js.contains("when(() => (show), () => {"));
-    assert!(js.contains("each(() => items(), (item) => item.id, (item) => text({}, () => item.name));"));
+    assert!(js.contains("each(() => items(), (item) => item.id, (item) => primitive(\"Text\", {}, () => item.name));"));
 }

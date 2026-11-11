@@ -93,7 +93,7 @@ assets/
 
 - handle 是 u32，0 保留；脚本线程在实例作用域内单调分配。
 - 动态节点由脚本分配 handle 后发送 `Spawn`，载荷带完整 `BNOD` 描述符；Rust 校验后插入树。
-- 模板挂载仍返回 `模板 ID → handle`；`CreateNode` 用于从模板派生节点，当前主要保留给测试与后续组件复用。
+- 模板注册返回 `模板 ID`；`CreateNode` 按模板 ID 在父节点下派生节点。当前 `CreateNode` 只派生单个节点，不复制子树；运行时已暴露 `createNode`，模板二进制由宿主经 `register_template` ABI 注入。
 
 ### Op 列表
 
@@ -116,7 +116,7 @@ assets/
 | `SetEditingValue` | handle, epoch, value, selection | 受控文本 |
 | `SetAsset` | handle, contentHash | 图片/资源 |
 
-当前 M1 实现覆盖 `Spawn`、`SpawnAt`、`CreateNode`、`DisposeNode`、`MoveNode`、`SetText`、`SetPropColor`、`BindEvent`、`ScrollTo`；其余 op 随组件/输入/更新里程碑补齐。脚本线程只产 op，UI/帧线程在 drain 时应用。
+当前 M1 实现覆盖 `Spawn`、`SpawnAt`、`CreateNode`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`；其余 op（含 `InsertNode`、动画、语义）随组件/输入/更新里程碑补齐。脚本线程只产 op，UI/帧线程在 drain 时应用。
 
 `when` / `each` 采用透明 fragment：在父节点下创建一个零尺寸、无背景、无 handler 的 anchor，分支/列表节点通过 `SpawnAt` 插到 anchor 之前；重跑时先 `DisposeNode`，再用 `MoveNode` 复用 keyed item。组件树不额外增加布局包装节点。
 
@@ -191,9 +191,9 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 每帧：
 
 1. 取出最新 op 批次（合并中间批次，保留结构 op 顺序）。
-2. 应用 op，标记布局/绘制脏区。
+2. 应用 op，失效 paint cache。
 3. 布局（含平台文本测量）。
-4. 绘制脏区。
+4. 绘制：当前整表面重绘；矩形脏区未实现。
 5. 同步语义树/ARIA 覆盖层。
 6. 上报帧统计。
 
@@ -220,6 +220,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 - Taffy 负责 flex、绝对定位、尺寸约束。
 - 文本与图片通过 measure 回调参与布局。
 - 脏节点向上/向下传播；布局结果缓存到帧结束。
+- `Shell::paint` 缓存已生成的 `PaintCmd` 列表；op、viewport、layout、滚动变化会使缓存失效。当前只避免重复遍历树，宿主仍清整表面；矩形脏区与静态子树缓存待在绘制层实现。
 
 ### 文本
 

@@ -21,6 +21,7 @@ pub struct NodeDesc {
     pub color: u32,
     pub font_size: f32,
     pub radius: f32,
+    pub opacity: f32,
     pub handler: u32,
     /// `None` is auto.
     pub width: Option<f32>,
@@ -43,6 +44,7 @@ impl NodeDesc {
             color: 0xffff_ffff,
             font_size: 16.0,
             radius: 0.0,
+            opacity: 1.0,
             handler: 0,
             width: None,
             height: None,
@@ -73,7 +75,8 @@ impl NodeDesc {
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         let mut cur = Cursor::new(bytes);
         let mut magic = [0u8; 4];
-        cur.read_exact(&mut magic).map_err(|_| "truncated node header")?;
+        cur.read_exact(&mut magic)
+            .map_err(|_| "truncated node header")?;
         if &magic != b"BNOD" {
             return Err("bad node magic".into());
         }
@@ -98,6 +101,7 @@ impl NodeDesc {
         out.extend_from_slice(&self.color.to_le_bytes());
         push_f32(out, self.font_size);
         push_f32(out, self.radius);
+        push_f32(out, self.opacity);
         out.extend_from_slice(&self.handler.to_le_bytes());
         push_f32(out, self.width.unwrap_or(f32::NAN));
         push_f32(out, self.height.unwrap_or(f32::NAN));
@@ -129,6 +133,7 @@ impl NodeDesc {
         let color = read_u32(cur)?;
         let font_size = read_f32(cur)?;
         let radius = read_f32(cur)?;
+        let opacity = read_f32(cur)?;
         let handler = read_u32(cur)?;
         let width = optional_f32(read_f32(cur)?);
         let height = optional_f32(read_f32(cur)?);
@@ -145,7 +150,8 @@ impl NodeDesc {
         }
         let text_len = read_u32(cur)? as usize;
         let mut text_bytes = vec![0u8; text_len];
-        cur.read_exact(&mut text_bytes).map_err(|_| "truncated node text")?;
+        cur.read_exact(&mut text_bytes)
+            .map_err(|_| "truncated node text")?;
         let text = String::from_utf8(text_bytes).map_err(|_| "text is not utf-8")?;
         Ok(Self {
             id,
@@ -156,6 +162,7 @@ impl NodeDesc {
             color,
             font_size,
             radius,
+            opacity,
             handler,
             width,
             height,
@@ -211,7 +218,10 @@ impl Template {
                 return Err("root parent must be 0".into());
             }
             if index > 0 && (node.parent == 0 || node.parent >= node.id) {
-                return Err(format!("node {} parent {} is missing", node.id, node.parent));
+                return Err(format!(
+                    "node {} parent {} is missing",
+                    node.id, node.parent
+                ));
             }
             nodes.push(node);
         }

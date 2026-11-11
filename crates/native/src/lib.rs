@@ -33,16 +33,7 @@ struct HostFns {
 unsafe impl Send for HostFns {}
 unsafe impl Sync for HostFns {}
 
-type MeasureFn = extern "C" fn(
-    *mut c_void,
-    *const u8,
-    u32,
-    f32,
-    f32,
-    i32,
-    *mut f32,
-    *mut f32,
-);
+type MeasureFn = extern "C" fn(*mut c_void, *const u8, u32, f32, f32, i32, *mut f32, *mut f32);
 
 /// Taffy's compact lengths contain tag bits that are not heap pointers in this
 /// build. The tree is only locked by the caller/frame thread.
@@ -100,7 +91,9 @@ static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
 static ERROR_C: Mutex<Option<CString>> = Mutex::new(None);
 
 fn engine() -> Result<EngineRef, String> {
-    let guard = ENGINE.lock().map_err(|_| "engine lock poisoned".to_string())?;
+    let guard = ENGINE
+        .lock()
+        .map_err(|_| "engine lock poisoned".to_string())?;
     let engine = guard.as_ref().ok_or("shell is not created")?;
     Ok(EngineRef {
         shared: Arc::clone(&engine.shared),
@@ -130,8 +123,14 @@ fn catch<T>(body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 /// swaps in a fresh root before the new batch is applied.
 fn drain_pending(shared: &Shared) -> Result<(), String> {
     let reset = shared.reset.swap(false, Ordering::SeqCst);
-    let mut queue = shared.pending.lock().map_err(|_| "op queue poisoned".to_string())?;
-    let mut shell = shared.shell.lock().map_err(|_| "tree lock poisoned".to_string())?;
+    let mut queue = shared
+        .pending
+        .lock()
+        .map_err(|_| "op queue poisoned".to_string())?;
+    let mut shell = shared
+        .shell
+        .lock()
+        .map_err(|_| "tree lock poisoned".to_string())?;
     if reset {
         *shell = Shell::blank()?;
     }
@@ -144,7 +143,9 @@ fn drain_pending(shared: &Shared) -> Result<(), String> {
 #[no_mangle]
 pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
     let result = catch(|| {
-        let mut slot = ENGINE.lock().map_err(|_| "engine lock poisoned".to_string())?;
+        let mut slot = ENGINE
+            .lock()
+            .map_err(|_| "engine lock poisoned".to_string())?;
         if slot.is_some() {
             return Err("a shell already exists".into());
         }
@@ -198,7 +199,11 @@ pub extern "C" fn bubble_destroy() {
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_load(manifest_json: *const c_char, entry: *const u8, entry_len: u32) -> i32 {
+pub extern "C" fn bubble_load(
+    manifest_json: *const c_char,
+    entry: *const u8,
+    entry_len: u32,
+) -> i32 {
     let result = catch(|| {
         let engine = engine()?;
         let manifest = cstr(manifest_json)?;
@@ -207,31 +212,73 @@ pub extern "C" fn bubble_load(manifest_json: *const c_char, entry: *const u8, en
         }
         let bytes = unsafe { std::slice::from_raw_parts(entry, entry_len as usize) }.to_vec();
         {
-            let mut pending = engine.shared.pending.lock().map_err(|_| "op queue poisoned".to_string())?;
+            let mut pending = engine
+                .shared
+                .pending
+                .lock()
+                .map_err(|_| "op queue poisoned".to_string())?;
             pending.clear();
-            let mut shell = engine.shared.shell.lock().map_err(|_| "tree lock poisoned".to_string())?;
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
             *shell = Shell::blank()?;
             engine.shared.reset.store(false, Ordering::SeqCst);
         }
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
         engine
             .tx
-            .send(Cmd::Load { manifest, entry: bytes, ack: ack_tx })
+            .send(Cmd::Load {
+                manifest,
+                entry: bytes,
+                ack: ack_tx,
+            })
             .map_err(|_| "script thread is gone".to_string())?;
-        ack_rx.recv().map_err(|_| "script thread dropped the load".to_string())?
+        ack_rx
+            .recv()
+            .map_err(|_| "script thread dropped the load".to_string())?
     });
     finish(result)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_frame(width: f32, height: f32, paint: *mut *const u8, paint_len: *mut u32) -> i32 {
+pub extern "C" fn bubble_register_template(data: *const u8, len: u32) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        if data.is_null() && len != 0 {
+            return Err("template pointer is null".into());
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(data, len as usize) };
+        drain_pending(&engine.shared)?;
+        let mut shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        shell.register_template(bytes)
+    });
+    finish(result)
+}
+
+#[no_mangle]
+pub extern "C" fn bubble_frame(
+    width: f32,
+    height: f32,
+    paint: *mut *const u8,
+    paint_len: *mut u32,
+) -> i32 {
     let result = catch(|| {
         let engine = engine()?;
         drain_pending(&engine.shared)?;
         if let Ok(mut viewport) = engine.shared.viewport.lock() {
             *viewport = (width, height);
         }
-        let mut shell = engine.shared.shell.lock().map_err(|_| "tree lock poisoned".to_string())?;
+        let mut shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
         shell.set_viewport(width, height);
         let host = &engine.shared.host;
         shell.layout(&mut |text, font_size, max_width| {
@@ -256,7 +303,11 @@ pub extern "C" fn bubble_frame(width: f32, height: f32, paint: *mut *const u8, p
         })?;
         let bytes = encode_paint(&shell.paint());
         drop(shell);
-        let mut slot = engine.shared.paint.lock().map_err(|_| "paint lock poisoned".to_string())?;
+        let mut slot = engine
+            .shared
+            .paint
+            .lock()
+            .map_err(|_| "paint lock poisoned".to_string())?;
         *slot = bytes;
         if !paint.is_null() {
             unsafe { *paint = slot.as_ptr() };
@@ -275,11 +326,18 @@ pub extern "C" fn bubble_pointer_down(x: f32, y: f32) {
         let engine = engine()?;
         drain_pending(&engine.shared)?;
         let handler = {
-            let shell = engine.shared.shell.lock().map_err(|_| "tree lock poisoned".to_string())?;
+            let shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
             shell.tap(x, y)
         };
         if let Some(handler) = handler {
-            engine.tx.send(Cmd::Press { handler }).map_err(|_| "script thread is gone".to_string())?;
+            engine
+                .tx
+                .send(Cmd::Press { handler })
+                .map_err(|_| "script thread is gone".to_string())?;
         }
         Ok(())
     });
@@ -290,7 +348,11 @@ pub extern "C" fn bubble_scroll(x: f32, y: f32, dy: f32) {
     let _ = catch(|| {
         let engine = engine()?;
         drain_pending(&engine.shared)?;
-        let mut shell = engine.shared.shell.lock().map_err(|_| "tree lock poisoned".to_string())?;
+        let mut shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
         shell.scroll_wheel(x, y, dy);
         Ok(())
     });
@@ -313,7 +375,11 @@ pub extern "C" fn bubble_register_font(family: *const c_char, data: *const u8, l
             return Err("font pointer is null".into());
         }
         let bytes = unsafe { std::slice::from_raw_parts(data, len as usize) }.to_vec();
-        let mut fonts = engine.shared.fonts.lock().map_err(|_| "font lock poisoned".to_string())?;
+        let mut fonts = engine
+            .shared
+            .fonts
+            .lock()
+            .map_err(|_| "font lock poisoned".to_string())?;
         fonts.push((family, bytes));
         engine.shared.epoch.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -323,14 +389,23 @@ pub extern "C" fn bubble_register_font(family: *const c_char, data: *const u8, l
 
 #[no_mangle]
 pub extern "C" fn bubble_font_epoch() -> u32 {
-    engine().map(|engine| engine.shared.epoch.load(Ordering::Relaxed)).unwrap_or(0)
+    engine()
+        .map(|engine| engine.shared.epoch.load(Ordering::Relaxed))
+        .unwrap_or(0)
 }
 
 #[no_mangle]
 pub extern "C" fn bubble_font_count() -> u32 {
     engine()
         .ok()
-        .and_then(|engine| engine.shared.fonts.lock().ok().map(|fonts| fonts.len() as u32))
+        .and_then(|engine| {
+            engine
+                .shared
+                .fonts
+                .lock()
+                .ok()
+                .map(|fonts| fonts.len() as u32)
+        })
         .unwrap_or(0)
 }
 
@@ -338,23 +413,45 @@ pub extern "C" fn bubble_font_count() -> u32 {
 pub extern "C" fn bubble_node_text(handle: u32, buf: *mut c_char, cap: u32) -> i32 {
     copy_text(buf, cap, |engine| {
         drain_pending(&engine.shared)?;
-        let shell = engine.shared.shell.lock().map_err(|_| "tree lock poisoned".to_string())?;
+        let shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
         shell.text(handle).map(|text| text.to_owned())
     })
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_node_box(handle: u32, x: *mut f32, y: *mut f32, w: *mut f32, h: *mut f32) -> i32 {
+pub extern "C" fn bubble_node_box(
+    handle: u32,
+    x: *mut f32,
+    y: *mut f32,
+    w: *mut f32,
+    h: *mut f32,
+) -> i32 {
     let result = catch(|| {
         let engine = engine()?;
         drain_pending(&engine.shared)?;
-        let shell = engine.shared.shell.lock().map_err(|_| "tree lock poisoned".to_string())?;
+        let shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
         let (nx, ny, nw, nh) = shell.node_box(handle)?;
         unsafe {
-            if !x.is_null() { *x = nx; }
-            if !y.is_null() { *y = ny; }
-            if !w.is_null() { *w = nw; }
-            if !h.is_null() { *h = nh; }
+            if !x.is_null() {
+                *x = nx;
+            }
+            if !y.is_null() {
+                *y = ny;
+            }
+            if !w.is_null() {
+                *w = nw;
+            }
+            if !h.is_null() {
+                *h = nh;
+            }
         }
         Ok(())
     });
@@ -381,9 +478,14 @@ pub extern "C" fn bubble_eval(source: *const c_char, buf: *mut c_char, cap: u32)
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
         engine
             .tx
-            .send(Cmd::Eval { source, ack: Some(ack_tx) })
+            .send(Cmd::Eval {
+                source,
+                ack: Some(ack_tx),
+            })
             .map_err(|_| "script thread is gone".to_string())?;
-        let text = ack_rx.recv().map_err(|_| "script thread dropped eval".to_string())??;
+        let text = ack_rx
+            .recv()
+            .map_err(|_| "script thread dropped eval".to_string())??;
         write_buf(buf, cap, &text);
         Ok(())
     });
@@ -406,24 +508,37 @@ pub extern "C" fn bubble_post_eval(source: *const c_char) {
 
 #[no_mangle]
 pub extern "C" fn bubble_generation() -> u32 {
-    engine().map(|engine| engine.shared.generation.load(Ordering::Relaxed)).unwrap_or(0)
+    engine()
+        .map(|engine| engine.shared.generation.load(Ordering::Relaxed))
+        .unwrap_or(0)
 }
 
 #[no_mangle]
 pub extern "C" fn bubble_faults() -> u32 {
-    engine().map(|engine| engine.shared.faults.load(Ordering::Relaxed)).unwrap_or(0)
+    engine()
+        .map(|engine| engine.shared.faults.load(Ordering::Relaxed))
+        .unwrap_or(0)
 }
 
 #[no_mangle]
 pub extern "C" fn bubble_status(buf: *mut c_char, cap: u32) -> i32 {
     copy_text(buf, cap, |engine| {
-        engine.shared.status.lock().map(|status| status.clone()).map_err(|_| "status lock poisoned".into())
+        engine
+            .shared
+            .status
+            .lock()
+            .map(|status| status.clone())
+            .map_err(|_| "status lock poisoned".into())
     })
 }
 
 #[no_mangle]
 pub extern "C" fn bubble_last_error() -> *const c_char {
-    ERROR_C.lock().ok().and_then(|slot| slot.as_ref().map(|text| text.as_ptr())).unwrap_or(std::ptr::null())
+    ERROR_C
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(|text| text.as_ptr()))
+        .unwrap_or(std::ptr::null())
 }
 
 #[no_mangle]
@@ -436,7 +551,11 @@ pub extern "C" fn bubble_poll_request(
 ) -> i32 {
     let result = catch(|| {
         let engine = engine()?;
-        let mut queue = engine.shared.requests.lock().map_err(|_| "request lock poisoned".to_string())?;
+        let mut queue = engine
+            .shared
+            .requests
+            .lock()
+            .map_err(|_| "request lock poisoned".to_string())?;
         let Some(request) = queue.pop_front() else {
             return Ok(0);
         };
@@ -460,10 +579,18 @@ pub extern "C" fn bubble_poll_request(
 pub extern "C" fn bubble_finish_request(id: u32, ok: i32, result: *const c_char) {
     let settled = catch(|| {
         let engine = engine()?;
-        let payload = if result.is_null() { String::new() } else { cstr(result)? };
+        let payload = if result.is_null() {
+            String::new()
+        } else {
+            cstr(result)?
+        };
         engine
             .tx
-            .send(Cmd::Settle { id, ok: ok != 0, payload })
+            .send(Cmd::Settle {
+                id,
+                ok: ok != 0,
+                payload,
+            })
             .map_err(|_| "script thread is gone".to_string())?;
         Ok(())
     });
@@ -511,7 +638,11 @@ fn write_buf(buf: *mut c_char, cap: u32, text: &str) {
     }
 }
 
-fn copy_text(buf: *mut c_char, cap: u32, body: impl FnOnce(EngineRef) -> Result<String, String>) -> i32 {
+fn copy_text(
+    buf: *mut c_char,
+    cap: u32,
+    body: impl FnOnce(EngineRef) -> Result<String, String>,
+) -> i32 {
     let result = catch(|| {
         let engine = engine()?;
         let text = body(engine)?;
@@ -563,9 +694,13 @@ mod android {
         manifest: JString<'a>,
         entry: JByteArray<'a>,
     ) -> jint {
-        let Ok(manifest) = env.get_string(&manifest) else { return 1 };
+        let Ok(manifest) = env.get_string(&manifest) else {
+            return 1;
+        };
         let manifest = super::CString_from(&manifest.to_string_lossy());
-        let Ok(bytes) = env.convert_byte_array(entry) else { return 1 };
+        let Ok(bytes) = env.convert_byte_array(entry) else {
+            return 1;
+        };
         super::bubble_load(manifest.as_ptr(), bytes.as_ptr().cast(), bytes.len() as u32)
     }
 
@@ -579,7 +714,9 @@ mod android {
         let mut ptr = ptr::null();
         let mut len = 0u32;
         if super::bubble_frame(width, height, &mut ptr, &mut len) != 0 || ptr.is_null() {
-            return env.new_byte_array(0).unwrap_or_else(|_| JObject::null().into());
+            return env
+                .new_byte_array(0)
+                .unwrap_or_else(|_| JObject::null().into());
         }
         let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
         let Ok(array) = env.byte_array_from_slice(bytes) else {
@@ -634,9 +771,13 @@ mod android {
         family: JString<'a>,
         data: JByteArray<'a>,
     ) {
-        let Ok(family) = env.get_string(&family) else { return };
+        let Ok(family) = env.get_string(&family) else {
+            return;
+        };
         let family = super::CString_from(&family.to_string_lossy());
-        let Ok(bytes) = env.convert_byte_array(data) else { return };
+        let Ok(bytes) = env.convert_byte_array(data) else {
+            return;
+        };
         super::bubble_register_font(family.as_ptr(), bytes.as_ptr().cast(), bytes.len() as u32);
     }
 
@@ -649,11 +790,14 @@ mod android {
         let mut buf = [0 as std::os::raw::c_char; 256];
         let code = super::bubble_node_text(handle as u32, buf.as_mut_ptr(), buf.len() as u32);
         let text = if code == 0 {
-            unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
+            unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
+                .to_string_lossy()
+                .into_owned()
         } else {
             String::new()
         };
-        env.new_string(text).unwrap_or_else(|_| env.new_string("").unwrap())
+        env.new_string(text)
+            .unwrap_or_else(|_| env.new_string("").unwrap())
     }
 
     #[no_mangle]
@@ -675,7 +819,9 @@ mod android {
         _class: JClass<'a>,
         source: JString<'a>,
     ) {
-        let Ok(source) = env.get_string(&source) else { return };
+        let Ok(source) = env.get_string(&source) else {
+            return;
+        };
         let source = super::CString_from(&source.to_string_lossy());
         super::bubble_post_eval(source.as_ptr());
     }
@@ -717,5 +863,6 @@ mod android {
 
 #[cfg(target_os = "android")]
 fn CString_from(text: &str) -> std::ffi::CString {
-    std::ffi::CString::new(text.replace('\0', " ")).unwrap_or_else(|_| std::ffi::CString::new("").unwrap())
+    std::ffi::CString::new(text.replace('\0', " "))
+        .unwrap_or_else(|_| std::ffi::CString::new("").unwrap())
 }

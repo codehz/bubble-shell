@@ -29,7 +29,7 @@ pub fn compile(source: &str) -> Result<String, String> {
 
 fn emit_program(program: &Program<'_>) -> Result<String, String> {
     let mut out = String::from(
-        "import { signal, view, text, mount, component, when, each } from \"../runtime.js\";\n\n",
+        "import { signal, primitive, mount, component, when, each } from \"../runtime.js\";\n\n",
     );
     for stmt in &program.body {
         match stmt {
@@ -82,7 +82,9 @@ fn emit_mount(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
     if call.arguments.len() != 1 {
         return Err("mount takes one component".into());
     }
-    let arg = call.arguments[0].as_expression().ok_or("mount argument is not an expression")?;
+    let arg = call.arguments[0]
+        .as_expression()
+        .ok_or("mount argument is not an expression")?;
     match arg {
         Expression::Identifier(id) => {
             out.push_str("mount(");
@@ -105,7 +107,10 @@ fn emit_body(out: &mut String, body: &FunctionBody<'_>, indent: usize) -> Result
                     let BindingPatternKind::BindingIdentifier(name) = &item.id.kind else {
                         return Err("only plain const bindings are supported".into());
                     };
-                    let init = item.init.as_ref().ok_or("const is missing an initializer")?;
+                    let init = item
+                        .init
+                        .as_ref()
+                        .ok_or("const is missing an initializer")?;
                     pad(out, indent);
                     out.push_str("const ");
                     out.push_str(&name.name);
@@ -162,7 +167,9 @@ fn emit_expr(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
                 if index > 0 {
                     out.push_str(", ");
                 }
-                let expr = arg.as_expression().ok_or("spread arguments are not supported")?;
+                let expr = arg
+                    .as_expression()
+                    .ok_or("spread arguments are not supported")?;
                 emit_expr(out, expr)?;
             }
             out.push(')');
@@ -174,7 +181,9 @@ fn emit_expr(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
             out.push_str(&member.property.name);
             Ok(())
         }
-        Expression::ComputedMemberExpression(_) => Err("computed member access is not supported".into()),
+        Expression::ComputedMemberExpression(_) => {
+            Err("computed member access is not supported".into())
+        }
         Expression::ArrowFunctionExpression(arrow) => {
             out.push('(');
             for (index, param) in arrow.params.items.iter().enumerate() {
@@ -188,7 +197,8 @@ fn emit_expr(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
             }
             out.push_str(") => ");
             if arrow.expression {
-                let Some(Statement::ExpressionStatement(stmt)) = arrow.body.statements.first() else {
+                let Some(Statement::ExpressionStatement(stmt)) = arrow.body.statements.first()
+                else {
                     return Err("arrow expression body is missing".into());
                 };
                 emit_expr(out, &stmt.expression)?;
@@ -269,8 +279,9 @@ fn emit_jsx(out: &mut String, element: &JSXElement<'_>) -> Result<(), String> {
         return Ok(());
     }
     let text = name == "Text";
-    out.push_str(if text { "text" } else { "view" });
-    out.push('(');
+    out.push_str("primitive(");
+    out.push_str(&js_string(if text { "Text" } else { "View" }));
+    out.push_str(", ");
     emit_attrs(out, &element.opening_element.attributes)?;
     out.push_str(", ");
     if text {
@@ -309,7 +320,10 @@ fn emit_attrs(out: &mut String, attributes: &[JSXAttributeItem<'_>]) -> Result<(
         let JSXAttributeItem::Attribute(attr) = attr else {
             return Err("JSX spread is not supported".into());
         };
-        let key = attr.name.as_identifier().ok_or("JSX names must be identifiers")?;
+        let key = attr
+            .name
+            .as_identifier()
+            .ok_or("JSX names must be identifiers")?;
         if wrote {
             out.push_str(", ");
         }
@@ -356,7 +370,9 @@ fn emit_children(out: &mut String, children: &[JSXChild<'_>]) -> Result<(), Stri
                     }
                 }
                 if let Expression::ConditionalExpression(conditional) = expr {
-                    if is_renderable(&conditional.consequent) || is_renderable(&conditional.alternate) {
+                    if is_renderable(&conditional.consequent)
+                        || is_renderable(&conditional.alternate)
+                    {
                         out.push_str("  when(() => (");
                         emit_expr(out, &conditional.test)?;
                         out.push_str("), ");
@@ -412,7 +428,9 @@ fn emit_text_content(out: &mut String, children: &[JSXChild<'_>]) -> Result<(), 
             other => parts.push(other),
         }
     }
-    let dynamic = parts.iter().any(|child| matches!(child, JSXChild::ExpressionContainer(_)));
+    let dynamic = parts
+        .iter()
+        .any(|child| matches!(child, JSXChild::ExpressionContainer(_)));
     if !dynamic {
         let mut text = String::new();
         for child in parts {
@@ -460,7 +478,9 @@ fn jsx_name(name: &JSXElementName<'_>) -> Result<String, String> {
         other if other.chars().next().is_some_and(char::is_uppercase) => {
             Ok(format!("component:{other}"))
         }
-        other => Err(format!("unknown primitive <{other}>; use View, Text, or a capitalized component")),
+        other => Err(format!(
+            "unknown primitive <{other}>; use View, Text, or a capitalized component"
+        )),
     }
 }
 

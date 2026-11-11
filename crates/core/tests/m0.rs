@@ -1,4 +1,7 @@
-use bubble_core::{encode, encode_set_prop_color, encode_set_text, validate_bundle_hashes, Kind, NodeDesc, Op, Shell, Template};
+use bubble_core::{
+    encode, encode_set_prop_color, encode_set_text, validate_bundle_hashes, Kind, NodeDesc, Op,
+    Shell, Template,
+};
 
 fn measure(text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
     let line = font_size * 1.2;
@@ -86,7 +89,10 @@ fn click_scroll_and_paint() {
     let (_x, y, w, h) = shell.node_box(3).unwrap();
     assert!(w > 0.0 && h > 0.0);
     let (lx, ly, _, lh) = shell.node_box(4).unwrap();
-    assert!(ly >= y && ly + lh <= y + h + 1.0, "label {ly} outside button {y} {h}");
+    assert!(
+        ly >= y && ly + lh <= y + h + 1.0,
+        "label {ly} outside button {y} {h}"
+    );
     assert!(shell.node_box(2).unwrap().1 < 20.0, "header double-padded");
     assert_eq!(shell.tap(lx + 1.0, ly + lh / 2.0), Some(1));
 
@@ -100,8 +106,12 @@ fn click_scroll_and_paint() {
     assert!(shell.scroll_of(5).unwrap() > 0.0);
 
     let paint = shell.paint();
-    assert!(paint.iter().any(|cmd| matches!(cmd, bubble_core::PaintCmd::Text { text, .. } if text == "Count: 0")));
-    assert!(paint.iter().any(|cmd| matches!(cmd, bubble_core::PaintCmd::PushClip { .. })));
+    assert!(paint
+        .iter()
+        .any(|cmd| matches!(cmd, bubble_core::PaintCmd::Text { text, .. } if text == "Count: 0")));
+    assert!(paint
+        .iter()
+        .any(|cmd| matches!(cmd, bubble_core::PaintCmd::PushClip { .. })));
 }
 #[test]
 fn create_prepends_and_refuses_a_retired_handle() {
@@ -125,7 +135,10 @@ fn create_prepends_and_refuses_a_retired_handle() {
     shell.apply_ops(&batch).unwrap();
     shell.layout(&mut measure).unwrap();
     assert_eq!(shell.text(handle).unwrap(), "Added 1");
-    assert!(shell.paint().iter().any(|cmd| matches!(cmd, bubble_core::PaintCmd::Text { text, .. } if text == "Added 1")));
+    assert!(shell
+        .paint()
+        .iter()
+        .any(|cmd| matches!(cmd, bubble_core::PaintCmd::Text { text, .. } if text == "Added 1")));
     shell
         .apply_ops(&encode(3, &[Op::DisposeNode { handle }]))
         .unwrap();
@@ -227,7 +240,13 @@ fn bind_event_hits_the_node_until_cleared() {
 fn scroll_to_clamps_and_rejects_a_plain_node() {
     let mut shell = laid_out();
     shell
-        .apply_ops(&encode(2, &[Op::ScrollTo { handle: 5, y: 10_000.0 }]))
+        .apply_ops(&encode(
+            2,
+            &[Op::ScrollTo {
+                handle: 5,
+                y: 10_000.0,
+            }],
+        ))
         .unwrap();
     let scrolled = shell.scroll_of(5).unwrap();
     assert!(scrolled > 0.0);
@@ -239,10 +258,6 @@ fn scroll_to_clamps_and_rejects_a_plain_node() {
         .apply_ops(&encode(4, &[Op::ScrollTo { handle: 2, y: 1.0 }]))
         .is_err());
 }
-
-
-
-
 
 #[test]
 fn manifest_checks_hashes_and_placeholder_signature() {
@@ -364,9 +379,9 @@ fn indexed_spawn_move_and_dispose_reorder_paint() {
     fn texts(shell: &Shell) -> Vec<String> {
         shell
             .paint()
-            .into_iter()
+            .iter()
             .filter_map(|cmd| match cmd {
-                bubble_core::PaintCmd::Text { text, .. } => Some(text),
+                bubble_core::PaintCmd::Text { text, .. } => Some(text.clone()),
                 _ => None,
             })
             .collect()
@@ -392,4 +407,78 @@ fn indexed_spawn_move_and_dispose_reorder_paint() {
     shell.apply_ops(&turn.commit().unwrap()).unwrap();
     assert_eq!(texts(&shell), vec!["B", "C"]);
     assert!(b < c);
+}
+
+#[test]
+fn generic_set_prop_updates_style_and_paint() {
+    use bubble_core::{Turn, Value};
+
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 120.0);
+    let mut turn = Turn::new();
+    let view = turn.spawn(NodeDesc::view(0, 1)).unwrap();
+    let label = turn.spawn(NodeDesc::text(0, view, "Hi")).unwrap();
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    shell.layout(&mut measure).unwrap();
+
+    turn.set_prop(view, "backgroundColor", Value::Int(0xff00_0000));
+    turn.set_prop(view, "width", Value::Float(50.0));
+    turn.set_prop(label, "color", Value::Int(0xffff_0000));
+    turn.set_prop(label, "fontSize", Value::Float(20.0));
+    turn.set_prop(view, "opacity", Value::Float(0.5));
+    let batch = turn.commit().unwrap();
+    let (_, ops) = bubble_core::decode_ops(&batch).unwrap();
+    assert_eq!(ops.len(), 5);
+    shell.apply_ops(&batch).unwrap();
+    shell.layout(&mut measure).unwrap();
+
+    assert_eq!(shell.node_box(view).unwrap().2, 50.0);
+    let paint = shell.paint();
+    assert!(paint.iter().any(|cmd| matches!(
+        cmd,
+        bubble_core::PaintCmd::Fill {
+            color: 0xff00_0000,
+            ..
+        }
+    )));
+    assert!(paint.iter().any(|cmd| matches!(cmd, bubble_core::PaintCmd::Text { color: 0xffff_0000, font_size, .. } if (*font_size - 20.0).abs() < f32::EPSILON)));
+    assert!(paint.iter().any(|cmd| matches!(cmd, bubble_core::PaintCmd::PushOpacity { opacity } if (*opacity - 0.5).abs() < f32::EPSILON)));
+    assert!(paint
+        .iter()
+        .any(|cmd| matches!(cmd, bubble_core::PaintCmd::PopOpacity)));
+    drop(paint);
+
+    turn.push(Op::SetProp {
+        handle: view,
+        key: "nope".into(),
+        value: Value::Null,
+    });
+    assert!(shell.apply_ops(&turn.commit().unwrap()).is_err());
+}
+
+#[test]
+fn registered_template_can_be_created_repeatedly() {
+    use bubble_core::{Turn, Value};
+
+    let template = Template {
+        nodes: vec![NodeDesc::text(1, 0, "T")],
+    };
+    let mut shell = Shell::blank().unwrap();
+    shell.register_template(&template.encode()).unwrap();
+    shell.set_viewport(100.0, 100.0);
+    let mut turn = Turn::new();
+    let first = turn.create_node(1, 1, 0).unwrap();
+    let second = turn.create_node(1, 1, 1).unwrap();
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    assert_eq!(shell.text(first).unwrap(), "T");
+    assert_eq!(shell.text(second).unwrap(), "T");
+    turn.set_prop(first, "color", Value::Int(0xffff_0000));
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    assert!(shell.paint().iter().any(|cmd| matches!(
+        cmd,
+        bubble_core::PaintCmd::Text {
+            color: 0xffff_0000,
+            ..
+        }
+    )));
 }

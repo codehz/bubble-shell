@@ -62,6 +62,8 @@ class BubbleView(context: Context) : View(context) {
         if (buffer.remaining() < 4) return
         val count = buffer.int
         val clips = ArrayDeque<Int>()
+        val opacities = ArrayDeque<Float>()
+        var alpha = 1f
         repeat(count) {
             if (!buffer.hasRemaining()) return
             when (buffer.get().toInt() and 0xff) {
@@ -102,6 +104,16 @@ class BubbleView(context: Context) : View(context) {
                 }
                 4 -> if (clips.isNotEmpty()) {
                     clips.removeLast()
+                    canvas.restore()
+                }
+                5 -> {
+                    val opacity = buffer.float
+                    opacities.addLast(alpha)
+                    alpha = (alpha * opacity).coerceIn(0f, 1f)
+                    canvas.saveLayerAlpha(null, (alpha * 255).toInt())
+                }
+                6 -> if (opacities.isNotEmpty()) {
+                    alpha = opacities.removeLast()
                     canvas.restore()
                 }
                 else -> return

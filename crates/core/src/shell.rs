@@ -1,9 +1,10 @@
 //! Retained tree. Taffy owns flex; this type owns scroll offsets, hit testing, and paint order.
 
+use std::cell::{Cell, Ref, RefCell};
 use std::collections::HashSet;
 
 use crate::ir::{Kind, NodeDesc, Template};
-use crate::ops::{decode_ops, Op};
+use crate::ops::{decode_ops, Op, Value};
 use taffy::prelude::*;
 use taffy::style::Overflow;
 use taffy::{compute_leaf_layout, NodeId, TaffyTree};
@@ -24,6 +25,7 @@ struct Node {
     color: u32,
     font_size: f32,
     radius: f32,
+    opacity: f32,
     handler: u32,
     width: Option<f32>,
     height: Option<f32>,
@@ -47,6 +49,8 @@ pub struct Shell {
     high_water: u32,
     taffy: TaffyTree<MeasureCtx>,
     viewport: Size<f32>,
+    paint_cache: RefCell<Vec<PaintCmd>>,
+    paint_dirty: Cell<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -74,6 +78,10 @@ pub enum PaintCmd {
         h: f32,
     },
     PopClip,
+    PushOpacity {
+        opacity: f32,
+    },
+    PopOpacity,
 }
 
 impl Shell {
@@ -94,6 +102,7 @@ impl Shell {
                     color: 0xffff_ffff,
                     font_size: 16.0,
                     radius: 0.0,
+                    opacity: 1.0,
                     handler: 0,
                     width: None,
                     height: None,
@@ -115,6 +124,8 @@ impl Shell {
             high_water: 1,
             taffy,
             viewport: Size::ZERO,
+            paint_cache: RefCell::new(Vec::new()),
+            paint_dirty: Cell::new(true),
         })
     }
 
@@ -172,6 +183,7 @@ impl Shell {
                 color: desc.color,
                 font_size: desc.font_size,
                 radius: desc.radius,
+                opacity: desc.opacity,
                 handler: desc.handler,
                 width: desc.width,
                 height: desc.height,
@@ -191,7 +203,11 @@ impl Shell {
         for id in 1..nodes.len() {
             let parent = nodes[id].as_ref().unwrap().parent;
             if parent != 0 {
-                nodes[parent as usize].as_mut().unwrap().children.push(id as u32);
+                nodes[parent as usize]
+                    .as_mut()
+                    .unwrap()
+                    .children
+                    .push(id as u32);
             }
         }
         for node in nodes.iter().flatten() {
@@ -215,11 +231,27 @@ impl Shell {
             high_water,
             taffy,
             viewport: Size::ZERO,
+            paint_cache: RefCell::new(Vec::new()),
+            paint_dirty: Cell::new(true),
         })
     }
 
     pub fn set_viewport(&mut self, width: f32, height: f32) {
-        self.viewport = Size { width, height };
+        if self.viewport.width != width || self.viewport.height != height {
+            self.viewport = Size { width, height };
+            self.paint_dirty.set(true);
+        }
+    }
+
+    /// Replace the node prototypes used by `CreateNode`. A template node can
+    /// be cloned with a new handle; child relationships are not cloned.
+    pub fn register_template(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let template = Template::decode(bytes)?;
+        if template.nodes.is_empty() {
+            return Err("template is empty".into());
+        }
+        self.prototypes = template.nodes;
+        Ok(())
     }
 
     pub fn apply_ops(&mut self, bytes: &[u8]) -> Result<u32, String> {
@@ -239,13 +271,9 @@ impl Shell {
                         .map_err(|err| err.to_string())?;
                 }
                 Op::SetPropColor { handle, key, rgba } => {
-                    let node = self.node_mut(handle)?;
-                    match key.as_str() {
-                        "color" => node.color = rgba,
-                        "backgroundColor" => node.background = rgba,
-                        other => return Err(format!("unsupported prop {other}")),
-                    }
+                    self.set_prop(handle, &key, &Value::Int(rgba as i64))?
                 }
+                Op::SetProp { handle, key, value } => self.set_prop(handle, &key, &value)?,
                 Op::CreateNode {
                     handle,
                     template_id,
@@ -253,7 +281,11 @@ impl Shell {
                     index,
                 } => self.create_node(handle, template_id, parent, index)?,
                 Op::DisposeNode { handle } => self.dispose_node(handle)?,
-                Op::MoveNode { handle, parent, index } => self.move_node(handle, parent, index)?,
+                Op::MoveNode {
+                    handle,
+                    parent,
+                    index,
+                } => self.move_node(handle, parent, index)?,
                 Op::BindEvent { handle, handler } => self.node_mut(handle)?.handler = handler,
                 Op::ScrollTo { handle, y } => self.scroll_to(handle, y)?,
                 Op::Spawn { desc } => self.spawn_desc(desc)?,
@@ -263,6 +295,7 @@ impl Shell {
                 }
             }
         }
+        self.paint_dirty.set(true);
         Ok(seq)
     }
 
@@ -298,23 +331,28 @@ impl Shell {
                 },
                 |inputs, _node, ctx, style| {
                     let measured = ctx.map(|ctx| (ctx.text.clone(), ctx.font_size));
-                    compute_leaf_layout(inputs, style, |_, _| 0.0, |known, available| {
-                        let Some((text, font_size)) = measured.as_ref() else {
-                            return Size::ZERO;
-                        };
-                        if let (Some(width), Some(height)) = (known.width, known.height) {
-                            return Size { width, height };
-                        }
-                        let max_width = match available.width {
-                            AvailableSpace::Definite(width) => Some(width),
-                            _ => known.width,
-                        };
-                        let (width, height) = measure(text, *font_size, max_width);
-                        Size {
-                            width: known.width.unwrap_or(width),
-                            height: known.height.unwrap_or(height),
-                        }
-                    })
+                    compute_leaf_layout(
+                        inputs,
+                        style,
+                        |_, _| 0.0,
+                        |known, available| {
+                            let Some((text, font_size)) = measured.as_ref() else {
+                                return Size::ZERO;
+                            };
+                            if let (Some(width), Some(height)) = (known.width, known.height) {
+                                return Size { width, height };
+                            }
+                            let max_width = match available.width {
+                                AvailableSpace::Definite(width) => Some(width),
+                                _ => known.width,
+                            };
+                            let (width, height) = measure(text, *font_size, max_width);
+                            Size {
+                                width: known.width.unwrap_or(width),
+                                height: known.height.unwrap_or(height),
+                            }
+                        },
+                    )
                 },
             )
             .map_err(|err| err.to_string())?;
@@ -325,7 +363,14 @@ impl Shell {
             .enumerate()
             .filter_map(|(index, node)| {
                 let node = node.as_ref()?;
-                Some((index, if node.scroll_y { self.max_scroll(node) } else { 0.0 }))
+                Some((
+                    index,
+                    if node.scroll_y {
+                        self.max_scroll(node)
+                    } else {
+                        0.0
+                    },
+                ))
             })
             .collect();
         for (index, limit) in limits {
@@ -335,15 +380,20 @@ impl Shell {
                 }
             }
         }
+        self.paint_dirty.set(true);
         Ok(())
     }
 
-    pub fn paint(&self) -> Vec<PaintCmd> {
-        let mut out = Vec::new();
-        if self.viewport.width > 0.0 {
-            self.paint_node(1, &mut out);
+    pub fn paint(&self) -> Ref<'_, Vec<PaintCmd>> {
+        if self.paint_dirty.get() {
+            let mut out = Vec::new();
+            if self.viewport.width > 0.0 {
+                self.paint_node(1, &mut out);
+            }
+            *self.paint_cache.borrow_mut() = out;
+            self.paint_dirty.set(false);
         }
-        out
+        self.paint_cache.borrow()
     }
 
     /// Handler on the hit node, or the nearest ancestor that has one.
@@ -366,6 +416,7 @@ impl Shell {
             return false;
         }
         node.scroll = next;
+        self.paint_dirty.set(true);
         true
     }
 
@@ -375,7 +426,58 @@ impl Shell {
         }
         let limit = self.max_scroll(self.node(id)?);
         self.node_mut(id)?.scroll = y.clamp(0.0, limit);
+        self.paint_dirty.set(true);
         Ok(())
+    }
+
+    fn set_prop(&mut self, id: u32, key: &str, value: &Value) -> Result<(), String> {
+        match key {
+            "color" => self.node_mut(id)?.color = value.as_u32()?,
+            "backgroundColor" => self.node_mut(id)?.background = value.as_u32()?,
+            "radius" => self.node_mut(id)?.radius = value.as_f32()?,
+            "opacity" => {
+                self.node_mut(id)?.opacity = value.as_f32()?.clamp(0.0, 1.0);
+            }
+            "fontSize" => {
+                let (text, font_size, taffy) = {
+                    let node = self.node_mut(id)?;
+                    node.font_size = value.as_f32()?;
+                    (node.text.clone(), node.font_size, node.taffy)
+                };
+                self.taffy
+                    .set_node_context(taffy, Some(MeasureCtx { text, font_size }))
+                    .map_err(|err| err.to_string())?;
+            }
+            "width" => self.node_mut(id)?.width = value.optional_f32()?,
+            "height" => self.node_mut(id)?.height = value.optional_f32()?,
+            "flexGrow" => self.node_mut(id)?.flex_grow = value.as_f32()?,
+            "flexShrink" => self.node_mut(id)?.flex_shrink = value.as_f32()?,
+            "scrollY" => self.node_mut(id)?.scroll_y = value.as_bool()?,
+            "row" => self.node_mut(id)?.row = value.as_bool()?,
+            other => return Err(format!("unsupported prop {other}")),
+        }
+        self.restyle(id)
+    }
+
+    fn restyle(&mut self, id: u32) -> Result<(), String> {
+        let (taffy, style) = {
+            let node = self.node(id)?;
+            (
+                node.taffy,
+                style_for(
+                    node.row,
+                    node.scroll_y,
+                    node.flex_grow,
+                    node.flex_shrink,
+                    node.width,
+                    node.height,
+                    node.padding,
+                ),
+            )
+        };
+        self.taffy
+            .set_style(taffy, style)
+            .map_err(|err| err.to_string())
     }
 
     pub fn node_box(&self, id: u32) -> Result<(f32, f32, f32, f32), String> {
@@ -408,7 +510,13 @@ impl Shell {
             .and_then(Option::as_mut)
             .ok_or_else(|| format!("bad handle {id}"))
     }
-    fn create_node(&mut self, handle: u32, template_id: u32, parent: u32, index: u32) -> Result<(), String> {
+    fn create_node(
+        &mut self,
+        handle: u32,
+        template_id: u32,
+        parent: u32,
+        index: u32,
+    ) -> Result<(), String> {
         let mut proto = self
             .prototypes
             .iter()
@@ -463,6 +571,7 @@ impl Shell {
             color: desc.color,
             font_size: desc.font_size,
             radius: desc.radius,
+            opacity: desc.opacity,
             handler: desc.handler,
             width: desc.width,
             height: desc.height,
@@ -478,12 +587,13 @@ impl Shell {
             w: 0.0,
             h: 0.0,
         });
-        self.node_mut(parent)?.children.insert(index as usize, handle);
+        self.node_mut(parent)?
+            .children
+            .insert(index as usize, handle);
         self.sync_children(parent)?;
         self.high_water = self.high_water.max(handle);
         Ok(())
     }
-
 
     fn dispose_node(&mut self, handle: u32) -> Result<(), String> {
         if handle <= 1 {
@@ -516,7 +626,9 @@ impl Shell {
             return Err(format!("index {index} past {dest_len} children"));
         }
         self.node_mut(old_parent)?.children.remove(pos);
-        self.node_mut(parent)?.children.insert(index as usize, handle);
+        self.node_mut(parent)?
+            .children
+            .insert(index as usize, handle);
         self.node_mut(handle)?.parent = parent;
         if same {
             self.sync_children(parent)?;
@@ -536,7 +648,6 @@ impl Shell {
         }
         false
     }
-
 
     fn destroy_subtree(&mut self, handle: u32) -> Result<(), String> {
         let children = self.node(handle)?.children.clone();
@@ -561,7 +672,6 @@ impl Shell {
             .set_children(parent_id, &taffy_children)
             .map_err(|err| err.to_string())
     }
-
 
     fn place(&mut self, id: u32, origin_x: f32, origin_y: f32) -> Result<(), String> {
         let taffy_id = self.node(id)?.taffy;
@@ -604,9 +714,13 @@ impl Shell {
         let text = node.text.clone();
         let color = node.color;
         let font_size = node.font_size;
+        let opacity = node.opacity.clamp(0.0, 1.0);
         let scroll_y = node.scroll_y;
         let children = node.children.clone();
         let pads = self.pads(id);
+        if opacity < 1.0 {
+            out.push(PaintCmd::PushOpacity { opacity });
+        }
         if background != 0 {
             out.push(PaintCmd::Fill {
                 x,
@@ -640,6 +754,9 @@ impl Shell {
         }
         if scroll_y {
             out.push(PaintCmd::PopClip);
+        }
+        if opacity < 1.0 {
+            out.push(PaintCmd::PopOpacity);
         }
     }
 
@@ -683,8 +800,12 @@ impl Shell {
         for child in children.iter().rev() {
             match self.hit(*child, x, y) {
                 Hit::Miss => {}
-                Hit::Inside { handler: Some(found) } => {
-                    return Hit::Inside { handler: Some(found) };
+                Hit::Inside {
+                    handler: Some(found),
+                } => {
+                    return Hit::Inside {
+                        handler: Some(found),
+                    };
                 }
                 Hit::Inside { handler: None } => {
                     return Hit::Inside {
@@ -742,7 +863,11 @@ fn style_for(
 ) -> Style {
     let mut style = Style::default();
     style.display = Display::Flex;
-    style.flex_direction = if row { FlexDirection::Row } else { FlexDirection::Column };
+    style.flex_direction = if row {
+        FlexDirection::Row
+    } else {
+        FlexDirection::Column
+    };
     style.flex_grow = flex_grow;
     style.flex_shrink = flex_shrink;
     style.size = Size {

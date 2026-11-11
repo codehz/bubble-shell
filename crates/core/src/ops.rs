@@ -7,9 +7,62 @@ use std::io::{Cursor, Read};
 use crate::ir::NodeDesc;
 
 #[derive(Clone, Debug, PartialEq)]
+pub enum Value {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
+}
+
+impl Value {
+    pub fn as_bool(&self) -> Result<bool, String> {
+        match self {
+            Value::Bool(value) => Ok(*value),
+            _ => Err("property value is not a bool".into()),
+        }
+    }
+
+    pub fn as_f32(&self) -> Result<f32, String> {
+        match self {
+            Value::Int(value) => Ok(*value as f32),
+            Value::Float(value) => Ok(*value as f32),
+            _ => Err("property value is not a number".into()),
+        }
+    }
+
+    pub fn optional_f32(&self) -> Result<Option<f32>, String> {
+        match self {
+            Value::Null => Ok(None),
+            other => Ok(Some(other.as_f32()?)),
+        }
+    }
+
+    pub fn as_u32(&self) -> Result<u32, String> {
+        match self {
+            Value::Int(value) if *value >= 0 && *value <= u32::MAX as i64 => Ok(*value as u32),
+            Value::Float(value) if *value >= 0.0 && *value <= u32::MAX as f64 => Ok(*value as u32),
+            _ => Err("property value is not a 32-bit unsigned integer".into()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Op {
-    SetPropColor { handle: u32, key: String, rgba: u32 },
-    SetText { handle: u32, text: String },
+    SetPropColor {
+        handle: u32,
+        key: String,
+        rgba: u32,
+    },
+    SetProp {
+        handle: u32,
+        key: String,
+        value: Value,
+    },
+    SetText {
+        handle: u32,
+        text: String,
+    },
     /// `template_id` selects the mounted template node's defaults.
     CreateNode {
         handle: u32,
@@ -17,21 +70,44 @@ pub enum Op {
         parent: u32,
         index: u32,
     },
-    DisposeNode { handle: u32 },
+    DisposeNode {
+        handle: u32,
+    },
     /// Final child index after the node is detached from its old parent.
-    MoveNode { handle: u32, parent: u32, index: u32 },
+    MoveNode {
+        handle: u32,
+        parent: u32,
+        index: u32,
+    },
     /// `handler` 0 clears the binding.
-    BindEvent { handle: u32, handler: u32 },
+    BindEvent {
+        handle: u32,
+        handler: u32,
+    },
     /// Instant vertical scroll. `y` is clamped to the container's range.
-    ScrollTo { handle: u32, y: f32 },
+    ScrollTo {
+        handle: u32,
+        y: f32,
+    },
     /// Full descriptor for a dynamic node. Appended under `desc.parent`.
-    Spawn { desc: NodeDesc },
+    Spawn {
+        desc: NodeDesc,
+    },
     /// Full descriptor inserted at `index` under `desc.parent`.
-    SpawnAt { desc: NodeDesc, index: u32 },
+    SpawnAt {
+        desc: NodeDesc,
+        index: u32,
+    },
 }
 
 pub fn encode_set_text(seq: u32, handle: u32, text: &str) -> Vec<u8> {
-    encode(seq, &[Op::SetText { handle, text: text.to_owned() }])
+    encode(
+        seq,
+        &[Op::SetText {
+            handle,
+            text: text.to_owned(),
+        }],
+    )
 }
 
 pub fn encode_set_prop_color(seq: u32, handle: u32, key: &str, rgba: u32) -> Vec<u8> {
@@ -66,6 +142,32 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.push(5);
                 payload.extend_from_slice(&rgba.to_le_bytes());
             }
+            Op::SetProp { handle, key, value } => {
+                let key_id = intern(key);
+                payload.push(10);
+                payload.extend_from_slice(&handle.to_le_bytes());
+                payload.extend_from_slice(&key_id.to_le_bytes());
+                match value {
+                    Value::Null => payload.push(0),
+                    Value::Bool(value) => {
+                        payload.push(1);
+                        payload.push(u8::from(*value));
+                    }
+                    Value::Int(value) => {
+                        payload.push(2);
+                        payload.extend_from_slice(&value.to_le_bytes());
+                    }
+                    Value::Float(value) => {
+                        payload.push(3);
+                        payload.extend_from_slice(&value.to_le_bytes());
+                    }
+                    Value::String(value) => {
+                        let value_id = intern(value);
+                        payload.push(4);
+                        payload.extend_from_slice(&value_id.to_le_bytes());
+                    }
+                }
+            }
             Op::SetText { handle, text } => {
                 let text_id = intern(text);
                 payload.push(2);
@@ -88,7 +190,11 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.push(4);
                 payload.extend_from_slice(&handle.to_le_bytes());
             }
-            Op::MoveNode { handle, parent, index } => {
+            Op::MoveNode {
+                handle,
+                parent,
+                index,
+            } => {
                 payload.push(5);
                 payload.extend_from_slice(&handle.to_le_bytes());
                 payload.extend_from_slice(&parent.to_le_bytes());
@@ -138,7 +244,8 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
 pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
     let mut cur = Cursor::new(bytes);
     let mut magic = [0u8; 4];
-    cur.read_exact(&mut magic).map_err(|_| "truncated op header")?;
+    cur.read_exact(&mut magic)
+        .map_err(|_| "truncated op header")?;
     if &magic != b"BSOP" {
         return Err("bad op magic".into());
     }
@@ -151,10 +258,12 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
     let table_len = read_u32(&mut cur)? as usize;
     let payload_len = read_u32(&mut cur)? as usize;
     let mut table_bytes = vec![0u8; table_len];
-    cur.read_exact(&mut table_bytes).map_err(|_| "truncated string table")?;
+    cur.read_exact(&mut table_bytes)
+        .map_err(|_| "truncated string table")?;
     let strings = parse_strings(&table_bytes)?;
     let mut payload = vec![0u8; payload_len];
-    cur.read_exact(&mut payload).map_err(|_| "truncated op payload")?;
+    cur.read_exact(&mut payload)
+        .map_err(|_| "truncated op payload")?;
     if cur.position() != bytes.len() as u64 {
         return Err("trailing op bytes".into());
     }
@@ -173,6 +282,28 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                 let rgba = read_u32(&mut payload_cur)?;
                 let key = strings.get(key_id).ok_or("prop key out of range")?.clone();
                 ops.push(Op::SetPropColor { handle, key, rgba });
+            }
+            10 => {
+                let handle = read_u32(&mut payload_cur)?;
+                let key_id = read_u32(&mut payload_cur)? as usize;
+                let key = strings.get(key_id).ok_or("prop key out of range")?.clone();
+                let value = match read_u8(&mut payload_cur)? {
+                    0 => Value::Null,
+                    1 => Value::Bool(read_u8(&mut payload_cur)? != 0),
+                    2 => Value::Int(read_i64(&mut payload_cur)?),
+                    3 => Value::Float(read_f64(&mut payload_cur)?),
+                    4 => {
+                        let value_id = read_u32(&mut payload_cur)? as usize;
+                        Value::String(
+                            strings
+                                .get(value_id)
+                                .ok_or("prop string out of range")?
+                                .clone(),
+                        )
+                    }
+                    other => return Err(format!("unsupported prop value tag {other}")),
+                };
+                ops.push(Op::SetProp { handle, key, value });
             }
             2 => {
                 let handle = read_u32(&mut payload_cur)?;
@@ -248,6 +379,18 @@ fn read_u32(cur: &mut Cursor<&[u8]>) -> Result<u32, String> {
     let mut buf = [0u8; 4];
     cur.read_exact(&mut buf).map_err(|_| "truncated ops")?;
     Ok(u32::from_le_bytes(buf))
+}
+
+fn read_i64(cur: &mut Cursor<&[u8]>) -> Result<i64, String> {
+    let mut buf = [0u8; 8];
+    cur.read_exact(&mut buf).map_err(|_| "truncated ops")?;
+    Ok(i64::from_le_bytes(buf))
+}
+
+fn read_f64(cur: &mut Cursor<&[u8]>) -> Result<f64, String> {
+    let mut buf = [0u8; 8];
+    cur.read_exact(&mut buf).map_err(|_| "truncated ops")?;
+    Ok(f64::from_le_bytes(buf))
 }
 
 fn read_f32(cur: &mut Cursor<&[u8]>) -> Result<f32, String> {

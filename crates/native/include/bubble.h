@@ -18,6 +18,9 @@ void bubble_destroy(void);
 /* `entry` is the manifest entry file. Other manifest files are not accepted yet. */
 int bubble_load(const char *manifest_json, const uint8_t *entry, uint32_t entry_len);
 
+/* BTIR template bytes; registers single-node prototypes for CreateNode. */
+int bubble_register_template(const uint8_t *data, uint32_t len);
+
 int bubble_frame(float width, float height, const uint8_t **paint, uint32_t *paint_len);
 void bubble_pointer_down(float x, float y);
 void bubble_scroll(float x, float y, float dy);

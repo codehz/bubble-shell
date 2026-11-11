@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use bubble_core::{
-    encode_paint, encode_set_text, validate_bundle_hashes, NodeDesc, Op, Shell, Turn,
+    encode_paint, encode_set_text, validate_bundle_hashes, NodeDesc, Op, Shell, Turn, Value,
 };
 
 thread_local! {
@@ -22,7 +22,14 @@ thread_local! {
 
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
-    fn host_measure(text_ptr: u32, text_len: u32, font_size: f32, mode: u32, avail: f32, out_ptr: u32);
+    fn host_measure(
+        text_ptr: u32,
+        text_len: u32,
+        font_size: f32,
+        mode: u32,
+        avail: f32,
+        out_ptr: u32,
+    );
 }
 
 fn set_error(message: String) {
@@ -38,7 +45,9 @@ fn store_scratch(bytes: Vec<u8>) -> u32 {
 fn with_turn<T>(body: impl FnOnce(&mut Turn) -> Result<T, String>) -> Result<T, String> {
     TURN.with(|slot| {
         let mut slot = slot.borrow_mut();
-        let turn = slot.as_mut().ok_or_else(|| "shell is not mounted".to_string())?;
+        let turn = slot
+            .as_mut()
+            .ok_or_else(|| "shell is not mounted".to_string())?;
         body(turn)
     })
 }
@@ -46,7 +55,9 @@ fn with_turn<T>(body: impl FnOnce(&mut Turn) -> Result<T, String>) -> Result<T, 
 fn with_shell<T>(body: impl FnOnce(&mut Shell) -> Result<T, String>) -> Result<T, String> {
     SHELL.with(|slot| {
         let mut slot = slot.borrow_mut();
-        let shell = slot.as_mut().ok_or_else(|| "shell is not mounted".to_string())?;
+        let shell = slot
+            .as_mut()
+            .ok_or_else(|| "shell is not mounted".to_string())?;
         body(shell)
     })
 }
@@ -128,6 +139,22 @@ pub extern "C" fn mount(ptr: *const u8, len: u32) -> i32 {
             PENDING.with(|queue| queue.borrow_mut().clear());
             0
         }
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn register_template(ptr: *const u8, len: u32) -> i32 {
+    if let Err(err) = drain_pending() {
+        set_error(err);
+        return 1;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+    match with_shell(|shell| shell.register_template(bytes)) {
+        Ok(()) => 0,
         Err(err) => {
             set_error(err);
             1
@@ -270,6 +297,62 @@ pub extern "C" fn dispose(handle: u32) -> i32 {
 pub extern "C" fn move_node(handle: u32, parent: u32, index: u32) -> i32 {
     match with_turn(|turn| {
         turn.move_node(handle, parent, index);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn create_node(template_id: u32, parent: u32, index: u32) -> u32 {
+    match with_turn(|turn| turn.create_node(template_id, parent, index)) {
+        Ok(handle) => handle,
+        Err(err) => {
+            set_error(err);
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn set_prop(
+    handle: u32,
+    key_ptr: *const u8,
+    key_len: u32,
+    tag: u32,
+    number: f64,
+    text_ptr: *const u8,
+    text_len: u32,
+) -> i32 {
+    let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
+    let Ok(key) = std::str::from_utf8(key_bytes) else {
+        set_error("prop key is not utf-8".into());
+        return 1;
+    };
+    let value = match tag {
+        0 => Value::Null,
+        1 => Value::Bool(number != 0.0),
+        2 => Value::Int(number as i64),
+        3 => Value::Float(number),
+        4 => {
+            let bytes = unsafe { std::slice::from_raw_parts(text_ptr, text_len as usize) };
+            let Ok(text) = std::str::from_utf8(bytes) else {
+                set_error("prop string is not utf-8".into());
+                return 1;
+            };
+            Value::String(text.to_owned())
+        }
+        other => {
+            set_error(format!("unsupported prop tag {other}"));
+            return 1;
+        }
+    };
+    match with_turn(|turn| {
+        turn.set_prop(handle, key, value.clone());
         Ok(())
     }) {
         Ok(()) => 0,
@@ -445,7 +528,10 @@ pub extern "C" fn validate(
             return 1;
         }
     };
-    let refs: Vec<(&str, &[u8])> = parsed.iter().map(|(path, bytes)| (path.as_str(), bytes.as_slice())).collect();
+    let refs: Vec<(&str, &[u8])> = parsed
+        .iter()
+        .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+        .collect();
     match validate_bundle_hashes(manifest, &refs) {
         Ok(()) => 0,
         Err(err) => {

@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 
 use crate::ir::NodeDesc;
-use crate::ops::{encode, Op};
+use crate::ops::{encode, Op, Value};
 
 pub struct Turn {
     values: Vec<f64>,
@@ -126,8 +126,28 @@ impl Turn {
         self.push(Op::DisposeNode { handle });
     }
 
+    pub fn create_node(
+        &mut self,
+        template_id: u32,
+        parent: u32,
+        index: u32,
+    ) -> Result<u32, String> {
+        let handle = self.allocate_handle()?;
+        self.push(Op::CreateNode {
+            handle,
+            template_id,
+            parent,
+            index,
+        });
+        Ok(handle)
+    }
+
     pub fn move_node(&mut self, handle: u32, parent: u32, index: u32) {
-        self.push(Op::MoveNode { handle, parent, index });
+        self.push(Op::MoveNode {
+            handle,
+            parent,
+            index,
+        });
     }
 
     fn allocate_handle(&mut self) -> Result<u32, String> {
@@ -141,6 +161,14 @@ impl Turn {
 
     pub fn bind_event(&mut self, handle: u32, handler: u32) {
         self.push(Op::BindEvent { handle, handler });
+    }
+
+    pub fn set_prop(&mut self, handle: u32, key: impl Into<String>, value: Value) {
+        self.push(Op::SetProp {
+            handle,
+            key: key.into(),
+            value,
+        });
     }
 
     pub fn push(&mut self, op: Op) {
@@ -165,11 +193,14 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
         Op::SetText { handle, text } => {
             for item in buf.iter_mut().rev() {
                 match item {
-                    Op::SetText { handle: existing, text: slot } if existing == handle => {
+                    Op::SetText {
+                        handle: existing,
+                        text: slot,
+                    } if existing == handle => {
                         *slot = text.clone();
                         return;
                     }
-                    Op::SetPropColor { .. } => {}
+                    Op::SetPropColor { .. } | Op::SetProp { .. } => {}
                     _ => break,
                 }
             }
@@ -185,7 +216,23 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
                         *slot = *rgba;
                         return;
                     }
-                    Op::SetText { .. } | Op::SetPropColor { .. } => {}
+                    Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } => {}
+                    _ => break,
+                }
+            }
+        }
+        Op::SetProp { handle, key, value } => {
+            for item in buf.iter_mut().rev() {
+                match item {
+                    Op::SetProp {
+                        handle: existing,
+                        key: existing_key,
+                        value: slot,
+                    } if existing == handle && existing_key == key => {
+                        *slot = value.clone();
+                        return;
+                    }
+                    Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } => {}
                     _ => break,
                 }
             }

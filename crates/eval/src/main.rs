@@ -6,7 +6,10 @@ fn main() {
         Some("android") => bubble_eval::android().unwrap_or_else(failed),
         Some(other) => failed(format!("unknown target {other}; use ios or android")),
     };
-    println!("{}", serde_json::to_string_pretty(&report).expect("report serializes"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).expect("report serializes")
+    );
     if !report.ok {
         std::process::exit(1);
     }

@@ -31,12 +31,18 @@ fn open(probe: &mut Probe) -> Option<Session> {
 }
 
 fn counter(probe: &mut Probe) {
-    let Some(mut session) = open(probe) else { return };
+    let Some(mut session) = open(probe) else {
+        return;
+    };
     if !load_counter(&mut session, probe) {
         return;
     }
     match session.frame(320.0, 180.0) {
-        Ok(paint) => probe.check("first frame paint", paint.len() > 16, format!("{} bytes", paint.len())),
+        Ok(paint) => probe.check(
+            "first frame paint",
+            paint.len() > 16,
+            format!("{} bytes", paint.len()),
+        ),
         Err(err) => probe.check("first frame paint", false, err),
     }
     match session.node_text(3) {
@@ -50,11 +56,21 @@ fn counter(probe: &mut Probe) {
             return;
         }
     };
-    probe.check("button has size", w > 0.0 && h > 0.0, format!("{w}x{h} at {x},{y}"));
+    probe.check(
+        "button has size",
+        w > 0.0 && h > 0.0,
+        format!("{w}x{h} at {x},{y}"),
+    );
     let generation = session.generation();
     session.pointer_down(x + w / 2.0, y + h / 2.0);
-    let tapped = session.wait_until(Duration::from_secs(2), |session| session.generation() != generation);
-    probe.check("tap reached script", tapped, format!("generation {generation}"));
+    let tapped = session.wait_until(Duration::from_secs(2), |session| {
+        session.generation() != generation
+    });
+    probe.check(
+        "tap reached script",
+        tapped,
+        format!("generation {generation}"),
+    );
     match session.node_text(3) {
         Ok(text) => probe.eq("label after tap", text, "Count: 1".to_string()),
         Err(err) => probe.check("label after tap", false, err),
@@ -78,7 +94,9 @@ fn counter(probe: &mut Probe) {
 }
 
 fn dead_loop(probe: &mut Probe) {
-    let Some(mut session) = open(probe) else { return };
+    let Some(mut session) = open(probe) else {
+        return;
+    };
     if !load_counter(&mut session, probe) {
         return;
     }
@@ -101,8 +119,16 @@ fn dead_loop(probe: &mut Probe) {
         }
         stop.store(true, Ordering::Relaxed);
     });
-    probe.check("interrupt recorded", session.faults() >= 1, session.status());
-    probe.eq("status after interrupt", session.status(), "running".to_string());
+    probe.check(
+        "interrupt recorded",
+        session.faults() >= 1,
+        session.status(),
+    );
+    probe.eq(
+        "status after interrupt",
+        session.status(),
+        "running".to_string(),
+    );
     probe.check(
         "frames during hang",
         frames.load(Ordering::Relaxed) >= 10,
@@ -115,12 +141,16 @@ fn dead_loop(probe: &mut Probe) {
 }
 
 fn timers_and_host(probe: &mut Probe) {
-    let Some(mut session) = open(probe) else { return };
+    let Some(mut session) = open(probe) else {
+        return;
+    };
     if !load_counter(&mut session, probe) {
         return;
     }
     session.set_visible(false);
-    match session.eval("globalThis.ticks = 0; setTimeout(() => { globalThis.ticks = 1 }, 0); 'armed'") {
+    match session
+        .eval("globalThis.ticks = 0; setTimeout(() => { globalThis.ticks = 1 }, 0); 'armed'")
+    {
         Ok(value) => probe.eq("timer armed", value, "armed".to_string()),
         Err(err) => {
             probe.check("timer armed", false, err);
@@ -150,7 +180,11 @@ fn timers_and_host(probe: &mut Probe) {
     match session.poll_request() {
         Ok(Some(request)) => {
             probe.eq("host method", request.method, "toast".to_string());
-            probe.eq("host params", request.params, "{\"message\":\"hi\"}".to_string());
+            probe.eq(
+                "host params",
+                request.params,
+                "{\"message\":\"hi\"}".to_string(),
+            );
             if let Err(err) = session.finish_request(request.id, true, "{\"ok\":true}") {
                 probe.check("finish host request", false, err);
                 return;
@@ -163,7 +197,9 @@ fn timers_and_host(probe: &mut Probe) {
     }
     let mut host = String::new();
     let settled = session.wait_until(Duration::from_secs(2), |session| {
-        host = session.eval("String(globalThis.hostValue)").unwrap_or_default();
+        host = session
+            .eval("String(globalThis.hostValue)")
+            .unwrap_or_default();
         host == "true"
     });
     probe.check("host result settled", settled, host);

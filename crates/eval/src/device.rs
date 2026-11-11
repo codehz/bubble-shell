@@ -28,28 +28,49 @@ fn run(cmd: &mut Command) -> Result<String, String> {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     if !output.status.success() {
-        return Err(format!("{cmd:?} exited {}\n{stdout}{stderr}", output.status));
+        return Err(format!(
+            "{cmd:?} exited {}\n{stdout}{stderr}",
+            output.status
+        ));
     }
     Ok(stdout)
 }
 
 fn copy(from: &Path, to: &Path) -> Result<(), String> {
-    std::fs::copy(from, to).map(|_| ()).map_err(|err| format!("copy {from:?}: {err}"))
+    std::fs::copy(from, to)
+        .map(|_| ())
+        .map_err(|err| format!("copy {from:?}: {err}"))
 }
 
 pub fn ios() -> Result<SuiteReport, String> {
     let root = workspace();
     run(Command::new("cargo")
-        .args(["build", "-p", "bubble-ffi", "--release", "--target", "aarch64-apple-ios-sim"])
+        .args([
+            "build",
+            "-p",
+            "bubble-ffi",
+            "--release",
+            "--target",
+            "aarch64-apple-ios-sim",
+        ])
         .current_dir(&root))?;
     let sdk = run(Command::new("xcrun").args(["--sdk", "iphonesimulator", "--show-sdk-path"]))?;
     let sdk = sdk.trim();
     let app = root.join("examples/ios/BubbleShell.app");
     let _ = std::fs::remove_dir_all(&app);
     std::fs::create_dir_all(&app).map_err(|err| err.to_string())?;
-    copy(&root.join("examples/ios/Info.plist"), &app.join("Info.plist"))?;
-    copy(&root.join("examples/web/bundle/manifest.json"), &app.join("manifest.json"))?;
-    copy(&root.join("examples/web/bundle/main.js"), &app.join("main.js"))?;
+    copy(
+        &root.join("examples/ios/Info.plist"),
+        &app.join("Info.plist"),
+    )?;
+    copy(
+        &root.join("examples/web/bundle/manifest.json"),
+        &app.join("manifest.json"),
+    )?;
+    copy(
+        &root.join("examples/web/bundle/main.js"),
+        &app.join("main.js"),
+    )?;
     let font = Path::new("/System/Library/Fonts/Supplemental/Arial.ttf");
     if font.exists() {
         copy(font, &app.join("HostFont.ttf"))?;
@@ -73,7 +94,9 @@ pub fn ios() -> Result<SuiteReport, String> {
         .args(["-lbubble_ffi", "-import-objc-header", "/dev/null", "-o"])
         .arg(app.join("BubbleShell"))
         .arg(root.join("examples/ios/Sources/main.swift")))?;
-    run(Command::new("xcrun").args(["simctl", "install", "booted"]).arg(&app))?;
+    run(Command::new("xcrun")
+        .args(["simctl", "install", "booted"])
+        .arg(&app))?;
     let container = run(Command::new("xcrun").args([
         "simctl",
         "get_app_container",
@@ -102,11 +125,22 @@ pub fn android() -> Result<SuiteReport, String> {
     let sdk = std::env::var("ANDROID_HOME").map_err(|_| "ANDROID_HOME is unset".to_string())?;
     let ndk = PathBuf::from(&sdk).join("ndk/27.2.12479018");
     let pre = ndk.join("toolchains/llvm/prebuilt/darwin-arm64");
-    let pre = if pre.is_dir() { pre } else { ndk.join("toolchains/llvm/prebuilt/darwin-x86_64") };
+    let pre = if pre.is_dir() {
+        pre
+    } else {
+        ndk.join("toolchains/llvm/prebuilt/darwin-x86_64")
+    };
     let cc = pre.join("bin/aarch64-linux-android24-clang");
     let ar = pre.join("bin/llvm-ar");
     run(Command::new("cargo")
-        .args(["build", "-p", "bubble-ffi", "--release", "--target", "aarch64-linux-android"])
+        .args([
+            "build",
+            "-p",
+            "bubble-ffi",
+            "--release",
+            "--target",
+            "aarch64-linux-android",
+        ])
         .env("CC_aarch64_linux_android", &cc)
         .env("AR_aarch64_linux_android", &ar)
         .env("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", &cc)
@@ -117,19 +151,30 @@ pub fn android() -> Result<SuiteReport, String> {
         .current_dir(&root))?;
     let kotlin = std::env::var("KOTLIN_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/bubble-kotlinc"));
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/bubble-kotlinc")
+        });
     let kotlinc = kotlin.join("bin/kotlinc");
     let bt = PathBuf::from(&sdk).join("build-tools/36.1.0");
     let android_jar = PathBuf::from(&sdk).join("platforms/android-35/android.jar");
     let out = root.join("examples/android/build");
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(out.join("apk/lib/arm64-v8a")).map_err(|err| err.to_string())?;
-    copy(&root.join("examples/web/bundle/manifest.json"), &out.join("apk/assets/manifest.json"))
-        .or_else(|_| {
-            std::fs::create_dir_all(out.join("apk/assets")).map_err(|err| err.to_string())?;
-            copy(&root.join("examples/web/bundle/manifest.json"), &out.join("apk/assets/manifest.json"))
-        })?;
-    copy(&root.join("examples/web/bundle/main.js"), &out.join("apk/assets/main.js"))?;
+    copy(
+        &root.join("examples/web/bundle/manifest.json"),
+        &out.join("apk/assets/manifest.json"),
+    )
+    .or_else(|_| {
+        std::fs::create_dir_all(out.join("apk/assets")).map_err(|err| err.to_string())?;
+        copy(
+            &root.join("examples/web/bundle/manifest.json"),
+            &out.join("apk/assets/manifest.json"),
+        )
+    })?;
+    copy(
+        &root.join("examples/web/bundle/main.js"),
+        &out.join("apk/assets/main.js"),
+    )?;
     let font = Path::new("/System/Library/Fonts/Supplemental/Arial.ttf");
     if font.exists() {
         copy(font, &out.join("apk/assets/HostFont.ttf"))?;
@@ -162,12 +207,23 @@ pub fn android() -> Result<SuiteReport, String> {
         .args(["--manifest"])
         .arg(root.join("examples/android/app/src/main/AndroidManifest.xml"))
         .args(["--min-sdk-version", "24", "--target-sdk-version", "35"]))?;
-    run(Command::new("unzip").args(["-q", "-o"]).arg(out.join("base.apk")).args(["-d"]).arg(out.join("apk")))?;
+    run(Command::new("unzip")
+        .args(["-q", "-o"])
+        .arg(out.join("base.apk"))
+        .args(["-d"])
+        .arg(out.join("apk")))?;
     let unsigned = out.join("BubbleShell-unsigned.apk");
     let _ = std::fs::remove_file(&unsigned);
-    run(Command::new("zip").args(["-qr", "-n", "arsc"]).arg(&unsigned).arg(".").current_dir(out.join("apk")))?;
+    run(Command::new("zip")
+        .args(["-qr", "-n", "arsc"])
+        .arg(&unsigned)
+        .arg(".")
+        .current_dir(out.join("apk")))?;
     let aligned = out.join("BubbleShell-aligned.apk");
-    run(Command::new(bt.join("zipalign")).args(["-p", "-f", "4"]).arg(&unsigned).arg(&aligned))?;
+    run(Command::new(bt.join("zipalign"))
+        .args(["-p", "-f", "4"])
+        .arg(&unsigned)
+        .arg(&aligned))?;
     let keystore = root.join("examples/android/debug.keystore");
     if !keystore.exists() {
         run(Command::new("keytool").args([
@@ -191,21 +247,29 @@ pub fn android() -> Result<SuiteReport, String> {
         ]))?;
     }
     let apk = out.join("BubbleShell.apk");
-    run(Command::new(bt.join("apksigner")).args([
-        "sign",
-        "--ks",
-        keystore.to_str().unwrap_or_default(),
-        "--ks-pass",
-        "pass:android",
-        "--key-pass",
-        "pass:android",
-        "--out",
-        apk.to_str().unwrap_or_default(),
-    ]).arg(&aligned))?;
+    run(Command::new(bt.join("apksigner"))
+        .args([
+            "sign",
+            "--ks",
+            keystore.to_str().unwrap_or_default(),
+            "--ks-pass",
+            "pass:android",
+            "--key-pass",
+            "pass:android",
+            "--out",
+            apk.to_str().unwrap_or_default(),
+        ])
+        .arg(&aligned))?;
     run(Command::new("adb").args(["install", "-r"]).arg(&apk))?;
     let _ = run(Command::new("adb").args(["shell", "am", "force-stop", "dev.bubble.shell"]));
     let _ = run(Command::new("adb").args(["logcat", "-c"]));
-    run(Command::new("adb").args(["shell", "am", "start", "-n", "dev.bubble.shell/.MainActivity"]))?;
+    run(Command::new("adb").args([
+        "shell",
+        "am",
+        "start",
+        "-n",
+        "dev.bubble.shell/.MainActivity",
+    ]))?;
     let (left, top, right, bottom) = wait_scroll_rect(Duration::from_secs(10))?;
     let x = (left + right) / 2;
     let start = top + (bottom - top) * 7 / 10;
@@ -273,7 +337,9 @@ fn booted_simulator() -> Result<String, String> {
                 .values()
                 .filter_map(|list| list.as_array())
                 .flatten()
-                .find(|device| device.get("state").and_then(|state| state.as_str()) == Some("Booted"))
+                .find(|device| {
+                    device.get("state").and_then(|state| state.as_str()) == Some("Booted")
+                })
                 .and_then(|device| device.get("udid").and_then(|udid| udid.as_str()))
                 .map(str::to_owned)
         })
@@ -310,9 +376,16 @@ fn wait_scroll_rect(timeout: Duration) -> Result<(i64, i64, i64, i64), String> {
 fn wait_logcat(timeout: Duration) -> Result<String, String> {
     let deadline = Instant::now() + timeout;
     loop {
-        let output = Command::new("adb").args(["logcat", "-d", "-s", "BUBBLE_EVAL:I"]).output().map_err(|err| err.to_string())?;
+        let output = Command::new("adb")
+            .args(["logcat", "-d", "-s", "BUBBLE_EVAL:I"])
+            .output()
+            .map_err(|err| err.to_string())?;
         let text = String::from_utf8_lossy(&output.stdout);
-        if let Some(json) = text.lines().rev().find_map(|line| line.split("BUBBLE_EVAL").nth(1)) {
+        if let Some(json) = text
+            .lines()
+            .rev()
+            .find_map(|line| line.split("BUBBLE_EVAL").nth(1))
+        {
             let json = json.trim().trim_start_matches(':').trim();
             if json.starts_with('{') {
                 return Ok(json.to_string());

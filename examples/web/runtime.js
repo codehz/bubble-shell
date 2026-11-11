@@ -54,7 +54,7 @@ function utf8(value) {
 // `id`, `parent`, and `handler` are zero; Rust assigns the handle and parent.
 function specBytes(kind, props, text) {
   const bytes = utf8(text);
-  const buffer = new Uint8Array(6 + 67 + bytes.length);
+  const buffer = new Uint8Array(6 + 71 + bytes.length);
   buffer[0] = 0x42;
   buffer[1] = 0x4e;
   buffer[2] = 0x4f;
@@ -77,6 +77,8 @@ function specBytes(kind, props, text) {
   view.setFloat32(offset, props.fontSize ?? 16, true);
   offset += 4;
   view.setFloat32(offset, props.radius ?? 0, true);
+  offset += 4;
+  view.setFloat32(offset, props.opacity ?? 1, true);
   offset += 4;
   view.setUint32(offset, 0, true);
   offset += 4;
@@ -162,6 +164,49 @@ export function text(props, content) {
 export function component(type, props, children) {
   if (typeof type !== "function") throw new Error(`${String(type)} is not a component`);
   return type({ ...(props ?? {}), children });
+}
+
+const primitives = new Map();
+
+export function registerPrimitive(name, factory) {
+  if (typeof factory !== "function") throw new Error("primitive factory must be a function");
+  primitives.set(name, factory);
+}
+
+export function primitive(name, props, children) {
+  const factory = primitives.get(name);
+  if (!factory) throw new Error(`unknown primitive ${name}`);
+  return factory(props, children);
+}
+
+registerPrimitive("View", view);
+registerPrimitive("Text", text);
+
+function propParts(value) {
+  if (value == null) return [0, 0, ""];
+  if (typeof value === "boolean") return [1, value ? 1 : 0, ""];
+  if (typeof value === "number") return [Number.isInteger(value) ? 2 : 3, value, ""];
+  if (typeof value === "string") return [4, 0, value];
+  throw new Error(`unsupported property value ${typeof value}`);
+}
+
+export function setProp(handle, key, value) {
+  const [tag, number, text] = propParts(value);
+  if (api.set_prop(handle, key, tag, number, text) !== 0) {
+    throw new Error(api.error() || "set_prop failed");
+  }
+}
+
+export function bindProp(handle, key, fn) {
+  const id = addBinding(() => setProp(handle, key, fn()), handle);
+  runBinding(id);
+}
+
+export function createNode(templateId, parentHandle, index) {
+  const handle = api.create_node(templateId, parentHandle, index);
+  if (!handle) throw new Error(api.error() || "create_node failed");
+  registerChild(parentHandle, handle, index);
+  return handle;
 }
 
 function addBinding(run, handle) {

@@ -9,8 +9,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use bubble_core::{validate_bundle_hashes, NodeDesc, Op, Turn};
-use rquickjs::{Array, Context, Ctx, Function, Object, Runtime, TypedArray, Value};
+use bubble_core::{validate_bundle_hashes, NodeDesc, Op, Turn, Value};
+use rquickjs::{Array, Context, Ctx, Function, Object, Runtime, TypedArray, Value as JsValue};
 use serde::Deserialize;
 
 use crate::Shared;
@@ -156,7 +156,11 @@ impl Session {
         match cmd {
             Cmd::Shutdown => false,
             Cmd::Wake => true,
-            Cmd::Load { manifest, entry, ack } => {
+            Cmd::Load {
+                manifest,
+                entry,
+                ack,
+            } => {
                 let result = self.load_bundle(manifest, entry);
                 let _ = ack.send(result);
                 true
@@ -199,7 +203,8 @@ impl Session {
         let Some((manifest, entry)) = self.bundle.clone() else {
             return Err("no bundle loaded".into());
         };
-        let source = String::from_utf8(entry).map_err(|_| "bundle entry is not utf-8".to_string())?;
+        let source =
+            String::from_utf8(entry).map_err(|_| "bundle entry is not utf-8".to_string())?;
         let _ = manifest;
         self.vm = Some(make_vm()?);
         let vm = self.vm.as_ref().expect("vm");
@@ -222,7 +227,11 @@ impl Session {
             Err(err) => {
                 if fatal(&err) {
                     self.recover()?;
-                    Err(if INTERRUPT.load(Ordering::Relaxed) { "interrupted".into() } else { err })
+                    Err(if INTERRUPT.load(Ordering::Relaxed) {
+                        "interrupted".into()
+                    } else {
+                        err
+                    })
                 } else {
                     Err(err)
                 }
@@ -365,7 +374,7 @@ fn install_and_run(vm: &Vm, source: &str) -> Result<(), String> {
 fn eval_in(vm: &Vm, source: &str) -> Result<String, String> {
     enter_js();
     let result = vm.context.with(|ctx| {
-        let value: Value = ctx.eval(source)?;
+        let value: JsValue = ctx.eval(source)?;
         pump(&ctx);
         Ok(value_string(&ctx, value))
     });
@@ -402,7 +411,11 @@ fn format_eval(vm: &Vm, err: rquickjs::Error) -> String {
         vm.context.with(|ctx| {
             let value = ctx.catch();
             let text = value_string(&ctx, value);
-            if text.is_empty() { "exception".into() } else { text }
+            if text.is_empty() {
+                "exception".into()
+            } else {
+                text
+            }
         })
     } else {
         err.to_string()
@@ -418,7 +431,7 @@ fn finish_promise(ctx: &Ctx, promise: &rquickjs::Promise) -> rquickjs::Result<()
             break;
         }
     }
-    match promise.result::<Value>() {
+    match promise.result::<JsValue>() {
         None => Err(rquickjs::Error::new_from_js("promise", "settled")),
         Some(Ok(_)) => Ok(()),
         Some(Err(err)) => Err(err),
@@ -433,7 +446,7 @@ fn pump(ctx: &Ctx) {
     }
 }
 
-fn value_string(ctx: &Ctx, value: Value) -> String {
+fn value_string(ctx: &Ctx, value: JsValue) -> String {
     if value.is_undefined() {
         return "undefined".into();
     }
@@ -478,7 +491,12 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
     api.set("spawn_at", Function::new(ctx.clone(), api_spawn_at)?)?;
     api.set("dispose", Function::new(ctx.clone(), api_dispose)?)?;
     api.set("move_node", Function::new(ctx.clone(), api_move_node)?)?;
-    api.set("queue_text_utf8", Function::new(ctx.clone(), api_queue_text)?)?;
+    api.set("create_node", Function::new(ctx.clone(), api_create_node)?)?;
+    api.set("set_prop", Function::new(ctx.clone(), api_set_prop)?)?;
+    api.set(
+        "queue_text_utf8",
+        Function::new(ctx.clone(), api_queue_text)?,
+    )?;
     api.set("bind_event", Function::new(ctx.clone(), api_bind)?)?;
     api.set("commit", Function::new(ctx.clone(), api_commit)?)?;
     api.set("request", Function::new(ctx.clone(), api_request)?)?;
@@ -491,7 +509,9 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
 fn with_turn<T>(body: impl FnOnce(&mut Turn) -> Result<T, String>) -> Result<T, String> {
     TURN.with(|slot| {
         let mut slot = slot.borrow_mut();
-        let turn = slot.as_mut().ok_or_else(|| "shell is not mounted".to_string())?;
+        let turn = slot
+            .as_mut()
+            .ok_or_else(|| "shell is not mounted".to_string())?;
         body(turn)
     })
 }
@@ -640,9 +660,46 @@ fn api_move_node(handle: f64, parent: f64, index: f64) -> i32 {
     }
 }
 
+fn api_create_node(template_id: f64, parent: f64, index: f64) -> u32 {
+    match with_turn(|turn| turn.create_node(template_id as u32, parent as u32, index as u32)) {
+        Ok(handle) => handle,
+        Err(err) => {
+            set_api_error(err);
+            0
+        }
+    }
+}
+
+fn api_set_prop(handle: f64, key: String, tag: f64, number: f64, text: String) -> i32 {
+    let value = match tag as u32 {
+        0 => Value::Null,
+        1 => Value::Bool(number != 0.0),
+        2 => Value::Int(number as i64),
+        3 => Value::Float(number),
+        4 => Value::String(text),
+        other => {
+            set_api_error(format!("unsupported prop tag {other}"));
+            return 1;
+        }
+    };
+    match with_turn(|turn| {
+        turn.set_prop(handle as u32, key, value.clone());
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
 fn api_queue_text(handle: f64, text: String) -> i32 {
     match with_turn(|turn| {
-        turn.push(Op::SetText { handle: handle as u32, text });
+        turn.push(Op::SetText {
+            handle: handle as u32,
+            text,
+        });
         Ok(())
     }) {
         Ok(()) => 0,
@@ -717,7 +774,10 @@ fn api_request(method: String, params: String) -> u32 {
 fn api_schedule(id: f64, ms: f64) {
     let delay = Duration::from_millis(ms.max(0.0) as u64);
     TIMERS.with(|slot| {
-        slot.borrow_mut().push(Timer { id: id as u32, at: Instant::now() + delay });
+        slot.borrow_mut().push(Timer {
+            id: id as u32,
+            at: Instant::now() + delay,
+        });
     });
 }
 

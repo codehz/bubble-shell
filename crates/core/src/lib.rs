@@ -15,7 +15,7 @@ mod turn;
 
 pub use ir::{Kind, NodeDesc, Template};
 pub use manifest::validate_bundle_hashes;
-pub use ops::{decode_ops, encode, encode_set_prop_color, encode_set_text, Op};
+pub use ops::{decode_ops, encode, encode_set_prop_color, encode_set_text, Op, Value};
 pub use paint::encode_paint;
 pub use shell::{PaintCmd, Shell};
 pub use turn::Turn;

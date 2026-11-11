@@ -31,19 +31,30 @@ pub struct Probe {
 
 impl Probe {
     pub fn new() -> Self {
-        Self { checks: Vec::new(), failed: false }
+        Self {
+            checks: Vec::new(),
+            failed: false,
+        }
     }
 
     pub fn check(&mut self, name: impl Into<String>, ok: bool, detail: impl Into<String>) {
         if !ok {
             self.failed = true;
         }
-        self.checks.push(Check { name: name.into(), ok, detail: detail.into() });
+        self.checks.push(Check {
+            name: name.into(),
+            ok,
+            detail: detail.into(),
+        });
     }
 
     pub fn eq<T: PartialEq + std::fmt::Debug>(&mut self, name: &str, got: T, want: T) {
         let ok = got == want;
-        let detail = if ok { format!("{got:?}") } else { format!("got {got:?}, want {want:?}") };
+        let detail = if ok {
+            format!("{got:?}")
+        } else {
+            format!("got {got:?}, want {want:?}")
+        };
         self.check(name, ok, detail);
     }
 
