@@ -325,6 +325,35 @@ fn signal_commit_updates_text_and_scrolls() {
 }
 
 #[test]
+fn set_prop_updates_padding_edges() {
+    use bubble_core::{Turn, Value};
+
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 120.0);
+    let mut turn = Turn::new();
+    let view = turn.spawn(NodeDesc::view(0, 1)).unwrap();
+    let label = turn.spawn(NodeDesc::text(0, view, "Hi")).unwrap();
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    shell.layout(&mut measure).unwrap();
+    let (base_x, base_y, _, _) = shell.node_box(label).unwrap();
+
+    for (key, value) in [
+        ("paddingLeft", 11.0),
+        ("paddingTop", 7.0),
+        ("paddingRight", 5.0),
+        ("paddingBottom", 3.0),
+    ] {
+        turn.set_prop(view, key, Value::Float(value));
+    }
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    shell.layout(&mut measure).unwrap();
+
+    let (x, y, _, _) = shell.node_box(label).unwrap();
+    assert!((x - base_x - 11.0).abs() < 0.01, "{base_x} -> {x}");
+    assert!((y - base_y - 7.0).abs() < 0.01, "{base_y} -> {y}");
+}
+
+#[test]
 fn node_descriptor_and_spawn_op_roundtrip() {
     let mut node = NodeDesc::text(9, 4, "hello");
     node.scroll_y = true;

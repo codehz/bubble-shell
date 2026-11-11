@@ -4,6 +4,8 @@
 //! thunk passed to `text`, which the runtime registers as a binding. There is
 //! no template IR.
 
+use std::collections::HashSet;
+
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     BindingPatternKind, Expression, FunctionBody, JSXAttributeItem, JSXAttributeValue, JSXChild,
@@ -29,7 +31,7 @@ pub fn compile(source: &str) -> Result<String, String> {
 
 fn emit_program(program: &Program<'_>) -> Result<String, String> {
     let mut out = String::from(
-        "import { signal, primitive, mount, component, when, each } from \"../runtime.js\";\n\n",
+        "import { signal, primitive, mount, component, when, each, dynamic } from \"../runtime.js\";\n\n",
     );
     for stmt in &program.body {
         match stmt {
@@ -56,7 +58,8 @@ fn emit_program(program: &Program<'_>) -> Result<String, String> {
                     out.push_str(&param.name);
                 }
                 out.push_str(") {\n");
-                emit_body(&mut out, body, 1)?;
+                let mut signals = HashSet::new();
+                emit_body(&mut out, body, 1, &mut signals)?;
                 out.push_str("}\n\n");
             }
             Statement::ExpressionStatement(stmt) => {
@@ -99,7 +102,12 @@ fn emit_mount(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
     Ok(())
 }
 
-fn emit_body(out: &mut String, body: &FunctionBody<'_>, indent: usize) -> Result<(), String> {
+fn emit_body(
+    out: &mut String,
+    body: &FunctionBody<'_>,
+    indent: usize,
+    signals: &mut HashSet<String>,
+) -> Result<(), String> {
     for stmt in &body.statements {
         match stmt {
             Statement::VariableDeclaration(decl) => {
@@ -111,11 +119,14 @@ fn emit_body(out: &mut String, body: &FunctionBody<'_>, indent: usize) -> Result
                         .init
                         .as_ref()
                         .ok_or("const is missing an initializer")?;
+                    if is_signal_call(init) {
+                        signals.insert(name.name.to_string());
+                    }
                     pad(out, indent);
                     out.push_str("const ");
                     out.push_str(&name.name);
                     out.push_str(" = ");
-                    emit_expr(out, init)?;
+                    emit_expr(out, init, signals)?;
                     out.push_str(";\n");
                 }
             }
@@ -123,12 +134,12 @@ fn emit_body(out: &mut String, body: &FunctionBody<'_>, indent: usize) -> Result
                 let value = ret.argument.as_ref().ok_or("return is missing a value")?;
                 pad(out, indent);
                 out.push_str("return ");
-                emit_expr(out, value)?;
+                emit_expr(out, value, signals)?;
                 out.push_str(";\n");
             }
             Statement::ExpressionStatement(stmt) => {
                 pad(out, indent);
-                emit_expr(out, &stmt.expression)?;
+                emit_expr(out, &stmt.expression, signals)?;
                 out.push_str(";\n");
             }
             _ => return Err("unsupported statement inside a component".into()),
@@ -137,9 +148,13 @@ fn emit_body(out: &mut String, body: &FunctionBody<'_>, indent: usize) -> Result
     Ok(())
 }
 
-fn emit_expr(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
+fn emit_expr(
+    out: &mut String,
+    expr: &Expression<'_>,
+    signals: &HashSet<String>,
+) -> Result<(), String> {
     match expr {
-        Expression::JSXElement(element) => emit_jsx(out, element),
+        Expression::JSXElement(element) => emit_jsx(out, element, signals),
         Expression::Identifier(id) => {
             out.push_str(&id.name);
             Ok(())
@@ -161,7 +176,7 @@ fn emit_expr(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
             Ok(())
         }
         Expression::CallExpression(call) => {
-            emit_expr(out, &call.callee)?;
+            emit_expr(out, &call.callee, signals)?;
             out.push('(');
             for (index, arg) in call.arguments.iter().enumerate() {
                 if index > 0 {
@@ -170,13 +185,13 @@ fn emit_expr(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
                 let expr = arg
                     .as_expression()
                     .ok_or("spread arguments are not supported")?;
-                emit_expr(out, expr)?;
+                emit_expr(out, expr, signals)?;
             }
             out.push(')');
             Ok(())
         }
         Expression::StaticMemberExpression(member) => {
-            emit_expr(out, &member.object)?;
+            emit_expr(out, &member.object, signals)?;
             out.push('.');
             out.push_str(&member.property.name);
             Ok(())
@@ -201,46 +216,47 @@ fn emit_expr(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
                 else {
                     return Err("arrow expression body is missing".into());
                 };
-                emit_expr(out, &stmt.expression)?;
+                emit_expr(out, &stmt.expression, signals)?;
             } else {
                 out.push_str("{\n");
-                emit_body(out, &arrow.body, 1)?;
+                let mut nested = signals.clone();
+                emit_body(out, &arrow.body, 1, &mut nested)?;
                 out.push('}');
             }
             Ok(())
         }
         Expression::BinaryExpression(binary) => {
-            emit_expr(out, &binary.left)?;
+            emit_expr(out, &binary.left, signals)?;
             out.push(' ');
             out.push_str(binary.operator.as_str());
             out.push(' ');
-            emit_expr(out, &binary.right)?;
+            emit_expr(out, &binary.right, signals)?;
             Ok(())
         }
         Expression::LogicalExpression(logical) => {
-            emit_expr(out, &logical.left)?;
+            emit_expr(out, &logical.left, signals)?;
             out.push(' ');
             out.push_str(logical.operator.as_str());
             out.push(' ');
-            emit_expr(out, &logical.right)?;
+            emit_expr(out, &logical.right, signals)?;
             Ok(())
         }
         Expression::ConditionalExpression(conditional) => {
-            emit_expr(out, &conditional.test)?;
+            emit_expr(out, &conditional.test, signals)?;
             out.push_str(" ? ");
-            emit_expr(out, &conditional.consequent)?;
+            emit_expr(out, &conditional.consequent, signals)?;
             out.push_str(" : ");
-            emit_expr(out, &conditional.alternate)?;
+            emit_expr(out, &conditional.alternate, signals)?;
             Ok(())
         }
         Expression::UnaryExpression(unary) => {
             out.push_str(unary.operator.as_str());
-            emit_expr(out, &unary.argument)?;
+            emit_expr(out, &unary.argument, signals)?;
             Ok(())
         }
         Expression::ParenthesizedExpression(paren) => {
             out.push('(');
-            emit_expr(out, &paren.expression)?;
+            emit_expr(out, &paren.expression, signals)?;
             out.push(')');
             Ok(())
         }
@@ -253,7 +269,7 @@ fn emit_expr(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
                 let Some(expr) = item.as_expression() else {
                     return Err("holes and spreads in arrays are not supported".into());
                 };
-                emit_expr(out, expr)?;
+                emit_expr(out, expr, signals)?;
             }
             out.push(']');
             Ok(())
@@ -263,16 +279,20 @@ fn emit_expr(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
     }
 }
 
-fn emit_jsx(out: &mut String, element: &JSXElement<'_>) -> Result<(), String> {
+fn emit_jsx(
+    out: &mut String,
+    element: &JSXElement<'_>,
+    signals: &HashSet<String>,
+) -> Result<(), String> {
     let name = jsx_name(&element.opening_element.name)?;
     if let Some(component) = name.strip_prefix("component:") {
         out.push_str("component(");
         out.push_str(component);
         out.push_str(", ");
-        emit_attrs(out, &element.opening_element.attributes)?;
+        emit_attrs(out, &element.opening_element.attributes, signals)?;
         if has_children(&element.children) {
             out.push_str(", () => {\n");
-            emit_children(out, &element.children)?;
+            emit_children(out, &element.children, signals)?;
             out.push('}');
         }
         out.push(')');
@@ -282,13 +302,13 @@ fn emit_jsx(out: &mut String, element: &JSXElement<'_>) -> Result<(), String> {
     out.push_str("primitive(");
     out.push_str(&js_string(if text { "Text" } else { "View" }));
     out.push_str(", ");
-    emit_attrs(out, &element.opening_element.attributes)?;
+    emit_attrs(out, &element.opening_element.attributes, signals)?;
     out.push_str(", ");
     if text {
-        emit_text_content(out, &element.children)?;
+        emit_text_content(out, &element.children, signals)?;
     } else {
         out.push_str("() => {\n");
-        emit_children(out, &element.children)?;
+        emit_children(out, &element.children, signals)?;
         out.push('}');
     }
     out.push(')');
@@ -313,7 +333,11 @@ fn is_render_call(expr: &Expression<'_>) -> bool {
     }
 }
 
-fn emit_attrs(out: &mut String, attributes: &[JSXAttributeItem<'_>]) -> Result<(), String> {
+fn emit_attrs(
+    out: &mut String,
+    attributes: &[JSXAttributeItem<'_>],
+    signals: &HashSet<String>,
+) -> Result<(), String> {
     out.push('{');
     let mut wrote = false;
     for attr in attributes {
@@ -337,7 +361,17 @@ fn emit_attrs(out: &mut String, attributes: &[JSXAttributeItem<'_>]) -> Result<(
                 let Some(expr) = container.expression.as_expression() else {
                     return Err("empty JSX expression".into());
                 };
-                emit_expr(out, expr)?;
+                let dynamic = !matches!(
+                    expr,
+                    Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)
+                ) && expr_reads_signal(expr, signals);
+                if dynamic {
+                    out.push_str("dynamic(() => ");
+                    emit_expr(out, expr, signals)?;
+                    out.push(')');
+                } else {
+                    emit_expr(out, expr, signals)?;
+                }
             }
             Some(_) => return Err("unsupported JSX attribute value".into()),
         }
@@ -346,12 +380,65 @@ fn emit_attrs(out: &mut String, attributes: &[JSXAttributeItem<'_>]) -> Result<(
     Ok(())
 }
 
-fn emit_children(out: &mut String, children: &[JSXChild<'_>]) -> Result<(), String> {
+fn is_signal_call(expr: &Expression<'_>) -> bool {
+    let Expression::CallExpression(call) = expr else {
+        return false;
+    };
+    matches!(&call.callee, Expression::Identifier(name) if name.name == "signal")
+}
+
+fn expr_reads_signal(expr: &Expression<'_>, signals: &HashSet<String>) -> bool {
+    match expr {
+        Expression::CallExpression(call) => {
+            if matches!(&call.callee, Expression::Identifier(name) if signals.contains(name.name.as_str()))
+            {
+                return true;
+            }
+            expr_reads_signal(&call.callee, signals)
+                || call
+                    .arguments
+                    .iter()
+                    .filter_map(|arg| arg.as_expression())
+                    .any(|arg| expr_reads_signal(arg, signals))
+        }
+        Expression::StaticMemberExpression(member) => expr_reads_signal(&member.object, signals),
+        Expression::ComputedMemberExpression(member) => {
+            expr_reads_signal(&member.object, signals)
+                || expr_reads_signal(&member.expression, signals)
+        }
+        Expression::BinaryExpression(binary) => {
+            expr_reads_signal(&binary.left, signals) || expr_reads_signal(&binary.right, signals)
+        }
+        Expression::LogicalExpression(logical) => {
+            expr_reads_signal(&logical.left, signals) || expr_reads_signal(&logical.right, signals)
+        }
+        Expression::ConditionalExpression(conditional) => {
+            expr_reads_signal(&conditional.test, signals)
+                || expr_reads_signal(&conditional.consequent, signals)
+                || expr_reads_signal(&conditional.alternate, signals)
+        }
+        Expression::UnaryExpression(unary) => expr_reads_signal(&unary.argument, signals),
+        Expression::ParenthesizedExpression(paren) => expr_reads_signal(&paren.expression, signals),
+        Expression::ArrayExpression(array) => array
+            .elements
+            .iter()
+            .filter_map(|item| item.as_expression())
+            .any(|item| expr_reads_signal(item, signals)),
+        Expression::JSXElement(_) | Expression::ArrowFunctionExpression(_) => false,
+        _ => false,
+    }
+}
+
+fn emit_children(
+    out: &mut String,
+    children: &[JSXChild<'_>],
+    signals: &HashSet<String>,
+) -> Result<(), String> {
     for child in children {
         match child {
             JSXChild::Element(child) => {
                 out.push_str("  ");
-                emit_jsx(out, child)?;
+                emit_jsx(out, child, signals)?;
                 out.push_str(";\n");
             }
             JSXChild::Text(text) if text.value.trim().is_empty() => {}
@@ -362,9 +449,9 @@ fn emit_children(out: &mut String, children: &[JSXChild<'_>]) -> Result<(), Stri
                 if let Expression::LogicalExpression(logical) = expr {
                     if logical.operator.as_str() == "&&" && is_renderable(&logical.right) {
                         out.push_str("  when(() => (");
-                        emit_expr(out, &logical.left)?;
+                        emit_expr(out, &logical.left, signals)?;
                         out.push_str("), ");
-                        emit_branch(out, &logical.right)?;
+                        emit_branch(out, &logical.right, signals)?;
                         out.push_str(", null);\n");
                         continue;
                     }
@@ -374,22 +461,22 @@ fn emit_children(out: &mut String, children: &[JSXChild<'_>]) -> Result<(), Stri
                         || is_renderable(&conditional.alternate)
                     {
                         out.push_str("  when(() => (");
-                        emit_expr(out, &conditional.test)?;
+                        emit_expr(out, &conditional.test, signals)?;
                         out.push_str("), ");
-                        emit_branch(out, &conditional.consequent)?;
+                        emit_branch(out, &conditional.consequent, signals)?;
                         out.push_str(", ");
-                        emit_branch(out, &conditional.alternate)?;
+                        emit_branch(out, &conditional.alternate, signals)?;
                         out.push_str(");\n");
                         continue;
                     }
                 }
                 if matches!(expr, Expression::JSXElement(_)) || is_render_call(expr) {
                     out.push_str("  ");
-                    emit_expr(out, expr)?;
+                    emit_expr(out, expr, signals)?;
                     out.push_str(";\n");
                 } else {
                     out.push_str("  text({}, () => String(");
-                    emit_expr(out, expr)?;
+                    emit_expr(out, expr, signals)?;
                     out.push_str("));\n");
                 }
             }
@@ -404,11 +491,15 @@ fn is_renderable(expr: &Expression<'_>) -> bool {
     matches!(expr, Expression::JSXElement(_) | Expression::NullLiteral(_))
 }
 
-fn emit_branch(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
+fn emit_branch(
+    out: &mut String,
+    expr: &Expression<'_>,
+    signals: &HashSet<String>,
+) -> Result<(), String> {
     match expr {
         Expression::JSXElement(element) => {
             out.push_str("() => {\n  ");
-            emit_jsx(out, element)?;
+            emit_jsx(out, element, signals)?;
             out.push_str(";\n}");
             Ok(())
         }
@@ -420,7 +511,11 @@ fn emit_branch(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
     }
 }
 
-fn emit_text_content(out: &mut String, children: &[JSXChild<'_>]) -> Result<(), String> {
+fn emit_text_content(
+    out: &mut String,
+    children: &[JSXChild<'_>],
+    signals: &HashSet<String>,
+) -> Result<(), String> {
     let mut parts: Vec<&JSXChild<'_>> = Vec::new();
     for child in children {
         match child {
@@ -455,7 +550,7 @@ fn emit_text_content(out: &mut String, children: &[JSXChild<'_>]) -> Result<(), 
                 let Some(expr) = container.expression.as_expression() else {
                     return Err("empty JSX expression".into());
                 };
-                emit_expr(out, expr)?;
+                emit_expr(out, expr, signals)?;
             }
             _ => return Err("Text children must be text or expressions".into()),
         }

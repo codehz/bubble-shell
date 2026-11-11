@@ -337,6 +337,10 @@ impl Shell {
                     .set_node_context(taffy, Some(MeasureCtx { text, font_size }))
                     .map_err(|err| err.to_string())?;
             }
+            "paddingLeft" => self.node_mut(id)?.padding[0] = value.as_f32()?,
+            "paddingRight" => self.node_mut(id)?.padding[1] = value.as_f32()?,
+            "paddingTop" => self.node_mut(id)?.padding[2] = value.as_f32()?,
+            "paddingBottom" => self.node_mut(id)?.padding[3] = value.as_f32()?,
             "width" => self.node_mut(id)?.width = value.optional_f32()?,
             "height" => self.node_mut(id)?.height = value.optional_f32()?,
             "flexGrow" => self.node_mut(id)?.flex_grow = value.as_f32()?,

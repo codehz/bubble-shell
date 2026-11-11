@@ -14,6 +14,41 @@ export function setApi(next) {
   api = next;
 }
 
+const DYNAMIC_PROPS = new Set([
+  "scrollY",
+  "background",
+  "color",
+  "fontSize",
+  "radius",
+  "opacity",
+  "width",
+  "height",
+  "flexGrow",
+  "flexShrink",
+  "row",
+  "padding",
+  "onPress",
+]);
+
+export class Dynamic {
+  constructor(run) {
+    this.run = run;
+  }
+}
+
+export function dynamic(run) {
+  if (typeof run !== "function") throw new Error("dynamic expects a function");
+  return new Dynamic(run);
+}
+
+function validateProps(kind, props) {
+  for (const key of Object.keys(props)) {
+    if (!DYNAMIC_PROPS.has(key)) {
+      throw new Error(`${kind === 2 ? "Text" : "View"} has no property ${key}`);
+    }
+  }
+}
+
 export function signal(initial) {
   const id = api.signal_new(initial);
   const read = () => api.signal_get(id);
@@ -124,7 +159,16 @@ function pack(kind, props, text) {
   props = props ?? {};
   const parentHandle = parent();
   const cursor = cursors[cursors.length - 1];
-  const spec = specBytes(kind, props, text);
+  const staticProps = {};
+  const dynamics = [];
+  for (const key of Object.keys(props)) {
+    const value = props[key];
+    if (value instanceof Dynamic) dynamics.push([key, value.run]);
+    else staticProps[key] = value;
+  }
+  validateProps(kind, staticProps);
+  for (const [key] of dynamics) validateProps(kind, { [key]: true });
+  const spec = specBytes(kind, staticProps, text);
   let handle;
   if (cursor && cursor.parent === parentHandle) {
     handle = api.spawn_at(parentHandle, cursor.index, spec);
@@ -141,6 +185,7 @@ function pack(kind, props, text) {
     handlers.set(id, props.onPress);
     if (api.bind_event(handle, id) !== 0) throw new Error(api.error() || "bind failed");
   }
+  for (const [key, run] of dynamics) bindProp(handle, key, run);
   return handle;
 }
 
@@ -191,6 +236,14 @@ function propParts(value) {
 }
 
 export function setProp(handle, key, value) {
+  if (key === "padding") {
+    if (!Array.isArray(value)) throw new Error("padding must be an array");
+    const edges = ["paddingLeft", "paddingRight", "paddingTop", "paddingBottom"];
+    for (let index = 0; index < edges.length; index += 1) {
+      setProp(handle, edges[index], value[index] ?? 0);
+    }
+    return;
+  }
   const [tag, number, text] = propParts(value);
   if (api.set_prop(handle, key, tag, number, text) !== 0) {
     throw new Error(api.error() || "set_prop failed");

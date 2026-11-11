@@ -60,6 +60,33 @@ fn lowers_component_props_children_and_conditionals() {
 }
 
 #[test]
+fn lowers_signal_reading_attributes_to_dynamic_bindings() {
+    let js = compile(
+        r#"
+        import { mount, signal, Text, View } from "bubble";
+        function App() {
+          const color = signal(0xff000000);
+          const pad = signal(4);
+          return (
+            <View background={color()} padding={[pad(), pad(), pad(), pad()]}>
+              <Text color={color()}>Body</Text>
+              <View onPress={() => color.update((c) => c + 1)} background={0xff000000} />
+            </View>
+          );
+        }
+        mount(App);
+        "#,
+    )
+    .unwrap();
+    assert!(js.contains("import { signal, primitive, mount, component, when, each, dynamic }"));
+    assert!(js.contains("dynamic(() => color())"));
+    assert!(js.contains("dynamic(() => [pad(), pad(), pad(), pad()])"));
+    assert!(js.contains("onPress: () => color.update((c) => c + 1)"));
+    assert!(js.contains("background: 4278190080"));
+    assert!(!js.contains("dynamic(() => 4278190080)"));
+}
+
+#[test]
 fn lowers_conditional_children_and_each() {
     let js = compile(
         r#"
