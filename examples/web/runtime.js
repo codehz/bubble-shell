@@ -465,7 +465,7 @@ function renderAt(parentHandle, index, build) {
 }
 
 function createAnchor() {
-  return pack(1, { width: 0, height: 0, flexGrow: 0, flexShrink: 0 }, "");
+  return pack(1, { width: 0, height: 0, flexGrow: 0, flexShrink: 0, position: "absolute" }, "");
 }
 
 export function when(cond, thenBranch, elseBranch) {

@@ -136,7 +136,11 @@ class BubbleView(context: Context) : View(context) {
                     val raw = ByteArray(n)
                     buffer.get(raw)
                     val src = String(raw, Charsets.UTF_8)
-                    val bitmap = images.getOrPut(src) { BitmapFactory.decodeFile(src) }
+                    val bitmap = if (images.containsKey(src)) {
+                        images[src]
+                    } else {
+                        BitmapFactory.decodeFile(src).also { images[src] = it }
+                    }
                     if (bitmap != null && w > 0f && h > 0f) {
                         val scale = if (fit == 0) {
                             minOf(w / bitmap.width, h / bitmap.height)
