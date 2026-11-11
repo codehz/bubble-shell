@@ -1,8 +1,8 @@
 # 05 · M2 前置：手势与滚动协商计划
 
-状态：A-D 已实现，E 中的设备交互验收与协商 trace 尚未完成。本文记录 2026-11-11 确认的行为契约与实施顺序；字段名已落到实现。
+状态：A-D 已实现。E 的可选协商 trace 已落地；模拟器已验收真实纵滑滚动与脚本挂起期间出帧，长按、双击、双指等设备交互未覆盖。本文记录 2026-11-11 确认的行为契约与实施顺序；字段名已落到实现。
 
-实现落点：`crates/core/src/gesture.rs`（识别状态机）、`crates/core/src/shell.rs`（命中路径、逐轴滚动链、声明生命周期）、`crates/core/src/ops.rs`（BSOP v3 手势 op）、`crates/wasm` / `crates/native`（pointer/tick ABI）、`examples/web/runtime.js`（五种虚拟原语与事件分发）、三端宿主输入适配。Web 端已由 `examples/web/m0-smoke.mjs` 覆盖按下-抬起、事件分发与滚动；iOS/Android 需要真机或模拟器交互验收。
+实现落点：`crates/core/src/gesture.rs`（识别状态机）、`crates/core/src/shell.rs`（命中路径、逐轴滚动链、声明生命周期）、`crates/core/src/ops.rs`（BSOP v3 手势 op）、`crates/wasm` / `crates/native`（pointer/tick ABI）、`examples/web/runtime.js`（五种虚拟原语与事件分发）、三端宿主输入适配。Web 端已由 `examples/web/m0-smoke.mjs` 覆盖按下-抬起、事件分发与滚动。iOS/Android 模拟器记录见第 9.1 节。
 
 ## 1. 目标与边界
 
@@ -196,8 +196,8 @@
 | A 输入和协议契约 | 已实现：BSOP v3、手势声明／配置／移动／销毁 op、`bubble_pointer`／`bubble_tick`、`pointer`／`tick` wasm 导出 |
 | B 虚拟节点与 JSX 运行时 | 已实现：五种原语、If/Each 归属与清理、onPress 语法糖与冲突校验 |
 | C Rust 识别和协商 | 已实现：单指、点击族、reserveScroll、双指 transform、结构事件与取消清理 |
-| D 滚动消费与三端接入 | 已实现：逐轴链、auto/contain、三端触点生命周期；设备交互验收待做 |
-| E 验证与文档切换 | 进行中：核心、wasm smoke 与可选协商 trace 已覆盖；三端设备交互验收未完成 |
+| D 滚动消费与三端接入 | 已实现：逐轴链、auto/contain、三端触点生命周期。模拟器已证明真实滑动进入 `bubble_pointer` 并滚动；长按、双击、双指未在设备上覆盖 |
+| E 验证与文档切换 | 进行中：核心、wasm smoke、可选协商 trace 与下方模拟器记录已覆盖；设备侧手势矩阵其余项未跑 |
 
 ### A. 输入和协议契约
 
@@ -263,6 +263,19 @@
 | 虚拟树 | 手势不影响布局与命中；If/Each 透明归属、顺序与销毁正确；onPress 语法糖冲突可诊断 |
 
 Rust 使用确定性输入轨迹和假时钟覆盖状态机；跨线程／runtime 集成用例覆盖已提交 signal、事件合并及清理。三端需要实际交互证明，不能仅以 headless 接口调用代替平台适配验收。新增永久测试只断言消费者可见行为和状态不变量，不锁定源代码文本或私有实现细节。
+
+### 9.1 模拟器记录（2026-11-11）
+
+命令：`cargo run -q -p bubble-eval -- ios` 与 `cargo run -q -p bubble-eval -- android`。两份报告 `ok: true`。
+
+| 设备 | 交互 | 结果 |
+|---|---|---|
+| iOS 27.2 Simulator，iPhone 18 Pro（`85111F63-1CD1-4C6F-8333-6039F90CD1A5`） | XCUITest `press` 0.05s 后从 (0.5, 0.75) 拖到 (0.5, 0.35)，经 `touchesBegan/Moved/Ended` → `bubble_pointer` | `scroll offset` 45.3（≥40）；`frames during hang` 60；帧均 16.87 ms；paint 2267 B；elapsed 4512 ms |
+| Android 16 模拟器 `emulator-5554`（`sdk_phone64_arm64`，arm64-v8a） | `adb shell input swipe` 纵滑 300 ms，经 `onTouchEvent` → `BubbleNative.pointer` | `scroll offset` 55.6（≥40）；`frames during hang` 61；帧均 16.83 ms；paint 2267 B；elapsed 1510 ms |
+
+两端共同通过、但不是手势矩阵：脚本死循环期间宿主继续出帧并在故障后重挂载（`remount text` = `Count: 0`，`faults` = 1，`font epoch` = 1）。按钮点击由宿主在第 20 帧直接调用 `bubble_pointer` down/up，不是平台注入的触点。
+
+本次没有在设备上覆盖：长按、双击、双指 transform、横纵并行、`reserveScroll` 回放、`scrollChain` contain、声明销毁取消、失焦/暂停清理。这些仍只由 Rust 轨迹测试和 Web smoke 证明。
 
 ## 10. 风险、调参与发布
 
