@@ -36,7 +36,7 @@ fn demo_template() -> Template {
     scroller.flex_grow = 1.0;
     scroller.flex_shrink = 1.0;
 
-    let mut column = NodeDesc::view(6, 5);
+    let column = NodeDesc::view(6, 5);
     let mut nodes = vec![root, header, button, label, scroller, column];
     for index in 0..30 {
         let mut row = NodeDesc::text(7 + index, 6, format!("Row {index:02}"));
@@ -83,7 +83,7 @@ fn rejects_bad_magic_and_dense_ids() {
 #[test]
 fn click_scroll_and_paint() {
     let mut shell = laid_out();
-    let (x, y, w, h) = shell.node_box(3).unwrap();
+    let (_x, y, w, h) = shell.node_box(3).unwrap();
     assert!(w > 0.0 && h > 0.0);
     let (lx, ly, _, lh) = shell.node_box(4).unwrap();
     assert!(ly >= y && ly + lh <= y + h + 1.0, "label {ly} outside button {y} {h}");

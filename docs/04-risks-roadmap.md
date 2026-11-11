@@ -68,9 +68,12 @@
 |---|---|---|
 | remount text | `Count: 0` | `Count: 0` |
 | faults | 1 | 1 |
-| frames during hang | 61 | 61 |
-| frame budget | 16.67 ms | 16.65 / 16.67 ms |
+| frames during hang | 61–62 | 61 |
+| frame budget | 16.67 ms | 16.67 ms |
 | font epoch | 1 | 1 |
+| scroll offset | 40.0 | 40.0 |
+| paint bytes | 500 | 500 |
+| 设备内耗时（启动→报告） | ≈1420 ms | ≈1380 ms |
 
 复现命令：
 
@@ -82,8 +85,10 @@ cargo run -q -p bubble-eval -- android
 说明：
 
 - Android 硬件加速前后差异明显：SwiftShader 软件渲染时 frame budget 为 38.76 / 35.32 ms、死循环期间仅 30–31 帧；切换为 Metal 后为 16.65 / 16.67 ms、61 帧。`dumpsys gfxinfo` 显示 82 帧中 2 帧 janky（2.44%），`Missed Vsync` 为 0。此前的不达标是模拟器软件光栅化导致，不是运行时缺陷。
-- 以上仅为模拟器结果，真机 60fps 基线仍需补测；iOS 滚动手势尚未接入，设备套件也未覆盖滚动。
-- headless 套件 `cargo test -p bubble-eval --test m1_report` 通过；`crates/native/tests/m1.rs` 共用进程级单例，默认并行运行会互相干扰，需加 `--test-threads=1`。
+- iOS 已接入 `UIPanGestureRecognizer` → `bubble_scroll` 并为 Android 补齐 `scrollOf` JNI。两端设备检查通过缩短 viewport 覆盖滚动路径（紧凑 bundle 在手机高度下不溢出，测试使用 320×180）；手势本身仍未做合成触摸回归。
+- 以上仅为模拟器结果，真机 60fps 基线仍需补测；宿主桥与生命周期暂停由 headless 套件覆盖。
+- `crates/native/tests/m1.rs` 已用进程级互斥串行化，`cargo test --workspace` 默认并行运行通过。内存超限与硬超时走同一重建路径，测试覆盖内存超限、双实例拒绝与坏 manifest 拒绝。
+- iOS 设备脚本现在会删除上次的 `m1-result.json` 再启动，避免读到旧报告。
 
 ### M2 · 输入与无障碍
 

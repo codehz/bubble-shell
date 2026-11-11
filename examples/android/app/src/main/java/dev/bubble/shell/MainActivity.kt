@@ -60,6 +60,11 @@ class MainActivity : Activity() {
                 2 -> {
                     hangFrames += 1
                     if (BubbleNative.faults() > 0 && BubbleNative.nodeText(3) == "Count: 0") {
+                        // The compact bundle list fits a phone viewport, so
+                        // use a short window to exercise the scroll path.
+                        BubbleNative.frame(320f, 180f)
+                        val box = BubbleNative.nodeBox(6)
+                        BubbleNative.scroll(box[0] + 1f, box[1] + 1f, 40f)
                         report()
                         phase = 3
                     }
@@ -86,8 +91,16 @@ class MainActivity : Activity() {
         add("frames during hang", hangFrames >= 10, hangFrames.toString())
         add("frame budget", average < 20.0, "%.2f".format(average))
         add("font epoch", BubbleNative.fontEpoch() > 0, BubbleNative.fontEpoch().toString())
+        add("scroll offset", BubbleNative.scrollOf(6) > 0f, BubbleNative.scrollOf(6).toString())
+        add("paint bytes", shell.paintSize() > 16, shell.paintSize().toString())
         val ok = (0 until checks.length()).all { checks.getJSONObject(it).getBoolean("ok") }
-        val json = JSONObject().put("suite", "m1.android").put("ok", ok).put("checks", checks).toString()
+        val elapsed = (System.nanoTime() - started) / 1_000_000
+        val json = JSONObject()
+            .put("suite", "m1.android")
+            .put("ok", ok)
+            .put("elapsed_ms", elapsed)
+            .put("checks", checks)
+            .toString()
         File(filesDir, "m1-result.json").writeText(json)
         Log.i("BUBBLE_EVAL", json)
     }

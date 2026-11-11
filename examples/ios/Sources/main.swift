@@ -14,6 +14,8 @@ func bubble_frame(_ width: Float, _ height: Float, _ paint: UnsafeMutablePointer
 func bubble_pointer_down(_ x: Float, _ y: Float)
 @_silgen_name("bubble_scroll")
 func bubble_scroll(_ x: Float, _ y: Float, _ dy: Float)
+@_silgen_name("bubble_scroll_of")
+func bubble_scroll_of(_ handle: UInt32) -> Float
 @_silgen_name("bubble_register_font")
 func bubble_register_font(_ family: UnsafePointer<CChar>?, _ data: UnsafePointer<UInt8>?, _ len: UInt32)
 @_silgen_name("bubble_font_epoch")
@@ -62,6 +64,7 @@ final class BubbleView: UIView {
         isMultipleTouchEnabled = true
         contentMode = .redraw
         backgroundColor = .black
+        addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:))))
     }
 
     required init?(coder: NSCoder) { nil }
@@ -135,8 +138,15 @@ final class BubbleView: UIView {
     }
 
     func scroll(dy: CGFloat, at point: CGPoint) {
-        bubble_scroll(Float(point.x), Float(point.y), Float(dy))
+        bubble_scroll(Float(point.x - safeAreaInsets.left), Float(point.y - safeAreaInsets.top), Float(dy))
         refresh()
+    }
+
+    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        let point = gesture.location(in: self)
+        let dy = gesture.translation(in: self).y
+        gesture.setTranslation(.zero, in: self)
+        scroll(dy: dy, at: point)
     }
 }
 
@@ -242,6 +252,14 @@ final class AppDriver {
         } else if phase == 2 {
             hangFrames += 1
             if bubble_faults() > 0 && nodeText(3) == "Count: 0" {
+                // The compact bundle list fits a phone viewport, so use a
+                // short window to exercise the scroll path.
+                var paint: UnsafePointer<UInt8>?
+                var paintLen: UInt32 = 0
+                _ = bubble_frame(320, 180, &paint, &paintLen)
+                var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
+                _ = bubble_node_box(6, &x, &y, &w, &h)
+                bubble_scroll(x + 1, y + 1, 40)
                 finish()
                 phase = 3
             }
@@ -256,18 +274,22 @@ final class AppDriver {
         let samples = max(frames - 5, 1)
         let average = frameMs / Double(samples)
         let text = nodeText(3)
+        let scrolled = bubble_scroll_of(6)
         let checks: [(String, Bool, String)] = [
             ("remount text", text == "Count: 0", text),
             ("faults", bubble_faults() > 0, "\(bubble_faults())"),
             ("frames during hang", hangFrames >= 10, "\(hangFrames)"),
             ("frame budget", average < 20, String(format: "%.2f", average)),
             ("font epoch", bubble_font_epoch() > 0, "\(bubble_font_epoch())"),
+            ("scroll offset", scrolled > 0, String(format: "%.1f", scrolled)),
+            ("paint bytes", view.paint.count > 16, "\(view.paint.count)"),
         ]
         let ok = checks.allSatisfy { $0.1 }
         let body = checks.map { name, passed, detail in
             #"{"name":"\#(name)","ok":\#(passed),"detail":"\#(detail)"}"#
         }.joined(separator: ",")
-        let json = #"{"suite":"m1.ios","ok":\#(ok),"checks":[\#(body)]}"#
+        let elapsed = Int((CACurrentMediaTime() - started) * 1000)
+        let json = #"{"suite":"m1.ios","ok":\#(ok),"elapsed_ms":\#(elapsed),"checks":[\#(body)]}"#
         let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("m1-result.json")
         try? json.data(using: .utf8)?.write(to: url)
         NSLog("BUBBLE_EVAL %@", json)

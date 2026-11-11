@@ -157,7 +157,7 @@ SetEditingValue {
 
 ### Native
 
-- 双端统一 QuickJS/PrimJS；每实例一个 context，跑在独立脚本线程。
+- 双端统一 QuickJS/PrimJS；v1 单实例嵌入，进程内一个 context，跑在独立脚本线程。多实例仍是待定项。
 - C ABI 暴露 Rust core；Swift/Kotlin 壳负责 surface、生命周期、原生输入与 a11y。
 - 脚本线程自建事件循环：timers、promises、microtasks、宿主回调。
 - `JS_SetInterruptHandler` 做硬超时；`JS_SetMemoryLimit` + 栈上限做资源配额。
@@ -242,7 +242,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 ## 6. 故障与资源
 
 - 脚本单事件软预算 32ms（仅埋点），硬超时 1s（中断）；初始值，可按实测调整。
-- QuickJS 内存上限初始 64MB，栈上限单独设置；超限视为脚本故障。
+- QuickJS 内存上限初始 64MB，栈上限单独设置；内存超限与硬超时走同一故障路径：中断执行、销毁 context、重建并重新挂载 bundle。
 - 故障处理：上报 → 销毁 context → 重建 → 重新挂载 bundle → 错误占位与重试。应用状态丢失，内容级恢复。
 - Web：一次调用返回前页面卡住；无法像 Worker 那样 `terminate()`。硬超时只存在于 native QuickJS。
 - FFI 边界 `catch_unwind`，不允许 Rust panic 跨 C ABI；QuickJS 绑定用安全封装并 fuzz。

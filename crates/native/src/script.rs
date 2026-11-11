@@ -122,8 +122,13 @@ fn script_main(rx: Receiver<Cmd>, shared: Arc<Shared>) {
         bundle: None,
     };
     loop {
-        if let Some(vm) = session.vm.as_ref() {
-            session.fire_due(vm);
+        let fired = session.vm.as_ref().map(|vm| session.fire_due(vm));
+        if let Some(Err(err)) = fired {
+            if fatal(&err) {
+                let _ = session.recover();
+            } else {
+                session.note_fault(&err);
+            }
         }
         let timeout = session.next_timeout();
         let cmd = match timeout {
@@ -154,9 +159,7 @@ impl Session {
                 true
             }
             Cmd::Press { handler } => {
-                if let Err(err) = self.press(handler) {
-                    self.note_fault(&err);
-                } else {
+                if self.press(handler).is_ok() {
                     self.shared.generation.fetch_add(1, Ordering::Relaxed);
                 }
                 true
@@ -170,7 +173,11 @@ impl Session {
             }
             Cmd::Settle { id, ok, payload } => {
                 if let Err(err) = self.settle(id, ok, &payload) {
-                    self.note_fault(&err);
+                    if fatal(&err) {
+                        let _ = self.recover();
+                    } else {
+                        self.note_fault(&err);
+                    }
                 }
                 true
             }
@@ -210,9 +217,9 @@ impl Session {
         match guarded(|| eval_in(vm, source)) {
             Ok(text) => Ok(text),
             Err(err) => {
-                if INTERRUPT.load(Ordering::Relaxed) || err.contains("interrupted") {
+                if fatal(&err) {
                     self.recover()?;
-                    Err("interrupted".into())
+                    Err(if INTERRUPT.load(Ordering::Relaxed) { "interrupted".into() } else { err })
                 } else {
                     Err(err)
                 }
@@ -227,8 +234,10 @@ impl Session {
         match guarded(|| press_in(vm, handler)) {
             Ok(()) => Ok(()),
             Err(err) => {
-                if INTERRUPT.load(Ordering::Relaxed) || err.contains("interrupted") {
+                if fatal(&err) {
                     self.recover()?;
+                } else {
+                    self.note_fault(&err);
                 }
                 Err(err)
             }
@@ -257,9 +266,9 @@ impl Session {
         self.shared.set_error(err);
     }
 
-    fn fire_due(&self, vm: &Vm) {
+    fn fire_due(&self, vm: &Vm) -> Result<(), String> {
         if !self.shared.visible.load(Ordering::Relaxed) {
-            return;
+            return Ok(());
         }
         let now = Instant::now();
         let due: Vec<u32> = TIMERS.with(|slot| {
@@ -276,9 +285,9 @@ impl Session {
             due
         });
         if due.is_empty() {
-            return;
+            return Ok(());
         }
-        let _ = guarded(|| {
+        guarded(|| {
             enter_js();
             let result = vm.context.with(|ctx| {
                 for id in due {
@@ -290,7 +299,7 @@ impl Session {
             });
             leave_js();
             result.map_err(|err: rquickjs::Error| err.to_string())
-        });
+        })
     }
 
     fn next_timeout(&self) -> Option<Duration> {
@@ -305,6 +314,14 @@ impl Session {
                 .min()
         })
     }
+}
+
+/// A fault that leaves the VM unsafe to reuse: an interrupt or a memory
+/// allocation failure. Both rebuild the context and remount the bundle.
+fn fatal(err: &str) -> bool {
+    INTERRUPT.load(Ordering::Relaxed)
+        || err.contains("interrupted")
+        || err.to_ascii_lowercase().contains("out of memory")
 }
 
 fn guarded<T>(body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {

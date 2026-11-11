@@ -150,6 +150,7 @@ fn timers_and_host(probe: &mut Probe) {
     match session.poll_request() {
         Ok(Some(request)) => {
             probe.eq("host method", request.method, "toast".to_string());
+            probe.eq("host params", request.params, "{\"message\":\"hi\"}".to_string());
             if let Err(err) = session.finish_request(request.id, true, "{\"ok\":true}") {
                 probe.check("finish host request", false, err);
                 return;

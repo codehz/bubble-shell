@@ -564,6 +564,15 @@ mod android {
     }
 
     #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_scrollOf<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        handle: jint,
+    ) -> jfloat {
+        super::bubble_scroll_of(handle as u32)
+    }
+
+    #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_setVisible<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,

@@ -14,6 +14,8 @@ use crate::report::{Check, ScenarioReport, SuiteReport};
 struct DeviceReport {
     suite: String,
     ok: bool,
+    #[serde(default)]
+    elapsed_ms: u128,
     checks: Vec<Check>,
 }
 
@@ -72,8 +74,6 @@ pub fn ios() -> Result<SuiteReport, String> {
         .arg(app.join("BubbleShell"))
         .arg(root.join("examples/ios/Sources/main.swift")))?;
     run(Command::new("xcrun").args(["simctl", "install", "booted"]).arg(&app))?;
-    let _ = run(Command::new("xcrun").args(["simctl", "terminate", "booted", "dev.bubble.shell"]));
-    run(Command::new("xcrun").args(["simctl", "launch", "booted", "dev.bubble.shell"]))?;
     let container = run(Command::new("xcrun").args([
         "simctl",
         "get_app_container",
@@ -82,6 +82,11 @@ pub fn ios() -> Result<SuiteReport, String> {
         "data",
     ]))?;
     let result = PathBuf::from(container.trim()).join("Documents/m1-result.json");
+    // The install keeps the data container, so a previous run's report would
+    // otherwise be read before the new process writes its own.
+    let _ = std::fs::remove_file(&result);
+    let _ = run(Command::new("xcrun").args(["simctl", "terminate", "booted", "dev.bubble.shell"]));
+    run(Command::new("xcrun").args(["simctl", "launch", "booted", "dev.bubble.shell"]))?;
     let body = wait_file(&result, Duration::from_secs(20))?;
     Ok(decode("m1.ios", &body))
 }
@@ -207,7 +212,7 @@ fn decode(name: &str, body: &str) -> SuiteReport {
             scenarios: vec![ScenarioReport {
                 name: name.into(),
                 ok: report.ok,
-                elapsed_ms: 0,
+                elapsed_ms: report.elapsed_ms,
                 checks: report.checks,
             }],
         },

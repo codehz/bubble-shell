@@ -31,6 +31,8 @@ int bubble_node_text(uint32_t handle, char *buf, uint32_t cap);
 int bubble_node_box(uint32_t handle, float *x, float *y, float *w, float *h);
 float bubble_scroll_of(uint32_t handle);
 
+/* A 1s interrupt and a memory limit fault both rebuild the context and
+ * remount the loaded bundle. */
 /* Blocks the caller until the script thread finishes, including a 1s interrupt. */
 int bubble_eval(const char *source, char *buf, uint32_t cap);
 /* Returns immediately. A dead loop is interrupted off the caller thread. */

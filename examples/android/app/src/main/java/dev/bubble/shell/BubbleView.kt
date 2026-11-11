@@ -30,6 +30,8 @@ class BubbleView(context: Context) : View(context) {
         family = typeface
     }
 
+    fun paintSize(): Int = paintBytes.size
+
     fun refresh() {
         val size = contentSize()
         paintBytes = BubbleNative.frame(size[0], size[1])
