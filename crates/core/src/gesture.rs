@@ -21,6 +21,8 @@ pub const LONG_PRESS_DIST: f32 = 10.0;
 pub const PAN_MIN: f32 = 10.0;
 /// Per-sample movement below this is treated as jitter.
 pub const SCROLL_SLOP: f32 = 1.0;
+/// Distance from the down sample before touch scrolling may start.
+pub const SCROLL_MIN_DISTANCE: f32 = 8.0;
 pub const PINCH_MIN: f64 = 0.05;
 pub const ROTATE_MIN: f64 = std::f64::consts::PI / 36.0;
 
@@ -313,6 +315,8 @@ struct Sequence {
     buffer: [f32; 2],
     scroll_last_x: f32,
     scroll_last_y: f32,
+    scroll_total: [f32; 2],
+    scroll_armed: [bool; 2],
     transform: Option<TransformState>,
     transform_decl: Option<u32>,
     dead: bool,
@@ -714,6 +718,8 @@ impl Recognizer {
             buffer: [0.0; 2],
             scroll_last_x: input.x,
             scroll_last_y: input.y,
+            scroll_total: [0.0; 2],
+            scroll_armed: [false; 2],
             transform: None,
             transform_decl: None,
             dead: false,
@@ -1197,6 +1203,13 @@ impl Recognizer {
             if seq.axes_owned & bit != 0 {
                 seq.buffer[axis] = 0.0;
                 continue;
+            }
+            seq.scroll_total[axis] += delta;
+            if !seq.scroll_armed[axis] {
+                if seq.scroll_total[axis].abs() < SCROLL_MIN_DISTANCE {
+                    continue;
+                }
+                seq.scroll_armed[axis] = true;
             }
             if seq.reserved & bit != 0 {
                 seq.buffer[axis] += delta;
@@ -2171,6 +2184,64 @@ mod tests {
             .iter()
             .any(|event| event.slot == SLOT_START));
         assert!(rec.drain_scroll().is_empty());
+    }
+
+    #[test]
+    fn a_deeper_pan_wins_the_axis_against_its_ancestor() {
+        let mut rec = Recognizer::new();
+        decl(&mut rec, 2, 10, GestureKind::Pan, 7);
+        decl(&mut rec, 3, 20, GestureKind::Pan, 8);
+        rec.pointer(down(0.0, 0.0, &[20, 10, 1]));
+        rec.pointer(mv(20.0, 0.0, 10.0));
+        let events = rec.drain_events();
+        let started: Vec<u32> = events
+            .iter()
+            .filter(|event| event.slot == SLOT_START)
+            .map(|event| event.gesture)
+            .collect();
+        assert_eq!(started, vec![3]);
+    }
+
+    #[test]
+    fn a_horizontal_pan_and_a_vertical_scroll_run_in_parallel() {
+        let mut rec = Recognizer::new();
+        decl(&mut rec, 2, 10, GestureKind::Pan, 7);
+        rec.set_prop(2, "axis", &Value::String("x".into())).unwrap();
+        rec.pointer(down(0.0, 0.0, &[10, 1]));
+        rec.pointer(mv(15.0, 20.0, 10.0));
+        assert!(rec
+            .drain_events()
+            .iter()
+            .any(|event| event.slot == SLOT_START));
+        let scroll = rec.drain_scroll();
+        assert_eq!(scroll.len(), 1);
+        assert_eq!(scroll[0].dx, 0.0);
+        assert_eq!(scroll[0].dy, -20.0);
+    }
+
+    #[test]
+    fn taps_on_different_targets_are_not_merged() {
+        let mut rec = Recognizer::new();
+        rec.spawn(2, 10, GestureKind::Tap, 0).unwrap();
+        rec.bind(2, SLOT_TAP, 7).unwrap();
+        rec.spawn(3, 10, GestureKind::DoubleTap, 1).unwrap();
+        rec.bind(3, SLOT_DOUBLE_TAP, 8).unwrap();
+        rec.spawn(4, 20, GestureKind::Tap, 0).unwrap();
+        rec.bind(4, SLOT_TAP, 9).unwrap();
+
+        rec.pointer(down(0.0, 0.0, &[10, 1]));
+        rec.pointer(up(0.0, 0.0, 10.0));
+        assert!(rec.drain_events().is_empty());
+        rec.pointer(down(100.0, 100.0, &[20, 1]));
+        rec.pointer(up(100.0, 100.0, 60.0));
+        let first = rec.drain_events();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].target, 20);
+        rec.advance(400.0);
+        let second = rec.drain_events();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].target, 10);
+        assert_eq!(second[0].slot, SLOT_TAP);
     }
 
     #[test]
