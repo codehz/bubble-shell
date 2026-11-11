@@ -21,6 +21,7 @@ struct MeasureCtx {
 #[derive(Clone, Copy)]
 struct NodeStyle {
     row: bool,
+    scroll_x: bool,
     scroll_y: bool,
     flex_grow: f32,
     flex_shrink: f32,
@@ -39,6 +40,7 @@ impl NodeStyle {
     fn from_node(node: &Node) -> Self {
         Self {
             row: node.row,
+            scroll_x: node.scroll_x,
             scroll_y: node.scroll_y,
             flex_grow: node.flex_grow,
             flex_shrink: node.flex_shrink,
@@ -59,6 +61,7 @@ impl Default for NodeStyle {
     fn default() -> Self {
         Self {
             row: false,
+            scroll_x: false,
             scroll_y: false,
             flex_grow: 0.0,
             flex_shrink: 1.0,
@@ -80,6 +83,7 @@ struct Node {
     parent: u32,
     children: Vec<u32>,
     kind: Kind,
+    scroll_x: bool,
     scroll_y: bool,
     background: u32,
     color: u32,
@@ -106,7 +110,8 @@ struct Node {
     fit: u8,
     text: String,
     taffy: NodeId,
-    scroll: f32,
+    scroll_left: f32,
+    scroll_top: f32,
     x: f32,
     y: f32,
     w: f32,
@@ -180,6 +185,7 @@ impl Shell {
                     parent: 0,
                     children: Vec::new(),
                     kind: Kind::View,
+                    scroll_x: false,
                     scroll_y: false,
                     background: 0,
                     color: 0xffff_ffff,
@@ -206,7 +212,8 @@ impl Shell {
                     fit: 0,
                     text: String::new(),
                     taffy: taffy_id,
-                    scroll: 0.0,
+                    scroll_left: 0.0,
+                    scroll_top: 0.0,
                     x: 0.0,
                     y: 0.0,
                     w: 0.0,
@@ -281,7 +288,7 @@ impl Shell {
                     index,
                 } => self.move_node(handle, parent, index)?,
                 Op::BindEvent { handle, handler } => self.node_mut(handle)?.handler = handler,
-                Op::ScrollTo { handle, y } => self.scroll_to(handle, y)?,
+                Op::ScrollTo { handle, x, y } => self.scroll_to(handle, x, y)?,
                 Op::Spawn { desc } => self.spawn_desc(desc)?,
                 Op::SpawnAt { desc, index } => {
                     let parent = desc.parent;
@@ -361,7 +368,7 @@ impl Shell {
             )
             .map_err(|err| err.to_string())?;
         self.place(1, 0.0, 0.0)?;
-        let limits: Vec<(usize, f32)> = self
+        let limits: Vec<(usize, f32, f32)> = self
             .nodes
             .iter()
             .enumerate()
@@ -369,19 +376,31 @@ impl Shell {
                 let node = node.as_ref()?;
                 Some((
                     index,
+                    if node.scroll_x {
+                        self.max_scroll_x(node)
+                    } else {
+                        0.0
+                    },
                     if node.scroll_y {
-                        self.max_scroll(node)
+                        self.max_scroll_y(node)
                     } else {
                         0.0
                     },
                 ))
             })
             .collect();
-        for (index, limit) in limits {
+        for (index, limit_x, limit_y) in limits {
             if let Some(node) = &mut self.nodes[index] {
-                if node.scroll_y {
-                    node.scroll = node.scroll.clamp(0.0, limit);
-                }
+                node.scroll_left = if node.scroll_x {
+                    node.scroll_left.clamp(0.0, limit_x)
+                } else {
+                    0.0
+                };
+                node.scroll_top = if node.scroll_y {
+                    node.scroll_top.clamp(0.0, limit_y)
+                } else {
+                    0.0
+                };
             }
         }
         self.paint_dirty.set(true);
@@ -409,27 +428,56 @@ impl Shell {
         }
     }
 
-    pub fn scroll_wheel(&mut self, x: f32, y: f32, dy: f32) -> bool {
-        let Some(id) = self.scroll_target(1, x, y) else {
+    pub fn scroll_wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        let Some(id) = self.scroll_target(1, x, y, dx, dy) else {
             return false;
         };
-        let limit = self.max_scroll(self.node(id).expect("scroll target"));
+        let node = self.node(id).expect("scroll target");
+        let limit_x = if node.scroll_x {
+            self.max_scroll_x(node)
+        } else {
+            0.0
+        };
+        let limit_y = if node.scroll_y {
+            self.max_scroll_y(node)
+        } else {
+            0.0
+        };
         let node = self.node_mut(id).expect("scroll target");
-        let next = (node.scroll + dy).clamp(0.0, limit);
-        if (next - node.scroll).abs() < f32::EPSILON {
+        let next_x = (node.scroll_left + dx).clamp(0.0, limit_x);
+        let next_y = (node.scroll_top + dy).clamp(0.0, limit_y);
+        if (next_x - node.scroll_left).abs() < f32::EPSILON
+            && (next_y - node.scroll_top).abs() < f32::EPSILON
+        {
             return false;
         }
-        node.scroll = next;
+        node.scroll_left = next_x;
+        node.scroll_top = next_y;
         self.paint_dirty.set(true);
         true
     }
 
-    fn scroll_to(&mut self, id: u32, y: f32) -> Result<(), String> {
-        if !self.node(id)?.scroll_y {
+    fn scroll_to(&mut self, id: u32, x: f32, y: f32) -> Result<(), String> {
+        let (scroll_x, scroll_y) = {
+            let node = self.node(id)?;
+            (node.scroll_x, node.scroll_y)
+        };
+        if !scroll_x && !scroll_y {
             return Err(format!("handle {id} is not a scroll container"));
         }
-        let limit = self.max_scroll(self.node(id)?);
-        self.node_mut(id)?.scroll = y.clamp(0.0, limit);
+        let limit_x = if scroll_x {
+            self.max_scroll_x(self.node(id)?)
+        } else {
+            0.0
+        };
+        let limit_y = if scroll_y {
+            self.max_scroll_y(self.node(id)?)
+        } else {
+            0.0
+        };
+        let node = self.node_mut(id)?;
+        node.scroll_left = x.clamp(0.0, limit_x);
+        node.scroll_top = y.clamp(0.0, limit_y);
         self.paint_dirty.set(true);
         Ok(())
     }
@@ -457,6 +505,7 @@ impl Shell {
             Prop::Height => self.node_mut(id)?.height = value.optional_f32()?,
             Prop::FlexGrow => self.node_mut(id)?.flex_grow = value.as_f32()?,
             Prop::FlexShrink => self.node_mut(id)?.flex_shrink = value.as_f32()?,
+            Prop::ScrollX => self.node_mut(id)?.scroll_x = value.as_bool()?,
             Prop::ScrollY => self.node_mut(id)?.scroll_y = value.as_bool()?,
             Prop::Row => self.node_mut(id)?.row = value.as_bool()?,
             Prop::LineHeight => {
@@ -539,8 +588,10 @@ impl Shell {
         Ok(&self.node(id)?.text)
     }
 
-    pub fn scroll_of(&self, id: u32) -> Result<f32, String> {
-        Ok(self.node(id)?.scroll)
+    /// `(left, top)` offsets of a scroll container.
+    pub fn scroll_of(&self, id: u32) -> Result<(f32, f32), String> {
+        let node = self.node(id)?;
+        Ok((node.scroll_left, node.scroll_top))
     }
 
     pub fn next_handle(&self) -> u32 {
@@ -571,6 +622,7 @@ impl Shell {
         }
         let style = style_for(NodeStyle {
             row: desc.row,
+            scroll_x: desc.scroll_x,
             scroll_y: desc.scroll_y,
             flex_grow: desc.flex_grow,
             flex_shrink: desc.flex_shrink,
@@ -601,6 +653,7 @@ impl Shell {
             parent,
             children: Vec::new(),
             kind: desc.kind,
+            scroll_x: desc.scroll_x,
             scroll_y: desc.scroll_y,
             background: desc.background,
             color: desc.color,
@@ -627,7 +680,8 @@ impl Shell {
             fit: 0,
             text: desc.text.clone(),
             taffy: taffy_id,
-            scroll: 0.0,
+            scroll_left: 0.0,
+            scroll_top: 0.0,
             x: 0.0,
             y: 0.0,
             w: 0.0,
@@ -724,7 +778,8 @@ impl Shell {
         let layout = *self.taffy.layout(taffy_id).map_err(|err| err.to_string())?;
         let x = origin_x + layout.location.x;
         let y = origin_y + layout.location.y;
-        let scroll = self.node(id)?.scroll;
+        let scroll_left = self.node(id)?.scroll_left;
+        let scroll_top = self.node(id)?.scroll_top;
         let children = self.node(id)?.children.clone();
         {
             let node = self.node_mut(id)?;
@@ -734,12 +789,21 @@ impl Shell {
             node.h = layout.size.height;
         }
         for child in children {
-            self.place(child, x, y - scroll)?;
+            self.place(child, x - scroll_left, y - scroll_top)?;
         }
         Ok(())
     }
 
-    fn max_scroll(&self, node: &Node) -> f32 {
+    fn max_scroll_x(&self, node: &Node) -> f32 {
+        let Ok(layout) = self.taffy.layout(node.taffy) else {
+            return 0.0;
+        };
+        let visible = (layout.size.width - layout.padding.left - layout.padding.right).max(0.0);
+        let content = layout.scrollable_overflow_rect.right.max(0.0);
+        (content - visible).max(0.0)
+    }
+
+    fn max_scroll_y(&self, node: &Node) -> f32 {
         let Ok(layout) = self.taffy.layout(node.taffy) else {
             return 0.0;
         };
@@ -761,7 +825,7 @@ impl Shell {
         let color = node.color;
         let font_size = node.font_size;
         let opacity = node.opacity.clamp(0.0, 1.0);
-        let scroll_y = node.scroll_y;
+        let scrolls = node.scroll_x || node.scroll_y;
         let children = node.children.clone();
         let pads = self.pads(id);
         if opacity < 1.0 {
@@ -801,7 +865,7 @@ impl Shell {
                 src: node.src.clone(),
             });
         }
-        if scroll_y {
+        if scrolls {
             out.push(PaintCmd::PushClip {
                 x: x + pads[0],
                 y: y + pads[2],
@@ -812,7 +876,7 @@ impl Shell {
         for child in children {
             self.paint_node(child, out);
         }
-        if scroll_y {
+        if scrolls {
             out.push(PaintCmd::PopClip);
         }
         if opacity < 1.0 {
@@ -839,13 +903,13 @@ impl Shell {
         let ny = node.y;
         let nw = node.w;
         let nh = node.h;
-        let scroll_y = node.scroll_y;
+        let scrolls = node.scroll_x || node.scroll_y;
         let handler = node.handler;
         let children = node.children.clone();
         if x < nx || y < ny || x >= nx + nw || y >= ny + nh {
             return Hit::Miss;
         }
-        if scroll_y {
+        if scrolls {
             let pads = self.pads(id);
             let left = nx + pads[0];
             let top = ny + pads[2];
@@ -879,19 +943,21 @@ impl Shell {
         }
     }
 
-    fn scroll_target(&self, id: u32, x: f32, y: f32) -> Option<u32> {
+    fn scroll_target(&self, id: u32, x: f32, y: f32, dx: f32, dy: f32) -> Option<u32> {
         let node = self.node(id).expect("scroll handle");
         if x < node.x || y < node.y || x >= node.x + node.w || y >= node.y + node.h {
             return None;
         }
         let children = node.children.clone();
         for child in children.iter().rev() {
-            if let Some(found) = self.scroll_target(*child, x, y) {
+            if let Some(found) = self.scroll_target(*child, x, y, dx, dy) {
                 return Some(found);
             }
         }
         let node = self.node(id).expect("scroll handle");
-        if node.scroll_y && self.max_scroll(node) > 0.0 {
+        let can_x = dx != 0.0 && node.scroll_x && self.max_scroll_x(node) > 0.0;
+        let can_y = dy != 0.0 && node.scroll_y && self.max_scroll_y(node) > 0.0;
+        if can_x || can_y {
             Some(id)
         } else {
             None
@@ -968,11 +1034,19 @@ fn style_for(node: NodeStyle) -> Style {
         bottom: inset(node.inset[2]),
         left: inset(node.inset[3]),
     };
+    if node.scroll_x || node.flex_grow > 0.0 {
+        style.min_size.width = length(0.0);
+    }
     if node.scroll_y || node.flex_grow > 0.0 {
         style.min_size.height = length(0.0);
     }
+    if node.scroll_x {
+        style.overflow.x = Overflow::Scroll;
+    }
     if node.scroll_y {
         style.overflow.y = Overflow::Scroll;
+    }
+    if node.scroll_x || node.scroll_y {
         style.scrollbar_width = 0.0;
     }
     style

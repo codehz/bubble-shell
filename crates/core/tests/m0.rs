@@ -106,11 +106,11 @@ fn click_scroll_and_paint() {
     let (sx, sy, sw, sh) = shell.node_box(5).unwrap();
     assert!(sh > 0.0 && sh < 480.0);
     let before = shell.node_box(7).unwrap().1;
-    assert!(shell.scroll_wheel(sx + sw / 2.0, sy + sh / 2.0, 40.0));
+    assert!(shell.scroll_wheel(sx + sw / 2.0, sy + sh / 2.0, 0.0, 40.0));
     shell.layout(&mut measure).unwrap();
     let after = shell.node_box(7).unwrap().1;
     assert!(after < before);
-    assert!(shell.scroll_of(5).unwrap() > 0.0);
+    assert!(shell.scroll_of(5).unwrap().1 > 0.0);
 
     let paint = shell.paint();
     assert!(paint
@@ -233,19 +233,119 @@ fn scroll_to_clamps_and_rejects_a_plain_node() {
             2,
             &[Op::ScrollTo {
                 handle: 5,
+                x: 0.0,
                 y: 10_000.0,
             }],
         ))
         .unwrap();
     let scrolled = shell.scroll_of(5).unwrap();
-    assert!(scrolled > 0.0);
+    assert!(scrolled.1 > 0.0);
     shell
-        .apply_ops(&encode(3, &[Op::ScrollTo { handle: 5, y: 0.0 }]))
+        .apply_ops(&encode(
+            3,
+            &[Op::ScrollTo {
+                handle: 5,
+                x: 0.0,
+                y: 0.0,
+            }],
+        ))
         .unwrap();
-    assert_eq!(shell.scroll_of(5).unwrap(), 0.0);
+    assert_eq!(shell.scroll_of(5).unwrap(), (0.0, 0.0));
     assert!(shell
-        .apply_ops(&encode(4, &[Op::ScrollTo { handle: 2, y: 1.0 }]))
+        .apply_ops(&encode(
+            4,
+            &[Op::ScrollTo {
+                handle: 2,
+                x: 1.0,
+                y: 1.0,
+            }],
+        ))
         .is_err());
+}
+
+#[test]
+fn scroll_axes_are_independent() {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 120.0);
+    let mut scroller = NodeDesc::view(2, 1);
+    scroller.scroll_x = true;
+    scroller.scroll_y = true;
+    scroller.width = Some(100.0);
+    scroller.height = Some(60.0);
+    let mut lane = NodeDesc::view(3, 2);
+    lane.width = Some(400.0);
+    lane.height = Some(200.0);
+    lane.flex_shrink = 0.0;
+    shell
+        .apply_ops(&encode(
+            1,
+            &[Op::Spawn { desc: scroller }, Op::Spawn { desc: lane }],
+        ))
+        .unwrap();
+    shell.layout(&mut measure).unwrap();
+    assert_eq!(shell.scroll_of(2).unwrap(), (0.0, 0.0));
+
+    let (sx, sy, sw, sh) = shell.node_box(2).unwrap();
+    let (lx, ly, _, _) = shell.node_box(3).unwrap();
+    assert!(shell.scroll_wheel(sx + sw / 2.0, sy + sh / 2.0, 12.0, 7.0));
+    assert_eq!(shell.scroll_of(2).unwrap(), (12.0, 7.0));
+    shell.layout(&mut measure).unwrap();
+    assert_eq!(shell.node_box(3).unwrap().0, lx - 12.0);
+    assert_eq!(shell.node_box(3).unwrap().1, ly - 7.0);
+
+    shell
+        .apply_ops(&encode(
+            2,
+            &[Op::ScrollTo {
+                handle: 2,
+                x: 10_000.0,
+                y: 10_000.0,
+            }],
+        ))
+        .unwrap();
+    assert_eq!(shell.scroll_of(2).unwrap(), (300.0, 140.0));
+    shell
+        .apply_ops(&encode(
+            3,
+            &[Op::ScrollTo {
+                handle: 2,
+                x: -5.0,
+                y: -5.0,
+            }],
+        ))
+        .unwrap();
+    assert_eq!(shell.scroll_of(2).unwrap(), (0.0, 0.0));
+
+    let mut vertical_only = NodeDesc::view(4, 1);
+    vertical_only.scroll_y = true;
+    vertical_only.width = Some(100.0);
+    vertical_only.height = Some(40.0);
+    let mut tall = NodeDesc::view(5, 4);
+    tall.height = Some(200.0);
+    tall.flex_shrink = 0.0;
+    shell
+        .apply_ops(&encode(
+            4,
+            &[Op::Spawn {
+                desc: vertical_only,
+            }],
+        ))
+        .unwrap();
+    shell
+        .apply_ops(&encode(5, &[Op::Spawn { desc: tall }]))
+        .unwrap();
+    shell.layout(&mut measure).unwrap();
+    shell
+        .apply_ops(&encode(
+            6,
+            &[Op::ScrollTo {
+                handle: 4,
+                x: 50.0,
+                y: 20.0,
+            }],
+        ))
+        .unwrap();
+    assert_eq!(shell.scroll_of(4).unwrap(), (0.0, 20.0));
 }
 
 #[test]
@@ -332,8 +432,8 @@ fn signal_commit_updates_text_and_scrolls() {
     shell.apply_ops(&turn.commit().unwrap()).unwrap();
     assert_eq!(shell.text(header).unwrap(), "Count: 1");
     let (x, y, _, _) = shell.node_box(scroller).unwrap();
-    assert!(shell.scroll_wheel(x + 1.0, y + 1.0, 50.0));
-    assert!(shell.scroll_of(scroller).unwrap() > 0.0);
+    assert!(shell.scroll_wheel(x + 1.0, y + 1.0, 0.0, 50.0));
+    assert!(shell.scroll_of(scroller).unwrap().1 > 0.0);
 }
 
 #[test]
@@ -350,7 +450,7 @@ fn every_runtime_property_is_dispatchable() {
         assert!(Prop::parse(key).is_some(), "{key} is not parseable");
         let value = match *key {
             "color" | "backgroundColor" => Value::Int(0xff00_0000),
-            "scrollY" | "row" => Value::Bool(true),
+            "scrollX" | "scrollY" | "row" => Value::Bool(true),
             "textAlign" => Value::String("center".into()),
             "alignItems" => Value::String("center".into()),
             "justifyContent" => Value::String("space-between".into()),
@@ -530,6 +630,7 @@ fn typed_signals_read_and_write() {
 #[test]
 fn node_descriptor_and_spawn_op_roundtrip() {
     let mut node = NodeDesc::text(9, 4, "hello");
+    node.scroll_x = true;
     node.scroll_y = true;
     node.row = true;
     node.background = 0x1122_3344;
@@ -550,6 +651,9 @@ fn node_descriptor_and_spawn_op_roundtrip() {
     let bytes = node.encode();
     assert_eq!(NodeDesc::decode(&bytes).unwrap(), node);
     assert!(NodeDesc::decode(&bytes[..bytes.len() - 1]).is_err());
+    let mut unknown_flag = bytes.clone();
+    unknown_flag[15] = 0b100;
+    assert!(NodeDesc::decode(&unknown_flag).is_err());
 
     let batch = encode(12, &[Op::Spawn { desc: node.clone() }]);
     let (seq, ops) = bubble_core::decode_ops(&batch).unwrap();

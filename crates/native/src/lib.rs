@@ -338,7 +338,7 @@ pub extern "C" fn bubble_pointer_down(x: f32, y: f32) {
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_scroll(x: f32, y: f32, dy: f32) {
+pub extern "C" fn bubble_scroll(x: f32, y: f32, dx: f32, dy: f32) {
     let _ = catch(|| {
         let engine = engine()?;
         drain_pending(&engine.shared)?;
@@ -347,7 +347,7 @@ pub extern "C" fn bubble_scroll(x: f32, y: f32, dy: f32) {
             .shell
             .lock()
             .map_err(|_| "tree lock poisoned".to_string())?;
-        shell.scroll_wheel(x, y, dy);
+        shell.scroll_wheel(x, y, dx, dy);
         Ok(())
     });
 }
@@ -453,15 +453,20 @@ pub extern "C" fn bubble_node_box(
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_scroll_of(handle: u32) -> f32 {
-    engine()
-        .ok()
-        .and_then(|engine| {
-            drain_pending(&engine.shared).ok()?;
-            let shell = engine.shared.shell.lock().ok()?;
-            shell.scroll_of(handle).ok()
-        })
-        .unwrap_or(f32::NAN)
+pub extern "C" fn bubble_scroll_x_of(handle: u32) -> f32 {
+    scroll_of(handle).map_or(f32::NAN, |(x, _)| x)
+}
+
+#[no_mangle]
+pub extern "C" fn bubble_scroll_y_of(handle: u32) -> f32 {
+    scroll_of(handle).map_or(f32::NAN, |(_, y)| y)
+}
+
+fn scroll_of(handle: u32) -> Option<(f32, f32)> {
+    let engine = engine().ok()?;
+    drain_pending(&engine.shared).ok()?;
+    let shell = engine.shared.shell.lock().ok()?;
+    shell.scroll_of(handle).ok()
 }
 
 #[no_mangle]
@@ -740,18 +745,28 @@ mod android {
         _class: JClass<'a>,
         x: jfloat,
         y: jfloat,
+        dx: jfloat,
         dy: jfloat,
     ) {
-        super::bubble_scroll(x, y, dy);
+        super::bubble_scroll(x, y, dx, dy);
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_scrollOf<'a>(
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_scrollXOf<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
         handle: jint,
     ) -> jfloat {
-        super::bubble_scroll_of(handle as u32)
+        super::bubble_scroll_x_of(handle as u32)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_scrollYOf<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        handle: jint,
+    ) -> jfloat {
+        super::bubble_scroll_y_of(handle as u32)
     }
 
     #[no_mangle]

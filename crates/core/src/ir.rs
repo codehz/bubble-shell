@@ -24,7 +24,9 @@ pub struct NodeDesc {
     pub id: u32,
     pub parent: u32,
     pub kind: Kind,
+    /// Bit 0 of the descriptor scroll byte; bit 1 is `scroll_x`.
     pub scroll_y: bool,
+    pub scroll_x: bool,
     pub background: u32,
     pub color: u32,
     pub font_size: f32,
@@ -49,6 +51,7 @@ impl NodeDesc {
             parent,
             kind: Kind::View,
             scroll_y: false,
+            scroll_x: false,
             background: 0,
             color: 0xffff_ffff,
             font_size: 16.0,
@@ -106,7 +109,7 @@ impl NodeDesc {
         out.extend_from_slice(&self.id.to_le_bytes());
         out.extend_from_slice(&self.parent.to_le_bytes());
         out.push(self.kind as u8);
-        out.push(u8::from(self.scroll_y));
+        out.push(u8::from(self.scroll_y) | (u8::from(self.scroll_x) << 1));
         out.extend_from_slice(&self.background.to_le_bytes());
         out.extend_from_slice(&self.color.to_le_bytes());
         push_f32(out, self.font_size);
@@ -143,11 +146,12 @@ impl NodeDesc {
             3 => Kind::Image,
             other => return Err(format!("bad node kind {other}")),
         };
-        let scroll_y = match read_u8(cur)? {
-            0 => false,
-            1 => true,
-            other => return Err(format!("bad scroll flag {other}")),
-        };
+        let scroll_flags = read_u8(cur)?;
+        if scroll_flags & !0b11 != 0 {
+            return Err(format!("bad scroll flags {scroll_flags:#04x}"));
+        }
+        let scroll_y = scroll_flags & 1 != 0;
+        let scroll_x = scroll_flags & 2 != 0;
         let background = read_u32(cur)?;
         let color = read_u32(cur)?;
         let font_size = read_f32(cur)?;
@@ -194,6 +198,7 @@ impl NodeDesc {
             parent,
             kind,
             scroll_y,
+            scroll_x,
             background,
             color,
             font_size,

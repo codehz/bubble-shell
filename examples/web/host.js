@@ -382,7 +382,7 @@ canvas.addEventListener(
   "wheel",
   (event) => {
     const [x, y] = point(event);
-    if (exports.scroll_wheel(x, y, event.deltaY)) {
+    if (exports.scroll_wheel(x, y, event.deltaX, event.deltaY)) {
       event.preventDefault();
       if (exports.layout() === 0) paint();
     }

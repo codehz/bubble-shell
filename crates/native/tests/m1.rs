@@ -7,7 +7,7 @@ use bubble_ffi::{
     bubble_create, bubble_destroy, bubble_eval, bubble_faults, bubble_finish_request,
     bubble_font_count, bubble_font_epoch, bubble_frame, bubble_generation, bubble_last_error,
     bubble_load, bubble_node_box, bubble_node_text, bubble_pointer_down, bubble_poll_request,
-    bubble_post_eval, bubble_register_font, bubble_scroll, bubble_scroll_of, bubble_set_visible,
+    bubble_post_eval, bubble_register_font, bubble_scroll, bubble_scroll_y_of, bubble_set_visible,
     bubble_status,
 };
 
@@ -119,8 +119,8 @@ fn counter_tap_scroll_and_font_epoch() {
     assert_eq!(text(3), "Count: 1");
     let (mut sx, mut sy, mut sw, mut sh) = (0.0, 0.0, 0.0, 0.0);
     assert_eq!(bubble_node_box(6, &mut sx, &mut sy, &mut sw, &mut sh), 0);
-    bubble_scroll(sx + 1.0, sy + 1.0, 40.0);
-    let scrolled = bubble_scroll_of(6);
+    bubble_scroll(sx + 1.0, sy + 1.0, 0.0, 40.0);
+    let scrolled = bubble_scroll_y_of(6);
     assert!(scrolled > 0.0, "scroll offset {scrolled}");
     let family = c("Demo");
     bubble_register_font(family.as_ptr(), b"font-bytes".as_ptr(), 10);

@@ -249,7 +249,7 @@ if (!handler || !press(handler)) throw new Error("click did not run a handler");
 textOf(paintList(), "Count: 1");
 
 const before = textOf(paintList(), "Alpha");
-const scrolled = exports.scroll_wheel(before.x + 4, before.y + 4, 80);
+const scrolled = exports.scroll_wheel(before.x + 4, before.y + 4, 0, 80);
 if (!scrolled) throw new Error("wheel did not scroll");
 if (exports.layout() !== 0) throw new Error(error() || "layout failed");
 const after = textOf(paintList(), "Alpha");

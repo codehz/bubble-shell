@@ -77,9 +77,11 @@ pub enum Op {
         handle: u32,
         handler: u32,
     },
-    /// Instant vertical scroll. `y` is clamped to the container's range.
+    /// Instant scroll. Each offset is clamped to that axis' range; a disabled
+    /// axis clamps to zero.
     ScrollTo {
         handle: u32,
+        x: f32,
         y: f32,
     },
     /// Full descriptor for a dynamic node. Appended under `desc.parent`.
@@ -186,9 +188,10 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.extend_from_slice(&handle.to_le_bytes());
                 payload.extend_from_slice(&handler.to_le_bytes());
             }
-            Op::ScrollTo { handle, y } => {
+            Op::ScrollTo { handle, x, y } => {
                 payload.push(7);
                 payload.extend_from_slice(&handle.to_le_bytes());
+                payload.extend_from_slice(&x.to_le_bytes());
                 payload.extend_from_slice(&y.to_le_bytes());
             }
             Op::Spawn { desc } => {
@@ -306,6 +309,7 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
             }),
             7 => ops.push(Op::ScrollTo {
                 handle: read_u32(&mut payload_cur)?,
+                x: read_f32(&mut payload_cur)?,
                 y: read_f32(&mut payload_cur)?,
             }),
             8 => ops.push(Op::Spawn {

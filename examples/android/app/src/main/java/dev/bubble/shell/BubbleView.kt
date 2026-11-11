@@ -26,6 +26,7 @@ class BubbleView(context: Context) : View(context) {
     private val images = HashMap<String, Bitmap?>()
     private var paintBytes = ByteArray(0)
     private var family: Typeface = Typeface.DEFAULT
+    private var lastX = 0f
     private var lastY = 0f
     private var tracking = false
 
@@ -196,11 +197,19 @@ class BubbleView(context: Context) : View(context) {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 tracking = true
+                lastX = event.x
                 lastY = event.y
                 BubbleNative.pointerDown(localX(event.x), localY(event.y))
             }
             MotionEvent.ACTION_MOVE -> if (tracking) {
-                BubbleNative.scroll(localX(event.x), localY(event.y), (lastY - event.y) / resources.displayMetrics.density)
+                val density = resources.displayMetrics.density
+                BubbleNative.scroll(
+                    localX(event.x),
+                    localY(event.y),
+                    (lastX - event.x) / density,
+                    (lastY - event.y) / density,
+                )
+                lastX = event.x
                 lastY = event.y
                 refresh()
             }

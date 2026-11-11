@@ -143,6 +143,7 @@ function utf8(value) {
 // BNOD version 2: header (magic + u16 version) + the `NodeDesc` body + TLV.
 // `id`, `parent`, and `handler` are zero; Rust assigns the handle and parent.
 const SPEC_PROPS = new Set([
+  "scrollX",
   "scrollY",
   "background",
   "color",
@@ -174,7 +175,7 @@ function specBytes(kind, props, text) {
   offset += 4;
   view.setUint8(offset, kind);
   offset += 1;
-  view.setUint8(offset, props.scrollY ? 1 : 0);
+  view.setUint8(offset, (props.scrollY ? 1 : 0) | (props.scrollX ? 2 : 0));
   offset += 1;
   view.setUint32(offset, (props.background ?? 0) >>> 0, true);
   offset += 4;

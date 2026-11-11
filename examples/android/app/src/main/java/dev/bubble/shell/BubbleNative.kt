@@ -10,8 +10,9 @@ object BubbleNative {
     external fun load(manifest: String, entry: ByteArray): Int
     external fun frame(width: Float, height: Float): ByteArray
     external fun pointerDown(x: Float, y: Float)
-    external fun scroll(x: Float, y: Float, dy: Float)
-    external fun scrollOf(handle: Int): Float
+    external fun scroll(x: Float, y: Float, dx: Float, dy: Float)
+    external fun scrollXOf(handle: Int): Float
+    external fun scrollYOf(handle: Int): Float
     external fun setVisible(visible: Int)
     external fun registerFont(family: String, data: ByteArray)
     external fun nodeText(handle: Int): String

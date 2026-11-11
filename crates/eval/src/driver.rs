@@ -9,8 +9,8 @@ use bubble_ffi::{
     bubble_create, bubble_destroy, bubble_eval, bubble_faults, bubble_finish_request,
     bubble_font_count, bubble_font_epoch, bubble_frame, bubble_generation, bubble_last_error,
     bubble_load, bubble_node_box, bubble_node_text, bubble_pointer_down, bubble_poll_request,
-    bubble_post_eval, bubble_register_font, bubble_scroll, bubble_scroll_of, bubble_set_visible,
-    bubble_status,
+    bubble_post_eval, bubble_register_font, bubble_scroll, bubble_scroll_x_of, bubble_scroll_y_of,
+    bubble_set_visible, bubble_status,
 };
 
 fn c_string(text: &str) -> Result<CString, String> {
@@ -70,8 +70,8 @@ impl Session {
         unsafe { bubble_pointer_down(x, y) };
     }
 
-    pub fn scroll(&mut self, x: f32, y: f32, dy: f32) {
-        unsafe { bubble_scroll(x, y, dy) };
+    pub fn scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
+        unsafe { bubble_scroll(x, y, dx, dy) };
     }
 
     pub fn set_visible(&mut self, visible: bool) {
@@ -84,8 +84,12 @@ impl Session {
         Ok(())
     }
 
-    pub fn scroll_of(&mut self, handle: u32) -> f32 {
-        unsafe { bubble_scroll_of(handle) }
+    pub fn scroll_x_of(&mut self, handle: u32) -> f32 {
+        unsafe { bubble_scroll_x_of(handle) }
+    }
+
+    pub fn scroll_y_of(&mut self, handle: u32) -> f32 {
+        unsafe { bubble_scroll_y_of(handle) }
     }
 
     pub fn node_text(&mut self, handle: u32) -> Result<String, String> {

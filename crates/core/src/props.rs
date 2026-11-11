@@ -24,6 +24,7 @@ pub enum Prop {
     Height,
     FlexGrow,
     FlexShrink,
+    ScrollX,
     ScrollY,
     Row,
     LineHeight,
@@ -61,6 +62,7 @@ impl Prop {
             "height" => Self::Height,
             "flexGrow" => Self::FlexGrow,
             "flexShrink" => Self::FlexShrink,
+            "scrollX" => Self::ScrollX,
             "scrollY" => Self::ScrollY,
             "row" => Self::Row,
             "lineHeight" => Self::LineHeight,
@@ -87,6 +89,7 @@ impl Prop {
 
 /// Properties carried by the `BNOD` descriptor.
 pub const SPAWN_PROPS: &[&str] = &[
+    "scrollX",
     "scrollY",
     "background",
     "color",
@@ -131,6 +134,7 @@ pub const SET_PROPS: &[&str] = &[
     "height",
     "flexGrow",
     "flexShrink",
+    "scrollX",
     "scrollY",
     "row",
     "lineHeight",

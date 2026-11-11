@@ -110,18 +110,18 @@ assets/
 | `BindEvent` | handle, handlerId | 事件表 |
 | `SetSemantics` | handle, role, label, value, state | 无障碍语义 |
 | `Animate` | handle, spec | 声明式动画，UI 线程执行 |
-| `ScrollTo` | handle, x, y, animated | 滚动容器 |
+| `ScrollTo` | handle, x, y | 滚动容器；按轴 clamp，未启用轴归零 |
 | `Focus` | handle | 焦点 |
 | `SetEditingValue` | handle, epoch, value, selection | 受控文本 |
 | `SetAsset` | handle, contentHash | 预留；当前 `Image` 通过 `SetProp src` 交给宿主解析 |
 
 当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`；其余 op（含 `InsertNode`、动画、语义）随组件/输入/更新里程碑补齐。脚本线程只产 op，UI/帧线程在 drain 时应用。
 
-节点描述为 `BNOD` v2：固定字段后跟 `u32` 长度的 TLV 扩展块，新增字段不移动既有偏移。`Spawn` 载荷复用同一 v2 body；`BSOP` 也是 v2。
+节点描述为 `BNOD` v2：固定字段后跟 `u32` 长度的 TLV 扩展块，新增字段不移动既有偏移。`Spawn` 载荷复用同一 v2 body；`BSOP` 也是 v2。滚动描述符的单个标志字节是位掩码：bit 0 为 `scrollY`，bit 1 为 `scrollX`，其余位保留且解码时拒绝。
 
 属性分两类：
 
-- `SPAWN_PROPS`：直接编码进 `BNOD`，当前为 `scrollY`、`background`、`color`、`fontSize`、`radius`、`opacity`、`width`、`height`、`flexGrow`、`flexShrink`、`row`、`padding`、`onPress`。
+- `SPAWN_PROPS`：直接编码进 `BNOD`，当前为 `scrollX`、`scrollY`、`background`、`color`、`fontSize`、`radius`、`opacity`、`width`、`height`、`flexGrow`、`flexShrink`、`row`、`padding`、`onPress`。
 - `DEFERRED_PROPS`：JSX 接受但由 `Spawn` 后立即发送 `SetProp`，当前为 `lineHeight`、`textAlign`、`fontWeight`、`margin`、`gap`、`alignItems`、`justifyContent`、`position`、`inset`、`src`、`fit`。这样样式面扩展不需要每次改描述符版本。
 
 `padding`、`margin`、`inset` 数组在 JS runtime 中拆成四边属性；未知创建属性会直接报错。宿主通过 `spawn_props()` / `deferred_props()` 暴露规范列表，runtime 还会校验 JS 编码器与宿主列表一致。
@@ -220,7 +220,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 | 尺寸 | width/height/min/max、padding、margin |
 | flex | direction、wrap、grow/shrink/basis、align/justify、gap |
 | 定位 | relative、absolute、z-index |
-| 溢出 | visible、hidden、scroll 容器 |
+| 溢出 | visible、hidden、scroll 容器（`scrollX`/`scrollY` 独立启用） |
 | 视觉 | background、border、radius、opacity、2D transform |
 | 文本 | font-family/size/weight/style、line-height、letter-spacing、text-align、color |
 
@@ -255,7 +255,9 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 
 - 命中按绘制逆序，考虑 transform、clip、z-index。
 - 指针捕获、手势识别在 UI 线程。
-- 滚动由 UI 线程本地执行，不依赖脚本线程。
+- 滚动由 UI 线程本地执行，不依赖脚本线程。横纵两轴各自维护偏移与范围；`scrollX`/`scrollY` 分别启用，未启用的轴不产生滚动且 `ScrollTo` 将其归零。
+- 滚轮/拖拽把 `(dx, dy)` 一并交给命中路径上最深、且在请求方向上仍有剩余范围的容器；两轴范围分别 clamp。
+- `Shell::scroll_of` 返回 `(left, top)`；宿主分别通过 `bubble_scroll_x_of` / `bubble_scroll_y_of` 读取。
 - 虚拟化列表协议：UI 线程计算可见区间并发送 `VisibleRangeChanged`；脚本创建/销毁 item 节点；未测量项用估算高度占位。滚动位置归 UI 线程，脚本只能 `ScrollTo`。
 
 ## 6. 故障与资源

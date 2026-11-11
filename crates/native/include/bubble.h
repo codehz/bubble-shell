@@ -20,7 +20,7 @@ int bubble_load(const char *manifest_json, const uint8_t *entry, uint32_t entry_
 
 int bubble_frame(float width, float height, const uint8_t **paint, uint32_t *paint_len);
 void bubble_pointer_down(float x, float y);
-void bubble_scroll(float x, float y, float dy);
+void bubble_scroll(float x, float y, float dx, float dy);
 void bubble_set_visible(int visible);
 
 void bubble_register_font(const char *family, const uint8_t *data, uint32_t len);
@@ -29,7 +29,8 @@ uint32_t bubble_font_count(void);
 
 int bubble_node_text(uint32_t handle, char *buf, uint32_t cap);
 int bubble_node_box(uint32_t handle, float *x, float *y, float *w, float *h);
-float bubble_scroll_of(uint32_t handle);
+float bubble_scroll_x_of(uint32_t handle);
+float bubble_scroll_y_of(uint32_t handle);
 
 /* A 1s interrupt and a memory limit fault both rebuild the context and
  * remount the loaded bundle. */

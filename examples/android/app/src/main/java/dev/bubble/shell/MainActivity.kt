@@ -65,7 +65,7 @@ class MainActivity : Activity() {
                             logScrollerRect()
                             scrollLogged = true
                         }
-                        if (BubbleNative.scrollOf(6) >= 40f) {
+                        if (BubbleNative.scrollYOf(6) >= 40f) {
                             report()
                             phase = 3
                         }
@@ -105,7 +105,7 @@ class MainActivity : Activity() {
         add("frames during hang", hangFrames >= 10, hangFrames.toString())
         add("frame budget", average < 20.0, "%.2f".format(average))
         add("font epoch", BubbleNative.fontEpoch() > 0, BubbleNative.fontEpoch().toString())
-        add("scroll offset", BubbleNative.scrollOf(6) >= 40f, BubbleNative.scrollOf(6).toString())
+        add("scroll offset", BubbleNative.scrollYOf(6) >= 40f, BubbleNative.scrollYOf(6).toString())
         add("paint bytes", shell.paintSize() > 16, shell.paintSize().toString())
         val ok = (0 until checks.length()).all { checks.getJSONObject(it).getBoolean("ok") }
         val elapsed = (System.nanoTime() - started) / 1_000_000

@@ -519,12 +519,12 @@ pub extern "C" fn tap(x: f32, y: f32) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn scroll_wheel(x: f32, y: f32, dy: f32) -> i32 {
+pub extern "C" fn scroll_wheel(x: f32, y: f32, dx: f32, dy: f32) -> i32 {
     if let Err(err) = drain_pending() {
         set_error(err);
         return 0;
     }
-    match with_shell(|shell| Ok(shell.scroll_wheel(x, y, dy))) {
+    match with_shell(|shell| Ok(shell.scroll_wheel(x, y, dx, dy))) {
         Ok(changed) => i32::from(changed),
         Err(err) => {
             set_error(err);

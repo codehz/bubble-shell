@@ -13,9 +13,11 @@ func bubble_frame(_ width: Float, _ height: Float, _ paint: UnsafeMutablePointer
 @_silgen_name("bubble_pointer_down")
 func bubble_pointer_down(_ x: Float, _ y: Float)
 @_silgen_name("bubble_scroll")
-func bubble_scroll(_ x: Float, _ y: Float, _ dy: Float)
-@_silgen_name("bubble_scroll_of")
-func bubble_scroll_of(_ handle: UInt32) -> Float
+func bubble_scroll(_ x: Float, _ y: Float, _ dx: Float, _ dy: Float)
+@_silgen_name("bubble_scroll_x_of")
+func bubble_scroll_x_of(_ handle: UInt32) -> Float
+@_silgen_name("bubble_scroll_y_of")
+func bubble_scroll_y_of(_ handle: UInt32) -> Float
 @_silgen_name("bubble_register_font")
 func bubble_register_font(_ family: UnsafePointer<CChar>?, _ data: UnsafePointer<UInt8>?, _ len: UInt32)
 @_silgen_name("bubble_font_epoch")
@@ -210,16 +212,21 @@ final class BubbleView: UIView {
         bubble_pointer_down(Float(point.x - safeAreaInsets.left), Float(point.y - safeAreaInsets.top))
     }
 
-    func scroll(dy: CGFloat, at point: CGPoint) {
-        bubble_scroll(Float(point.x - safeAreaInsets.left), Float(point.y - safeAreaInsets.top), Float(dy))
+    func scroll(dx: CGFloat, dy: CGFloat, at point: CGPoint) {
+        bubble_scroll(
+            Float(point.x - safeAreaInsets.left),
+            Float(point.y - safeAreaInsets.top),
+            Float(dx),
+            Float(dy)
+        )
         refresh()
     }
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         let point = gesture.location(in: self)
-        let dy = -gesture.translation(in: self).y
+        let translation = gesture.translation(in: self)
         gesture.setTranslation(.zero, in: self)
-        scroll(dy: dy, at: point)
+        scroll(dx: -translation.x, dy: -translation.y, at: point)
     }
 }
 
@@ -324,7 +331,7 @@ final class AppDriver {
             hangFrames = 0
         } else if phase == 2 {
             if bubble_faults() == 0 { hangFrames += 1 }
-            if bubble_faults() > 0 && nodeText(3) == "Count: 0" && bubble_scroll_of(6) >= 40 {
+            if bubble_faults() > 0 && nodeText(3) == "Count: 0" && bubble_scroll_y_of(6) >= 40 {
                 finish()
                 phase = 3
             }
@@ -339,7 +346,7 @@ final class AppDriver {
         let samples = max(frames - 5, 1)
         let average = frameMs / Double(samples)
         let text = nodeText(3)
-        let scrolled = bubble_scroll_of(6)
+        let scrolled = bubble_scroll_y_of(6)
         let checks: [(String, Bool, String)] = [
             ("remount text", text == "Count: 0", text),
             ("faults", bubble_faults() > 0, "\(bubble_faults())"),

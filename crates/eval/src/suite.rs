@@ -82,9 +82,15 @@ fn counter(probe: &mut Probe) {
             return;
         }
     };
-    session.scroll(sx + 1.0, sy + 1.0, 40.0);
-    let offset = session.scroll_of(6);
+    session.scroll(sx + 1.0, sy + 1.0, 0.0, 40.0);
+    let offset = session.scroll_y_of(6);
+    let horizontal = session.scroll_x_of(6);
     probe.check("scroll offset", offset > 0.0, format!("{offset}"));
+    probe.check(
+        "vertical only stays at x=0",
+        horizontal == 0.0,
+        format!("{horizontal}"),
+    );
     if let Err(err) = session.register_font("Demo", b"font-bytes") {
         probe.check("register font", false, err);
         return;
