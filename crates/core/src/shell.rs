@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 use crate::ir::{Kind, NodeDesc};
 use crate::ops::{decode_ops, Op, Value};
+use crate::props::Prop;
 use taffy::prelude::*;
 use taffy::style::Overflow;
 use taffy::{compute_leaf_layout, NodeId, TaffyTree};
@@ -320,14 +321,17 @@ impl Shell {
     }
 
     fn set_prop(&mut self, id: u32, key: &str, value: &Value) -> Result<(), String> {
-        match key {
-            "color" => self.node_mut(id)?.color = value.as_u32()?,
-            "backgroundColor" => self.node_mut(id)?.background = value.as_u32()?,
-            "radius" => self.node_mut(id)?.radius = value.as_f32()?,
-            "opacity" => {
+        let Some(prop) = Prop::parse(key) else {
+            return Err(format!("unsupported prop {key}"));
+        };
+        match prop {
+            Prop::Color => self.node_mut(id)?.color = value.as_u32()?,
+            Prop::BackgroundColor => self.node_mut(id)?.background = value.as_u32()?,
+            Prop::Radius => self.node_mut(id)?.radius = value.as_f32()?,
+            Prop::Opacity => {
                 self.node_mut(id)?.opacity = value.as_f32()?.clamp(0.0, 1.0);
             }
-            "fontSize" => {
+            Prop::FontSize => {
                 let (text, font_size, taffy) = {
                     let node = self.node_mut(id)?;
                     node.font_size = value.as_f32()?;
@@ -337,17 +341,16 @@ impl Shell {
                     .set_node_context(taffy, Some(MeasureCtx { text, font_size }))
                     .map_err(|err| err.to_string())?;
             }
-            "paddingLeft" => self.node_mut(id)?.padding[0] = value.as_f32()?,
-            "paddingRight" => self.node_mut(id)?.padding[1] = value.as_f32()?,
-            "paddingTop" => self.node_mut(id)?.padding[2] = value.as_f32()?,
-            "paddingBottom" => self.node_mut(id)?.padding[3] = value.as_f32()?,
-            "width" => self.node_mut(id)?.width = value.optional_f32()?,
-            "height" => self.node_mut(id)?.height = value.optional_f32()?,
-            "flexGrow" => self.node_mut(id)?.flex_grow = value.as_f32()?,
-            "flexShrink" => self.node_mut(id)?.flex_shrink = value.as_f32()?,
-            "scrollY" => self.node_mut(id)?.scroll_y = value.as_bool()?,
-            "row" => self.node_mut(id)?.row = value.as_bool()?,
-            other => return Err(format!("unsupported prop {other}")),
+            Prop::PaddingLeft => self.node_mut(id)?.padding[0] = value.as_f32()?,
+            Prop::PaddingRight => self.node_mut(id)?.padding[1] = value.as_f32()?,
+            Prop::PaddingTop => self.node_mut(id)?.padding[2] = value.as_f32()?,
+            Prop::PaddingBottom => self.node_mut(id)?.padding[3] = value.as_f32()?,
+            Prop::Width => self.node_mut(id)?.width = value.optional_f32()?,
+            Prop::Height => self.node_mut(id)?.height = value.optional_f32()?,
+            Prop::FlexGrow => self.node_mut(id)?.flex_grow = value.as_f32()?,
+            Prop::FlexShrink => self.node_mut(id)?.flex_shrink = value.as_f32()?,
+            Prop::ScrollY => self.node_mut(id)?.scroll_y = value.as_bool()?,
+            Prop::Row => self.node_mut(id)?.row = value.as_bool()?,
         }
         self.restyle(id)
     }

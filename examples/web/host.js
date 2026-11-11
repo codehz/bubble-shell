@@ -74,6 +74,12 @@ setApi({
   alloc: exports.alloc,
   dealloc: exports.dealloc,
   boot: exports.boot,
+  spawn_props() {
+    const len = exports.spawn_props();
+    return decoder
+      .decode(new Uint8Array(memory().buffer, exports.scratch_ptr(), len))
+      .split("\n");
+  },
   signal_new: exports.signal_new,
   signal_get: exports.signal_get,
   signal_set: exports.signal_set,

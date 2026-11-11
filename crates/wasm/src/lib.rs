@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 
 use bubble_core::{
     encode_paint, encode_set_text, validate_bundle_hashes, NodeDesc, Op, Shell, Turn, Value,
+    SPAWN_PROPS,
 };
 
 thread_local! {
@@ -110,6 +111,13 @@ pub extern "C" fn scratch_ptr() -> *const u8 {
 #[no_mangle]
 pub extern "C" fn scratch_len() -> u32 {
     SCRATCH.with(|slot| slot.borrow().len() as u32)
+}
+
+/// Newline-separated creation-time property names. The JS runtime validates
+/// node props against this canonical list.
+#[no_mangle]
+pub extern "C" fn spawn_props() -> u32 {
+    store_scratch(SPAWN_PROPS.join("\n").into_bytes())
 }
 
 #[no_mangle]

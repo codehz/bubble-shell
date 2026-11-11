@@ -325,6 +325,34 @@ fn signal_commit_updates_text_and_scrolls() {
 }
 
 #[test]
+fn every_runtime_property_is_dispatchable() {
+    use bubble_core::{Turn, Value, Prop, SET_PROPS};
+
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 120.0);
+    let mut turn = Turn::new();
+    let view = turn.spawn(NodeDesc::view(0, 1)).unwrap();
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+
+    for key in SET_PROPS {
+        assert!(Prop::parse(key).is_some(), "{key} is not parseable");
+        let value = match *key {
+            "color" | "backgroundColor" => Value::Int(0xff00_0000),
+            "scrollY" | "row" => Value::Bool(true),
+            _ => Value::Float(4.0),
+        };
+        turn.set_prop(view, *key, value);
+        shell
+            .apply_ops(&turn.commit().unwrap())
+            .unwrap_or_else(|err| panic!("{key}: {err}"));
+    }
+
+    let mut unknown = Turn::new();
+    unknown.set_prop(view, "margin", Value::Float(4.0));
+    assert!(shell.apply_ops(&unknown.commit().unwrap()).is_err());
+}
+
+#[test]
 fn set_prop_updates_padding_edges() {
     use bubble_core::{Turn, Value};
 

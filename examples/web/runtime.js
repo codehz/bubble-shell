@@ -14,21 +14,23 @@ export function setApi(next) {
   api = next;
 }
 
-const DYNAMIC_PROPS = new Set([
-  "scrollY",
-  "background",
-  "color",
-  "fontSize",
-  "radius",
-  "opacity",
-  "width",
-  "height",
-  "flexGrow",
-  "flexShrink",
-  "row",
-  "padding",
-  "onPress",
-]);
+let spawnProps;
+
+function allowedSpawnProps() {
+  if (!spawnProps) {
+    if (typeof api.spawn_props !== "function") {
+      throw new Error("host does not expose spawn property names");
+    }
+    spawnProps = new Set(api.spawn_props());
+    if (
+      spawnProps.size !== SPEC_PROPS.size ||
+      [...spawnProps].some((name) => !SPEC_PROPS.has(name))
+    ) {
+      throw new Error("host and runtime spawn property schemas differ");
+    }
+  }
+  return spawnProps;
+}
 
 export class Dynamic {
   constructor(run) {
@@ -42,8 +44,9 @@ export function dynamic(run) {
 }
 
 function validateProps(kind, props) {
+  const allowed = allowedSpawnProps();
   for (const key of Object.keys(props)) {
-    if (!DYNAMIC_PROPS.has(key)) {
+    if (!allowed.has(key)) {
       throw new Error(`${kind === 2 ? "Text" : "View"} has no property ${key}`);
     }
   }
@@ -87,6 +90,22 @@ function utf8(value) {
 
 // BNOD version 1: header (magic + u16 version) + the `NodeDesc` body.
 // `id`, `parent`, and `handler` are zero; Rust assigns the handle and parent.
+const SPEC_PROPS = new Set([
+  "scrollY",
+  "background",
+  "color",
+  "fontSize",
+  "radius",
+  "opacity",
+  "width",
+  "height",
+  "flexGrow",
+  "flexShrink",
+  "row",
+  "padding",
+  "onPress",
+]);
+
 function specBytes(kind, props, text) {
   const bytes = utf8(text);
   const buffer = new Uint8Array(6 + 71 + bytes.length);

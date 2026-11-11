@@ -10,6 +10,7 @@ mod ir;
 mod manifest;
 mod ops;
 mod paint;
+mod props;
 mod shell;
 mod turn;
 
@@ -17,5 +18,6 @@ pub use ir::{Kind, NodeDesc};
 pub use manifest::validate_bundle_hashes;
 pub use ops::{decode_ops, encode, encode_set_prop_color, encode_set_text, Op, Value};
 pub use paint::encode_paint;
+pub use props::{Prop, SET_PROPS, SPAWN_PROPS};
 pub use shell::{PaintCmd, Shell};
 pub use turn::Turn;
