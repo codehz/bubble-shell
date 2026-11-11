@@ -23,7 +23,7 @@ mount(() => <Counter />);
 ```
 
 - 组件函数只执行一次，不在状态变化时重建树。
-- `signal` / `computed` / `effect` 是 Rust 里的图，JS 只是调用入口。不引入 `solid-js`，也不在 JS 里维护订阅。
+- `signal` 的值由 Rust 图持有，按初值类型分 number / text / bool 三种。`computed` / `effect` 是 JS 在现有绑定图上的薄封装：`computed` 用 effect 写一个派生 signal；不引入 `solid-js`，也不在 JS 里维护第二套订阅。
 - 一次 Oxc pass 去掉 TypeScript，把 JSX 降成原生渲染模块的调用：静态属性和子节点设一次；会读信号的表达式登记为绑定。
 - 绑定重跑时，原生渲染器直接产出对应 op（`SetText` / `SetProp` / 插入 / 移动 / 销毁）。没有 VDOM diff，也没有「模板 IR + 按绑定生成的 JS 更新函数」。
 - `<If>` / `<Each>` 是运行时原语：按真值和 key 创建、移动、销毁，不在编译期把列表展开成静态节点。
@@ -113,9 +113,20 @@ assets/
 | `ScrollTo` | handle, x, y, animated | 滚动容器 |
 | `Focus` | handle | 焦点 |
 | `SetEditingValue` | handle, epoch, value, selection | 受控文本 |
-| `SetAsset` | handle, contentHash | 图片/资源 |
+| `SetAsset` | handle, contentHash | 预留；当前 `Image` 通过 `SetProp src` 交给宿主解析 |
 
-当前 M1 实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`；其余 op（含 `InsertNode`、动画、语义）随组件/输入/更新里程碑补齐。脚本线程只产 op，UI/帧线程在 drain 时应用。
+当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`；其余 op（含 `InsertNode`、动画、语义）随组件/输入/更新里程碑补齐。脚本线程只产 op，UI/帧线程在 drain 时应用。
+
+节点描述为 `BNOD` v2：固定字段后跟 `u32` 长度的 TLV 扩展块，新增字段不移动既有偏移。`Spawn` 载荷复用同一 v2 body；`BSOP` 也是 v2。
+
+属性分两类：
+
+- `SPAWN_PROPS`：直接编码进 `BNOD`，当前为 `scrollY`、`background`、`color`、`fontSize`、`radius`、`opacity`、`width`、`height`、`flexGrow`、`flexShrink`、`row`、`padding`、`onPress`。
+- `DEFERRED_PROPS`：JSX 接受但由 `Spawn` 后立即发送 `SetProp`，当前为 `lineHeight`、`textAlign`、`fontWeight`、`margin`、`gap`、`alignItems`、`justifyContent`、`position`、`inset`、`src`、`fit`。这样样式面扩展不需要每次改描述符版本。
+
+`padding`、`margin`、`inset` 数组在 JS runtime 中拆成四边属性；未知创建属性会直接报错。宿主通过 `spawn_props()` / `deferred_props()` 暴露规范列表，runtime 还会校验 JS 编码器与宿主列表一致。
+
+基础原语为 `View`、`Text`、`Image`。`Image` 的 `src` 是宿主可解析的路径/URL，`fit` 为 `contain`、`cover` 或 `fill`；解析失败时该帧跳过图片，不阻断其他绘制。
 
 `when` / `each` 采用透明 fragment：在父节点下创建一个零尺寸、无背景、无 handler 的 anchor，分支/列表节点通过 `SpawnAt` 插到 anchor 之前。`when` 重跑时销毁旧分支并按条件重建；`each` 对消失的 key 销毁，对已有 key 按新顺序 `MoveNode`，对新 key 在目标位置 `SpawnAt`。组件树不额外增加布局包装节点。
 
@@ -133,6 +144,7 @@ Event {
 ```
 
 - UI 线程命中后异步入队，不等待脚本。
+- 当前实现只有 `tap`：handler 收到 `{ type: "tap", x, y }`。`BindEvent` 绑定单个 handler；节点销毁时 runtime 释放 handler 表项。
 - 脚本线程可以丢弃过期事件（例如滚动中间态），但结构性事件不可丢。
 - 事件处理期间产生的 op 在帧边界统一提交。
 
@@ -212,12 +224,12 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 | 视觉 | background、border、radius、opacity、2D transform |
 | 文本 | font-family/size/weight/style、line-height、letter-spacing、text-align、color |
 
-不支持：grid、选择器、级联、伪类、隐式继承。样式是显式 props/tokens，不解析 CSS 文本。
+不支持：grid、选择器、级联、伪类、隐式继承。样式是显式 props/tokens，不解析 CSS 文本。当前已实现 flex 方向、grow/shrink、尺寸、padding、margin、gap、align/justify、relative/absolute 定位与 inset；border、transform、min/max、overflow hidden 仍在路线图。
 
 ### 布局
 
 - Taffy 负责 flex、绝对定位、尺寸约束。
-- 文本与图片通过 measure 回调参与布局。
+- 文本通过 measure 回调参与布局；回调携带 `font_size`、`line_height`、`font_weight` 与可用宽度。图片由显式 `width`/`height`（或父级约束）决定盒子，不做内禀尺寸测量。
 - 脏节点向上/向下传播；布局结果缓存到帧结束。
 - `Shell::paint` 缓存已生成的 `PaintCmd` 列表；op、viewport、layout、滚动变化会使缓存失效。当前只避免重复遍历树，宿主仍清整表面；矩形脏区与静态子树缓存待在绘制层实现。
 
@@ -227,6 +239,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
   - iOS：CoreText / TextKit。
   - Android：StaticLayout / Paint。
   - Web：Canvas2D `measureText` + 浏览器整形。
+- `PaintCmd::Text` 携带节点盒、行高、字重与对齐；三端用同一组参数换行并绘制。
 - 缓存 key：`(text, style, maxWidth, fontEpoch)`。
 - 宿主注入字体时递增 `fontEpoch`，清空文本缓存。
 - 三端换行/基线差异是接受的；内容避免依赖固定文本高度。
@@ -235,7 +248,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 
 - 每个实例一个平台画布：iOS `UIView.draw` + CoreGraphics，Android `onDraw(Canvas)`，Web Canvas2D。
 - 脏矩形 + 静态子树缓存；全量重绘作为兜底。
-- 图片离屏解码，UI 线程只做上传/绘制。
+- `PaintCmd` 当前包含填充、文本、图片、裁剪与透明度；图片按宿主可解析的 `src` 解码，离屏缓存。
 - v1 不做模糊、滤镜、液态玻璃等高级合成。
 
 ### 命中与滚动
