@@ -77,6 +77,57 @@ pub enum PaintCmd {
 }
 
 impl Shell {
+    /// Empty viewport root. Function components append children with `spawn`.
+    pub fn blank() -> Result<Self, String> {
+        let mut taffy: TaffyTree<MeasureCtx> = TaffyTree::new();
+        let style = style_for(false, false, 0.0, 1.0, None, None, [0.0; 4]);
+        let taffy_id = taffy.new_leaf(style).map_err(|err| err.to_string())?;
+        Ok(Self {
+            nodes: vec![
+                None,
+                Some(Node {
+                    parent: 0,
+                    children: Vec::new(),
+                    kind: Kind::View,
+                    scroll_y: false,
+                    background: 0,
+                    color: 0xffff_ffff,
+                    font_size: 16.0,
+                    radius: 0.0,
+                    handler: 0,
+                    width: None,
+                    height: None,
+                    flex_grow: 0.0,
+                    flex_shrink: 1.0,
+                    row: false,
+                    padding: [0.0; 4],
+                    text: String::new(),
+                    taffy: taffy_id,
+                    scroll: 0.0,
+                    x: 0.0,
+                    y: 0.0,
+                    w: 0.0,
+                    h: 0.0,
+                }),
+            ],
+            prototypes: Vec::new(),
+            retired: HashSet::new(),
+            high_water: 1,
+            taffy,
+            viewport: Size::ZERO,
+        })
+    }
+
+    /// Append `desc` under `desc.parent`. `desc.id` is the caller-allocated handle.
+    pub fn spawn(&mut self, desc: NodeDesc) -> Result<(), String> {
+        let parent = desc.parent;
+        if parent == 0 {
+            return Err("spawn requires a parent".into());
+        }
+        let index = self.node(parent)?.children.len() as u32;
+        self.insert_node(desc, parent, index)
+    }
+
     pub fn mount(bytes: &[u8]) -> Result<Self, String> {
         let template = Template::decode(bytes)?;
         if template.nodes.is_empty() {
@@ -348,35 +399,42 @@ impl Shell {
             .ok_or_else(|| format!("bad handle {id}"))
     }
     fn create_node(&mut self, handle: u32, template_id: u32, parent: u32, index: u32) -> Result<(), String> {
-        if handle == 0 || self.retired.contains(&handle) || self.node(handle).is_ok() {
-            return Err(format!("handle {handle} is not free"));
-        }
-        let proto = self
+        let mut proto = self
             .prototypes
             .iter()
             .find(|node| node.id == template_id)
             .cloned()
             .ok_or_else(|| format!("unknown template {template_id}"))?;
+        proto.id = handle;
+        proto.parent = parent;
+        self.insert_node(proto, parent, index)
+    }
+
+    fn insert_node(&mut self, desc: NodeDesc, parent: u32, index: u32) -> Result<(), String> {
+        let handle = desc.id;
+        if handle == 0 || self.retired.contains(&handle) || self.node(handle).is_ok() {
+            return Err(format!("handle {handle} is not free"));
+        }
         let parent_len = self.node(parent)?.children.len() as u32;
         if index > parent_len {
             return Err(format!("index {index} past {parent_len} children"));
         }
         let style = style_for(
-            proto.row,
-            proto.scroll_y,
-            proto.flex_grow,
-            proto.flex_shrink,
-            proto.width,
-            proto.height,
-            proto.padding,
+            desc.row,
+            desc.scroll_y,
+            desc.flex_grow,
+            desc.flex_shrink,
+            desc.width,
+            desc.height,
+            desc.padding,
         );
-        let taffy_id = if proto.kind == Kind::Text {
+        let taffy_id = if desc.kind == Kind::Text {
             self.taffy
                 .new_leaf_with_context(
                     style,
                     MeasureCtx {
-                        text: proto.text.clone(),
-                        font_size: proto.font_size,
+                        text: desc.text.clone(),
+                        font_size: desc.font_size,
                     },
                 )
                 .map_err(|err| err.to_string())?
@@ -389,20 +447,20 @@ impl Shell {
         self.nodes[handle as usize] = Some(Node {
             parent,
             children: Vec::new(),
-            kind: proto.kind,
-            scroll_y: proto.scroll_y,
-            background: proto.background,
-            color: proto.color,
-            font_size: proto.font_size,
-            radius: proto.radius,
-            handler: proto.handler,
-            width: proto.width,
-            height: proto.height,
-            flex_grow: proto.flex_grow,
-            flex_shrink: proto.flex_shrink,
-            row: proto.row,
-            padding: proto.padding,
-            text: proto.text,
+            kind: desc.kind,
+            scroll_y: desc.scroll_y,
+            background: desc.background,
+            color: desc.color,
+            font_size: desc.font_size,
+            radius: desc.radius,
+            handler: desc.handler,
+            width: desc.width,
+            height: desc.height,
+            flex_grow: desc.flex_grow,
+            flex_shrink: desc.flex_shrink,
+            row: desc.row,
+            padding: desc.padding,
+            text: desc.text.clone(),
             taffy: taffy_id,
             scroll: 0.0,
             x: 0.0,
@@ -415,6 +473,7 @@ impl Shell {
         self.high_water = self.high_water.max(handle);
         Ok(())
     }
+
 
     fn dispose_node(&mut self, handle: u32) -> Result<(), String> {
         if handle <= 1 {

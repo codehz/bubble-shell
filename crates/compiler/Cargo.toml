@@ -1,0 +1,12 @@
+[package]
+name = "bubble-compiler"
+version = "0.1.0"
+edition = "2021"
+description = "M0 TSX lowering to bubble renderer calls"
+license = "MIT"
+
+[dependencies]
+oxc_allocator = "0.61"
+oxc_ast = "0.61"
+oxc_parser = "0.61"
+oxc_span = "0.61"

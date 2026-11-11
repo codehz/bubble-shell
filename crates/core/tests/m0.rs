@@ -258,3 +258,71 @@ fn manifest_checks_hashes_and_placeholder_signature() {
     let escape = ok.replace("main.js", "../main.js");
     validate_bundle_hashes(&escape, &[("../main.js", file)]).unwrap_err();
 }
+
+#[test]
+fn signal_commit_updates_text_and_scrolls() {
+    use bubble_core::Turn;
+
+    let mut turn = Turn::new(Shell::blank().unwrap());
+    let count = turn.signal(0.0);
+    let mut header = NodeDesc::text(2, 1, "Count: 0");
+    header.font_size = 24.0;
+    turn.shell_mut().spawn(header).unwrap();
+    let mut button = NodeDesc::view(3, 1);
+    button.handler = 1;
+    button.background = 0xff3b_82f6;
+    button.height = Some(32.0);
+    turn.shell_mut().spawn(button).unwrap();
+    let mut scroller = NodeDesc::view(4, 1);
+    scroller.scroll_y = true;
+    scroller.flex_grow = 1.0;
+    scroller.height = Some(80.0);
+    turn.shell_mut().spawn(scroller).unwrap();
+    let mut row = NodeDesc::text(5, 4, "row");
+    row.font_size = 40.0;
+    turn.shell_mut().spawn(row).unwrap();
+    let mut row = NodeDesc::text(6, 4, "row");
+    row.font_size = 40.0;
+    turn.shell_mut().spawn(row).unwrap();
+
+    turn.track(1);
+    let value = turn.get(count).unwrap();
+    turn.untrack();
+    turn.push(Op::SetText {
+        handle: 2,
+        text: format!("Count: {value}"),
+    });
+    turn.push(Op::SetText {
+        handle: 2,
+        text: "Count: 0".into(),
+    });
+    let batch = turn.commit().unwrap();
+    let (_, ops) = bubble_core::decode_ops(&batch).unwrap();
+    assert_eq!(ops.len(), 1);
+
+    turn.shell_mut().set_viewport(200.0, 120.0);
+    turn.shell_mut()
+        .layout(&mut |text, font, max| {
+            let width = text.chars().count() as f32 * font * 0.5;
+            let width = max.map(|max| width.min(max)).unwrap_or(width);
+            (width, font * 1.2)
+        })
+        .unwrap();
+    let (bx, by, _, _) = turn.shell().node_box(3).unwrap();
+    assert_eq!(turn.shell().tap(bx + 1.0, by + 1.0), Some(1));
+    turn.set(count, 1.0).unwrap();
+    let dirty = turn.take_dirty();
+    assert_eq!(dirty, vec![1]);
+    turn.track(1);
+    let value = turn.get(count).unwrap();
+    turn.untrack();
+    turn.push(Op::SetText {
+        handle: 2,
+        text: format!("Count: {value}"),
+    });
+    turn.commit().unwrap();
+    assert_eq!(turn.shell().text(2).unwrap(), "Count: 1");
+    let (x, y, _, _) = turn.shell().node_box(4).unwrap();
+    assert!(turn.shell_mut().scroll_wheel(x + 1.0, y + 1.0, 50.0));
+    assert!(turn.shell().scroll_of(4).unwrap() > 0.0);
+}

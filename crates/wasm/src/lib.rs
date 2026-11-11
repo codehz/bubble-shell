@@ -1,20 +1,30 @@
 //! Single-threaded wasm ABI. The host copies bytes in and paint/op bytes out.
 //! `host_measure` writes two f32s at `out_ptr` and must not grow wasm memory.
 
-use bubble_core::{encode_set_text, validate_bundle_hashes, PaintCmd, Shell};
+use bubble_core::{
+    encode_set_text, validate_bundle_hashes, Kind, NodeDesc, Op, PaintCmd, Shell, Turn,
+};
 use std::cell::RefCell;
 
 thread_local! {
-    static SHELL: RefCell<Option<Shell>> = const { RefCell::new(None) };
+    static TURN: RefCell<Option<Turn>> = const { RefCell::new(None) };
     static SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static ERROR: RefCell<String> = const { RefCell::new(String::new()) };
 }
+
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
     fn host_measure(text_ptr: u32, text_len: u32, font_size: f32, mode: u32, avail: f32, out_ptr: u32);
 }
+
 fn set_error(message: String) {
     ERROR.with(|slot| *slot.borrow_mut() = message);
+}
+
+fn store_scratch(bytes: Vec<u8>) -> u32 {
+    let len = bytes.len() as u32;
+    SCRATCH.with(|slot| *slot.borrow_mut() = bytes);
+    len
 }
 
 #[no_mangle]
@@ -30,7 +40,7 @@ pub extern "C" fn dealloc(ptr: *mut u8, size: u32) {
     if ptr.is_null() || size == 0 {
         return;
     }
-    unsafe { drop(Vec::from_raw_parts(ptr, size as usize, size as usize)) };
+    unsafe { drop(Vec::from_raw_parts(ptr, size as usize, size as usize)) }
 }
 
 #[no_mangle]
@@ -54,11 +64,25 @@ pub extern "C" fn scratch_len() -> u32 {
 }
 
 #[no_mangle]
+pub extern "C" fn boot() -> i32 {
+    match Shell::blank() {
+        Ok(shell) => {
+            TURN.with(|slot| *slot.borrow_mut() = Some(Turn::new(shell)));
+            0
+        }
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn mount(ptr: *const u8, len: u32) -> i32 {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
     match Shell::mount(bytes) {
         Ok(shell) => {
-            SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
+            TURN.with(|slot| *slot.borrow_mut() = Some(Turn::new(shell)));
             0
         }
         Err(err) => {
@@ -70,25 +94,240 @@ pub extern "C" fn mount(ptr: *const u8, len: u32) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn set_viewport(width: f32, height: f32) {
-    SHELL.with(|slot| {
-        if let Some(shell) = slot.borrow_mut().as_mut() {
-            shell.set_viewport(width, height);
+    TURN.with(|slot| {
+        if let Some(turn) = slot.borrow_mut().as_mut() {
+            turn.shell_mut().set_viewport(width, height);
         }
     });
 }
+
 #[no_mangle]
 pub extern "C" fn next_handle() -> u32 {
-    SHELL.with(|slot| slot.borrow().as_ref().map(|shell| shell.next_handle()).unwrap_or(0))
+    TURN.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|turn| turn.shell().next_handle())
+            .unwrap_or(0)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn signal_new(initial: f64) -> u32 {
+    TURN.with(|slot| {
+        slot.borrow_mut()
+            .as_mut()
+            .map(|turn| turn.signal(initial))
+            .unwrap_or(0)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn signal_get(id: u32) -> f64 {
+    TURN.with(|slot| {
+        let mut turn = slot.borrow_mut();
+        let Some(turn) = turn.as_mut() else {
+            return f64::NAN;
+        };
+        match turn.get(id) {
+            Ok(value) => value,
+            Err(err) => {
+                set_error(err);
+                f64::NAN
+            }
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn signal_set(id: u32, value: f64) -> i32 {
+    let result = TURN.with(|slot| {
+        let mut turn = slot.borrow_mut();
+        let Some(turn) = turn.as_mut() else {
+            return Err("shell is not mounted".to_string());
+        };
+        turn.set(id, value)
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn track_begin(binding: u32) {
+    TURN.with(|slot| {
+        if let Some(turn) = slot.borrow_mut().as_mut() {
+            turn.track(binding);
+        }
+    });
+}
+
+#[no_mangle]
+pub extern "C" fn track_end() {
+    TURN.with(|slot| {
+        if let Some(turn) = slot.borrow_mut().as_mut() {
+            turn.untrack();
+        }
+    });
+}
+
+/// Writes `u32 count + count * u32` into scratch. Returns the byte length.
+#[no_mangle]
+pub extern "C" fn take_dirty() -> u32 {
+    let ids = TURN.with(|slot| {
+        slot.borrow_mut()
+            .as_mut()
+            .map(|turn| turn.take_dirty())
+            .unwrap_or_default()
+    });
+    let mut bytes = Vec::with_capacity(4 + ids.len() * 4);
+    bytes.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+    for id in ids {
+        bytes.extend_from_slice(&id.to_le_bytes());
+    }
+    store_scratch(bytes)
+}
+
+#[no_mangle]
+pub extern "C" fn spawn(
+    kind: u32,
+    parent: u32,
+    flags: u32,
+    background: u32,
+    color: u32,
+    font_size: f32,
+    radius: f32,
+    handler: u32,
+    width: f32,
+    height: f32,
+    grow: f32,
+    shrink: f32,
+    p0: f32,
+    p1: f32,
+    p2: f32,
+    p3: f32,
+    text_ptr: *const u8,
+    text_len: u32,
+) -> u32 {
+    let text = if text_ptr.is_null() || text_len == 0 {
+        String::new()
+    } else {
+        let bytes = unsafe { std::slice::from_raw_parts(text_ptr, text_len as usize) };
+        match std::str::from_utf8(bytes) {
+            Ok(text) => text.to_owned(),
+            Err(_) => {
+                set_error("spawn text is not utf-8".into());
+                return 0;
+            }
+        }
+    };
+    let result = TURN.with(|slot| {
+        let mut turn = slot.borrow_mut();
+        let Some(turn) = turn.as_mut() else {
+            return Err("shell is not mounted".to_string());
+        };
+        let handle = turn.shell().next_handle();
+        let kind = if kind == Kind::Text as u32 {
+            Kind::Text
+        } else {
+            Kind::View
+        };
+        let mut desc = if kind == Kind::Text {
+            NodeDesc::text(handle, parent, text)
+        } else {
+            NodeDesc::view(handle, parent)
+        };
+        desc.scroll_y = flags & 1 != 0;
+        desc.row = flags & 2 != 0;
+        desc.background = background;
+        desc.color = color;
+        desc.font_size = font_size;
+        desc.radius = radius;
+        desc.handler = handler;
+        desc.width = finite(width);
+        desc.height = finite(height);
+        desc.flex_grow = grow;
+        desc.flex_shrink = shrink;
+        desc.padding = [p0, p1, p2, p3];
+        turn.shell_mut().spawn(desc)?;
+        Ok(handle)
+    });
+    match result {
+        Ok(handle) => handle,
+        Err(err) => {
+            set_error(err);
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn queue_text(handle: u32, ptr: *const u8, len: u32) -> i32 {
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        set_error("op text is not utf-8".into());
+        return 1;
+    };
+    TURN.with(|slot| {
+        if let Some(turn) = slot.borrow_mut().as_mut() {
+            turn.push(Op::SetText {
+                handle,
+                text: text.to_owned(),
+            });
+        }
+    });
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn bind_event(handle: u32, handler: u32) -> i32 {
+    let result = TURN.with(|slot| {
+        let mut turn = slot.borrow_mut();
+        let Some(turn) = turn.as_mut() else {
+            return Err("shell is not mounted".to_string());
+        };
+        turn.shell_mut()
+            .apply_ops(&bubble_core::encode(0, &[Op::BindEvent { handle, handler }]))
+            .map(|_| ())
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn commit() -> u32 {
+    let result = TURN.with(|slot| {
+        let mut turn = slot.borrow_mut();
+        let Some(turn) = turn.as_mut() else {
+            return Err("shell is not mounted".to_string());
+        };
+        turn.commit()
+    });
+    match result {
+        Ok(bytes) => store_scratch(bytes),
+        Err(err) => {
+            set_error(err);
+            0
+        }
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn layout() -> i32 {
-    let result = SHELL.with(|slot| {
-        let mut shell = slot.borrow_mut();
-        let Some(shell) = shell.as_mut() else {
+    let result = TURN.with(|slot| {
+        let mut turn = slot.borrow_mut();
+        let Some(turn) = turn.as_mut() else {
             return Err("shell is not mounted".to_string());
         };
-        shell.layout(&mut |text, font_size, max_width| {
+        turn.shell_mut().layout(&mut |text, font_size, max_width| {
             let mut out = [0f32; 2];
             unsafe {
                 host_measure(
@@ -115,12 +354,12 @@ pub extern "C" fn layout() -> i32 {
 #[no_mangle]
 pub extern "C" fn apply_ops(ptr: *const u8, len: u32) -> i32 {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
-    let result = SHELL.with(|slot| {
-        let mut shell = slot.borrow_mut();
-        let Some(shell) = shell.as_mut() else {
+    let result = TURN.with(|slot| {
+        let mut turn = slot.borrow_mut();
+        let Some(turn) = turn.as_mut() else {
             return Err("shell is not mounted".to_string());
         };
-        shell.apply_ops(bytes).map(|_| ())
+        turn.shell_mut().apply_ops(bytes).map(|_| ())
     });
     match result {
         Ok(()) => 0,
@@ -133,37 +372,35 @@ pub extern "C" fn apply_ops(ptr: *const u8, len: u32) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn tap(x: f32, y: f32) -> u32 {
-    SHELL.with(|slot| {
+    TURN.with(|slot| {
         slot.borrow()
             .as_ref()
-            .and_then(|shell| shell.tap(x, y))
+            .and_then(|turn| turn.shell().tap(x, y))
             .unwrap_or(0)
     })
 }
 
 #[no_mangle]
 pub extern "C" fn scroll_wheel(x: f32, y: f32, dy: f32) -> i32 {
-    SHELL.with(|slot| {
-        let mut shell = slot.borrow_mut();
-        let Some(shell) = shell.as_mut() else {
+    TURN.with(|slot| {
+        let mut turn = slot.borrow_mut();
+        let Some(turn) = turn.as_mut() else {
             return 0;
         };
-        i32::from(shell.scroll_wheel(x, y, dy))
+        i32::from(turn.shell_mut().scroll_wheel(x, y, dy))
     })
 }
 
 #[no_mangle]
 pub extern "C" fn paint() -> u32 {
-    let bytes = SHELL.with(|slot| {
-        let shell = slot.borrow();
-        let Some(shell) = shell.as_ref() else {
+    let bytes = TURN.with(|slot| {
+        let turn = slot.borrow();
+        let Some(turn) = turn.as_ref() else {
             return Vec::new();
         };
-        encode_paint(&shell.paint())
+        encode_paint(&turn.shell().paint())
     });
-    let len = bytes.len() as u32;
-    SCRATCH.with(|slot| *slot.borrow_mut() = bytes);
-    len
+    store_scratch(bytes)
 }
 
 #[no_mangle]
@@ -173,36 +410,45 @@ pub extern "C" fn encode_text_op(seq: u32, handle: u32, ptr: *const u8, len: u32
         set_error("op text is not utf-8".into());
         return 0;
     };
-    let bytes = encode_set_text(seq, handle, text);
-    let len = bytes.len() as u32;
-    SCRATCH.with(|slot| *slot.borrow_mut() = bytes);
-    len
+    store_scratch(encode_set_text(seq, handle, text))
 }
 
 /// `files` is a sequence of `u32 path_len + path + u32 data_len + data`.
 #[no_mangle]
-pub extern "C" fn validate(manifest_ptr: *const u8, manifest_len: u32, files_ptr: *const u8, files_len: u32) -> i32 {
+pub extern "C" fn validate(
+    manifest_ptr: *const u8,
+    manifest_len: u32,
+    files_ptr: *const u8,
+    files_len: u32,
+) -> i32 {
     let manifest = unsafe { std::slice::from_raw_parts(manifest_ptr, manifest_len as usize) };
+    let files = unsafe { std::slice::from_raw_parts(files_ptr, files_len as usize) };
     let Ok(manifest) = std::str::from_utf8(manifest) else {
         set_error("manifest is not utf-8".into());
         return 1;
     };
-    let blob = unsafe { std::slice::from_raw_parts(files_ptr, files_len as usize) };
-    match parse_files(blob) {
-        Ok(files) => {
-            let refs: Vec<(&str, &[u8])> = files.iter().map(|(path, data)| (path.as_str(), data.as_slice())).collect();
-            match validate_bundle_hashes(manifest, &refs) {
-                Ok(()) => 0,
-                Err(err) => {
-                    set_error(err);
-                    1
-                }
-            }
+    let parsed = match parse_files(files) {
+        Ok(files) => files,
+        Err(err) => {
+            set_error(err);
+            return 1;
         }
+    };
+    let refs: Vec<(&str, &[u8])> = parsed.iter().map(|(path, bytes)| (path.as_str(), bytes.as_slice())).collect();
+    match validate_bundle_hashes(manifest, &refs) {
+        Ok(()) => 0,
         Err(err) => {
             set_error(err);
             1
         }
+    }
+}
+
+fn finite(value: f32) -> Option<f32> {
+    if value.is_finite() {
+        Some(value)
+    } else {
+        None
     }
 }
 
@@ -217,7 +463,9 @@ fn parse_files(mut bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
         if bytes.len() < path_len + 4 {
             return Err("truncated file path".into());
         }
-        let path = std::str::from_utf8(&bytes[..path_len]).map_err(|_| "file path is not utf-8")?.to_owned();
+        let path = std::str::from_utf8(&bytes[..path_len])
+            .map_err(|_| "file path is not utf-8")?
+            .to_owned();
         bytes = &bytes[path_len..];
         let data_len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
         bytes = &bytes[4..];

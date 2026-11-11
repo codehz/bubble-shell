@@ -1,6 +1,6 @@
 //! `BSOP` version 1. Little-endian batch with a string table.
-//! M0 applies batches in order. Last `SetText` / `SetProp` for a key wins,
-//! which matches per-frame last-write-wins without a separate coalesce pass.
+//! `Turn` coalesces repeated `SetText` / `SetProp` before encoding.
+//! Applied batches still run in order.
 
 use std::io::{Cursor, Read};
 
