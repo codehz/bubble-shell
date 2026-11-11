@@ -69,12 +69,48 @@ function validateProps(kind, props) {
 }
 
 export function signal(initial) {
+  if (typeof initial === "string") {
+    const id = api.signal_text_new(initial);
+    const read = () => api.signal_text_get(id);
+    read.id = id;
+    read.update = (fn) => {
+      api.signal_text_set(id, String(fn(api.signal_text_get(id))));
+    };
+    return read;
+  }
+  if (typeof initial === "boolean") {
+    const id = api.signal_bool_new(initial ? 1 : 0);
+    const read = () => api.signal_bool_get(id);
+    read.id = id;
+    read.update = (fn) => {
+      api.signal_bool_set(id, fn(api.signal_bool_get(id)) ? 1 : 0);
+    };
+    return read;
+  }
   const id = api.signal_new(initial);
   const read = () => api.signal_get(id);
+  read.id = id;
   read.update = (fn) => {
     api.signal_set(id, fn(api.signal_get(id)));
   };
   return read;
+}
+
+export function effect(run) {
+  const id = addBinding(() => run(), null);
+  runBinding(id);
+  return () => {
+    const binding = bindings[id - 1];
+    if (binding) binding.active = false;
+  };
+}
+
+export function computed(run) {
+  const out = signal(0);
+  effect(() => {
+    api.signal_set(out.id, run());
+  });
+  return out;
 }
 
 function parent() {

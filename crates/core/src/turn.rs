@@ -10,8 +10,15 @@ use std::collections::HashSet;
 use crate::ir::NodeDesc;
 use crate::ops::{encode, Op, Value};
 
+#[derive(Clone, Debug, PartialEq)]
+enum SignalValue {
+    Number(f64),
+    Text(String),
+    Bool(bool),
+}
+
 pub struct Turn {
-    values: Vec<f64>,
+    values: Vec<SignalValue>,
     subs: Vec<HashSet<u32>>,
     reads: Vec<Vec<u32>>,
     tracking: Option<u32>,
@@ -26,7 +33,7 @@ pub struct Turn {
 impl Turn {
     pub fn new() -> Self {
         Self {
-            values: vec![0.0],
+            values: vec![SignalValue::Number(0.0)],
             subs: vec![HashSet::new()],
             reads: vec![Vec::new()],
             tracking: None,
@@ -44,8 +51,20 @@ impl Turn {
     }
 
     pub fn signal(&mut self, initial: f64) -> u32 {
+        self.push_signal(SignalValue::Number(initial))
+    }
+
+    pub fn signal_text(&mut self, initial: impl Into<String>) -> u32 {
+        self.push_signal(SignalValue::Text(initial.into()))
+    }
+
+    pub fn signal_bool(&mut self, initial: bool) -> u32 {
+        self.push_signal(SignalValue::Bool(initial))
+    }
+
+    fn push_signal(&mut self, value: SignalValue) -> u32 {
         let id = self.values.len() as u32;
-        self.values.push(initial);
+        self.values.push(value);
         self.subs.push(HashSet::new());
         id
     }
@@ -65,18 +84,64 @@ impl Turn {
     }
 
     pub fn get(&mut self, id: u32) -> Result<f64, String> {
-        let value = *self
+        let value = self
             .values
             .get(id as usize)
+            .cloned()
             .ok_or_else(|| format!("unknown signal {id}"))?;
-        if let Some(binding) = self.tracking {
-            self.subs[id as usize].insert(binding);
-            self.reads[binding as usize].push(id);
-        }
+        let SignalValue::Number(value) = value else {
+            return Err(format!("signal {id} is not a number"));
+        };
+        self.record_read(id);
+        Ok(value)
+    }
+
+    pub fn get_text(&mut self, id: u32) -> Result<String, String> {
+        let value = self
+            .values
+            .get(id as usize)
+            .cloned()
+            .ok_or_else(|| format!("unknown signal {id}"))?;
+        let SignalValue::Text(value) = value else {
+            return Err(format!("signal {id} is not text"));
+        };
+        self.record_read(id);
+        Ok(value)
+    }
+
+    pub fn get_bool(&mut self, id: u32) -> Result<bool, String> {
+        let value = self
+            .values
+            .get(id as usize)
+            .cloned()
+            .ok_or_else(|| format!("unknown signal {id}"))?;
+        let SignalValue::Bool(value) = value else {
+            return Err(format!("signal {id} is not a bool"));
+        };
+        self.record_read(id);
         Ok(value)
     }
 
     pub fn set(&mut self, id: u32, value: f64) -> Result<(), String> {
+        self.replace(id, SignalValue::Number(value))
+    }
+
+    pub fn set_text(&mut self, id: u32, value: impl Into<String>) -> Result<(), String> {
+        self.replace(id, SignalValue::Text(value.into()))
+    }
+
+    pub fn set_bool(&mut self, id: u32, value: bool) -> Result<(), String> {
+        self.replace(id, SignalValue::Bool(value))
+    }
+
+    fn record_read(&mut self, id: u32) {
+        if let Some(binding) = self.tracking {
+            self.subs[id as usize].insert(binding);
+            self.reads[binding as usize].push(id);
+        }
+    }
+
+    fn replace(&mut self, id: u32, value: SignalValue) -> Result<(), String> {
         let slot = self
             .values
             .get_mut(id as usize)

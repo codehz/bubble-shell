@@ -491,6 +491,30 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
     api.set("signal_new", Function::new(ctx.clone(), api_signal_new)?)?;
     api.set("signal_get", Function::new(ctx.clone(), api_signal_get)?)?;
     api.set("signal_set", Function::new(ctx.clone(), api_signal_set)?)?;
+    api.set(
+        "signal_text_new",
+        Function::new(ctx.clone(), api_signal_text_new),
+    )?;
+    api.set(
+        "signal_text_get",
+        Function::new(ctx.clone(), api_signal_text_get),
+    )?;
+    api.set(
+        "signal_text_set",
+        Function::new(ctx.clone(), api_signal_text_set),
+    )?;
+    api.set(
+        "signal_bool_new",
+        Function::new(ctx.clone(), api_signal_bool_new),
+    )?;
+    api.set(
+        "signal_bool_get",
+        Function::new(ctx.clone(), api_signal_bool_get),
+    )?;
+    api.set(
+        "signal_bool_set",
+        Function::new(ctx.clone(), api_signal_bool_set),
+    )?;
     api.set("track_begin", Function::new(ctx.clone(), api_track_begin)?)?;
     api.set("track_end", Function::new(ctx.clone(), api_track_end)?)?;
     api.set("takeDirty", Function::new(ctx.clone(), api_take_dirty)?)?;
@@ -584,6 +608,60 @@ fn api_signal_get(id: f64) -> f64 {
 
 fn api_signal_set(id: f64, value: f64) -> i32 {
     match with_turn(|turn| turn.set(id as u32, value)) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_signal_text_new(initial: String) -> u32 {
+    with_turn(|turn| Ok(turn.signal_text(initial))).unwrap_or_else(|err| {
+        set_api_error(err);
+        0
+    })
+}
+
+fn api_signal_text_get(id: f64) -> String {
+    match with_turn(|turn| turn.get_text(id as u32)) {
+        Ok(text) => text,
+        Err(err) => {
+            set_api_error(err);
+            String::new()
+        }
+    }
+}
+
+fn api_signal_text_set(id: f64, value: String) -> i32 {
+    match with_turn(|turn| turn.set_text(id as u32, value)) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_signal_bool_new(initial: bool) -> u32 {
+    with_turn(|turn| Ok(turn.signal_bool(initial))).unwrap_or_else(|err| {
+        set_api_error(err);
+        0
+    })
+}
+
+fn api_signal_bool_get(id: f64) -> bool {
+    match with_turn(|turn| turn.get_bool(id as u32)) {
+        Ok(value) => value,
+        Err(err) => {
+            set_api_error(err);
+            false
+        }
+    }
+}
+
+fn api_signal_bool_set(id: f64, value: bool) -> i32 {
+    match with_turn(|turn| turn.set_bool(id as u32, value)) {
         Ok(()) => 0,
         Err(err) => {
             set_api_error(err);

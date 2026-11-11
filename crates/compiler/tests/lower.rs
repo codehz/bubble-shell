@@ -78,12 +78,35 @@ fn lowers_signal_reading_attributes_to_dynamic_bindings() {
         "#,
     )
     .unwrap();
-    assert!(js.contains("import { signal, primitive, mount, component, when, each, dynamic }"));
+    assert!(js.contains("import { signal, computed, effect, primitive, mount, component, when, each, dynamic }"));
     assert!(js.contains("dynamic(() => color())"));
     assert!(js.contains("dynamic(() => [pad(), pad(), pad(), pad()])"));
     assert!(js.contains("onPress: () => color.update((c) => c + 1)"));
     assert!(js.contains("background: 4278190080"));
     assert!(!js.contains("dynamic(() => 4278190080)"));
+}
+
+#[test]
+fn lowers_computed_values_as_signal_sources() {
+    let js = compile(
+        r#"
+        import { mount, signal, computed, Text, View } from "bubble";
+        function App() {
+          const count = signal(1);
+          const double = computed(() => count() * 2);
+          return (
+            <View opacity={double()}>
+              <Text>{double()}</Text>
+            </View>
+          );
+        }
+        mount(App);
+        "#,
+    )
+    .unwrap();
+    assert!(js.contains("const double = computed(() => count() * 2);"));
+    assert!(js.contains("dynamic(() => double())"));
+    assert!(js.contains("() => double()"));
 }
 
 #[test]

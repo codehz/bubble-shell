@@ -31,7 +31,7 @@ pub fn compile(source: &str) -> Result<String, String> {
 
 fn emit_program(program: &Program<'_>) -> Result<String, String> {
     let mut out = String::from(
-        "import { signal, primitive, mount, component, when, each, dynamic } from \"../runtime.js\";\n\n",
+        "import { signal, computed, effect, primitive, mount, component, when, each, dynamic } from \"../runtime.js\";\n\n",
     );
     for stmt in &program.body {
         match stmt {
@@ -384,7 +384,7 @@ fn is_signal_call(expr: &Expression<'_>) -> bool {
     let Expression::CallExpression(call) = expr else {
         return false;
     };
-    matches!(&call.callee, Expression::Identifier(name) if name.name == "signal")
+    matches!(&call.callee, Expression::Identifier(name) if name.name == "signal" || name.name == "computed")
 }
 
 fn expr_reads_signal(expr: &Expression<'_>, signals: &HashSet<String>) -> bool {

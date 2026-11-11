@@ -479,6 +479,28 @@ fn set_prop_updates_padding_edges() {
 }
 
 #[test]
+fn typed_signals_read_and_write() {
+    use bubble_core::Turn;
+
+    let mut turn = Turn::new();
+    let text = turn.signal_text("left");
+    let flag = turn.signal_bool(true);
+    let number = turn.signal(1.0);
+    assert_eq!(turn.get_text(text).unwrap(), "left");
+    assert!(turn.get_bool(flag).unwrap());
+    assert_eq!(turn.get(number).unwrap(), 1.0);
+    turn.set_text(text, "center").unwrap();
+    turn.set_bool(flag, false).unwrap();
+    turn.set(number, 2.0).unwrap();
+    assert_eq!(turn.get_text(text).unwrap(), "center");
+    assert!(!turn.get_bool(flag).unwrap());
+    assert_eq!(turn.get(number).unwrap(), 2.0);
+    assert!(turn.get(text).is_err());
+    assert!(turn.get_bool(number).is_err());
+    assert!(turn.get_text(flag).is_err());
+}
+
+#[test]
 fn node_descriptor_and_spawn_op_roundtrip() {
     let mut node = NodeDesc::text(9, 4, "hello");
     node.scroll_y = true;

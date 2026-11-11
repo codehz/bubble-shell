@@ -187,6 +187,79 @@ pub extern "C" fn signal_set(id: u32, value: f64) -> i32 {
 }
 
 #[no_mangle]
+pub extern "C" fn signal_text_new(ptr: *const u8, len: u32) -> u32 {
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        set_error("signal text is not utf-8".into());
+        return 0;
+    };
+    match with_turn(|turn| Ok(turn.signal_text(text.to_owned()))) {
+        Ok(id) => id,
+        Err(err) => {
+            set_error(err);
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn signal_text_get(id: u32) -> u32 {
+    match with_turn(|turn| turn.get_text(id)) {
+        Ok(text) => store_scratch(text.into_bytes()),
+        Err(err) => {
+            set_error(err);
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn signal_text_set(id: u32, ptr: *const u8, len: u32) -> i32 {
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        set_error("signal text is not utf-8".into());
+        return 1;
+    };
+    match with_turn(|turn| turn.set_text(id, text.to_owned())) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn signal_bool_new(value: u32) -> u32 {
+    with_turn(|turn| Ok(turn.signal_bool(value != 0))).unwrap_or_else(|err| {
+        set_error(err);
+        0
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn signal_bool_get(id: u32) -> i32 {
+    match with_turn(|turn| turn.get_bool(id)) {
+        Ok(value) => i32::from(value),
+        Err(err) => {
+            set_error(err);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn signal_bool_set(id: u32, value: u32) -> i32 {
+    match with_turn(|turn| turn.set_bool(id, value != 0)) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn track_begin(binding: u32) {
     let _ = with_turn(|turn| {
         turn.track(binding);
