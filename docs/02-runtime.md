@@ -100,6 +100,7 @@ assets/
 | Op | 载荷 | 说明 |
 |---|---|---|
 | `Spawn` | `BNOD` 描述符 | 动态节点；`id`/`parent` 由脚本填写，Rust 校验 handle |
+| `SpawnAt` | `BNOD` 描述符 + index | 在指定子索引插入；fragment 锚点使用 |
 | `CreateNode` | handle, templateId, parent, index | 从模板创建节点；templateId 提供默认属性 |
 | `DisposeNode` | handle | 销毁子树 |
 | `InsertNode` | handle, parent, index | 插入已存在节点 |
@@ -115,7 +116,9 @@ assets/
 | `SetEditingValue` | handle, epoch, value, selection | 受控文本 |
 | `SetAsset` | handle, contentHash | 图片/资源 |
 
-当前 M1 实现覆盖 `Spawn`、`CreateNode`、`DisposeNode`、`MoveNode`、`SetText`、`SetPropColor`、`BindEvent`、`ScrollTo`；其余 op 随组件/输入/更新里程碑补齐。脚本线程只产 op，UI/帧线程在 drain 时应用。
+当前 M1 实现覆盖 `Spawn`、`SpawnAt`、`CreateNode`、`DisposeNode`、`MoveNode`、`SetText`、`SetPropColor`、`BindEvent`、`ScrollTo`；其余 op 随组件/输入/更新里程碑补齐。脚本线程只产 op，UI/帧线程在 drain 时应用。
+
+`when` / `each` 采用透明 fragment：在父节点下创建一个零尺寸、无背景、无 handler 的 anchor，分支/列表节点通过 `SpawnAt` 插到 anchor 之前；重跑时先 `DisposeNode`，再用 `MoveNode` 复用 keyed item。组件树不额外增加布局包装节点。
 
 ### 事件协议
 

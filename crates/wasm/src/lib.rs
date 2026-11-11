@@ -206,26 +206,76 @@ pub extern "C" fn take_dirty() -> u32 {
 }
 
 /// `ptr/len` is a `BNOD` version 1 descriptor. The handle is allocated by Rust.
-#[no_mangle]
-pub extern "C" fn spawn(parent: u32, ptr: *const u8, len: u32) -> u32 {
+fn read_spawn(parent: u32, ptr: *const u8, len: u32) -> Result<NodeDesc, String> {
     if ptr.is_null() || len == 0 {
-        set_error("spawn descriptor is empty".into());
-        return 0;
+        return Err("spawn descriptor is empty".into());
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
-    let mut desc = match NodeDesc::decode(bytes) {
+    let mut desc = NodeDesc::decode(bytes)?;
+    desc.parent = parent;
+    Ok(desc)
+}
+
+#[no_mangle]
+pub extern "C" fn spawn(parent: u32, ptr: *const u8, len: u32) -> u32 {
+    let desc = match read_spawn(parent, ptr, len) {
         Ok(desc) => desc,
         Err(err) => {
             set_error(err);
             return 0;
         }
     };
-    desc.parent = parent;
     match with_turn(|turn| turn.spawn(desc)) {
         Ok(handle) => handle,
         Err(err) => {
             set_error(err);
             0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn spawn_at(parent: u32, index: u32, ptr: *const u8, len: u32) -> u32 {
+    let desc = match read_spawn(parent, ptr, len) {
+        Ok(desc) => desc,
+        Err(err) => {
+            set_error(err);
+            return 0;
+        }
+    };
+    match with_turn(|turn| turn.spawn_at(desc, index)) {
+        Ok(handle) => handle,
+        Err(err) => {
+            set_error(err);
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dispose(handle: u32) -> i32 {
+    match with_turn(|turn| {
+        turn.dispose(handle);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn move_node(handle: u32, parent: u32, index: u32) -> i32 {
+    match with_turn(|turn| {
+        turn.move_node(handle, parent, index);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
         }
     }
 }

@@ -26,6 +26,8 @@ pub enum Op {
     ScrollTo { handle: u32, y: f32 },
     /// Full descriptor for a dynamic node. Appended under `desc.parent`.
     Spawn { desc: NodeDesc },
+    /// Full descriptor inserted at `index` under `desc.parent`.
+    SpawnAt { desc: NodeDesc, index: u32 },
 }
 
 pub fn encode_set_text(seq: u32, handle: u32, text: &str) -> Vec<u8> {
@@ -105,6 +107,11 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
             Op::Spawn { desc } => {
                 payload.push(8);
                 desc.write_body(&mut payload);
+            }
+            Op::SpawnAt { desc, index } => {
+                payload.push(9);
+                desc.write_body(&mut payload);
+                payload.extend_from_slice(&index.to_le_bytes());
             }
         }
     }
@@ -199,6 +206,10 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
             }),
             8 => ops.push(Op::Spawn {
                 desc: NodeDesc::read_body(&mut payload_cur)?,
+            }),
+            9 => ops.push(Op::SpawnAt {
+                desc: NodeDesc::read_body(&mut payload_cur)?,
+                index: read_u32(&mut payload_cur)?,
             }),
             other => return Err(format!("unknown op tag {other}")),
         }

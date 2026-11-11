@@ -29,7 +29,7 @@ pub fn compile(source: &str) -> Result<String, String> {
 
 fn emit_program(program: &Program<'_>) -> Result<String, String> {
     let mut out = String::from(
-        "import { signal, view, text, mount, component } from \"../runtime.js\";\n\n",
+        "import { signal, view, text, mount, component, when, each } from \"../runtime.js\";\n\n",
     );
     for stmt in &program.body {
         match stmt {
@@ -291,14 +291,15 @@ fn has_children(children: &[JSXChild<'_>]) -> bool {
     })
 }
 
-fn is_children_call(expr: &Expression<'_>) -> bool {
+fn is_render_call(expr: &Expression<'_>) -> bool {
     let Expression::CallExpression(call) = expr else {
         return false;
     };
-    matches!(
-        &call.callee,
-        Expression::StaticMemberExpression(member) if member.property.name == "children"
-    )
+    match &call.callee {
+        Expression::Identifier(name) => name.name == "when" || name.name == "each",
+        Expression::StaticMemberExpression(member) => member.property.name == "children",
+        _ => false,
+    }
 }
 
 fn emit_attrs(out: &mut String, attributes: &[JSXAttributeItem<'_>]) -> Result<(), String> {
@@ -344,7 +345,29 @@ fn emit_children(out: &mut String, children: &[JSXChild<'_>]) -> Result<(), Stri
                 let Some(expr) = container.expression.as_expression() else {
                     return Err("empty JSX expression".into());
                 };
-                if matches!(expr, Expression::JSXElement(_)) || is_children_call(expr) {
+                if let Expression::LogicalExpression(logical) = expr {
+                    if logical.operator.as_str() == "&&" && is_renderable(&logical.right) {
+                        out.push_str("  when(() => (");
+                        emit_expr(out, &logical.left)?;
+                        out.push_str("), ");
+                        emit_branch(out, &logical.right)?;
+                        out.push_str(", null);\n");
+                        continue;
+                    }
+                }
+                if let Expression::ConditionalExpression(conditional) = expr {
+                    if is_renderable(&conditional.consequent) || is_renderable(&conditional.alternate) {
+                        out.push_str("  when(() => (");
+                        emit_expr(out, &conditional.test)?;
+                        out.push_str("), ");
+                        emit_branch(out, &conditional.consequent)?;
+                        out.push_str(", ");
+                        emit_branch(out, &conditional.alternate)?;
+                        out.push_str(");\n");
+                        continue;
+                    }
+                }
+                if matches!(expr, Expression::JSXElement(_)) || is_render_call(expr) {
                     out.push_str("  ");
                     emit_expr(out, expr)?;
                     out.push_str(";\n");
@@ -359,6 +382,26 @@ fn emit_children(out: &mut String, children: &[JSXChild<'_>]) -> Result<(), Stri
         }
     }
     Ok(())
+}
+
+fn is_renderable(expr: &Expression<'_>) -> bool {
+    matches!(expr, Expression::JSXElement(_) | Expression::NullLiteral(_))
+}
+
+fn emit_branch(out: &mut String, expr: &Expression<'_>) -> Result<(), String> {
+    match expr {
+        Expression::JSXElement(element) => {
+            out.push_str("() => {\n  ");
+            emit_jsx(out, element)?;
+            out.push_str(";\n}");
+            Ok(())
+        }
+        Expression::NullLiteral(_) => {
+            out.push_str("null");
+            Ok(())
+        }
+        _ => Err("conditional JSX branch must be an element or null".into()),
+    }
 }
 
 fn emit_text_content(out: &mut String, children: &[JSXChild<'_>]) -> Result<(), String> {

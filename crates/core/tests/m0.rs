@@ -356,3 +356,40 @@ fn node_descriptor_and_spawn_op_roundtrip() {
     assert_eq!(seq, 12);
     assert_eq!(ops, vec![Op::Spawn { desc: node }]);
 }
+
+#[test]
+fn indexed_spawn_move_and_dispose_reorder_paint() {
+    use bubble_core::Turn;
+
+    fn texts(shell: &Shell) -> Vec<String> {
+        shell
+            .paint()
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                bubble_core::PaintCmd::Text { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(100.0, 100.0);
+    let mut turn = Turn::new();
+    let a = turn.spawn(NodeDesc::text(0, 1, "A")).unwrap();
+    let b = turn.spawn(NodeDesc::text(0, 1, "B")).unwrap();
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    assert_eq!(texts(&shell), vec!["A", "B"]);
+
+    let c = turn.spawn_at(NodeDesc::text(0, 1, "C"), 0).unwrap();
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    assert_eq!(texts(&shell), vec!["C", "A", "B"]);
+
+    turn.move_node(c, 1, 2);
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    assert_eq!(texts(&shell), vec!["A", "B", "C"]);
+
+    turn.dispose(a);
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    assert_eq!(texts(&shell), vec!["B", "C"]);
+    assert!(b < c);
+}

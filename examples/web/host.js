@@ -84,6 +84,14 @@ setApi({
     exports.dealloc(ptr, spec.length);
     return handle;
   },
+  spawn_at(parent, index, spec) {
+    const ptr = copyBytes(spec);
+    const handle = exports.spawn_at(parent, index, ptr, spec.length);
+    exports.dealloc(ptr, spec.length);
+    return handle;
+  },
+  dispose: exports.dispose,
+  move_node: exports.move_node,
   bind_event: exports.bind_event,
   queue_text: exports.queue_text,
   commit: exports.commit,

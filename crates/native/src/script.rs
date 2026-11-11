@@ -475,6 +475,9 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
     api.set("track_end", Function::new(ctx.clone(), api_track_end)?)?;
     api.set("takeDirty", Function::new(ctx.clone(), api_take_dirty)?)?;
     api.set("spawn", Function::new(ctx.clone(), api_spawn)?)?;
+    api.set("spawn_at", Function::new(ctx.clone(), api_spawn_at)?)?;
+    api.set("dispose", Function::new(ctx.clone(), api_dispose)?)?;
+    api.set("move_node", Function::new(ctx.clone(), api_move_node)?)?;
     api.set("queue_text_utf8", Function::new(ctx.clone(), api_queue_text)?)?;
     api.set("bind_event", Function::new(ctx.clone(), api_bind)?)?;
     api.set("commit", Function::new(ctx.clone(), api_commit)?)?;
@@ -570,21 +573,69 @@ fn api_take_dirty(ctx: Ctx) -> rquickjs::Result<Array> {
     Ok(array)
 }
 
-fn api_spawn(parent: f64, spec: TypedArray<'_, u8>) -> u32 {
+fn read_spawn(parent: f64, spec: TypedArray<'_, u8>) -> Result<NodeDesc, String> {
     let bytes = unsafe { spec.as_slice() };
-    let mut desc = match NodeDesc::decode(bytes) {
+    let mut desc = NodeDesc::decode(bytes)?;
+    desc.parent = parent as u32;
+    Ok(desc)
+}
+
+fn api_spawn(parent: f64, spec: TypedArray<'_, u8>) -> u32 {
+    let desc = match read_spawn(parent, spec) {
         Ok(desc) => desc,
         Err(err) => {
             set_api_error(err);
             return 0;
         }
     };
-    desc.parent = parent as u32;
     match with_turn(|turn| turn.spawn(desc)) {
         Ok(handle) => handle,
         Err(err) => {
             set_api_error(err);
             0
+        }
+    }
+}
+
+fn api_spawn_at(parent: f64, index: f64, spec: TypedArray<'_, u8>) -> u32 {
+    let desc = match read_spawn(parent, spec) {
+        Ok(desc) => desc,
+        Err(err) => {
+            set_api_error(err);
+            return 0;
+        }
+    };
+    match with_turn(|turn| turn.spawn_at(desc, index as u32)) {
+        Ok(handle) => handle,
+        Err(err) => {
+            set_api_error(err);
+            0
+        }
+    }
+}
+
+fn api_dispose(handle: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.dispose(handle as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_move_node(handle: f64, parent: f64, index: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.move_node(handle as u32, parent as u32, index as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
         }
     }
 }

@@ -2,6 +2,11 @@ let api;
 const parents = [1];
 const handlers = new Map();
 const bindings = [];
+const bindingHandles = new Map();
+const childrenOf = new Map([[1, []]]);
+const parentOf = new Map();
+const cursors = [];
+const collectors = [];
 let nextHandler = 1;
 const encoder = typeof TextEncoder === "function" ? new TextEncoder() : null;
 
@@ -100,10 +105,35 @@ function finite(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : NaN;
 }
 
+function registerChild(parentHandle, handle, index) {
+  let list = childrenOf.get(parentHandle);
+  if (!list) {
+    list = [];
+    childrenOf.set(parentHandle, list);
+  }
+  if (index === undefined || index >= list.length) list.push(handle);
+  else list.splice(index, 0, handle);
+  parentOf.set(handle, parentHandle);
+  const collector = collectors[collectors.length - 1];
+  if (collector && collector.parent === parentHandle) collector.handles.push(handle);
+}
+
 function pack(kind, props, text) {
   props = props ?? {};
-  const handle = api.spawn(parent(), specBytes(kind, props, text));
-  if (!handle) throw new Error(api.error() || "spawn failed");
+  const parentHandle = parent();
+  const cursor = cursors[cursors.length - 1];
+  const spec = specBytes(kind, props, text);
+  let handle;
+  if (cursor && cursor.parent === parentHandle) {
+    handle = api.spawn_at(parentHandle, cursor.index, spec);
+    if (!handle) throw new Error(api.error() || "spawn_at failed");
+    registerChild(parentHandle, handle, cursor.index);
+    cursor.index += 1;
+  } else {
+    handle = api.spawn(parentHandle, spec);
+    if (!handle) throw new Error(api.error() || "spawn failed");
+    registerChild(parentHandle, handle);
+  }
   if (props.onPress) {
     const id = nextHandler++;
     handlers.set(id, props.onPress);
@@ -134,20 +164,44 @@ export function component(type, props, children) {
   return type({ ...(props ?? {}), children });
 }
 
-function bind(handle, fn) {
+function addBinding(run, handle) {
   const id = bindings.length + 1;
-  const run = () => {
-    api.track_begin(id);
-    let value = "";
-    try {
-      value = String(fn());
-    } finally {
-      api.track_end();
+  bindings.push({ run, active: true });
+  if (handle != null) {
+    let set = bindingHandles.get(handle);
+    if (!set) {
+      set = new Set();
+      bindingHandles.set(handle, set);
     }
-    writeText(handle, value);
-  };
-  bindings.push(run);
-  run();
+    set.add(id);
+  }
+  return id;
+}
+
+function runBinding(id) {
+  const binding = bindings[id - 1];
+  if (!binding || !binding.active) return;
+  api.track_begin(id);
+  try {
+    binding.run();
+  } finally {
+    api.track_end();
+  }
+}
+
+function deactivateHandleBindings(handle) {
+  const set = bindingHandles.get(handle);
+  if (!set) return;
+  for (const id of set) {
+    const binding = bindings[id - 1];
+    if (binding) binding.active = false;
+  }
+  bindingHandles.delete(handle);
+}
+
+function bind(handle, fn) {
+  const id = addBinding(() => writeText(handle, String(fn())), handle);
+  runBinding(id);
 }
 
 function writeText(handle, value) {
@@ -162,11 +216,134 @@ function writeText(handle, value) {
   api.dealloc(ptr, bytes.length);
 }
 
+function disposeHandle(handle) {
+  if (handle === 1) return;
+  deactivateHandleBindings(handle);
+  const kids = childrenOf.get(handle);
+  if (kids) {
+    for (const kid of [...kids]) disposeHandle(kid);
+  }
+  const parentHandle = parentOf.get(handle);
+  if (parentHandle !== undefined) {
+    const list = childrenOf.get(parentHandle);
+    const index = list ? list.indexOf(handle) : -1;
+    if (index >= 0) list.splice(index, 1);
+  }
+  childrenOf.delete(handle);
+  parentOf.delete(handle);
+  if (api.dispose(handle) !== 0) throw new Error(api.error() || "dispose failed");
+}
+
+function moveHandle(handle, parentHandle, index) {
+  const oldParent = parentOf.get(handle);
+  if (oldParent !== undefined) {
+    const old = childrenOf.get(oldParent);
+    const position = old ? old.indexOf(handle) : -1;
+    if (position >= 0) old.splice(position, 1);
+  }
+  let list = childrenOf.get(parentHandle);
+  if (!list) {
+    list = [];
+    childrenOf.set(parentHandle, list);
+  }
+  list.splice(index, 0, handle);
+  parentOf.set(handle, parentHandle);
+  if (api.move_node(handle, parentHandle, index) !== 0) {
+    throw new Error(api.error() || "move failed");
+  }
+}
+
+function anchorIndex(parentHandle, anchor) {
+  const list = childrenOf.get(parentHandle);
+  const index = list ? list.indexOf(anchor) : -1;
+  if (index < 0) throw new Error("fragment anchor is detached");
+  return index;
+}
+
+function renderAt(parentHandle, index, build) {
+  const collector = { parent: parentHandle, handles: [] };
+  collectors.push(collector);
+  cursors.push({ parent: parentHandle, index });
+  parents.push(parentHandle);
+  try {
+    build();
+  } finally {
+    parents.pop();
+    cursors.pop();
+    collectors.pop();
+  }
+  return collector.handles;
+}
+
+function createAnchor() {
+  return pack(1, { width: 0, height: 0, flexGrow: 0, flexShrink: 0 }, "");
+}
+
+export function when(cond, thenBranch, elseBranch) {
+  const condFn = typeof cond === "function" ? cond : () => cond;
+  const parentHandle = parent();
+  const anchor = createAnchor();
+  let handles = [];
+  const render = () => {
+    for (const handle of handles) disposeHandle(handle);
+    handles = [];
+    const branch = condFn() ? thenBranch : elseBranch;
+    if (typeof branch !== "function") return;
+    handles = renderAt(parentHandle, anchorIndex(parentHandle, anchor), branch);
+  };
+  runBinding(addBinding(render, anchor));
+  return anchor;
+}
+
+export function each(items, key, render) {
+  if (typeof render !== "function") throw new Error("each requires a render function");
+  const itemsFn = typeof items === "function" ? items : () => items;
+  const keyFn = typeof key === "function"
+    ? key
+    : typeof key === "string"
+      ? (item) => item[key]
+      : (_item, index) => index;
+  const parentHandle = parent();
+  const anchor = createAnchor();
+  const groups = new Map();
+  const renderList = () => {
+    const list = itemsFn() ?? [];
+    const next = [];
+    for (let index = 0; index < list.length; index += 1) {
+      const item = list[index];
+      next.push({ item, key: keyFn(item, index) });
+    }
+    const seen = new Set(next.map((entry) => entry.key));
+    for (const [groupKey, handles] of groups) {
+      if (!seen.has(groupKey)) {
+        for (const handle of handles) disposeHandle(handle);
+        groups.delete(groupKey);
+      }
+    }
+    let index = anchorIndex(parentHandle, anchor);
+    for (const entry of next) {
+      let handles = groups.get(entry.key);
+      if (handles === undefined) {
+        handles = renderAt(parentHandle, index, () => render(entry.item, entry.key));
+        groups.set(entry.key, handles);
+        index += handles.length;
+      } else {
+        for (const handle of handles) {
+          moveHandle(handle, parentHandle, index);
+          index += 1;
+        }
+      }
+    }
+  };
+  runBinding(addBinding(renderList, anchor));
+  return anchor;
+}
+
 export function flush() {
   for (let guard = 0; guard < 8; guard += 1) {
     const ids = api.takeDirty();
     if (ids.length === 0) break;
-    for (const id of ids) bindings[id - 1]();
+    for (const id of ids) runBinding(id);
   }
   if (api.commit() === 0 && api.error()) throw new Error(api.error());
   if (typeof api.layout === "function" && api.layout() !== 0) throw new Error(api.error() || "layout failed");

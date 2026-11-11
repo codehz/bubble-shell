@@ -257,6 +257,10 @@ impl Shell {
                 Op::BindEvent { handle, handler } => self.node_mut(handle)?.handler = handler,
                 Op::ScrollTo { handle, y } => self.scroll_to(handle, y)?,
                 Op::Spawn { desc } => self.spawn_desc(desc)?,
+                Op::SpawnAt { desc, index } => {
+                    let parent = desc.parent;
+                    self.insert_node(desc, parent, index)?
+                }
             }
         }
         Ok(seq)

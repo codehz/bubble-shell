@@ -108,13 +108,34 @@ impl Turn {
     /// by the host, so callers may build children under the returned handle
     /// before the parent exists in the tree.
     pub fn spawn(&mut self, mut desc: NodeDesc) -> Result<u32, String> {
+        let handle = self.allocate_handle()?;
+        desc.id = handle;
+        self.push(Op::Spawn { desc });
+        Ok(handle)
+    }
+
+    /// Spawn at a final child index; used by fragment anchors.
+    pub fn spawn_at(&mut self, mut desc: NodeDesc, index: u32) -> Result<u32, String> {
+        let handle = self.allocate_handle()?;
+        desc.id = handle;
+        self.push(Op::SpawnAt { desc, index });
+        Ok(handle)
+    }
+
+    pub fn dispose(&mut self, handle: u32) {
+        self.push(Op::DisposeNode { handle });
+    }
+
+    pub fn move_node(&mut self, handle: u32, parent: u32, index: u32) {
+        self.push(Op::MoveNode { handle, parent, index });
+    }
+
+    fn allocate_handle(&mut self) -> Result<u32, String> {
         let handle = self.next_handle;
         self.next_handle = self
             .next_handle
             .checked_add(1)
             .ok_or_else(|| "handle space exhausted".to_string())?;
-        desc.id = handle;
-        self.push(Op::Spawn { desc });
         Ok(handle)
     }
 

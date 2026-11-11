@@ -59,3 +59,27 @@ fn lowers_component_props_children_and_conditionals() {
     assert!(js.contains("props.children();"));
     assert!(js.contains("text({}, \"Body\");"));
 }
+
+#[test]
+fn lowers_conditional_children_and_each() {
+    let js = compile(
+        r#"
+        import { mount, Text, View } from "bubble";
+        function App() {
+          const show = true;
+          return (
+            <View>
+              {show && <Text>On</Text>}
+              {show ? <Text>Yes</Text> : null}
+              {each(() => items(), (item) => item.id, (item) => <Text>{item.name}</Text>)}
+            </View>
+          );
+        }
+        mount(App);
+        "#,
+    )
+    .unwrap();
+    assert!(js.contains("when(() => (show), () => {"));
+    assert!(js.contains("when(() => (show), () => {"));
+    assert!(js.contains("each(() => items(), (item) => item.id, (item) => text({}, () => item.name));"));
+}
