@@ -111,17 +111,19 @@ fn bundle_command(args: &[String]) -> Result<(), String> {
 
     let mut names = std::collections::HashSet::new();
     for entry in &parsed.entries {
+        let name = entry
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| format!("{}: entry has no file name", entry.display()))?;
+        if !names.insert(name.to_string()) {
+            return Err(format!("{}: duplicate entry name {name}", entry.display()));
+        }
+    }
+    for entry in &parsed.entries {
         let bundled = bundle_entry(&BundleOptions {
             entry: entry.clone(),
             source_map: parsed.dev,
         })?;
-        if !names.insert(bundled.name.clone()) {
-            return Err(format!(
-                "{}: duplicate entry name {}",
-                entry.display(),
-                bundled.name
-            ));
-        }
         let bundle_path = out.join(format!("{}.js", bundled.name));
         std::fs::write(&bundle_path, &bundled.code)
             .map_err(|error| format!("{}: {error}", bundle_path.display()))?;

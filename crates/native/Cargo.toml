@@ -14,5 +14,8 @@ rquickjs = { version = "0.14", features = ["bindgen", "loader"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+[dev-dependencies]
+sha2 = "0.10"
+
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"

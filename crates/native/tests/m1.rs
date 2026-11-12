@@ -458,3 +458,62 @@ fn ime_transactions_apply_new_cursor_and_composition() {
         "stale session must be rejected"
     );
 }
+
+/// Load a hand-written bundle with a manifest that matches its hash.
+fn try_load_source(code: &str) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(code.as_bytes());
+    let hash: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let manifest = format!(
+        "{{\"schema\":1,\"entry\":\"main.js\",\"files\":[{{\"path\":\"main.js\",\"sha256\":\"{hash}\",\"size\":{}}}],\"signature\":\"test\"}}",
+        code.len()
+    );
+    let manifest = c(&manifest);
+    let result = bubble_load(manifest.as_ptr(), code.as_ptr(), code.len() as u32);
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(error())
+    }
+}
+
+#[test]
+fn host_modules_resolve_to_one_runtime_instance() {
+    let _guard = exclusive();
+    bubble_destroy();
+    assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    try_load_source(
+        r#"import * as shell from "bubble-shell";
+import * as rt from "bubble:rt";
+if (shell !== rt) throw new Error("bubble-shell and bubble:rt must be one module");
+const count = shell.signal(41);
+shell.mount(function App() {
+  shell.primitive("View", {}, () => {
+    shell.primitive("Text", {}, () => "N=" + (count() + 1));
+  });
+});
+"#,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let mut paint = ptr::null();
+    let mut len = 0u32;
+    assert_eq!(
+        bubble_frame(200.0, 100.0, &mut paint, &mut len),
+        0,
+        "{}",
+        error()
+    );
+    assert_eq!(text(3), "N=42");
+}
+
+#[test]
+fn relative_imports_are_rejected_by_the_loader() {
+    let _guard = exclusive();
+    bubble_destroy();
+    assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    let error = try_load_source(
+        "import { helper } from \"./helper.js\";\nhelper();\n",
+    )
+    .unwrap_err();
+    assert!(error.contains("relative imports"), "{error}");
+}
