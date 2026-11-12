@@ -20,6 +20,18 @@ func bubble_field_at(_ x: Float, _ y: Float) -> UInt32
 func bubble_focus_at(_ x: Float, _ y: Float) -> UInt32
 @_silgen_name("bubble_field_flags")
 func bubble_field_flags(_ handle: UInt32) -> UInt32
+@_silgen_name("bubble_focused")
+func bubble_focused() -> UInt32
+@_silgen_name("bubble_selection")
+func bubble_selection(_ start: UnsafeMutablePointer<UInt32>?, _ end: UnsafeMutablePointer<UInt32>?, _ markStart: UnsafeMutablePointer<UInt32>?, _ markEnd: UnsafeMutablePointer<UInt32>?) -> Int32
+@_silgen_name("bubble_unit_at")
+func bubble_unit_at(_ x: Float, _ y: Float, _ unit: UnsafeMutablePointer<UInt32>?) -> Int32
+@_silgen_name("bubble_caret_at")
+func bubble_caret_at(_ unit: UInt32, _ x: UnsafeMutablePointer<Float>?, _ y: UnsafeMutablePointer<Float>?, _ w: UnsafeMutablePointer<Float>?, _ h: UnsafeMutablePointer<Float>?) -> Int32
+@_silgen_name("bubble_selection_count")
+func bubble_selection_count() -> UInt32
+@_silgen_name("bubble_selection_rect")
+func bubble_selection_rect(_ index: UInt32, _ x: UnsafeMutablePointer<Float>?, _ y: UnsafeMutablePointer<Float>?, _ w: UnsafeMutablePointer<Float>?, _ h: UnsafeMutablePointer<Float>?) -> Int32
 @_silgen_name("bubble_tick")
 func bubble_tick(_ timeMs: Double) -> Int32
 @_silgen_name("bubble_scroll")
@@ -79,6 +91,8 @@ final class BubbleView: UIView {
     var paint = Data()
     var family = "Arial"
     private var imageCache: [String: UIImage] = [:]
+    weak var inputDelegate: UITextInputDelegate?
+    lazy var textTokenizer: UITextInputStringTokenizer = UITextInputStringTokenizer(textInput: self)
 
     private func imageFor(_ src: String) -> UIImage? {
         if let image = imageCache[src] {
@@ -292,23 +306,315 @@ final class BubbleView: UIView {
     }
 }
 
-extension BubbleView: UIKeyInput {
+final class IndexedPosition: UITextPosition {
+    let index: Int
+    init(_ index: Int) {
+        self.index = max(0, index)
+        super.init()
+    }
+}
+
+final class IndexedRange: UITextRange {
+    let startIndex: Int
+    let endIndex: Int
+    init(_ start: Int, _ end: Int) {
+        startIndex = min(start, end)
+        endIndex = max(start, end)
+        super.init()
+    }
+    override var start: UITextPosition { IndexedPosition(startIndex) }
+    override var end: UITextPosition { IndexedPosition(endIndex) }
+    override var isEmpty: Bool { startIndex == endIndex }
+}
+
+final class IndexedSelection: UITextSelectionRect {
+    let rectValue: CGRect
+    let starts: Bool
+    let ends: Bool
+    init(_ rect: CGRect, starts: Bool, ends: Bool) {
+        rectValue = rect
+        self.starts = starts
+        self.ends = ends
+        super.init()
+    }
+    override var rect: CGRect { rectValue }
+    override var writingDirection: NSWritingDirection { .leftToRight }
+    override var containsStart: Bool { starts }
+    override var containsEnd: Bool { ends }
+    override var isVertical: Bool { false }
+}
+
+extension BubbleView: UITextInput {
     override var canBecomeFirstResponder: Bool { true }
-    override var keyboardType: UIKeyboardType { keyboardKind }
-    override var isSecureTextEntry: Bool { secureEntry }
-    var hasText: Bool { true }
+    override var keyCommands: [UIKeyCommand]? {
+        [
+            UIKeyCommand(input: "z", modifierFlags: .command, action: #selector(undoEditing)),
+            UIKeyCommand(input: "z", modifierFlags: [.command, .shift], action: #selector(redoEditing)),
+        ]
+    }
+
+    @objc func undoEditing() {
+        changeText { _ = bubble_edit(8, nil, 0, 0, 0) }
+    }
+
+    @objc func redoEditing() {
+        changeText { _ = bubble_edit(9, nil, 0, 0, 0) }
+    }
+
+    var keyboardType: UIKeyboardType {
+        get { keyboardKind }
+        set { _ = newValue }
+    }
+    var isSecureTextEntry: Bool {
+        get { secureEntry }
+        set { _ = newValue }
+    }
+    var autocorrectionType: UITextAutocorrectionType {
+        get { secureEntry ? .no : .default }
+        set { _ = newValue }
+    }
+    var spellCheckingType: UITextSpellCheckingType {
+        get { secureEntry ? .no : .default }
+        set { _ = newValue }
+    }
+    var hasText: Bool { !focusedFieldText().isEmpty }
+    var tokenizer: UITextInputTokenizer { textTokenizer }
+    var markedTextStyle: [NSAttributedString.Key: Any]? {
+        get { nil }
+        set {}
+    }
 
     func insertText(_ text: String) {
-        let bytes = Array(text.utf8)
-        bytes.withUnsafeBufferPointer { buffer in
-            _ = bubble_edit(1, buffer.baseAddress, UInt32(bytes.count), 0, 0)
+        changeText {
+            editUTF8(1, text)
         }
-        refresh()
     }
 
     func deleteBackward() {
-        _ = bubble_edit(2, nil, 0, 0, 0)
+        changeText {
+            _ = bubble_edit(2, nil, 0, 0, 0)
+        }
+    }
+
+    var selectedTextRange: UITextRange? {
+        get {
+            guard let (start, end, _, _) = selectionUnits() else { return nil }
+            return IndexedRange(start, end)
+        }
+        set {
+            guard let range = newValue as? IndexedRange else { return }
+            changeText {
+                _ = bubble_edit(4, nil, 0, UInt32(range.startIndex), UInt32(range.endIndex))
+            }
+        }
+    }
+
+    var markedTextRange: UITextRange? {
+        guard let (_, _, markStart, markEnd) = selectionUnits(), markEnd != Int(UInt32.max) else { return nil }
+        return IndexedRange(markStart, markEnd)
+    }
+
+    func text(in range: UITextRange) -> String? {
+        guard let range = range as? IndexedRange else { return nil }
+        return utf16Slice(focusedFieldText(), range.startIndex, range.endIndex)
+    }
+
+    func replace(_ range: UITextRange, withText text: String) {
+        guard let range = range as? IndexedRange else { return }
+        changeText {
+            if let marked = markedTextRange as? IndexedRange,
+               marked.startIndex == range.startIndex && marked.endIndex == range.endIndex {
+                editUTF8(7, text)
+                return
+            }
+            _ = bubble_edit(4, nil, 0, UInt32(range.startIndex), UInt32(range.endIndex))
+            editUTF8(1, text)
+        }
+    }
+
+    func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+        let text = markedText ?? ""
+        changeText {
+            if markedTextRange == nil {
+                _ = bubble_edit(5, nil, 0, 0, 0)
+            }
+            editUTF8(6, text)
+            _ = selectedRange
+        }
+    }
+
+    func unmarkText() {
+        guard let marked = markedTextRange as? IndexedRange,
+              let text = text(in: marked) else { return }
+        changeText {
+            editUTF8(7, text)
+        }
+    }
+
+    var beginningOfDocument: UITextPosition { IndexedPosition(0) }
+    var endOfDocument: UITextPosition { IndexedPosition(focusedFieldText().utf16.count) }
+
+    func textRange(from fromPosition: UITextPosition, to toPosition: UITextPosition) -> UITextRange? {
+        guard let start = fromPosition as? IndexedPosition, let end = toPosition as? IndexedPosition else { return nil }
+        return IndexedRange(start.index, end.index)
+    }
+
+    func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
+        guard let position = position as? IndexedPosition else { return nil }
+        let next = position.index + offset
+        if next < 0 || next > focusedFieldText().utf16.count { return nil }
+        return IndexedPosition(next)
+    }
+
+    func position(from position: UITextPosition, in direction: UITextLayoutDirection, offset: Int) -> UITextPosition? {
+        switch direction {
+        case .left, .right:
+            let delta = direction == .left ? -offset : offset
+            return self.position(from: position, offset: delta)
+        default:
+            return nil
+        }
+    }
+
+    func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
+        let a = (position as? IndexedPosition)?.index ?? 0
+        let b = (other as? IndexedPosition)?.index ?? 0
+        if a < b { return .orderedAscending }
+        if a > b { return .orderedDescending }
+        return .orderedSame
+    }
+
+    func offset(from: UITextPosition, to toPosition: UITextPosition) -> Int {
+        ((toPosition as? IndexedPosition)?.index ?? 0) - ((from as? IndexedPosition)?.index ?? 0)
+    }
+
+    func position(within range: UITextRange, farthestIn direction: UITextLayoutDirection) -> UITextPosition? {
+        guard let range = range as? IndexedRange else { return nil }
+        switch direction {
+        case .left, .up: return IndexedPosition(range.startIndex)
+        default: return IndexedPosition(range.endIndex)
+        }
+    }
+
+    func characterRange(byExtending position: UITextPosition, in direction: UITextLayoutDirection) -> UITextRange? {
+        guard let position = position as? IndexedPosition,
+              let next = self.position(from: position, in: direction, offset: 1) as? IndexedPosition else { return nil }
+        return IndexedRange(position.index, next.index)
+    }
+
+    func baseWritingDirection(for position: UITextPosition, in direction: UITextStorageDirection) -> NSWritingDirection {
+        _ = position
+        _ = direction
+        return .leftToRight
+    }
+
+    func setBaseWritingDirection(_ writingDirection: NSWritingDirection, for range: UITextRange) {
+        _ = writingDirection
+        _ = range
+    }
+
+    func firstRect(for range: UITextRange) -> CGRect {
+        guard let range = range as? IndexedRange else { return .zero }
+        if let selected = selectedTextRange as? IndexedRange,
+           selected.startIndex == range.startIndex && selected.endIndex == range.endIndex,
+           bubble_selection_count() > 0 {
+            return selectionRect(0)
+        }
+        return caretRect(for: IndexedPosition(range.startIndex))
+    }
+
+    func caretRect(for position: UITextPosition) -> CGRect {
+        guard let position = position as? IndexedPosition else { return .zero }
+        var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
+        if bubble_caret_at(UInt32(position.index), &x, &y, &w, &h) != 0 { return .zero }
+        return viewRect(x, y, w, h)
+    }
+
+    func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
+        guard let range = range as? IndexedRange else { return [] }
+        let count = Int(bubble_selection_count())
+        let selected = selectedTextRange as? IndexedRange
+        if let selected, selected.startIndex == range.startIndex && selected.endIndex == range.endIndex && count > 0 {
+            return (0..<count).map { index in
+                IndexedSelection(selectionRect(UInt32(index)), starts: index == 0, ends: index == count - 1)
+            }
+        }
+        let rect = caretRect(for: IndexedPosition(range.startIndex))
+        return [IndexedSelection(rect, starts: true, ends: true)]
+    }
+
+    func closestPosition(to point: CGPoint) -> UITextPosition? {
+        let local = contentPoint(point)
+        var unit: UInt32 = 0
+        if bubble_unit_at(Float(local.x), Float(local.y), &unit) != 0 { return nil }
+        return IndexedPosition(Int(unit))
+    }
+
+    func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? {
+        guard let range = range as? IndexedRange, let position = closestPosition(to: point) as? IndexedPosition else { return nil }
+        return IndexedPosition(min(range.endIndex, max(range.startIndex, position.index)))
+    }
+
+    func characterRange(at point: CGPoint) -> UITextRange? {
+        guard let position = closestPosition(to: point) as? IndexedPosition else { return nil }
+        let end = min(focusedFieldText().utf16.count, position.index + 1)
+        return IndexedRange(position.index, end)
+    }
+
+    private func selectionUnits() -> (Int, Int, Int, Int)? {
+        var start: UInt32 = 0, end: UInt32 = 0, markStart: UInt32 = 0, markEnd: UInt32 = 0
+        if bubble_selection(&start, &end, &markStart, &markEnd) != 0 { return nil }
+        return (Int(start), Int(end), Int(markStart), Int(markEnd))
+    }
+
+    private func focusedFieldText() -> String {
+        let handle = bubble_focused()
+        if handle == 0 { return "" }
+        var buf = [CChar](repeating: 0, count: 65536)
+        guard bubble_node_text(handle, &buf, UInt32(buf.count)) == 0 else { return "" }
+        return String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+
+    private func utf16Slice(_ text: String, _ start: Int, _ end: Int) -> String {
+        let units = text.utf16
+        let lower = units.index(units.startIndex, offsetBy: start, limitedBy: units.endIndex) ?? units.endIndex
+        let upper = units.index(units.startIndex, offsetBy: end, limitedBy: units.endIndex) ?? units.endIndex
+        return String(decoding: units[lower..<upper], as: UTF16.self)
+    }
+
+    private func editUTF8(_ action: UInt32, _ text: String) {
+        let bytes = Array(text.utf8)
+        bytes.withUnsafeBufferPointer { buffer in
+            _ = bubble_edit(action, buffer.baseAddress, UInt32(bytes.count), 0, 0)
+        }
+    }
+
+    private func changeText(_ body: () -> Void) {
+        inputDelegate?.selectionWillChange(self)
+        inputDelegate?.textWillChange(self)
+        body()
         refresh()
+        inputDelegate?.textDidChange(self)
+        inputDelegate?.selectionDidChange(self)
+    }
+
+    private func contentPoint(_ point: CGPoint) -> CGPoint {
+        CGPoint(x: point.x - safeAreaInsets.left, y: point.y - safeAreaInsets.top)
+    }
+
+    private func viewRect(_ x: Float, _ y: Float, _ w: Float, _ h: Float) -> CGRect {
+        CGRect(
+            x: CGFloat(x) + safeAreaInsets.left,
+            y: CGFloat(y) + safeAreaInsets.top,
+            width: CGFloat(w),
+            height: CGFloat(h)
+        )
+    }
+
+    private func selectionRect(_ index: UInt32) -> CGRect {
+        var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
+        if bubble_selection_rect(index, &x, &y, &w, &h) != 0 { return .zero }
+        return viewRect(x, y, w, h)
     }
 }
 

@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::editing::{
     apply_command, apply_script, display_text, hit_unit, text_metrics, EditCommand, EditEvent,
-    FieldState,
+    EditHistory, FieldState,
 };
 use crate::gesture::{GestureEvent, GestureKind, PointerAction, PointerInput, Recognizer};
 use crate::color::Color;
@@ -140,6 +140,7 @@ pub struct Shell {
     paint_dirty: Cell<bool>,
     recognizer: Recognizer,
     fields: HashMap<u32, FieldState>,
+    history: HashMap<u32, EditHistory>,
     focused: u32,
     edit_events: Vec<EditEvent>,
     caret_handle: u32,
@@ -271,6 +272,7 @@ impl Shell {
             paint_dirty: Cell::new(true),
             recognizer: Recognizer::new(),
             fields: HashMap::new(),
+            history: HashMap::new(),
             focused: 0,
             edit_events: Vec::new(),
             caret_handle: 0,
@@ -613,6 +615,69 @@ impl Shell {
         self.caret_box
     }
 
+    /// UTF-16 offset in the focused field nearest the point. Does not move the caret.
+    pub fn unit_at(
+        &self,
+        x: f32,
+        y: f32,
+        measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
+    ) -> Result<Option<u32>, String> {
+        let handle = self.focused;
+        if handle == 0 {
+            return Ok(None);
+        }
+        let node = self.node(handle)?;
+        let pads = self.pads(handle);
+        let font_size = node.font_size;
+        let weight = node.font_weight;
+        let lh = if node.line_height > 0.0 {
+            node.line_height
+        } else {
+            font_size * 1.2
+        };
+        let text = display_text(&node.text, node.secure);
+        let local_x = x - (node.x + pads[0]);
+        let local_y = y - (node.y + pads[2]);
+        Ok(Some(hit_unit(&text, local_x, local_y, lh, |line| {
+            measure(line, font_size, lh, weight, None).0
+        })))
+    }
+
+    /// Caret rect for a UTF-16 offset in the focused field, viewport coordinates.
+    pub fn caret_rect_at(
+        &self,
+        unit: u32,
+        measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
+    ) -> Result<Option<(f32, f32, f32, f32)>, String> {
+        let handle = self.focused;
+        if handle == 0 {
+            return Ok(None);
+        }
+        let node = self.node(handle)?;
+        let pads = self.pads(handle);
+        let font_size = node.font_size;
+        let weight = node.font_weight;
+        let lh = if node.line_height > 0.0 {
+            node.line_height
+        } else {
+            font_size * 1.2
+        };
+        let text = display_text(&node.text, node.secure);
+        let metrics = text_metrics(&text, unit, unit, lh, |line| {
+            measure(line, font_size, lh, weight, None).0
+        });
+        Ok(Some((
+            node.x + pads[0] + metrics.caret_x,
+            node.y + pads[2] + metrics.caret_y,
+            1.0,
+            metrics.caret_h,
+        )))
+    }
+
+    pub fn selection_rects(&self) -> &[(f32, f32, f32, f32)] {
+        &self.selection_rects
+    }
+
     /// Focus the field under the point and collapse the caret to the nearest
     /// UTF-16 offset. Returns `0` when the point misses every field.
     pub fn focus_point(
@@ -708,22 +773,86 @@ impl Shell {
                 node.text.clone(),
             )
         };
+        if matches!(command, EditCommand::Undo | EditCommand::Redo) {
+            let (sel_start, sel_end) = {
+                let state = self
+                    .fields
+                    .get(&handle)
+                    .ok_or_else(|| format!("handle {handle} has no editing session"))?;
+                (state.sel_start, state.sel_end)
+            };
+            let restored = {
+                let history = self.history.entry(handle).or_default();
+                if matches!(command, EditCommand::Undo) {
+                    history.undo(&value, sel_start, sel_end)
+                } else {
+                    history.redo(&value, sel_start, sel_end)
+                }
+            };
+            let Some((next, sel_start, sel_end)) = restored else {
+                return Ok(());
+            };
+            let state = self
+                .fields
+                .get_mut(&handle)
+                .ok_or_else(|| format!("handle {handle} has no editing session"))?;
+            state.composing = false;
+            state.composition = None;
+            state.sel_start = sel_start;
+            state.sel_end = sel_end;
+            state.revision += 1;
+            value = next;
+            let event = EditEvent {
+                handle,
+                handler,
+                revision: state.revision,
+                value: value.clone(),
+                sel_start: state.sel_start,
+                sel_end: state.sel_end,
+                composition: None,
+            };
+            self.node_mut(handle)?.text = value;
+            self.edit_events.push(event);
+            self.refresh_measure(handle)?;
+            self.paint_dirty.set(true);
+            return Ok(());
+        }
+        let (sel_start, sel_end) = {
+            let state = self
+                .fields
+                .get(&handle)
+                .ok_or_else(|| format!("handle {handle} has no editing session"))?;
+            (state.sel_start, state.sel_end)
+        };
+        let checkpoint = self
+            .history
+            .entry(handle)
+            .or_default()
+            .checkpoint(&command, &value, sel_start, sel_end);
         let state = self
             .fields
             .get_mut(&handle)
             .ok_or_else(|| format!("handle {handle} has no editing session"))?;
         let changed = apply_command(state, &mut value, command, multiline, max_length)?;
+        let revision = state.revision;
+        let sel_start = state.sel_start;
+        let sel_end = state.sel_end;
+        let composition = state.composition;
+        self.history
+            .entry(handle)
+            .or_default()
+            .commit(checkpoint, changed);
         if !changed {
             return Ok(());
         }
         let event = EditEvent {
             handle,
             handler,
-            revision: state.revision,
+            revision,
             value: value.clone(),
-            sel_start: state.sel_start,
-            sel_end: state.sel_end,
-            composition: state.composition,
+            sel_start,
+            sel_end,
+            composition,
         };
         self.node_mut(handle)?.text = value;
         self.edit_events.push(event);
@@ -768,6 +897,7 @@ impl Shell {
             multiline,
             max_length,
         ) {
+
             return Ok(());
         }
         let event = EditEvent {
@@ -779,6 +909,7 @@ impl Shell {
             sel_end: state.sel_end,
             composition: state.composition,
         };
+        self.history.remove(&handle);
         self.node_mut(handle)?.text = value;
         self.edit_events.push(event);
         self.refresh_measure(handle)?;
@@ -1262,6 +1393,7 @@ impl Shell {
         self.taffy.remove(taffy_id).map_err(|err| err.to_string())?;
         self.nodes[handle as usize] = None;
         self.fields.remove(&handle);
+        self.history.remove(&handle);
         if self.focused == handle {
             self.focused = 0;
         }

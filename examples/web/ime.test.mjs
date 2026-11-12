@@ -15,6 +15,12 @@ test("insert, paste, and delete map to edit actions", () => {
   assert.deepEqual(commandsForDom({ type: "beforeinput", inputType: "deleteContentForward" }), [
     { action: 3, text: "" },
   ]);
+  assert.deepEqual(commandsForDom({ type: "beforeinput", inputType: "historyUndo" }), [
+    { action: 8, text: "" },
+  ]);
+  assert.deepEqual(commandsForDom({ type: "beforeinput", inputType: "historyRedo" }), [
+    { action: 9, text: "" },
+  ]);
 });
 
 test("composition is one path and beforeinput composition text is dropped", () => {

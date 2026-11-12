@@ -249,6 +249,8 @@ pub extern "C" fn edit(action: u32, ptr: *const u8, len: u32, a: u32, b: u32) ->
                 5 => shell.edit(EditCommand::CompositionStart)?,
                 6 => shell.edit(EditCommand::CompositionUpdate(text))?,
                 7 => shell.edit(EditCommand::CompositionEnd(text))?,
+                8 => shell.edit(EditCommand::Undo)?,
+                9 => shell.edit(EditCommand::Redo)?,
                 other => return Err(format!("bad edit action {other}")),
             }
             collect_events(shell);

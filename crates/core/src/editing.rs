@@ -34,6 +34,82 @@ pub enum EditCommand {
     CompositionStart,
     CompositionUpdate(String),
     CompositionEnd(String),
+    Undo,
+    Redo,
+}
+
+const HISTORY_LIMIT: usize = 100;
+
+#[derive(Clone, Debug)]
+pub(crate) struct EditSnap {
+    value: String,
+    sel_start: u32,
+    sel_end: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct EditHistory {
+    undo: Vec<EditSnap>,
+    redo: Vec<EditSnap>,
+    composition_base: Option<EditSnap>,
+}
+
+impl EditHistory {
+
+    /// Snapshot to commit if the command changes the field. Composition updates
+    /// stay on the snapshot taken at `CompositionStart`.
+    pub(crate) fn checkpoint(&mut self, command: &EditCommand, value: &str, sel_start: u32, sel_end: u32) -> Option<EditSnap> {
+        let snap = EditSnap {
+            value: value.to_owned(),
+            sel_start,
+            sel_end,
+        };
+        match command {
+            EditCommand::Undo | EditCommand::Redo | EditCommand::CompositionUpdate(_) => None,
+            EditCommand::CompositionStart => {
+                self.composition_base = Some(snap);
+                None
+            }
+            EditCommand::CompositionEnd(_) => self.composition_base.take(),
+            _ => Some(snap),
+        }
+    }
+
+    pub(crate) fn commit(&mut self, checkpoint: Option<EditSnap>, changed: bool) {
+        let Some(snap) = checkpoint else {
+            return;
+        };
+        if !changed {
+            return;
+        }
+        self.redo.clear();
+        self.undo.push(snap);
+        if self.undo.len() > HISTORY_LIMIT {
+            self.undo.remove(0);
+        }
+    }
+
+    pub fn undo(&mut self, value: &str, sel_start: u32, sel_end: u32) -> Option<(String, u32, u32)> {
+        self.composition_base = None;
+        let snap = self.undo.pop()?;
+        self.redo.push(EditSnap {
+            value: value.to_owned(),
+            sel_start,
+            sel_end,
+        });
+        Some((snap.value, snap.sel_start, snap.sel_end))
+    }
+
+    pub fn redo(&mut self, value: &str, sel_start: u32, sel_end: u32) -> Option<(String, u32, u32)> {
+        self.composition_base = None;
+        let snap = self.redo.pop()?;
+        self.undo.push(EditSnap {
+            value: value.to_owned(),
+            sel_start,
+            sel_end,
+        });
+        Some((snap.value, snap.sel_start, snap.sel_end))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,6 +197,7 @@ pub fn apply_command(
             }
             Ok(true)
         }
+        EditCommand::Undo | EditCommand::Redo => Err("undo history is applied by the shell".into()),
     }
 }
 

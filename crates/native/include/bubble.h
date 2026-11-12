@@ -24,13 +24,21 @@ void bubble_scroll(float x, float y, float dx, float dy);
 void bubble_set_visible(int visible);
 
 /* action 0 focus a (0 blurs); 1 insert; 2 backspace; 3 delete; 4 selection a..b;
- * 5 composition start; 6 update; 7 end. Text is UTF-8. Offsets are UTF-16. */
+ * 5 composition start; 6 update; 7 end; 8 undo; 9 redo. Text is UTF-8. Offsets are UTF-16. */
 int bubble_edit(uint32_t action, const uint8_t *text, uint32_t text_len, uint32_t a, uint32_t b);
 /* Deepest text field under the point, or 0. */
 uint32_t bubble_field_at(float x, float y);
 uint32_t bubble_focus_at(float x, float y);
 int bubble_caret(float *x, float *y, float *w, float *h);
 uint32_t bubble_field_flags(uint32_t handle);
+uint32_t bubble_focused(void);
+/* Writes UTF-16 selection. mark_end is UINT32_MAX when no composition is open. */
+int bubble_selection(uint32_t *start, uint32_t *end, uint32_t *mark_start, uint32_t *mark_end);
+/* Nearest UTF-16 offset in the focused field. Does not move the caret. */
+int bubble_unit_at(float x, float y, uint32_t *unit);
+int bubble_caret_at(uint32_t unit, float *x, float *y, float *w, float *h);
+uint32_t bubble_selection_count(void);
+int bubble_selection_rect(uint32_t index, float *x, float *y, float *w, float *h);
 
 void bubble_register_font(const char *family, const uint8_t *data, uint32_t len);
 uint32_t bubble_font_epoch(void);

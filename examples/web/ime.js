@@ -12,5 +12,7 @@ export function commandsForDom(event) {
   }
   if (event.inputType === "deleteContentBackward") return [{ action: 2, text: "" }];
   if (event.inputType === "deleteContentForward") return [{ action: 3, text: "" }];
+  if (event.inputType === "historyUndo") return [{ action: 8, text: "" }];
+  if (event.inputType === "historyRedo") return [{ action: 9, text: "" }];
   return [];
 }

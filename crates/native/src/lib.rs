@@ -453,6 +453,8 @@ pub extern "C" fn bubble_edit(
             5 => Some(EditCommand::CompositionStart),
             6 => Some(EditCommand::CompositionUpdate(text)),
             7 => Some(EditCommand::CompositionEnd(text)),
+            8 => Some(EditCommand::Undo),
+            9 => Some(EditCommand::Redo),
             other => return Err(format!("bad edit action {other}")),
         };
         let events = {
@@ -584,6 +586,207 @@ pub extern "C" fn bubble_field_flags(handle: u32) -> u32 {
         shell.field_flags(handle)
     });
     result.unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn bubble_focused() -> u32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        Ok(shell.focused())
+    });
+    result.unwrap_or(0)
+}
+
+/// UTF-16 selection of the focused field. `mark_end` is `u32::MAX` when not composing.
+#[no_mangle]
+pub extern "C" fn bubble_selection(
+    start: *mut u32,
+    end: *mut u32,
+    mark_start: *mut u32,
+    mark_end: *mut u32,
+) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        let handle = shell.focused();
+        if handle == 0 {
+            return Err("no focused field".into());
+        }
+        let (_, state) = shell.field(handle)?;
+        unsafe {
+            if !start.is_null() {
+                *start = state.sel_start;
+            }
+            if !end.is_null() {
+                *end = state.sel_end;
+            }
+            let (ms, me) = state.composition.unwrap_or((0, u32::MAX));
+            if !mark_start.is_null() {
+                *mark_start = ms;
+            }
+            if !mark_end.is_null() {
+                *mark_end = me;
+            }
+        }
+        Ok(())
+    });
+    finish(result)
+}
+
+fn host_measure(
+    host: &HostFns,
+    text: &str,
+    font_size: f32,
+    line_height: f32,
+    font_weight: u16,
+    max_width: Option<f32>,
+) -> (f32, f32) {
+    if let Some(measure) = host.measure {
+        let mut w = 0.0f32;
+        let mut h = 0.0f32;
+        measure(
+            host.ctx as *mut std::ffi::c_void,
+            text.as_ptr(),
+            text.len() as u32,
+            font_size,
+            line_height,
+            font_weight,
+            max_width.unwrap_or(0.0),
+            i32::from(max_width.is_some()),
+            &mut w,
+            &mut h,
+        );
+        (w, h)
+    } else {
+        fallback_measure(text, font_size, line_height)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn bubble_unit_at(x: f32, y: f32, unit: *mut u32) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        let host = &engine.shared.host;
+        let Some(offset) = shell.unit_at(x, y, &mut |text, font_size, line_height, font_weight, max_width| {
+            host_measure(host, text, font_size, line_height, font_weight, max_width)
+        })?
+        else {
+            return Err("no focused field".into());
+        };
+        if !unit.is_null() {
+            unsafe { *unit = offset };
+        }
+        Ok(())
+    });
+    finish(result)
+}
+
+#[no_mangle]
+pub extern "C" fn bubble_caret_at(unit: u32, x: *mut f32, y: *mut f32, w: *mut f32, h: *mut f32) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        let host = &engine.shared.host;
+        let Some((cx, cy, cw, ch)) = shell.caret_rect_at(unit, &mut |text, font_size, line_height, font_weight, max_width| {
+            host_measure(host, text, font_size, line_height, font_weight, max_width)
+        })?
+        else {
+            return Err("no focused field".into());
+        };
+        unsafe {
+            if !x.is_null() {
+                *x = cx;
+            }
+            if !y.is_null() {
+                *y = cy;
+            }
+            if !w.is_null() {
+                *w = cw;
+            }
+            if !h.is_null() {
+                *h = ch;
+            }
+        }
+        Ok(())
+    });
+    finish(result)
+}
+
+#[no_mangle]
+pub extern "C" fn bubble_selection_count() -> u32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        Ok(shell.selection_rects().len() as u32)
+    });
+    result.unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn bubble_selection_rect(
+    index: u32,
+    x: *mut f32,
+    y: *mut f32,
+    w: *mut f32,
+    h: *mut f32,
+) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        let rect = shell
+            .selection_rects()
+            .get(index as usize)
+            .copied()
+            .ok_or_else(|| format!("selection rect {index} is out of range"))?;
+        unsafe {
+            if !x.is_null() {
+                *x = rect.0;
+            }
+            if !y.is_null() {
+                *y = rect.1;
+            }
+            if !w.is_null() {
+                *w = rect.2;
+            }
+            if !h.is_null() {
+                *h = rect.3;
+            }
+        }
+        Ok(())
+    });
+    finish(result)
 }
 
 #[no_mangle]

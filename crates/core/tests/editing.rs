@@ -212,6 +212,68 @@ fn focus_point_places_the_caret_on_the_tapped_line() {
 }
 
 #[test]
+fn undo_redo_and_script_reset() {
+    let mut shell = Shell::blank().unwrap();
+    let handle = focused(&mut shell, "");
+    shell.edit(EditCommand::Insert("a".into())).unwrap();
+    shell.edit(EditCommand::Insert("b".into())).unwrap();
+    shell.edit(EditCommand::Undo).unwrap();
+    assert_eq!(shell.field(handle).unwrap().0, "a");
+    shell.edit(EditCommand::Redo).unwrap();
+    assert_eq!(shell.field(handle).unwrap().0, "ab");
+    shell.edit(EditCommand::Undo).unwrap();
+    shell.edit(EditCommand::Insert("c".into())).unwrap();
+    shell.edit(EditCommand::Redo).unwrap();
+    assert_eq!(shell.field(handle).unwrap().0, "ac");
+
+    shell.edit(EditCommand::CompositionStart).unwrap();
+    shell.edit(EditCommand::CompositionUpdate("中".into())).unwrap();
+    shell.edit(EditCommand::CompositionEnd("中".into())).unwrap();
+    assert_eq!(shell.field(handle).unwrap().0, "ac中");
+    shell.edit(EditCommand::Undo).unwrap();
+    assert_eq!(shell.field(handle).unwrap().0, "ac");
+
+    let revision = shell.field(handle).unwrap().1.revision;
+    shell
+        .apply_ops(&encode(
+            1,
+            &[Op::SetEditingValue {
+                handle,
+                epoch: revision,
+                value: "z".into(),
+                sel_start: 1,
+                sel_end: 1,
+                cancel: false,
+            }],
+        ))
+        .unwrap();
+    shell.edit(EditCommand::Undo).unwrap();
+    assert_eq!(shell.field(handle).unwrap().0, "z");
+}
+
+#[test]
+fn unit_at_does_not_move_the_caret() {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 80.0);
+    let handle = focused(&mut shell, "ab\ncd");
+    shell
+        .edit(EditCommand::SetSelection { start: 0, end: 0 })
+        .unwrap();
+    let mut measure = |text: &str, font: f32, _: f32, _: u16, _: Option<f32>| {
+        (text.chars().count() as f32 * 10.0, font)
+    };
+    shell.layout(&mut measure).unwrap();
+    let (x, y, _, _) = shell.node_box(handle).unwrap();
+    assert_eq!(shell.unit_at(x + 25.0, y + 4.0, &mut measure).unwrap(), Some(2));
+    assert_eq!(shell.field(handle).unwrap().1.sel_start, 0);
+    let (cx, cy, cw, ch) = shell.caret_rect_at(2, &mut measure).unwrap().unwrap();
+    assert!(cx >= x + 20.0);
+    assert!(cy >= y && ch > 0.0 && cw == 1.0);
+    shell.focus(0).unwrap();
+    assert_eq!(shell.unit_at(x, y, &mut measure).unwrap(), None);
+}
+
+#[test]
 fn focused_field_paints_a_caret_and_reports_keyboard_flags() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 80.0);
