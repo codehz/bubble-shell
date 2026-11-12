@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { commandsForDom, menuActions } from "./ime.js";
+import { commandsForDom, dragSelection, menuActions } from "./ime.js";
 
 test("insert, paste, and delete map to edit actions", () => {
   assert.deepEqual(commandsForDom({ type: "beforeinput", inputType: "insertText", data: "a" }), [
@@ -50,4 +50,9 @@ test("menu actions cut, copy, paste, and select all", () => {
   });
   assert.deepEqual(menuActions({ ...field, secure: true }, "copy"), { clipboard: "", commands: [] });
   assert.equal(menuActions(field, "bold"), null);
+});
+
+test("drag selection keeps the pointer-down offset", () => {
+  assert.deepEqual(dragSelection(1, 4), { action: 4, text: "", a: 1, b: 4 });
+  assert.equal(dragSelection(1, -1), null);
 });

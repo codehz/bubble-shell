@@ -307,6 +307,35 @@ pub extern "C" fn focus_at(x: f32, y: f32) -> u32 {
     }
 }
 
+/// Nearest UTF-16 offset in the focused field. `u32::MAX` when nothing is focused.
+#[no_mangle]
+pub extern "C" fn unit_at(x: f32, y: f32) -> u32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            shell.unit_at(x, y, &mut |text, font_size, line_height, font_weight, max_width| {
+                let mut out = [0f32; 2];
+                unsafe {
+                    host_measure(
+                        text.as_ptr() as u32,
+                        text.len() as u32,
+                        font_size,
+                        line_height,
+                        font_weight as u32,
+                        u32::from(max_width.is_some()),
+                        max_width.unwrap_or(0.0),
+                        out.as_mut_ptr() as u32,
+                    );
+                }
+                (out[0], out[1])
+            })
+        })
+    });
+    match result {
+        Ok(Some(unit)) => unit,
+        _ => u32::MAX,
+    }
+}
+
 /// Writes x, y, width, height of the focused caret into scratch. Returns 16, or 0.
 #[no_mangle]
 pub extern "C" fn caret_box() -> u32 {

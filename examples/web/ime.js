@@ -60,3 +60,9 @@ export function menuActions(field, name, clipboard = "") {
   }
   return null;
 }
+
+/** Selection covering the pointer-down offset through the current hit. */
+export function dragSelection(anchor, unit) {
+  if (!Number.isInteger(anchor) || !Number.isInteger(unit) || anchor < 0 || unit < 0) return null;
+  return { action: 4, text: "", a: anchor, b: unit };
+}

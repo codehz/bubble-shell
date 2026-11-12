@@ -1,4 +1,4 @@
-import { commandsForDom, menuActions } from "./ime.js";
+import { commandsForDom, dragSelection, menuActions } from "./ime.js";
 import { dispatchEditEvents, dispatchGestureEvents, setApi } from "./runtime.js";
 
 const canvas = document.querySelector("canvas");
@@ -435,21 +435,47 @@ function sendPointer(action, event) {
   if (exports.layout() === 0) paint();
 }
 
+let selectDrag = null;
+
 canvas.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   canvas.setPointerCapture(event.pointerId);
   editMenu.hidden = true;
   activePointers.add(event.pointerId);
+  const [x, y] = point(event);
+  if (event.button === 0 && exports.field_at(x, y)) {
+    const handle = exports.focus_at(x, y);
+    let anchor = 0;
+    if (exports.selection() >= 16) {
+      const view = new DataView(memory().buffer, exports.scratch_ptr(), 16);
+      anchor = view.getUint32(0, true);
+    }
+    selectDrag = { id: event.pointerId, anchor };
+    if (handle) placeCaret(handle);
+    return;
+  }
+  selectDrag = null;
   sendPointer(0, event);
   startTicking();
 });
 
 canvas.addEventListener("pointermove", (event) => {
+  if (selectDrag && selectDrag.id === event.pointerId) {
+    const [x, y] = point(event);
+    const unit = exports.unit_at(x, y);
+    const command = dragSelection(selectDrag.anchor, unit === 4294967295 ? -1 : unit);
+    if (command) applyEditCommands([command]);
+    return;
+  }
   if (!activePointers.has(event.pointerId)) return;
   sendPointer(1, event);
 });
 
 function releasePointer(action, event) {
+  if (selectDrag && selectDrag.id === event.pointerId) {
+    activePointers.delete(event.pointerId);
+    return;
+  }
   if (!activePointers.has(event.pointerId)) return;
   sendPointer(action, event);
   activePointers.delete(event.pointerId);
@@ -493,10 +519,7 @@ for (const type of ["beforeinput", "compositionstart", "compositionupdate", "com
   });
 }
 
-canvas.addEventListener("pointerup", (event) => {
-  const [x, y] = point(event);
-  const handle = exports.focus_at(x, y);
-  if (!handle) return;
+function placeCaret(handle) {
   exports.layout();
   const flags = exports.field_flags(handle);
   ime.type = flags & 2 ? "password" : "text";
@@ -513,6 +536,19 @@ canvas.addEventListener("pointerup", (event) => {
     ime.style.height = `${Math.max(16, view.getFloat32(12, true))}px`;
   }
   ime.focus();
+}
+
+canvas.addEventListener("pointerup", (event) => {
+  if (selectDrag && selectDrag.id === event.pointerId) {
+    selectDrag = null;
+    const handle = exports.focused();
+    if (handle) placeCaret(handle);
+    return;
+  }
+  const [x, y] = point(event);
+  const handle = exports.focus_at(x, y);
+  if (!handle) return;
+  placeCaret(handle);
 });
 
 const editMenu = document.createElement("div");
