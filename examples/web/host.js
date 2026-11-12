@@ -114,10 +114,13 @@ function packFile(path, data) {
   return packed;
 }
 
+const requestedFixture = new URLSearchParams(location.search).get("fixture") ?? "counter";
+const fixture = /^[a-z0-9-]+$/.test(requestedFixture) ? requestedFixture : "counter";
+
 async function checkBundle() {
-  const manifest = new Uint8Array(await (await fetch("./bundle/manifest.json")).arrayBuffer());
-  const main = new Uint8Array(await (await fetch("./bundle/main.js")).arrayBuffer());
-  const files = packFile("main.js", main);
+  const manifest = new Uint8Array(await (await fetch(`./fixtures/${fixture}.json`)).arrayBuffer());
+  const main = new Uint8Array(await (await fetch(`./fixtures/${fixture}.js`)).arrayBuffer());
+  const files = packFile(`${fixture}.js`, main);
   const manifestPtr = copyBytes(manifest);
   const filesPtr = copyBytes(files);
   const failed = exports.validate(manifestPtr, manifest.length, filesPtr, files.length);
@@ -703,7 +706,7 @@ window.addEventListener("resize", resize);
 
 const started = performance.now();
 await checkBundle();
-await import("./bundle/main.js");
+await import(`./fixtures/${fixture}.js`);
 paint();
 const firstFrameMs = performance.now() - started;
 console.info(`first frame ${firstFrameMs.toFixed(1)} ms`);

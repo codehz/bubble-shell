@@ -57,7 +57,7 @@
 
 #### M1 本机验证记录（2026-11-11）
 
-同一份 `examples/web/bundle`（`manifest.json` + `main.js`）分别装入 iOS 与 Android 模拟器宿主；两端的设备内驱动完成「点击 → `Count: 1` → 注入死循环 → 1s 中断并重挂载 → 断言 `Count: 0`」流程。
+按测试职责拆分 `examples/app/fixtures/*.tsx`，由 `examples/build-fixtures.sh` 生成 `examples/web/fixtures/<name>.{js,json}`。`counter` 用于点击/滚动/中断，`editing` 用于文本输入，`gestures` 用于手势；同一原生宿主按资产名选择 fixture，不再把所有内容塞进一个入口。两端的设备内驱动完成「点击 → `Count: 1` → 注入死循环 → 1s 中断并重挂载 → 断言 `Count: 0`」流程。
 
 | 环境 | 配置 |
 |---|---|

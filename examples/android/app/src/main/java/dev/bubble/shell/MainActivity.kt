@@ -32,8 +32,10 @@ class MainActivity : Activity() {
             file.writeBytes(bytes)
             shellTypeface = Typeface.createFromFile(file)
         }
-        val manifest = assets.open("manifest.json").bufferedReader().readText()
-        val entry = assets.open("main.js").readBytes()
+        val requested = intent?.getStringExtra("bubble_fixture") ?: "counter"
+        val fixture = if (requested.matches(Regex("[a-z0-9-]+"))) requested else "counter"
+        val manifest = assets.open("fixtures/$fixture.json").bufferedReader().readText()
+        val entry = assets.open("fixtures/$fixture.js").readBytes()
         check(BubbleNative.load(manifest, entry) == 0)
         shell = BubbleView(this)
         shell.setHostTypeface(shellTypeface ?: Typeface.DEFAULT)

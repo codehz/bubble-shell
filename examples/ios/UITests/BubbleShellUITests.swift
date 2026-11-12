@@ -35,6 +35,7 @@ final class BubbleShellUITests: XCTestCase {
         app.launchEnvironment = [
             "BUBBLE_GESTURES": "1",
             "BUBBLE_GESTURE_SCENE": scene,
+            "BUBBLE_FIXTURE": "gestures",
         ]
         if reset {
             app.launchEnvironment["BUBBLE_GESTURE_RESET"] = "1"

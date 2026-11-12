@@ -27,12 +27,13 @@ fi
 SDK="$ANDROID_HOME"
 BT="$SDK/build-tools/36.1.0"
 ANDROID_JAR="$SDK/platforms/android-35/android.jar"
+sh examples/build-fixtures.sh
+
 OUT="examples/android/build"
 rm -rf "$OUT"
 mkdir -p "$OUT/classes" "$OUT/apk/assets" "$OUT/apk/lib/arm64-v8a"
 
-cp examples/web/bundle/manifest.json "$OUT/apk/assets/manifest.json"
-cp examples/web/bundle/main.js "$OUT/apk/assets/main.js"
+cp -R examples/web/fixtures "$OUT/apk/assets/fixtures"
 FONT="/System/Library/Fonts/Supplemental/Arial.ttf"
 if [ -f "$FONT" ]; then
   cp "$FONT" "$OUT/apk/assets/HostFont.ttf"

@@ -103,6 +103,7 @@ public class ShellInstrumentation extends Instrumentation {
         intent.setClassName(TARGET, ACTIVITY);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         intent.putExtra("bubble_gestures", true);
+        intent.putExtra("bubble_fixture", "gestures");
         activity = startActivitySync(intent);
         waitForIdleSync();
     }
@@ -114,6 +115,7 @@ public class ShellInstrumentation extends Instrumentation {
                 | Intent.FLAG_ACTIVITY_SINGLE_TOP
                 | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
         intent.putExtra("bubble_gestures", true);
+        intent.putExtra("bubble_fixture", "gestures");
         final Intent launch = intent;
         runOnMainSync(() -> activity.startActivity(launch));
         waitForIdleSync();

@@ -76,12 +76,29 @@ fn eval(source: &str) -> String {
     try_eval(source).unwrap_or_else(|err| panic!("{err}"))
 }
 
-fn load_counter() {
-    let manifest = include_str!("../../../examples/web/bundle/manifest.json");
-    let entry = include_bytes!("../../../examples/web/bundle/main.js");
+fn load_fixture(name: &str) {
+    let (manifest, entry): (&str, &[u8]) = match name {
+        "counter" => (
+            include_str!("../../../examples/web/fixtures/counter.json"),
+            include_bytes!("../../../examples/web/fixtures/counter.js"),
+        ),
+        "editing" => (
+            include_str!("../../../examples/web/fixtures/editing.json"),
+            include_bytes!("../../../examples/web/fixtures/editing.js"),
+        ),
+        other => panic!("unknown fixture {other}"),
+    };
     let manifest = c(manifest);
     let code = bubble_load(manifest.as_ptr(), entry.as_ptr(), entry.len() as u32);
     assert_eq!(code, 0, "{}", error());
+}
+
+fn load_counter() {
+    load_fixture("counter");
+}
+
+fn load_editing() {
+    load_fixture("editing");
 }
 
 #[test]
@@ -279,7 +296,7 @@ fn edit_batch_writes_through_the_focused_session() {
     let _guard = exclusive();
     bubble_destroy();
     assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
-    load_counter();
+    load_editing();
     let mut paint = ptr::null();
     let mut len = 0u32;
     assert_eq!(
@@ -358,7 +375,7 @@ fn ime_transactions_apply_new_cursor_and_composition() {
     let _guard = exclusive();
     bubble_destroy();
     assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
-    load_counter();
+    load_editing();
     let mut paint = ptr::null();
     let mut len = 0u32;
     assert_eq!(

@@ -1,14 +1,14 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/../.."
+sh examples/build-fixtures.sh
 cargo build -p bubble-ffi --release --target aarch64-apple-ios-sim
 SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 OUT="examples/ios/BubbleShell.app"
 rm -rf "$OUT"
 mkdir -p "$OUT"
 cp examples/ios/Info.plist "$OUT/Info.plist"
-cp examples/web/bundle/manifest.json "$OUT/manifest.json"
-cp examples/web/bundle/main.js "$OUT/main.js"
+cp -R examples/web/fixtures "$OUT/fixtures"
 FONT="/System/Library/Fonts/Supplemental/Arial.ttf"
 if [ -f "$FONT" ]; then
   cp "$FONT" "$OUT/HostFont.ttf"

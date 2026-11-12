@@ -43,6 +43,7 @@ public class EditInstrumentation extends Instrumentation {
             intent.setClassName(TARGET, ACTIVITY);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
             intent.putExtra("bubble_gestures", true);
+            intent.putExtra("bubble_fixture", "editing");
             activity = startActivitySync(intent);
             waitForIdleSync();
             SystemClock.sleep(300);

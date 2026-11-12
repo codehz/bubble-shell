@@ -7,7 +7,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 use crate::report::{Check, ScenarioReport, SuiteReport};
 
@@ -43,24 +42,25 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
         .map_err(|err| format!("copy {from:?}: {err}"))
 }
 
-fn install_bundle(root: &Path, destination: &Path, gestures: bool) -> Result<(), String> {
-    std::fs::create_dir_all(destination).map_err(|err| err.to_string())?;
-    if gestures {
-        let entry = std::fs::read(root.join("examples/app/gestures.js")).map_err(|err| err.to_string())?;
-        let manifest = serde_json::json!({
-            "schema": 1, "id": "com.bubble.gestures", "version": 1,
-            "minRuntime": "0.1.0", "platforms": ["ios", "android"], "entry": "main.js",
-            "files": [{ "path": "main.js", "sha256": format!("{:x}", Sha256::digest(&entry)), "size": entry.len() }],
-            "keyId": "m0-placeholder", "signature": "m0-placeholder"
-        });
-        std::fs::write(destination.join("main.js"), entry).map_err(|err| err.to_string())?;
-        std::fs::write(destination.join("manifest.json"), serde_json::to_vec(&manifest).map_err(|err| err.to_string())?)
-            .map_err(|err| err.to_string())?;
-    } else {
-        copy(&root.join("examples/web/bundle/manifest.json"), &destination.join("manifest.json"))?;
-        copy(&root.join("examples/web/bundle/main.js"), &destination.join("main.js"))?;
+fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(to).map_err(|err| err.to_string())?;
+    for entry in std::fs::read_dir(from).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            copy(&entry.path(), &target)?;
+        }
     }
     Ok(())
+}
+
+fn install_fixtures(root: &Path, destination: &Path) -> Result<(), String> {
+    copy_dir(
+        &root.join("examples/web/fixtures"),
+        &destination.join("fixtures"),
+    )
 }
 
 pub fn ios() -> Result<SuiteReport, String> {
@@ -92,7 +92,7 @@ fn ios_device(gestures: bool) -> Result<SuiteReport, String> {
         &root.join("examples/ios/Info.plist"),
         &app.join("Info.plist"),
     )?;
-    install_bundle(&root, &app, gestures)?;
+    install_fixtures(&root, &app)?;
     let font = Path::new("/System/Library/Fonts/Supplemental/Arial.ttf");
     if font.exists() {
         copy(font, &app.join("HostFont.ttf"))?;
@@ -218,7 +218,7 @@ fn android_device(gestures: bool) -> Result<SuiteReport, String> {
     let out = root.join("examples/android/build");
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(out.join("apk/lib/arm64-v8a")).map_err(|err| err.to_string())?;
-    install_bundle(&root, &out.join("apk/assets"), gestures)?;
+    install_fixtures(&root, &out.join("apk/assets"))?;
     let font = Path::new("/System/Library/Fonts/Supplemental/Arial.ttf");
     if font.exists() {
         copy(font, &out.join("apk/assets/HostFont.ttf"))?;

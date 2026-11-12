@@ -995,6 +995,13 @@ final class AppDriver {
     var lastSignature = ""
 
     var gestureMode: Bool { ProcessInfo.processInfo.environment["BUBBLE_GESTURES"] == "1" }
+    var fixtureName: String {
+        let requested = ProcessInfo.processInfo.environment["BUBBLE_FIXTURE"]
+            ?? (gestureMode ? "gestures" : "counter")
+        return requested.range(of: "^[a-z0-9-]+$", options: .regularExpression) == nil
+            ? "counter"
+            : requested
+    }
     var gestureReset: Bool { ProcessInfo.processInfo.environment["BUBBLE_GESTURE_RESET"] == "1" }
     var gestureScene: String {
         let requested = ProcessInfo.processInfo.environment["BUBBLE_GESTURE_SCENE"] ?? "tap"
@@ -1036,8 +1043,16 @@ final class AppDriver {
                 }
             }
         }
-        guard let manifestURL = Bundle.main.url(forResource: "manifest", withExtension: "json"),
-              let entryURL = Bundle.main.url(forResource: "main", withExtension: "js"),
+        guard let manifestURL = Bundle.main.url(
+                  forResource: fixtureName,
+                  withExtension: "json",
+                  subdirectory: "fixtures"
+              ),
+              let entryURL = Bundle.main.url(
+                  forResource: fixtureName,
+                  withExtension: "js",
+                  subdirectory: "fixtures"
+              ),
               let manifest = try? String(contentsOf: manifestURL, encoding: .utf8),
               let entry = try? Data(contentsOf: entryURL) else { return }
         let loaded: Int32 = manifest.withCString { manifest in

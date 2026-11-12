@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use crate::driver::{frame_detached, Session};
 use crate::report::{Probe, ScenarioReport};
 
-const MANIFEST: &str = include_str!("../../../examples/web/bundle/manifest.json");
-const ENTRY: &[u8] = include_bytes!("../../../examples/web/bundle/main.js");
+const MANIFEST: &str = include_str!("../../../examples/web/fixtures/counter.json");
+const ENTRY: &[u8] = include_bytes!("../../../examples/web/fixtures/counter.js");
 
 fn load_counter(session: &mut Session, probe: &mut Probe) -> bool {
     match session.load(MANIFEST, ENTRY) {

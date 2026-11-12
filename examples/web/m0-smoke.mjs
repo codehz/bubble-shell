@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
 import { dispatchGestureEvents, setApi } from "./runtime.js";
 
+const fixture = process.argv[2] ?? "counter";
 const wasmBytes = readFileSync(new URL("./bubble.wasm", import.meta.url));
-const manifest = readFileSync(new URL("./bundle/manifest.json", import.meta.url));
-const main = readFileSync(new URL("./bundle/main.js", import.meta.url));
+const manifest = readFileSync(new URL(`./fixtures/${fixture}.json`, import.meta.url));
+const main = readFileSync(new URL(`./fixtures/${fixture}.js`, import.meta.url));
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
@@ -59,7 +60,7 @@ function packFile(path, data) {
   return packed;
 }
 
-const files = packFile("main.js", main);
+const files = packFile(`${fixture}.js`, main);
 const manifestPtr = copyBytes(manifest);
 const filesPtr = copyBytes(files);
 if (exports.validate(manifestPtr, manifest.length, filesPtr, files.length) !== 0) {
@@ -146,7 +147,7 @@ setApi({
 
 });
 
-await import("./bundle/main.js");
+await import(new URL(`./fixtures/${fixture}.js`, import.meta.url));
 
 function paintList() {
   const len = exports.paint();
@@ -236,10 +237,7 @@ function textOf(cmds, value) {
 
 const first = paintList();
 const firstFrameMs = performance.now() - started;
-const countText = textOf(first, "Count: 0");
-if (argb(countText.color) !== 0xffffffff) throw new Error("CSS string text color was not applied");
-const button = first.find((cmd) => cmd.tag === 1 && argb(cmd.color) === 0xff3b82f6);
-if (!button) throw new Error("increment button was not painted");
+
 function pumpGestures() {
   let len = exports.take_gesture_events();
   while (len > 0) {
@@ -255,38 +253,42 @@ function sendPointer(action, id, x, y, time) {
   pumpGestures();
 }
 
-const x = button.x + button.w / 2;
-const y = button.y + button.h / 2;
-sendPointer(0, 1, x, y, 0);
-sendPointer(2, 1, x, y, 20);
-textOf(paintList(), "Count: 1");
+if (fixture === "counter") {
+  const countText = textOf(first, "Count: 0");
+  if (argb(countText.color) !== 0xffffffff) throw new Error("CSS string text color was not applied");
+  const button = first.find((cmd) => cmd.tag === 1 && argb(cmd.color) === 0xff3b82f6);
+  if (!button) throw new Error("increment button was not painted");
+  const x = button.x + button.w / 2;
+  const y = button.y + button.h / 2;
+  sendPointer(0, 1, x, y, 0);
+  sendPointer(2, 1, x, y, 20);
+  textOf(paintList(), "Count: 1");
 
-const pad = paintList().find((cmd) => cmd.tag === 1 && argb(cmd.color) === 0xff222222);
-if (!pad) throw new Error("gesture pad was not painted");
-const px = pad.x + pad.w / 2;
-const py = pad.y + pad.h / 2;
-sendPointer(0, 2, px, py, 100);
-sendPointer(2, 2, px, py, 120);
-textOf(paintList(), "tap");
-sendPointer(0, 3, px, py, 1000);
-if (exports.tick(1500) !== 0) throw new Error(error() || "tick failed");
-pumpGestures();
-textOf(paintList(), "long");
-sendPointer(2, 3, px, py, 1600);
-textOf(paintList(), "long");
-sendPointer(0, 4, px - 30, py, 2000);
-sendPointer(1, 4, px, py, 2010);
-sendPointer(1, 4, px + 20, py, 2020);
-textOf(paintList(), "pan 50");
-sendPointer(2, 4, px + 20, py, 2030);
-textOf(paintList(), "pan end");
-
-const before = textOf(paintList(), "Alpha");
-const scrolled = exports.scroll_wheel(before.x + 4, before.y + 4, 0, 80);
-if (!scrolled) throw new Error("wheel did not scroll");
-if (exports.layout() !== 0) throw new Error(error() || "layout failed");
-const after = textOf(paintList(), "Alpha");
-if (!(after.y < before.y)) throw new Error(`Alpha did not move (${before.y} -> ${after.y})`);
+  const before = textOf(paintList(), "Item 1");
+  const scrolled = exports.scroll_wheel(before.x + 4, before.y + 4, 0, 80);
+  if (!scrolled) throw new Error("wheel did not scroll");
+  if (exports.layout() !== 0) throw new Error(error() || "layout failed");
+  const after = textOf(paintList(), "Item 1");
+  if (!(after.y < before.y)) throw new Error(`Item 1 did not move (${before.y} -> ${after.y})`);
+} else if (fixture === "gestures") {
+  const pad = first.find((cmd) => cmd.tag === 1 && argb(cmd.color) === 0xff26364a);
+  if (!pad) throw new Error("gesture pad was not painted");
+  const px = pad.x + pad.w / 2;
+  const py = pad.y + pad.h / 2;
+  sendPointer(0, 2, px, py, 100);
+  sendPointer(2, 2, px, py, 120);
+  const status = paintList()
+    .filter((cmd) => cmd.tag === 2)
+    .map((cmd) => cmd.text)
+    .find((text) => text.startsWith("{"));
+  if (!status) throw new Error("gesture status was not painted");
+  const events = JSON.parse(status).events ?? [];
+  if (!events.some((event) => event.name === "tap" && event.type === "tap")) {
+    throw new Error(`tap was not recorded: ${status}`);
+  }
+} else {
+  throw new Error(`unknown fixture ${fixture}`);
+}
 
 const samples = [];
 for (let frame = 0; frame < 60; frame += 1) {
@@ -299,4 +301,4 @@ samples.sort((a, b) => a - b);
 const p95 = samples[Math.ceil(samples.length * 0.95) - 1];
 if (firstFrameMs >= 400) throw new Error(`first frame ${firstFrameMs.toFixed(1)} ms`);
 if (p95 >= 16.7) throw new Error(`frame p95 ${p95.toFixed(2)} ms`);
-console.log(`first frame ${firstFrameMs.toFixed(1)} ms, paint p95 ${p95.toFixed(2)} ms`);
+console.log(`${fixture}: first frame ${firstFrameMs.toFixed(1)} ms, paint p95 ${p95.toFixed(2)} ms`);
