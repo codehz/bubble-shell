@@ -744,6 +744,7 @@ fn jsx_name(name: &JSXElementName<'_>) -> Result<String, String> {
         "View" => Ok("View".into()),
         "Text" => Ok("Text".into()),
         "Image" => Ok("Image".into()),
+        "TextField" => Ok("TextField".into()),
         "TapGesture" => Ok("TapGesture".into()),
         "DoubleTapGesture" => Ok("DoubleTapGesture".into()),
         "LongPressGesture" => Ok("LongPressGesture".into()),
@@ -758,7 +759,7 @@ fn jsx_name(name: &JSXElementName<'_>) -> Result<String, String> {
             Ok(format!("component:{other}"))
         }
         other => Err(format!(
-            "unknown primitive <{other}>; use View, Text, Image, a gesture, or a capitalized component"
+            "unknown primitive <{other}>; use View, Text, TextField, Image, a gesture, or a capitalized component"
         )),
     }
 }

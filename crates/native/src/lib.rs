@@ -15,7 +15,10 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use bubble_core::{encode_events, encode_paint, GestureEvent, PointerAction, PointerInput, Shell};
+use bubble_core::{
+    encode_edit_events, encode_events, encode_paint, EditCommand, EditEvent, GestureEvent,
+    PointerAction, PointerInput, Shell,
+};
 
 use script::Cmd;
 
@@ -136,7 +139,7 @@ fn catch<T>(body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 /// swaps in a fresh root before the new batch is applied.
 fn drain_pending(shared: &Shared) -> Result<(), String> {
     let reset = shared.reset.swap(false, Ordering::SeqCst);
-    let events = {
+    let (events, edits) = {
         let mut queue = shared
             .pending
             .lock()
@@ -151,9 +154,10 @@ fn drain_pending(shared: &Shared) -> Result<(), String> {
         while let Some(bytes) = queue.pop_front() {
             shell.apply_ops(&bytes)?;
         }
-        shell.take_gesture_events()
+        (shell.take_gesture_events(), shell.take_edit_events())
     };
     send_events(shared, events);
+    send_edits(shared, edits);
     Ok(())
 }
 
@@ -170,6 +174,21 @@ fn send_events(shared: &Shared, events: Vec<GestureEvent>) {
         let _ = tx.send(Cmd::Gesture {
             epoch: shared.input_epoch.load(Ordering::SeqCst),
             bytes: encode_events(&events),
+        });
+    }
+}
+
+fn send_edits(shared: &Shared, events: Vec<EditEvent>) {
+    if events.is_empty() {
+        return;
+    }
+    let Ok(slot) = shared.commands.lock() else {
+        return;
+    };
+    if let Some(tx) = slot.as_ref() {
+        let _ = tx.send(Cmd::Edit {
+            epoch: shared.input_epoch.load(Ordering::SeqCst),
+            bytes: encode_edit_events(&events),
         });
     }
 }
@@ -400,6 +419,56 @@ pub extern "C" fn bubble_tick(time_ms: f64) -> i32 {
             shell.take_gesture_events()
         };
         send_events(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
+}
+
+/// Mutate the focused field, or focus one. `action` 0 focuses `a` (`0` blurs).
+/// 1 inserts UTF-8 text. 2 backspace. 3 delete forward. 4 sets the UTF-16
+/// selection to `a`..`b`. 5 starts composition. 6 updates it. 7 ends it.
+#[no_mangle]
+pub extern "C" fn bubble_edit(
+    action: u32,
+    text: *const u8,
+    text_len: u32,
+    a: u32,
+    b: u32,
+) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let bytes = if text.is_null() || text_len == 0 {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(text, text_len as usize) }.to_vec()
+        };
+        let text = String::from_utf8(bytes).map_err(|_| "edit text is not utf-8".to_string())?;
+        let command = match action {
+            0 => None,
+            1 => Some(EditCommand::Insert(text)),
+            2 => Some(EditCommand::Backspace),
+            3 => Some(EditCommand::DeleteForward),
+            4 => Some(EditCommand::SetSelection { start: a, end: b }),
+            5 => Some(EditCommand::CompositionStart),
+            6 => Some(EditCommand::CompositionUpdate(text)),
+            7 => Some(EditCommand::CompositionEnd(text)),
+            other => return Err(format!("bad edit action {other}")),
+        };
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            if action == 0 {
+                shell.focus(a)?;
+            } else if let Some(command) = command {
+                shell.edit(command)?;
+            }
+            shell.take_edit_events()
+        };
+        send_edits(&engine.shared, events);
         Ok(())
     });
     finish(result)

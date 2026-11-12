@@ -1,4 +1,4 @@
-import { dispatchGestureEvents, setApi } from "./runtime.js";
+import { dispatchEditEvents, dispatchGestureEvents, setApi } from "./runtime.js";
 
 const canvas = document.querySelector("canvas");
 const ctx = canvas.getContext("2d");
@@ -177,6 +177,14 @@ setApi({
     return code;
   },
   bind_event: exports.bind_event,
+  focus: exports.focus,
+  set_editing_value(handle, epoch, value, start, end, cancel) {
+    const bytes = encoder.encode(value ?? "");
+    const ptr = bytes.length ? copyBytes(bytes) : 0;
+    const code = exports.set_editing_value(handle, epoch, ptr, bytes.length, start, end, cancel);
+    if (bytes.length) exports.dealloc(ptr, bytes.length);
+    return code;
+  },
   spawn_gesture: exports.spawn_gesture,
   set_gesture_prop(handle, key, tag, number, text) {
     const keyBytes = encoder.encode(key);
@@ -385,6 +393,12 @@ function pumpGestures() {
     const bytes = new Uint8Array(memory().buffer, exports.scratch_ptr(), len).slice();
     dispatchGestureEvents(bytes);
     len = exports.take_gesture_events();
+  }
+  len = exports.take_edit_events();
+  while (len > 0) {
+    const bytes = new Uint8Array(memory().buffer, exports.scratch_ptr(), len).slice();
+    dispatchEditEvents(bytes);
+    len = exports.take_edit_events();
   }
 }
 

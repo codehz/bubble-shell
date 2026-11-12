@@ -10,6 +10,7 @@ const cursors = [];
 const collectors = [];
 let nextHandler = 1;
 const gestureHandlers = new Map();
+const fieldHandlers = new Map();
 const gesturesOfTarget = new Map();
 const gestureOrderOfTarget = new Map();
 const gestureParentOf = new Map();
@@ -400,6 +401,39 @@ export function image(props) {
   return pack(3, props, "");
 }
 
+export function textField(props) {
+  props = props ?? {};
+  const onChange = props.onChange;
+  const value = props.value;
+  if (value instanceof Dynamic) {
+    throw new Error("TextField value is set with setEditingValue, not a signal binding");
+  }
+  const rest = {};
+  for (const key of Object.keys(props)) {
+    if (key !== "onChange" && key !== "value") rest[key] = props[key];
+  }
+  const handle = pack(4, rest, value == null ? "" : String(value));
+  if (onChange != null) {
+    if (typeof onChange !== "function") throw new Error("onChange must be a function");
+    const handler = nextHandler++;
+    fieldHandlers.set(handler, onChange);
+    if (api.bind_event(handle, handler) !== 0) {
+      throw new Error(api.error() || "bind_event failed");
+    }
+  }
+  return handle;
+}
+
+export function setEditingValue(handle, epoch, value, start, end, cancel) {
+  if (api.set_editing_value(handle, epoch, String(value ?? ""), start ?? 0, end ?? 0, cancel ? 1 : 0) !== 0) {
+    throw new Error(api.error() || "set_editing_value failed");
+  }
+}
+
+export function focusField(handle) {
+  if (api.focus(handle ?? 0) !== 0) throw new Error(api.error() || "focus failed");
+}
+
 export function component(type, props, children) {
   if (typeof type !== "function") throw new Error(`${String(type)} is not a component`);
   return type({ ...(props ?? {}), children });
@@ -579,6 +613,7 @@ export function transformGesture(props) {
 registerPrimitive("View", view);
 registerPrimitive("Text", text);
 registerPrimitive("Image", image);
+registerPrimitive("TextField", textField);
 registerPrimitive("TapGesture", tapGesture);
 registerPrimitive("DoubleTapGesture", doubleTapGesture);
 registerPrimitive("LongPressGesture", longPressGesture);
@@ -1101,3 +1136,81 @@ export function dispatchGestureEvents(bytes) {
 globalThis.__bubbleSetApi = setApi;
 globalThis.__bubblePress = press;
 globalThis.__bubbleGesture = dispatchGestureEvents;
+globalThis.__bubbleEdit = dispatchEditEvents;
+
+function dispatchEditEvents(bytes) {
+  const events = decodeEditEvents(bytes);
+  let ran = false;
+  batch(() => {
+    for (const event of events) {
+      const fn = fieldHandlers.get(event.handler);
+      if (!fn) continue;
+      ran = true;
+      fn(event);
+    }
+  });
+  if (ran) flush();
+  return events.length;
+}
+
+function decodeEditEvents(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.byteLength < 10 || view.getUint8(0) !== 0x42 || view.getUint8(1) !== 0x53 ||
+      view.getUint8(2) !== 0x45 || view.getUint8(3) !== 0x44) {
+    throw new Error("bad edit event batch");
+  }
+  const version = view.getUint16(4, true);
+  if (version !== 1) throw new Error(`unsupported edit event version ${version}`);
+  const count = view.getUint32(6, true);
+  const events = [];
+  let offset = 10;
+  for (let index = 0; index < count; index += 1) {
+    if (offset + 36 > bytes.byteLength) throw new Error("truncated edit event");
+    const handler = view.getUint32(offset, true);
+    const handle = view.getUint32(offset + 4, true);
+    const revision = Number(view.getBigUint64(offset + 8, true));
+    const selStart = view.getUint32(offset + 16, true);
+    const selEnd = view.getUint32(offset + 20, true);
+    const compStart = view.getUint32(offset + 24, true);
+    const compEnd = view.getUint32(offset + 28, true);
+    const len = view.getUint32(offset + 32, true);
+    offset += 36;
+    if (offset + len > bytes.byteLength) throw new Error("truncated edit value");
+    const value = decodeUtf8(bytes, offset, offset + len);
+    offset += len;
+    events.push({
+      type: "input",
+      handler,
+      handle,
+      revision,
+      value,
+      selection: [selStart, selEnd],
+      composition: compStart === 0xffffffff ? null : [compStart, compEnd],
+    });
+  }
+  return events;
+}
+
+function decodeUtf8(bytes, start, end) {
+  let out = "";
+  let i = start;
+  while (i < end) {
+    const b = bytes[i++];
+    if (b < 0x80) out += String.fromCharCode(b);
+    else if (b < 0xe0) {
+      out += String.fromCharCode(((b & 0x1f) << 6) | (bytes[i++] & 0x3f));
+    } else if (b < 0xf0) {
+      const b2 = bytes[i++];
+      const b3 = bytes[i++];
+      out += String.fromCharCode(((b & 0x0f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f));
+    } else {
+      const b2 = bytes[i++];
+      const b3 = bytes[i++];
+      const b4 = bytes[i++];
+      let cp = ((b & 7) << 18) | ((b2 & 0x3f) << 12) | ((b3 & 0x3f) << 6) | (b4 & 0x3f);
+      cp -= 0x10000;
+      out += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+    }
+  }
+  return out;
+}

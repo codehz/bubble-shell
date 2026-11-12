@@ -47,6 +47,10 @@ pub enum Prop {
     Fit,
     ScrollChainX,
     ScrollChainY,
+    Multiline,
+    Secure,
+    MaxLength,
+    Keyboard,
 }
 
 impl Prop {
@@ -88,6 +92,10 @@ impl Prop {
             "fit" => Self::Fit,
             "overscrollX" => Self::ScrollChainX,
             "overscrollY" => Self::ScrollChainY,
+            "multiline" => Self::Multiline,
+            "secure" => Self::Secure,
+            "maxLength" => Self::MaxLength,
+            "keyboard" => Self::Keyboard,
             _ => return None,
         })
     }
@@ -126,6 +134,10 @@ pub const DEFERRED_PROPS: &[&str] = &[
     "fit",
     "overscrollX",
     "overscrollY",
+    "multiline",
+    "secure",
+    "maxLength",
+    "keyboard",
 ];
 
 pub const SET_PROPS: &[&str] = &[
@@ -165,4 +177,8 @@ pub const SET_PROPS: &[&str] = &[
     "fit",
     "overscrollX",
     "overscrollY",
+    "multiline",
+    "secure",
+    "maxLength",
+    "keyboard",
 ];

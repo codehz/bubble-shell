@@ -136,6 +136,20 @@ pub enum Op {
         slot: u8,
         handler: u32,
     },
+    /// `handle` 0 clears focus.
+    Focus {
+        handle: u32,
+    },
+    /// Controlled text. `epoch` is the revision the script observed.
+    /// `cancel` ends an open composition before applying.
+    SetEditingValue {
+        handle: u32,
+        epoch: u64,
+        value: String,
+        sel_start: u32,
+        sel_end: u32,
+        cancel: bool,
+    },
 }
 
 pub fn encode_set_text(seq: u32, handle: u32, text: &str) -> Vec<u8> {
@@ -312,6 +326,27 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.push(*slot);
                 payload.extend_from_slice(&handler.to_le_bytes());
             }
+            Op::Focus { handle } => {
+                payload.push(16);
+                payload.extend_from_slice(&handle.to_le_bytes());
+            }
+            Op::SetEditingValue {
+                handle,
+                epoch,
+                value,
+                sel_start,
+                sel_end,
+                cancel,
+            } => {
+                let value_id = intern(value);
+                payload.push(17);
+                payload.extend_from_slice(&handle.to_le_bytes());
+                payload.extend_from_slice(&epoch.to_le_bytes());
+                payload.extend_from_slice(&value_id.to_le_bytes());
+                payload.extend_from_slice(&sel_start.to_le_bytes());
+                payload.extend_from_slice(&sel_end.to_le_bytes());
+                payload.push(u8::from(*cancel));
+            }
         }
     }
 
@@ -484,6 +519,29 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                     handler,
                 });
             }
+            16 => ops.push(Op::Focus {
+                handle: read_u32(&mut payload_cur)?,
+            }),
+            17 => {
+                let handle = read_u32(&mut payload_cur)?;
+                let epoch = read_u64(&mut payload_cur)?;
+                let value_id = read_u32(&mut payload_cur)? as usize;
+                let value = strings
+                    .get(value_id)
+                    .ok_or("editing value out of range")?
+                    .clone();
+                let sel_start = read_u32(&mut payload_cur)?;
+                let sel_end = read_u32(&mut payload_cur)?;
+                let cancel = read_u8(&mut payload_cur)? != 0;
+                ops.push(Op::SetEditingValue {
+                    handle,
+                    epoch,
+                    value,
+                    sel_start,
+                    sel_end,
+                    cancel,
+                });
+            }
             other => return Err(format!("unknown op tag {other}")),
         }
     }
@@ -522,6 +580,13 @@ fn read_u32(cur: &mut Cursor<&[u8]>) -> Result<u32, String> {
     cur.read_exact(&mut buf).map_err(|_| "truncated ops")?;
     Ok(u32::from_le_bytes(buf))
 }
+
+fn read_u64(cur: &mut Cursor<&[u8]>) -> Result<u64, String> {
+    let mut buf = [0u8; 8];
+    cur.read_exact(&mut buf).map_err(|_| "truncated ops")?;
+    Ok(u64::from_le_bytes(buf))
+}
+
 
 fn read_i64(cur: &mut Cursor<&[u8]>) -> Result<i64, String> {
     let mut buf = [0u8; 8];

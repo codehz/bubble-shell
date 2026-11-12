@@ -9,9 +9,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
 use bubble_core::{
-    encode_events, encode_paint, encode_set_text, validate_bundle_hashes, ComputationKind,
-    GestureEvent, GestureKind, NodeDesc, Op, PointerAction, PointerInput, Sched, Shell, Turn,
-    Value, DEFERRED_PROPS, SPAWN_PROPS,
+    encode_edit_events, encode_events, encode_paint, encode_set_text, validate_bundle_hashes,
+    ComputationKind, EditCommand, EditEvent, GestureEvent, GestureKind, NodeDesc, Op, PointerAction,
+    PointerInput, Sched, Shell, Turn, Value, DEFERRED_PROPS, SPAWN_PROPS,
 };
 
 thread_local! {
@@ -22,6 +22,7 @@ thread_local! {
     static SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static ERROR: RefCell<String> = const { RefCell::new(String::new()) };
     static GESTURES: RefCell<Vec<GestureEvent>> = const { RefCell::new(Vec::new()) };
+    static EDITS: RefCell<Vec<EditEvent>> = const { RefCell::new(Vec::new()) };
 }
 
 #[link(wasm_import_module = "env")]
@@ -116,10 +117,13 @@ fn drain_pending() -> Result<(), String> {
 
 fn collect_events(shell: &mut Shell) {
     let events = shell.take_gesture_events();
-    if events.is_empty() {
-        return;
+    if !events.is_empty() {
+        GESTURES.with(|queue| queue.borrow_mut().extend(events));
     }
-    GESTURES.with(|queue| queue.borrow_mut().extend(events));
+    let edits = shell.take_edit_events();
+    if !edits.is_empty() {
+        EDITS.with(|queue| queue.borrow_mut().extend(edits));
+    }
 }
 
 /// `action` 0 down, 1 move, 2 up, 3 cancel. Returns 0 on success.
@@ -217,6 +221,111 @@ pub extern "C" fn take_gesture_events() -> u32 {
         store_scratch(Vec::new())
     } else {
         store_scratch(encode_events(&events))
+    }
+}
+
+/// Same action codes as `bubble_edit`.
+#[no_mangle]
+pub extern "C" fn edit(action: u32, ptr: *const u8, len: u32, a: u32, b: u32) -> i32 {
+    let text = if ptr.is_null() || len == 0 {
+        String::new()
+    } else {
+        match std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len as usize) }) {
+            Ok(text) => text.to_owned(),
+            Err(_) => {
+                set_error("edit text is not utf-8".into());
+                return 1;
+            }
+        }
+    };
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            match action {
+                0 => shell.focus(a)?,
+                1 => shell.edit(EditCommand::Insert(text))?,
+                2 => shell.edit(EditCommand::Backspace)?,
+                3 => shell.edit(EditCommand::DeleteForward)?,
+                4 => shell.edit(EditCommand::SetSelection { start: a, end: b })?,
+                5 => shell.edit(EditCommand::CompositionStart)?,
+                6 => shell.edit(EditCommand::CompositionUpdate(text))?,
+                7 => shell.edit(EditCommand::CompositionEnd(text))?,
+                other => return Err(format!("bad edit action {other}")),
+            }
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+/// Encoded `BSED` batch since the last drain; 0 bytes when empty.
+#[no_mangle]
+pub extern "C" fn take_edit_events() -> u32 {
+    let events = EDITS.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
+    if events.is_empty() {
+        store_scratch(Vec::new())
+    } else {
+        store_scratch(encode_edit_events(&events))
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn focus(handle: u32) -> i32 {
+    match with_turn(|turn| {
+        turn.push(Op::Focus { handle });
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn set_editing_value(
+    handle: u32,
+    epoch: f64,
+    ptr: *const u8,
+    len: u32,
+    sel_start: u32,
+    sel_end: u32,
+    cancel: u32,
+) -> i32 {
+    let value = if ptr.is_null() || len == 0 {
+        String::new()
+    } else {
+        match std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len as usize) }) {
+            Ok(text) => text.to_owned(),
+            Err(_) => {
+                set_error("editing value is not utf-8".into());
+                return 1;
+            }
+        }
+    };
+    match with_turn(|turn| {
+        turn.push(Op::SetEditingValue {
+            handle,
+            epoch: epoch as u64,
+            value,
+            sel_start,
+            sel_end,
+            cancel: cancel != 0,
+        });
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
     }
 }
 

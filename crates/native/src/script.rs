@@ -56,6 +56,11 @@ pub enum Cmd {
         epoch: u32,
         bytes: Vec<u8>,
     },
+    /// Encoded `BSED` editing batch. `epoch` matches `Gesture`.
+    Edit {
+        epoch: u32,
+        bytes: Vec<u8>,
+    },
     Eval {
         source: String,
         ack: Option<Sender<Result<String, String>>>,
@@ -181,6 +186,15 @@ impl Session {
                 }
                 true
             }
+            Cmd::Edit { epoch, bytes } => {
+                if epoch != self.shared.input_epoch.load(Ordering::SeqCst) {
+                    return true;
+                }
+                if self.dispatch_edits(&bytes).is_ok() {
+                    self.shared.generation.fetch_add(1, Ordering::Relaxed);
+                }
+                true
+            }
             Cmd::Eval { source, ack } => {
                 let result = self.eval_user(&source);
                 if let Some(ack) = ack {
@@ -255,6 +269,23 @@ impl Session {
             return Ok(());
         };
         match guarded(|| gesture_in(vm, bytes)) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                if fatal(&err) {
+                    self.recover()?;
+                } else {
+                    self.note_fault(&err);
+                }
+                Err(err)
+            }
+        }
+    }
+
+    fn dispatch_edits(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let Some(vm) = self.vm.as_ref() else {
+            return Ok(());
+        };
+        match guarded(|| edit_in(vm, bytes)) {
             Ok(()) => Ok(()),
             Err(err) => {
                 if fatal(&err) {
@@ -406,6 +437,19 @@ fn gesture_in(vm: &Vm, bytes: &[u8]) -> Result<(), String> {
     result.map_err(|err: rquickjs::Error| format_eval(vm, err))
 }
 
+fn edit_in(vm: &Vm, bytes: &[u8]) -> Result<(), String> {
+    enter_js();
+    let result = vm.context.with(|ctx| {
+        let array = TypedArray::new(ctx.clone(), bytes.to_vec())?;
+        let dispatch: Function = ctx.globals().get("__bubbleEdit")?;
+        dispatch.call::<_, ()>((array,))?;
+        pump(&ctx);
+        Ok(())
+    });
+    leave_js();
+    result.map_err(|err: rquickjs::Error| format_eval(vm, err))
+}
+
 fn settle_in(vm: &Vm, id: u32, ok: bool, payload: &str) -> Result<(), String> {
     enter_js();
     let result = vm.context.with(|ctx| {
@@ -526,6 +570,11 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
         Function::new(ctx.clone(), api_queue_text)?,
     )?;
     api.set("bind_event", Function::new(ctx.clone(), api_bind)?)?;
+    api.set("focus", Function::new(ctx.clone(), api_focus)?)?;
+    api.set(
+        "set_editing_value",
+        Function::new(ctx.clone(), api_set_editing)?,
+    )?;
     api.set(
         "spawn_gesture",
         Function::new(ctx.clone(), api_spawn_gesture)?,
@@ -843,6 +892,48 @@ fn api_queue_text(handle: f64, text: String) -> i32 {
 fn api_bind(handle: f64, handler: f64) -> i32 {
     match with_turn(|turn| {
         turn.bind_event(handle as u32, handler as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_focus(handle: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.push(Op::Focus {
+            handle: handle as u32,
+        });
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_set_editing(
+    handle: f64,
+    epoch: f64,
+    value: String,
+    sel_start: f64,
+    sel_end: f64,
+    cancel: f64,
+) -> i32 {
+    match with_turn(|turn| {
+        turn.push(Op::SetEditingValue {
+            handle: handle as u32,
+            epoch: epoch as u64,
+            value,
+            sel_start: sel_start as u32,
+            sel_end: sel_end as u32,
+            cancel: cancel != 0.0,
+        });
         Ok(())
     }) {
         Ok(()) => 0,

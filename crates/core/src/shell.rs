@@ -1,8 +1,11 @@
 //! Retained tree. Taffy owns flex; this type owns scroll offsets, hit testing, and paint order.
 
 use std::cell::{Cell, Ref, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+use crate::editing::{
+    apply_command, apply_script, display_text, EditCommand, EditEvent, FieldState,
+};
 use crate::gesture::{GestureEvent, GestureKind, PointerAction, PointerInput, Recognizer};
 use crate::color::Color;
 use crate::ir::{Kind, NodeDesc};
@@ -116,6 +119,10 @@ struct Node {
     scroll_top: f32,
     chain_x: bool,
     chain_y: bool,
+    multiline: bool,
+    secure: bool,
+    max_length: u32,
+    keyboard: String,
     x: f32,
     y: f32,
     w: f32,
@@ -131,6 +138,9 @@ pub struct Shell {
     paint_cache: RefCell<Vec<PaintCmd>>,
     paint_dirty: Cell<bool>,
     recognizer: Recognizer,
+    fields: HashMap<u32, FieldState>,
+    focused: u32,
+    edit_events: Vec<EditEvent>,
 }
 
 /// Per-axis result of routing a wheel or touch delta through the hit path.
@@ -239,6 +249,10 @@ impl Shell {
                     scroll_top: 0.0,
                     chain_x: false,
                     chain_y: false,
+                    multiline: false,
+                    secure: false,
+                    max_length: 0,
+                    keyboard: String::new(),
                     x: 0.0,
                     y: 0.0,
                     w: 0.0,
@@ -252,6 +266,9 @@ impl Shell {
             paint_cache: RefCell::new(Vec::new()),
             paint_dirty: Cell::new(true),
             recognizer: Recognizer::new(),
+            fields: HashMap::new(),
+            focused: 0,
+            edit_events: Vec::new(),
         })
     }
 
@@ -350,6 +367,15 @@ impl Shell {
                     slot,
                     handler,
                 } => self.recognizer.bind(gesture, slot, handler)?,
+                Op::Focus { handle } => self.focus(handle)?,
+                Op::SetEditingValue {
+                    handle,
+                    epoch,
+                    value,
+                    sel_start,
+                    sel_end,
+                    cancel,
+                } => self.set_editing_value(handle, epoch, &value, sel_start, sel_end, cancel)?,
             }
         }
         self.paint_dirty.set(true);
@@ -527,6 +553,144 @@ impl Shell {
     pub fn take_gesture_events(&mut self) -> Vec<GestureEvent> {
         self.recognizer.drain_events()
     }
+
+    /// Focus a text field. `0` blurs. Only `Kind::Field` accepts focus.
+    pub fn focus(&mut self, handle: u32) -> Result<(), String> {
+        if handle == 0 {
+            self.focused = 0;
+            return Ok(());
+        }
+        if self.node(handle)?.kind != Kind::Field {
+            return Err(format!("handle {handle} is not a text field"));
+        }
+        if !self.fields.contains_key(&handle) {
+            return Err(format!("handle {handle} has no editing session"));
+        }
+        self.focused = handle;
+        Ok(())
+    }
+
+    pub fn focused(&self) -> u32 {
+        self.focused
+    }
+
+    pub fn field(&self, handle: u32) -> Result<(String, FieldState), String> {
+        let node = self.node(handle)?;
+        if node.kind != Kind::Field {
+            return Err(format!("handle {handle} is not a text field"));
+        }
+        let state = self
+            .fields
+            .get(&handle)
+            .ok_or_else(|| format!("handle {handle} has no editing session"))?
+            .clone();
+        Ok((node.text.clone(), state))
+    }
+
+    /// Mutate the focused field. No-ops that do not change state emit nothing.
+    pub fn edit(&mut self, command: EditCommand) -> Result<(), String> {
+        let handle = self.focused;
+        if handle == 0 {
+            return Err("no focused field".into());
+        }
+        self.edit_handle(handle, command)
+    }
+
+    pub fn take_edit_events(&mut self) -> Vec<EditEvent> {
+        std::mem::take(&mut self.edit_events)
+    }
+
+    fn edit_handle(&mut self, handle: u32, command: EditCommand) -> Result<(), String> {
+        let (multiline, max_length, handler, mut value) = {
+            let node = self.node(handle)?;
+            if node.kind != Kind::Field {
+                return Err(format!("handle {handle} is not a text field"));
+            }
+            (
+                node.multiline,
+                node.max_length,
+                node.handler,
+                node.text.clone(),
+            )
+        };
+        let state = self
+            .fields
+            .get_mut(&handle)
+            .ok_or_else(|| format!("handle {handle} has no editing session"))?;
+        let changed = apply_command(state, &mut value, command, multiline, max_length)?;
+        if !changed {
+            return Ok(());
+        }
+        let event = EditEvent {
+            handle,
+            handler,
+            revision: state.revision,
+            value: value.clone(),
+            sel_start: state.sel_start,
+            sel_end: state.sel_end,
+            composition: state.composition,
+        };
+        self.node_mut(handle)?.text = value;
+        self.edit_events.push(event);
+        self.refresh_measure(handle)?;
+        self.paint_dirty.set(true);
+        Ok(())
+    }
+
+    fn set_editing_value(
+        &mut self,
+        handle: u32,
+        epoch: u64,
+        next: &str,
+        sel_start: u32,
+        sel_end: u32,
+        cancel: bool,
+    ) -> Result<(), String> {
+        let (multiline, max_length, handler, mut value) = {
+            let node = self.node(handle)?;
+            if node.kind != Kind::Field {
+                return Err(format!("handle {handle} is not a text field"));
+            }
+            (
+                node.multiline,
+                node.max_length,
+                node.handler,
+                node.text.clone(),
+            )
+        };
+        let state = self
+            .fields
+            .get_mut(&handle)
+            .ok_or_else(|| format!("handle {handle} has no editing session"))?;
+        if !apply_script(
+            state,
+            &mut value,
+            epoch,
+            next,
+            sel_start,
+            sel_end,
+            cancel,
+            multiline,
+            max_length,
+        ) {
+            return Ok(());
+        }
+        let event = EditEvent {
+            handle,
+            handler,
+            revision: state.revision,
+            value: value.clone(),
+            sel_start: state.sel_start,
+            sel_end: state.sel_end,
+            composition: state.composition,
+        };
+        self.node_mut(handle)?.text = value;
+        self.edit_events.push(event);
+        self.refresh_measure(handle)?;
+        self.paint_dirty.set(true);
+        Ok(())
+    }
+
 
     fn flush_gesture_scroll(&mut self) {
         let requests = self.recognizer.drain_scroll();
@@ -742,6 +906,18 @@ impl Shell {
                 self.node_mut(id)?.src = source.clone();
             }
             Prop::Fit => self.node_mut(id)?.fit = image_fit(value)?,
+            Prop::Multiline => self.node_mut(id)?.multiline = value.as_bool()?,
+            Prop::Secure => {
+                self.node_mut(id)?.secure = value.as_bool()?;
+                self.refresh_measure(id)?;
+            }
+            Prop::MaxLength => self.node_mut(id)?.max_length = value.as_u32()?,
+            Prop::Keyboard => {
+                let Value::String(name) = value else {
+                    return Err("keyboard must be a string".into());
+                };
+                self.node_mut(id)?.keyboard = name.clone();
+            }
         }
         self.restyle(id)
     }
@@ -759,12 +935,17 @@ impl Shell {
     fn refresh_measure(&mut self, id: u32) -> Result<(), String> {
         let (taffy, text, font_size, line_height, font_weight) = {
             let node = self.node(id)?;
-            if node.kind != Kind::Text {
+            if !matches!(node.kind, Kind::Text | Kind::Field) {
                 return Ok(());
             }
+            let text = if node.kind == Kind::Field {
+                display_text(&node.text, node.secure)
+            } else {
+                node.text.clone()
+            };
             (
                 node.taffy,
-                node.text.clone(),
+                text,
                 node.font_size,
                 node.line_height,
                 node.font_weight,
@@ -838,7 +1019,7 @@ impl Shell {
             padding: desc.padding,
             ..NodeStyle::default()
         });
-        let taffy_id = if desc.kind == Kind::Text {
+        let taffy_id = if matches!(desc.kind, Kind::Text | Kind::Field) {
             self.taffy
                 .new_leaf_with_context(
                     style,
@@ -891,6 +1072,10 @@ impl Shell {
             scroll_top: 0.0,
             chain_x: false,
             chain_y: false,
+            multiline: false,
+            secure: false,
+            max_length: 0,
+            keyboard: String::new(),
             x: 0.0,
             y: 0.0,
             w: 0.0,
@@ -901,6 +1086,9 @@ impl Shell {
             .insert(index as usize, handle);
         self.sync_children(parent)?;
         self.high_water = self.high_water.max(handle);
+        if desc.kind == Kind::Field {
+            self.fields.insert(handle, FieldState::new(&desc.text));
+        }
         Ok(())
     }
 
@@ -978,6 +1166,10 @@ impl Shell {
         let taffy_id = self.node(handle)?.taffy;
         self.taffy.remove(taffy_id).map_err(|err| err.to_string())?;
         self.nodes[handle as usize] = None;
+        self.fields.remove(&handle);
+        if self.focused == handle {
+            self.focused = 0;
+        }
         self.retired.insert(handle);
         Ok(())
     }
@@ -1043,6 +1235,7 @@ impl Shell {
         let background = node.background;
         let kind = node.kind;
         let text = node.text.clone();
+        let secure = node.secure;
         let color = node.color;
         let font_size = node.font_size;
         let opacity = node.opacity.clamp(0.0, 1.0);
@@ -1062,7 +1255,12 @@ impl Shell {
                 color: background,
             });
         }
-        if kind == Kind::Text && !text.is_empty() {
+        let shown = if kind == Kind::Field {
+            display_text(&text, secure)
+        } else {
+            text
+        };
+        if matches!(kind, Kind::Text | Kind::Field) && !shown.is_empty() {
             out.push(PaintCmd::Text {
                 x,
                 y,
@@ -1073,7 +1271,7 @@ impl Shell {
                 line_height: node.line_height,
                 weight: node.font_weight,
                 align: node.text_align,
-                text,
+                text: shown,
             });
         } else if kind == Kind::Image && !node.src.is_empty() {
             out.push(PaintCmd::Image {

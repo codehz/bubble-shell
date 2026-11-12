@@ -17,6 +17,7 @@ pub enum Kind {
     View = 1,
     Text = 2,
     Image = 3,
+    Field = 4,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -147,6 +148,7 @@ impl NodeDesc {
             1 => Kind::View,
             2 => Kind::Text,
             3 => Kind::Image,
+            4 => Kind::Field,
             other => return Err(format!("bad node kind {other}")),
         };
         let scroll_flags = read_u8(cur)?;

@@ -51,6 +51,25 @@ fn lowers_gesture_virtual_nodes_and_dynamic_config() {
 }
 
 #[test]
+fn lowers_a_text_field() {
+    let js = compile(
+        r#"
+        import { mount, View, TextField } from "bubble";
+        function App() {
+          return (
+            <View>
+              <TextField value="hi" multiline secure maxLength={8} onChange={() => {}} />
+            </View>
+          );
+        }
+        mount(App);
+        "#,
+    )
+    .unwrap();
+    assert!(js.contains("primitive(\"TextField\", {value: \"hi\", multiline: true, secure: true, maxLength: 8, onChange: () => {"));
+}
+
+#[test]
 fn lowers_component_props_children_and_conditionals() {
     let js = compile(
         r#"

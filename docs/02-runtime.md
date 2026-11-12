@@ -116,7 +116,7 @@ assets/
 | `SetEditingValue` | handle, epoch, value, selection | 受控文本 |
 | `SetAsset` | handle, contentHash | 预留；当前 `Image` 通过 `SetProp src` 交给宿主解析 |
 
-当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`；其余 op（含 `InsertNode`、动画、语义）随组件/输入/更新里程碑补齐。脚本线程只产 op，UI/帧线程在 drain 时应用。
+当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`、`Focus`、`SetEditingValue`，以及手势声明 op。`TextField`（kind 4）的编辑状态在 UI 线程：UTF-16 选区、`revision`、`epoch`、composition。`BSED` v1 把 `input` 事件交给脚本。iOS `UITextInput`、Android `InputConnection`、Web 隐藏 textarea 与无障碍桥尚未接入。其余 op（含 `InsertNode`、动画、语义）随后续里程碑补齐。
 
 节点描述为 `BNOD` v2：固定字段后跟 `u32` 长度的 TLV 扩展块，新增字段不移动既有偏移。`Spawn` 载荷复用同一 v2 body；`BSOP` 也是 v2。滚动描述符的单个标志字节是位掩码：bit 0 为纵向 `overflow="scroll"`，bit 1 为横向，其余位保留且解码时拒绝。
 

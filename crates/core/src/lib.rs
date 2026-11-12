@@ -7,6 +7,7 @@
 //! verified cryptographically yet.
 
 mod color;
+mod editing;
 mod gesture;
 mod ir;
 mod manifest;
@@ -18,6 +19,10 @@ mod shell;
 mod turn;
 
 pub use color::{parse as parse_color, Color};
+pub use editing::{
+    apply_command, apply_script, display_text, encode_edit_events, utf16_len, EditCommand, EditEvent,
+    FieldState,
+};
 pub use gesture::{
     encode_events, GestureConfig, GestureDecl, GestureEvent, GestureKind, PointerAction,
     PointerInput, Recognizer, ScrollRequest, REASON_HOST_CANCEL,
