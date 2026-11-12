@@ -151,6 +151,8 @@ EditingState {
 
 Web 宿主从 `runtime.js` 具名导入 `setApi`、`dispatchGestureEvents` 和 `dispatchEditEvents`；编辑事件由 `dispatchEditEvents` 解码并调用字段的 `onChange`。隐藏 `textarea` 通过 `inputMode` 与 `autocomplete` 配置键盘和自动填充，不写入只读的 `type` 属性；密码遮罩由核心绘制。
 
+点击 Web 文本框时，`placeCaret` 在布局成功后立即重绘 Canvas，再定位并聚焦隐藏输入代理；首次点击和切换字段都立即显示光标，无需等待输入或手势动画触发重绘。
+
 三端已实现行为的差异：
 
 | 行为 | 核心 | Web | Android | iOS |

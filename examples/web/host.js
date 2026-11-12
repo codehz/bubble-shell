@@ -520,7 +520,7 @@ for (const type of ["beforeinput", "compositionstart", "compositionupdate", "com
 }
 
 function placeCaret(handle) {
-  exports.layout();
+  if (exports.layout() === 0) paint();
   const flags = exports.field_flags(handle);
   const kind = (flags >> 8) & 0xff;
   ime.inputMode = ["text", "numeric", "email", "url", "tel"][kind] || "text";
