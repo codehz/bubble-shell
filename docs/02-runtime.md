@@ -7,7 +7,7 @@
 作者写的是函数组件，不是一份静态 JSX 树。参照 nsh（`docs/dev/native-pipeline.md`）：
 
 ```tsx
-import { mount, signal, Text, View } from "bubble";
+import { mount, signal, Text, View } from "bubble-shell";
 
 function Counter() {
   const count = signal(0);

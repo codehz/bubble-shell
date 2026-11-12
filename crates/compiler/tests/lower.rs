@@ -4,7 +4,7 @@ use bubble_compiler::compile;
 fn lowers_a_signal_text_binding() {
     let js = compile(
         r#"
-        import { mount, signal, Text, View } from "bubble";
+        import { mount, signal, Text, View } from "bubble-shell";
         function Counter() {
           const count = signal(0);
           return (
@@ -23,14 +23,14 @@ fn lowers_a_signal_text_binding() {
     assert!(js.contains("() => \"Count: \" + count()"));
     assert!(js.contains("onTap: () => count.update((c) => c + 1)"));
     assert!(js.contains("mount(Counter);"));
-    assert!(!js.contains("from \"bubble\""));
+    assert!(!js.contains("from \"bubble-shell\""));
 }
 
 #[test]
 fn lowers_gesture_virtual_nodes_and_dynamic_config() {
     let js = compile(
         r#"
-        import { mount, signal, Text, View, PanGesture, TransformGesture } from "bubble";
+        import { mount, signal, Text, View, PanGesture, TransformGesture } from "bubble-shell";
         function App() {
           const editing = signal(false);
           const update = () => {};
@@ -54,7 +54,7 @@ fn lowers_gesture_virtual_nodes_and_dynamic_config() {
 fn lowers_a_text_field() {
     let js = compile(
         r#"
-        import { mount, View, TextField } from "bubble";
+        import { mount, View, TextField } from "bubble-shell";
         function App() {
           return (
             <View>
@@ -73,7 +73,7 @@ fn lowers_a_text_field() {
 fn lowers_component_props_children_and_conditionals() {
     let js = compile(
         r#"
-        import { mount, Text, View } from "bubble";
+        import { mount, Text, View } from "bubble-shell";
         function Card(props) {
           return (
             <View backgroundColor={props.background ?? 0xff000000}>
@@ -105,7 +105,7 @@ fn lowers_component_props_children_and_conditionals() {
 fn lowers_signal_reading_attributes_to_dynamic_bindings() {
     let js = compile(
         r#"
-        import { mount, signal, Text, View } from "bubble";
+        import { mount, signal, Text, View } from "bubble-shell";
         function App() {
           const color = signal(0xff000000);
           const pad = signal(4);
@@ -132,7 +132,7 @@ fn lowers_signal_reading_attributes_to_dynamic_bindings() {
 fn lowers_image_primitive() {
     let js = compile(
         r#"
-        import { mount, Image, View } from "bubble";
+        import { mount, Image, View } from "bubble-shell";
         function App() {
           return (
             <View>
@@ -153,7 +153,7 @@ fn lowers_image_primitive() {
 fn lowers_computed_values_as_signal_sources() {
     let js = compile(
         r#"
-        import { mount, signal, computed, Text, View } from "bubble";
+        import { mount, signal, computed, Text, View } from "bubble-shell";
         function App() {
           const count = signal(1);
           const double = computed(() => count() * 2);
@@ -176,7 +176,7 @@ fn lowers_computed_values_as_signal_sources() {
 fn lowers_show_for_and_switch() {
     let js = compile(
         r#"
-        import { mount, Text, View } from "bubble";
+        import { mount, Text, View } from "bubble-shell";
         function App() {
           const show = true;
           const items = [];
