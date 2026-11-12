@@ -7,7 +7,7 @@ BT="$SDK/build-tools/36.1.0"
 ANDROID_JAR="$SDK/platforms/android-35/android.jar"
 OUT="examples/android/build"
 CLASSES="$OUT/classes.jar"
-SRC="examples/android/app/src/androidTest/java/dev/bubble/shell/test/ShellInstrumentation.java"
+SRC_DIR="examples/android/app/src/androidTest/java/dev/bubble/shell/test"
 if [ ! -f "$CLASSES" ]; then
   echo "missing $CLASSES; package the app before the test apk" >&2
   exit 1
@@ -20,7 +20,7 @@ fi
 rm -rf "$OUT/test-classes" "$OUT/test-dex" "$OUT/test-apk"
 mkdir -p "$OUT/test-classes" "$OUT/test-dex" "$OUT/test-apk"
 
-javac --release 8 -classpath "$ANDROID_JAR:$CLASSES" -d "$OUT/test-classes" "$SRC"
+javac --release 8 -classpath "$ANDROID_JAR:$CLASSES" -d "$OUT/test-classes" "$SRC_DIR"/*.java
 jar cf "$OUT/test-classes.jar" -C "$OUT/test-classes" .
 
 "$BT/d8" --min-api 24 --lib "$ANDROID_JAR" --output "$OUT/test-dex" "$OUT/test-classes.jar"

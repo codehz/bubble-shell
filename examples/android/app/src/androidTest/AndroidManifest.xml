@@ -4,5 +4,9 @@
         android:name="dev.bubble.shell.test.ShellInstrumentation"
         android:targetPackage="dev.bubble.shell"
         android:label="Bubble gestures" />
+    <instrumentation
+        android:name="dev.bubble.shell.test.EditInstrumentation"
+        android:targetPackage="dev.bubble.shell"
+        android:label="Bubble editing" />
     <application />
 </manifest>

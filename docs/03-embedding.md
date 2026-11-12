@@ -124,8 +124,9 @@ Web 覆盖层要求：
 编辑状态在 **UI 线程**，避免每个按键跨线程：
 
 ```text
-EditingState {
-  value, selection, composition, revision
+EditSession {
+  value, directional selection, composition range,
+  composing, revision, undo history
 }
 ```
 
@@ -147,7 +148,7 @@ EditingState {
 
 覆盖能力：键盘类型、autofill、密码、多行、maxlength、输入过滤、撤销/重做。三端行为差异记录在测试矩阵中。
 
-当前接入：Web 隐藏 `textarea` 把 `beforeinput` / composition 映射到 `edit`（`examples/web/ime.js`），含 `historyUndo` / `historyRedo`。在字段上按下并拖动会改选区，不再交给手势；抬起不把插入符折回落点。右键菜单提供剪切、复制、粘贴和全选；密码字段不复制。Android `InputConnection` 提交、composition、删除，并向 IME 报告选区、光标前后文本和 `CursorAnchorInfo`。iOS `UITextInput` 覆盖插入、退格、UTF-16 选区、标记文本（`setMarkedText` / `unmarkText`）和选区矩形；⌘Z / ⇧⌘Z 走同一撤销栈。标记文本内部的选中范围仍固定在组合末尾。点按 `focus_at` 聚焦并把插入符落到最近的 UTF-16 边界。聚焦字段在 layout 后绘制选区与 1px 光标。撤销按字段保留最近 100 步；脚本 `SetEditingValue` 成功后清空该字段的撤销栈。`field_flags` 的 bit0 多行、bit1 密码，bits 8..15 为键盘种类：1 number、2 email、3 url、4 phone。bits 16..23 为 `autofill`：1 username、2 password、3 newPassword、4 email、5 phone、6 oneTimeCode。
+当前接入：Web 隐藏 `textarea` 把 `beforeinput` / composition 映射到 `edit`（`examples/web/ime.js`），含 `historyUndo` / `historyRedo`。在字段上按下并拖动会改选区，不再交给手势；抬起不把插入符折回落点。右键菜单提供剪切、复制、粘贴和全选；密码字段不复制。Android `InputConnection` 绑定创建时的 `EditSession`，每次读写校验 session；`commitText` / `setComposingText` 走范围事务并应用 `newCursorPosition`，支持内部组合选区、`setComposingRegion`、UTF-16 与代码点两种 `deleteSurroundingText`、嵌套 batch edit、`getTextBefore/After`、`getSelectedText`、`getExtractedText` 和 `CursorAnchorInfo`。连接关闭或字段切换后旧 session 写入被拒绝，Kotlin 不再维护第二份 composition 状态。iOS `UITextInput` 覆盖插入、退格、UTF-16 选区、标记文本（`setMarkedText` / `unmarkText`）和选区矩形；⌘Z / ⇧⌘Z 走同一撤销栈。标记文本内部的选中范围仍固定在组合末尾。点按 `focus_at` 聚焦并把插入符落到最近的 UTF-16 边界。聚焦字段在 layout 后绘制选区与 1px 光标。撤销按字段保留最近 100 步；脚本 `SetEditingValue` 成功后清空该字段的撤销栈。`field_flags` 的 bit0 多行、bit1 密码，bits 8..15 为键盘种类：1 number、2 email、3 url、4 phone。bits 16..23 为 `autofill`：1 username、2 password、3 newPassword、4 email、5 phone、6 oneTimeCode。
 
 Web 宿主从 `runtime.js` 具名导入 `setApi`、`dispatchGestureEvents` 和 `dispatchEditEvents`；编辑事件由 `dispatchEditEvents` 解码并调用字段的 `onChange`。隐藏 `textarea` 通过 `inputMode` 与 `autocomplete` 配置键盘和自动填充，不写入只读的 `type` 属性；密码遮罩由核心绘制。
 
@@ -159,7 +160,7 @@ Web 宿主从 `runtime.js` 具名导入 `setApi`、`dispatchGestureEvents` 和 `
 |---|---|---|---|---|
 | 单行换行 | 去掉 `\n` / `\r` | 同核心 | 同核心 | 同核心 |
 | 多行回车 | 去掉 `\r`，保留 `\n` | 同核心 | 同核心 | 同核心 |
-| composition | 未 `cancel` 时忽略脚本写入 | `composition*` 事件；`insertCompositionText` 丢弃 | `setComposingText` / `finishComposingText` | `setMarkedText` / `unmarkText`；标记文本内部选区固定在末尾 |
+| composition | 独立组合区；未 `cancel` 时忽略脚本写入 | `composition*` 事件；`insertCompositionText` 丢弃 | session 内组合区；`setComposingText` / `setComposingRegion` / 内部选区 | `setMarkedText` / `unmarkText`；标记文本内部选区固定在末尾 |
 | 撤销 | 每字段 100 步；脚本值清空 | `historyUndo` / `historyRedo` | 未接按键 | ⌘Z / ⇧⌘Z |
 | 拖动选区 | `SetSelection` | 字段上的拖动不交给手势 | IME `setSelection` | 系统选区手柄 |
 | 菜单 | 无 | 自绘剪切/复制/粘贴/全选；密码不复制 | 系统菜单，依赖 IME | 系统菜单 |
@@ -168,7 +169,7 @@ Web 宿主从 `runtime.js` 具名导入 `setApi`、`dispatchGestureEvents` 和 `
 
 设备上的 CJK 标记文本、系统手柄和 Web 菜单待点击验收。
 
-下一版本按 [自绘输入模型重设计计划](06-input-model-plan.md) 同步迁移 Rust、Android、iOS 与 Web，一次性替换上述实现，不保留旧编辑语义并行运行。
+剩余 iOS/Web 事务迁移与平台排版快照按 [自绘输入模型重设计计划](06-input-model-plan.md) 后续阶段实施。
 
 
 ## 6. 更新平面

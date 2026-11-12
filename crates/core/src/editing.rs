@@ -688,7 +688,7 @@ impl EditSession {
         }
     }
 
-    fn set_composition(&mut self, range: DocRange) -> Result<EditOutcome, EditError> {
+    pub fn set_composition(&mut self, range: DocRange) -> Result<EditOutcome, EditError> {
         let before = self.snapshot();
         if !self.composing {
             self.composition_base = Some(before.clone());
@@ -696,6 +696,132 @@ impl EditSession {
         }
         self.composition = Some(self.normalize_range(range));
         Ok(self.commit(before, HistoryMode::None))
+    }
+
+    /// Replace a range with IME text and apply Android's `newCursorPosition`
+    /// relative to the fitted insertion. `composing` keeps or starts a
+    /// composition over the inserted span; otherwise any open composition is
+    /// committed and the replacement becomes one history step.
+    pub fn replace_with_cursor(
+        &mut self,
+        range: DocRange,
+        text: &str,
+        new_cursor_position: i32,
+        composing: bool,
+    ) -> Result<EditOutcome, EditError> {
+        if self.closed {
+            return Err(EditError::Closed);
+        }
+        let (start, end) = self.normalize_range(range);
+        let text = sanitize(text, self.config.multiline);
+        let before = self.snapshot();
+        let was_composing = self.composing;
+        let base = self.composition_base.clone();
+        if composing && !self.composing {
+            self.composition_base = Some(before.clone());
+            self.composing = true;
+        }
+        let (insert_start, insert_end) = self.splice(start, end, &text);
+        let len = utf16_len(&self.value);
+        let cursor = cursor_from_position(insert_start, insert_end, new_cursor_position, len);
+        self.selection = Selection::collapsed(cursor);
+        if composing {
+            self.composition = Some((insert_start, insert_end));
+            return Ok(self.commit(before, HistoryMode::None));
+        }
+        self.composition = None;
+        self.composing = false;
+        self.composition_base = None;
+        let outcome = self.commit(
+            before,
+            if was_composing {
+                HistoryMode::None
+            } else {
+                HistoryMode::Push
+            },
+        );
+        if was_composing {
+            if let Some(base) = base {
+                if base.value != self.value || base.selection != self.selection {
+                    self.push_undo(base);
+                }
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// Delete `before_units` and `after_units` around the selection, expanding
+    /// the range to cover an open composition. The caret collapses at the
+    /// start of the deleted range.
+    pub fn delete_surrounding(
+        &mut self,
+        before_units: u32,
+        after_units: u32,
+    ) -> Result<EditOutcome, EditError> {
+        if self.closed {
+            return Err(EditError::Closed);
+        }
+        let (start, end) = self.surrounding_range();
+        let len = utf16_len(&self.value);
+        let start = normalize_offset(&self.value, start.saturating_sub(before_units));
+        let end = normalize_offset(
+            &self.value,
+            end.saturating_add(after_units).min(len),
+        );
+        self.delete_units(start, end)
+    }
+
+    /// Delete code points around the selection. Unlike UTF-16 unit counts,
+    /// this never splits a surrogate pair and counts each scalar once.
+    pub fn delete_surrounding_code_points(
+        &mut self,
+        before: u32,
+        after: u32,
+    ) -> Result<EditOutcome, EditError> {
+        if self.closed {
+            return Err(EditError::Closed);
+        }
+        let (start, end) = self.surrounding_range();
+        let start = walk_scalars_back(&self.value, start, before);
+        let end = walk_scalars_forward(&self.value, end, after);
+        self.delete_units(start, end)
+    }
+
+    fn surrounding_range(&self) -> (u32, u32) {
+        let (mut start, mut end) = self.selection.range();
+        if let Some((comp_start, comp_end)) = self.composition {
+            start = start.min(comp_start);
+            end = end.max(comp_end);
+        }
+        (start, end)
+    }
+
+    fn delete_units(&mut self, start: u32, end: u32) -> Result<EditOutcome, EditError> {
+        let (start, end) = self.normalize_offsets(start, end);
+        let before = self.snapshot();
+        let was_composing = self.composing;
+        let base = self.composition_base.clone();
+        let (deleted_at, _) = self.splice(start, end, "");
+        self.selection = Selection::collapsed(deleted_at);
+        self.composition = None;
+        self.composing = false;
+        self.composition_base = None;
+        let outcome = self.commit(
+            before,
+            if was_composing {
+                HistoryMode::None
+            } else {
+                HistoryMode::Push
+            },
+        );
+        if was_composing {
+            if let Some(base) = base {
+                if base.value != self.value || base.selection != self.selection {
+                    self.push_undo(base);
+                }
+            }
+        }
+        Ok(outcome)
     }
 
     /// Replace the current composition range with `text` and collapse the
@@ -1078,6 +1204,44 @@ fn boundary_index(value: &str, units: u32) -> usize {
         seen += width;
     }
     value.len()
+}
+
+fn walk_scalars_back(value: &str, units: u32, count: u32) -> u32 {
+    let mut position = units;
+    for _ in 0..count {
+        let previous = prev_scalar_boundary(value, position);
+        if previous == position {
+            break;
+        }
+        position = previous;
+    }
+    position
+}
+
+fn walk_scalars_forward(value: &str, units: u32, count: u32) -> u32 {
+    let mut position = units;
+    for _ in 0..count {
+        let next = next_scalar_boundary(value, position);
+        if next == position {
+            break;
+        }
+        position = next;
+    }
+    position
+}
+
+fn cursor_from_position(
+    insert_start: u32,
+    insert_end: u32,
+    new_cursor_position: i32,
+    len: u32,
+) -> u32 {
+    let position = if new_cursor_position > 0 {
+        insert_end.saturating_add((new_cursor_position - 1) as u32)
+    } else {
+        insert_start.saturating_sub(new_cursor_position.unsigned_abs())
+    };
+    position.min(len)
 }
 
 fn next_scalar_boundary(value: &str, units: u32) -> u32 {

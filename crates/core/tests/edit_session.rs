@@ -388,3 +388,111 @@ fn read_u32(bytes: &[u8], offset: usize) -> u32 {
 fn read_u64(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
 }
+
+#[test]
+fn new_cursor_position_uses_the_fitted_insertion() {
+    let mut session = EditSession::new("abcd", EditConfig::default());
+    session
+        .apply(EditOp::Select(Selection::collapsed(2)), None)
+        .unwrap();
+    session
+        .replace_with_cursor(DocRange::new(2, 2), "XY", 1, false)
+        .unwrap();
+    assert_eq!(session.value(), "abXYcd");
+    assert_eq!(session.field_state().active(), 4);
+
+    let mut session = EditSession::new("abcd", EditConfig::default());
+    session
+        .apply(EditOp::Select(Selection::collapsed(2)), None)
+        .unwrap();
+    session
+        .replace_with_cursor(DocRange::new(2, 2), "XY", 0, false)
+        .unwrap();
+    assert_eq!(session.field_state().active(), 2);
+
+    let mut session = EditSession::new("abcd", EditConfig::default());
+    session
+        .apply(EditOp::Select(Selection::collapsed(2)), None)
+        .unwrap();
+    session
+        .replace_with_cursor(DocRange::new(2, 2), "XY", -1, false)
+        .unwrap();
+    assert_eq!(session.field_state().active(), 1);
+
+    let mut session = EditSession::new("ab", EditConfig::default());
+    session.set_config(EditConfig {
+        multiline: false,
+        max_length: 3,
+    });
+    session
+        .apply(EditOp::Select(Selection::collapsed(1)), None)
+        .unwrap();
+    session
+        .replace_with_cursor(DocRange::new(1, 1), "XY", 2, false)
+        .unwrap();
+    assert_eq!(session.value(), "aXb");
+    assert_eq!(session.field_state().active(), 3, "fitted insert length is used");
+}
+
+#[test]
+fn composing_replacement_commits_as_one_history_step() {
+    let mut session = EditSession::new("ab", EditConfig::default());
+    session
+        .replace_with_cursor(DocRange::new(1, 1), "に", 1, true)
+        .unwrap();
+    assert!(session.field_state().composing);
+    assert_eq!(session.field_state().composition, Some((1, 2)));
+    assert_eq!(session.value(), "aにb");
+
+    session
+        .replace_with_cursor(DocRange::new(1, 2), "日本", 1, true)
+        .unwrap();
+    assert_eq!(session.value(), "a日本b");
+    assert_eq!(session.field_state().composition, Some((1, 3)));
+
+    session
+        .replace_with_cursor(DocRange::new(1, 3), "日本", 1, false)
+        .unwrap();
+    assert!(!session.field_state().composing);
+    assert_eq!(session.field_state().composition, None);
+    session.apply(EditOp::Undo, None).unwrap();
+    assert_eq!(session.value(), "ab");
+}
+
+#[test]
+fn delete_surrounding_expands_selection_and_composition() {
+    let mut session = EditSession::new("abcdef", EditConfig::default());
+    session
+        .apply(EditOp::Select(Selection::new(2, 4)), None)
+        .unwrap();
+    session.delete_surrounding(1, 1).unwrap();
+    assert_eq!(session.value(), "af");
+    assert_eq!(session.field_state().active(), 1);
+
+    let mut session = EditSession::new("abc", EditConfig::default());
+    session
+        .replace_with_cursor(DocRange::new(1, 1), "X", 1, true)
+        .unwrap();
+    assert_eq!(session.value(), "aXbc");
+    session.delete_surrounding(1, 1).unwrap();
+    assert_eq!(session.value(), "c");
+    assert_eq!(session.field_state().active(), 0);
+    assert!(!session.field_state().composing);
+}
+
+#[test]
+fn codepoint_deletion_counts_scalars_not_units() {
+    let mut session = EditSession::new("a😀", EditConfig::default());
+    session
+        .apply(EditOp::Select(Selection::collapsed(3)), None)
+        .unwrap();
+    session.delete_surrounding(2, 0).unwrap();
+    assert_eq!(session.value(), "a");
+
+    let mut session = EditSession::new("a😀", EditConfig::default());
+    session
+        .apply(EditOp::Select(Selection::collapsed(3)), None)
+        .unwrap();
+    session.delete_surrounding_code_points(2, 0).unwrap();
+    assert_eq!(session.value(), "");
+}

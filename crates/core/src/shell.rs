@@ -4,8 +4,8 @@ use std::cell::{Cell, Ref, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use crate::editing::{
-    display_text, hit_unit, text_metrics, EditCommand, EditConfig, EditError, EditEvent, EditOp,
-    EditOutcome, EditSession, FieldState, Selection, SessionId,
+    display_text, hit_unit, text_metrics, DocRange, EditCommand, EditConfig, EditError, EditEvent,
+    EditOp, EditOutcome, EditSession, FieldState, Selection, SessionId,
 };
 use crate::gesture::{GestureEvent, GestureKind, PointerAction, PointerInput, Recognizer};
 use crate::color::Color;
@@ -873,7 +873,7 @@ impl Shell {
         self.edit_batch.is_some()
     }
 
-    fn abort_edit_batch(&mut self) {
+    pub fn abort_edit_batch(&mut self) {
         if let Some(batch) = self.edit_batch.take() {
             let restored = self.fields.get_mut(&batch.handle).map(|session| {
                 session.abort_batch();
@@ -900,6 +900,114 @@ impl Shell {
 
     pub fn take_edit_events(&mut self) -> Vec<EditEvent> {
         std::mem::take(&mut self.edit_events)
+    }
+
+    pub fn focused_state(&self) -> Result<FieldState, String> {
+        let handle = self.focused;
+        if handle == 0 {
+            return Err("no focused field".into());
+        }
+        self.fields
+            .get(&handle)
+            .map(EditSession::field_state)
+            .ok_or_else(|| format!("handle {handle} has no editing session"))
+    }
+
+    /// Replace a focused-field range with IME text and a relative cursor.
+    pub fn replace_with_cursor(
+        &mut self,
+        start: u32,
+        end: u32,
+        text: &str,
+        new_cursor_position: i32,
+        composing: bool,
+    ) -> Result<(), String> {
+        self.apply_focused_session(|session| {
+            session.replace_with_cursor(
+                DocRange::new(start, end),
+                text,
+                new_cursor_position,
+                composing,
+            )
+        })
+    }
+
+    /// Delete units around the focused selection, including an open
+    /// composition range.
+    pub fn delete_surrounding(&mut self, before: u32, after: u32) -> Result<(), String> {
+        self.apply_focused_session(|session| session.delete_surrounding(before, after))
+    }
+
+    pub fn delete_surrounding_code_points(&mut self, before: u32, after: u32) -> Result<(), String> {
+        self.apply_focused_session(|session| {
+            session.delete_surrounding_code_points(before, after)
+        })
+    }
+
+    pub fn set_composition_region(&mut self, start: u32, end: u32) -> Result<(), String> {
+        self.apply_focused_session(|session| {
+            session.set_composition(DocRange::new(start, end))
+        })
+    }
+
+    pub fn finish_composition(&mut self) -> Result<(), String> {
+        self.apply_focused_session(|session| session.end_composition(None, None))
+    }
+
+    fn apply_focused_session(
+        &mut self,
+        op: impl FnOnce(&mut EditSession) -> Result<EditOutcome, EditError>,
+    ) -> Result<(), String> {
+        let handle = self.focused;
+        if handle == 0 {
+            return Err("no focused field".into());
+        }
+        let (handler, config) = {
+            let node = self.node(handle)?;
+            if node.kind != Kind::Field {
+                return Err(format!("handle {handle} is not a text field"));
+            }
+            (
+                node.handler,
+                EditConfig {
+                    multiline: node.multiline,
+                    max_length: node.max_length,
+                },
+            )
+        };
+        let result = {
+            let session = self
+                .fields
+                .get_mut(&handle)
+                .ok_or_else(|| format!("handle {handle} has no editing session"))?;
+            session.set_config(config);
+            op(session)
+        };
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                self.rollback_failed_batch(handle);
+                return Err(err.to_string());
+            }
+        };
+        self.finish_edit(handle, handler, outcome)
+    }
+
+    fn rollback_failed_batch(&mut self, handle: u32) {
+        if self.edit_batch.is_none() {
+            return;
+        }
+        let restored = self.fields.get_mut(&handle).map(|session| {
+            session.abort_batch();
+            session.value().to_owned()
+        });
+        if let Some(value) = restored {
+            if let Ok(node) = self.node_mut(handle) {
+                node.text = value;
+            }
+            let _ = self.refresh_measure(handle);
+        }
+        self.edit_batch = None;
     }
 
     fn edit_handle(&mut self, handle: u32, command: EditCommand) -> Result<(), String> {
@@ -939,19 +1047,7 @@ impl Shell {
         let outcome = match result {
             Ok(outcome) => outcome,
             Err(err) => {
-                if self.edit_batch.is_some() {
-                    let restored = self.fields.get_mut(&handle).map(|session| {
-                        session.abort_batch();
-                        session.value().to_owned()
-                    });
-                    if let Some(value) = restored {
-                        if let Ok(node) = self.node_mut(handle) {
-                            node.text = value;
-                        }
-                        let _ = self.refresh_measure(handle);
-                    }
-                    self.edit_batch = None;
-                }
+                self.rollback_failed_batch(handle);
                 return Err(err.to_string());
             }
         };

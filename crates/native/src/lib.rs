@@ -479,7 +479,7 @@ pub extern "C" fn bubble_edit(
 /// Open a nested edit batch on the focused field. Events are published by
 /// `bubble_edit_batch_end`.
 #[no_mangle]
-pub extern "C" fn bubble_edit_batch_begin() -> i32 {
+pub extern "C" fn bubble_edit_batch_begin(session: u64) -> i32 {
     let result = catch(|| {
         let engine = engine()?;
         drain_pending(&engine.shared)?;
@@ -489,6 +489,7 @@ pub extern "C" fn bubble_edit_batch_begin() -> i32 {
                 .shell
                 .lock()
                 .map_err(|_| "tree lock poisoned".to_string())?;
+            check_edit_session(&shell, session)?;
             shell.begin_edit_batch()?;
             shell.take_edit_events()
         };
@@ -500,7 +501,7 @@ pub extern "C" fn bubble_edit_batch_begin() -> i32 {
 
 /// Close one batch level. The outermost level emits one delta event.
 #[no_mangle]
-pub extern "C" fn bubble_edit_batch_end() -> i32 {
+pub extern "C" fn bubble_edit_batch_end(session: u64) -> i32 {
     let result = catch(|| {
         let engine = engine()?;
         drain_pending(&engine.shared)?;
@@ -510,7 +511,259 @@ pub extern "C" fn bubble_edit_batch_end() -> i32 {
                 .shell
                 .lock()
                 .map_err(|_| "tree lock poisoned".to_string())?;
+            check_edit_session(&shell, session)?;
             shell.end_edit_batch()?;
+            shell.take_edit_events()
+        };
+        send_edits(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
+}
+
+/// Read the focused editing snapshot. `comp_end` is `u32::MAX` when no
+/// composition range is active; `composing` is 0 or 1.
+#[no_mangle]
+pub extern "C" fn bubble_edit_snapshot(
+    session: *mut u64,
+    revision: *mut u64,
+    anchor: *mut u32,
+    active: *mut u32,
+    comp_start: *mut u32,
+    comp_end: *mut u32,
+    composing: *mut u32,
+) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let state = {
+            let shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            shell.focused_state()?
+        };
+        unsafe {
+            if !session.is_null() {
+                *session = state.session.get();
+            }
+            if !revision.is_null() {
+                *revision = state.revision;
+            }
+            if !anchor.is_null() {
+                *anchor = state.selection.anchor.offset;
+            }
+            if !active.is_null() {
+                *active = state.selection.active.offset;
+            }
+            let (start, end) = state.composition.unwrap_or((0, u32::MAX));
+            if !comp_start.is_null() {
+                *comp_start = start;
+            }
+            if !comp_end.is_null() {
+                *comp_end = end;
+            }
+            if !composing.is_null() {
+                *composing = u32::from(state.composing);
+            }
+        }
+        Ok(())
+    });
+    finish(result)
+}
+
+fn check_edit_session(shell: &Shell, session: u64) -> Result<(), String> {
+    let state = shell.focused_state()?;
+    if state.session.get() != session {
+        return Err("stale editing session".into());
+    }
+    Ok(())
+}
+
+fn read_utf8(text: *const u8, len: u32) -> Result<String, String> {
+    let bytes = if text.is_null() || len == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(text, len as usize) }.to_vec()
+    };
+    String::from_utf8(bytes).map_err(|_| "edit text is not utf-8".to_string())
+}
+
+/// Replace `start..end` with UTF-8 text and apply Android's
+/// `newCursorPosition`. `composing` 1 keeps/starts composition.
+#[no_mangle]
+pub extern "C" fn bubble_edit_replace(
+    session: u64,
+    start: u32,
+    end: u32,
+    text: *const u8,
+    text_len: u32,
+    new_cursor_position: i32,
+    composing: u32,
+) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let text = read_utf8(text, text_len)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            check_edit_session(&shell, session)?;
+            shell.replace_with_cursor(
+                start,
+                end,
+                &text,
+                new_cursor_position,
+                composing != 0,
+            )?;
+            shell.take_edit_events()
+        };
+        send_edits(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
+}
+
+/// Delete UTF-16 units around the focused selection.
+#[no_mangle]
+pub extern "C" fn bubble_edit_delete_surrounding(
+    session: u64,
+    before: u32,
+    after: u32,
+) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            check_edit_session(&shell, session)?;
+            shell.delete_surrounding(before, after)?;
+            shell.take_edit_events()
+        };
+        send_edits(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
+}
+
+/// Delete code points around the focused selection.
+#[no_mangle]
+pub extern "C" fn bubble_edit_delete_surrounding_code_points(
+    session: u64,
+    before: u32,
+    after: u32,
+) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            check_edit_session(&shell, session)?;
+            shell.delete_surrounding_code_points(before, after)?;
+            shell.take_edit_events()
+        };
+        send_edits(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
+}
+
+#[no_mangle]
+pub extern "C" fn bubble_edit_set_composition(session: u64, start: u32, end: u32) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            check_edit_session(&shell, session)?;
+            shell.set_composition_region(start, end)?;
+            shell.take_edit_events()
+        };
+        send_edits(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
+}
+
+#[no_mangle]
+pub extern "C" fn bubble_edit_finish_composition(session: u64) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            check_edit_session(&shell, session)?;
+            shell.finish_composition()?;
+            shell.take_edit_events()
+        };
+        send_edits(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
+}
+
+#[no_mangle]
+pub extern "C" fn bubble_edit_select(session: u64, anchor: u32, active: u32) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            check_edit_session(&shell, session)?;
+            shell.edit(EditCommand::SetSelection {
+                start: anchor,
+                end: active,
+            })?;
+            shell.take_edit_events()
+        };
+        send_edits(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
+}
+
+/// Abort any open edit batch without committing it.
+#[no_mangle]
+pub extern "C" fn bubble_edit_batch_abort(session: u64) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            if shell
+                .focused_state()
+                .is_ok_and(|state| state.session.get() == session)
+            {
+                shell.abort_edit_batch();
+            }
             shell.take_edit_events()
         };
         send_edits(&engine.shared, events);
@@ -1327,16 +1580,141 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editBatchBegin<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        session: jlong,
     ) -> jint {
-        super::bubble_edit_batch_begin()
+        super::bubble_edit_batch_begin(session as u64)
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editBatchEnd<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        session: jlong,
     ) -> jint {
-        super::bubble_edit_batch_end()
+        super::bubble_edit_batch_end(session as u64)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editBatchAbort<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        session: jlong,
+    ) -> jint {
+        super::bubble_edit_batch_abort(session as u64)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editSnapshot<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+    ) -> jni::objects::JLongArray<'a> {
+        let (mut session, mut revision) = (0u64, 0u64);
+        let (mut anchor, mut active) = (0u32, 0u32);
+        let (mut comp_start, mut comp_end, mut composing) = (0u32, 0u32, 0u32);
+        let code = super::bubble_edit_snapshot(
+            &mut session,
+            &mut revision,
+            &mut anchor,
+            &mut active,
+            &mut comp_start,
+            &mut comp_end,
+            &mut composing,
+        );
+        if code != 0 {
+            return env.new_long_array(0).expect("long array");
+        }
+        let values = [
+            session as i64,
+            revision as i64,
+            anchor as i64,
+            active as i64,
+            comp_start as i64,
+            comp_end as i64,
+            composing as i64,
+        ];
+        let array = env.new_long_array(7).expect("long array");
+        let _ = env.set_long_array_region(&array, 0, &values);
+        array
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editReplace<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        session: jlong,
+        start: jint,
+        end: jint,
+        text: JByteArray<'a>,
+        new_cursor_position: jint,
+        composing: jint,
+    ) -> jint {
+        let bytes = env.convert_byte_array(text).unwrap_or_default();
+        super::bubble_edit_replace(
+            session as u64,
+            start as u32,
+            end as u32,
+            bytes.as_ptr(),
+            bytes.len() as u32,
+            new_cursor_position,
+            composing as u32,
+        )
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editDeleteSurrounding<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        session: jlong,
+        before: jint,
+        after: jint,
+    ) -> jint {
+        super::bubble_edit_delete_surrounding(session as u64, before as u32, after as u32)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editDeleteSurroundingCodePoints<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        session: jlong,
+        before: jint,
+        after: jint,
+    ) -> jint {
+        super::bubble_edit_delete_surrounding_code_points(
+            session as u64,
+            before as u32,
+            after as u32,
+        )
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editSetComposition<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        session: jlong,
+        start: jint,
+        end: jint,
+    ) -> jint {
+        super::bubble_edit_set_composition(session as u64, start as u32, end as u32)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editFinishComposition<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        session: jlong,
+    ) -> jint {
+        super::bubble_edit_finish_composition(session as u64)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editSelect<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        session: jlong,
+        anchor: jint,
+        active: jint,
+    ) -> jint {
+        super::bubble_edit_select(session as u64, anchor as u32, active as u32)
     }
 
     #[no_mangle]

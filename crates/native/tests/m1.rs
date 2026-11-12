@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use bubble_ffi::{
     bubble_create, bubble_destroy, bubble_edit, bubble_edit_batch_begin, bubble_edit_batch_end,
-    bubble_eval, bubble_faults, bubble_finish_request,
+    bubble_edit_delete_surrounding, bubble_edit_finish_composition, bubble_edit_replace,
+    bubble_edit_snapshot, bubble_eval, bubble_faults, bubble_finish_request,
     bubble_font_count, bubble_font_epoch, bubble_frame, bubble_generation, bubble_last_error,
     bubble_load, bubble_node_box, bubble_node_text, bubble_pointer, bubble_poll_request,
     bubble_post_eval, bubble_register_font, bubble_scroll, bubble_scroll_y_of, bubble_set_visible,
@@ -287,7 +288,23 @@ fn edit_batch_writes_through_the_focused_session() {
         error()
     );
     assert_eq!(bubble_edit(0, ptr::null(), 0, 4, 0), 0, "{}", error());
-    assert_eq!(bubble_edit_batch_begin(), 0, "{}", error());
+    let (mut session, mut revision) = (0u64, 0u64);
+    assert_eq!(
+        bubble_edit_snapshot(
+            &mut session,
+            &mut revision,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        ),
+        0,
+        "{}",
+        error()
+    );
+    assert_ne!(session, 0);
+    assert_eq!(bubble_edit_batch_begin(session), 0, "{}", error());
     let a = CString::new("a").unwrap();
     let b = CString::new("b").unwrap();
     assert_eq!(
@@ -304,12 +321,119 @@ fn edit_batch_writes_through_the_focused_session() {
     );
     assert_eq!(text(4), "ab");
     let generation = bubble_generation();
-    assert_eq!(bubble_edit_batch_end(), 0, "{}", error());
+    assert_eq!(bubble_edit_batch_end(session), 0, "{}", error());
     assert_eq!(text(4), "ab");
     let deadline = Instant::now() + Duration::from_secs(2);
     while bubble_generation() == generation && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_ne!(bubble_generation(), generation, "{}", status());
-    assert_ne!(bubble_edit_batch_end(), 0);
+    assert_ne!(bubble_edit_batch_end(session), 0);
+}
+
+fn edit_snapshot() -> (u64, u64, u32, u32, u32, u32, u32) {
+    let (mut session, mut revision) = (0u64, 0u64);
+    let (mut anchor, mut active) = (0u32, 0u32);
+    let (mut comp_start, mut comp_end, mut composing) = (0u32, 0u32, 0u32);
+    assert_eq!(
+        bubble_edit_snapshot(
+            &mut session,
+            &mut revision,
+            &mut anchor,
+            &mut active,
+            &mut comp_start,
+            &mut comp_end,
+            &mut composing,
+        ),
+        0,
+        "{}",
+        error()
+    );
+    (session, revision, anchor, active, comp_start, comp_end, composing)
+}
+
+#[test]
+fn ime_transactions_apply_new_cursor_and_composition() {
+    let _guard = exclusive();
+    bubble_destroy();
+    assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    load_counter();
+    let mut paint = ptr::null();
+    let mut len = 0u32;
+    assert_eq!(
+        bubble_frame(320.0, 240.0, &mut paint, &mut len),
+        0,
+        "{}",
+        error()
+    );
+    assert_eq!(bubble_edit(0, ptr::null(), 0, 4, 0), 0, "{}", error());
+    let (session, _, _, _, _, _, _) = edit_snapshot();
+    assert_ne!(session, 0);
+
+    let ab = CString::new("ab").unwrap();
+    assert_eq!(
+        bubble_edit_replace(
+            session,
+            0,
+            0,
+            ab.as_ptr() as *const u8,
+            2,
+            1,
+            0,
+        ),
+        0,
+        "{}",
+        error()
+    );
+    let (_, _, anchor, active, _comp_start, comp_end, composing) = edit_snapshot();
+    assert_eq!((anchor, active), (2, 2));
+    assert_eq!(comp_end, u32::MAX);
+    assert_eq!(composing, 0);
+    assert_eq!(text(4), "ab");
+
+    let mark = CString::new("X").unwrap();
+    assert_eq!(
+        bubble_edit_replace(
+            session,
+            2,
+            2,
+            mark.as_ptr() as *const u8,
+            1,
+            1,
+            1,
+        ),
+        0,
+        "{}",
+        error()
+    );
+    let (_, _, anchor, active, comp_start, comp_end, composing) = edit_snapshot();
+    assert_eq!((anchor, active), (3, 3));
+    assert_eq!((comp_start, comp_end, composing), (2, 3, 1));
+    assert_eq!(text(4), "abX");
+
+    assert_eq!(
+        bubble_edit_finish_composition(session),
+        0,
+        "{}",
+        error()
+    );
+    let (_, _, _, _, _, comp_end, composing) = edit_snapshot();
+    assert_eq!(comp_end, u32::MAX);
+    assert_eq!(composing, 0);
+
+    assert_eq!(
+        bubble_edit_delete_surrounding(session, 1, 0),
+        0,
+        "{}",
+        error()
+    );
+    let (_, _, anchor, active, _, _, _) = edit_snapshot();
+    assert_eq!((anchor, active), (2, 2));
+    assert_eq!(text(4), "ab");
+
+    assert_ne!(
+        bubble_edit_delete_surrounding(session + 1, 1, 0),
+        0,
+        "stale session must be rejected"
+    );
 }

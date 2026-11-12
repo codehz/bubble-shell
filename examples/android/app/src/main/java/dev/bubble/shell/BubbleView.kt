@@ -217,34 +217,48 @@ class BubbleView(context: Context) : View(context) {
         refresh()
     }
 
-    private var composing = false
-    private var composingText = ""
+    private data class EditSnapshot(
+        val session: Long,
+        val revision: Long,
+        val anchor: Int,
+        val active: Int,
+        val compositionStart: Int,
+        val compositionEnd: Int,
+        val composing: Boolean,
+    ) {
+        val start: Int get() = minOf(anchor, active)
+        val end: Int get() = maxOf(anchor, active)
+        val hasComposition: Boolean get() = compositionEnd >= 0
+    }
+
     private var editorType = InputType.TYPE_CLASS_TEXT
     private var autofillHints = emptyArray<String>()
 
-    private fun sendEdit(action: Int, text: String, a: Int = 0, b: Int = 0) {
-        BubbleNative.edit(action, text.toByteArray(Charsets.UTF_8), a, b)
-        refresh()
-        publishCursor()
-    }
-
-    private fun selection(): Pair<Int, Int> {
-        val raw = BubbleNative.selection()
-        if (raw.size < 2) return 0 to 0
-        return raw[0] to raw[1]
+    private fun editSnapshot(): EditSnapshot? {
+        val raw = BubbleNative.editSnapshot()
+        if (raw.size < 7) return null
+        return EditSnapshot(
+            session = raw[0],
+            revision = raw[1],
+            anchor = raw[2].toInt(),
+            active = raw[3].toInt(),
+            compositionStart = raw[4].toInt(),
+            compositionEnd = raw[5].toInt(),
+            composing = raw[6] != 0L,
+        )
     }
 
     private fun publishCursor() {
         val caret = BubbleNative.caret()
         if (caret.size < 4) return
+        val snapshot = editSnapshot() ?: return
         val density = resources.displayMetrics.density
         val x = paddingLeft + caret[0] * density
         val top = paddingTop + caret[1] * density
         val bottom = top + caret[3] * density
-        val (start, end) = selection()
         val info = CursorAnchorInfo.Builder()
             .setMatrix(android.graphics.Matrix())
-            .setSelectionRange(start, end)
+            .setSelectionRange(snapshot.start, snapshot.end)
             .setInsertionMarkerLocation(x, top, bottom, bottom, CursorAnchorInfo.FLAG_HAS_VISIBLE_REGION)
             .build()
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
@@ -257,98 +271,210 @@ class BubbleView(context: Context) : View(context) {
         outAttrs.inputType = editorType
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
         setAutofillHints(*autofillHints)
-        val (selStart, selEnd) = selection()
-        outAttrs.initialSelStart = selStart
-        outAttrs.initialSelEnd = selEnd
+        val initial = editSnapshot()
+        outAttrs.initialSelStart = initial?.start ?: 0
+        outAttrs.initialSelEnd = initial?.end ?: 0
         return object : BaseInputConnection(this, true) {
-            override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
-                val value = text.toString()
-                if (composing) {
-                    sendEdit(7, value)
-                    composing = false
-                    composingText = ""
-                } else if (value.isNotEmpty()) {
-                    sendEdit(1, value)
+            private val expectedSession = initial?.session ?: 0L
+            private var batchDepth = 0
+
+            private fun current(): EditSnapshot? {
+                val snapshot = editSnapshot() ?: return null
+                return if (snapshot.session == expectedSession) snapshot else null
+            }
+
+            private fun bytes(text: CharSequence): ByteArray =
+                text.toString().toByteArray(Charsets.UTF_8)
+
+            private fun wrote(code: Int): Boolean {
+                if (code != 0) return false
+                if (batchDepth == 0) {
+                    refresh()
+                    publishCursor()
                 }
                 return true
+            }
+
+            private fun replaceRange(
+                snapshot: EditSnapshot,
+                composing: Boolean,
+                text: CharSequence,
+                newCursorPosition: Int,
+            ): Boolean {
+                val (start, end) = if (snapshot.hasComposition) {
+                    snapshot.compositionStart to snapshot.compositionEnd
+                } else {
+                    snapshot.start to snapshot.end
+                }
+                val code = BubbleNative.editReplace(
+                    snapshot.session,
+                    start,
+                    end,
+                    bytes(text),
+                    newCursorPosition,
+                    if (composing) 1 else 0,
+                )
+                return wrote(code)
+            }
+
+            override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
+                val snapshot = current() ?: return false
+                return replaceRange(snapshot, false, text, newCursorPosition)
             }
 
             override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
-                val value = text.toString()
-                if (!composing) {
-                    sendEdit(5, "")
-                    composing = true
-                }
-                composingText = value
-                sendEdit(6, value)
-                return true
+                val snapshot = current() ?: return false
+                return replaceRange(snapshot, true, text, newCursorPosition)
             }
 
             override fun finishComposingText(): Boolean {
-                if (composing) {
-                    sendEdit(7, composingText)
-                    composing = false
-                    composingText = ""
-                }
-                return true
+                val snapshot = current() ?: return false
+                if (!snapshot.composing) return true
+                return wrote(BubbleNative.editFinishComposition(snapshot.session))
+            }
+
+            override fun setComposingRegion(start: Int, end: Int): Boolean {
+                val snapshot = current() ?: return false
+                return wrote(BubbleNative.editSetComposition(snapshot.session, start, end))
             }
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-                repeat(beforeLength.coerceAtLeast(0)) { sendEdit(2, "") }
-                repeat(afterLength.coerceAtLeast(0)) { sendEdit(3, "") }
-                return true
+                val snapshot = current() ?: return false
+                return wrote(
+                    BubbleNative.editDeleteSurrounding(
+                        snapshot.session,
+                        beforeLength.coerceAtLeast(0),
+                        afterLength.coerceAtLeast(0),
+                    ),
+                )
+            }
+
+            override fun deleteSurroundingTextInCodePoints(
+                beforeLength: Int,
+                afterLength: Int,
+            ): Boolean {
+                val snapshot = current() ?: return false
+                return wrote(
+                    BubbleNative.editDeleteSurroundingCodePoints(
+                        snapshot.session,
+                        beforeLength.coerceAtLeast(0),
+                        afterLength.coerceAtLeast(0),
+                    ),
+                )
             }
 
             override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence {
+                val snapshot = current() ?: return ""
                 val value = BubbleNative.focusedText()
-                val (start, _) = selection()
-                val from = (start - n).coerceAtLeast(0).coerceAtMost(value.length)
-                return value.substring(from, start.coerceIn(0, value.length))
+                val cursor = snapshot.active.coerceIn(0, value.length)
+                val from = if (n < 0) 0 else (cursor - n).coerceAtLeast(0)
+                return value.substring(from, cursor)
             }
 
             override fun getTextAfterCursor(n: Int, flags: Int): CharSequence {
+                val snapshot = current() ?: return ""
                 val value = BubbleNative.focusedText()
-                val (_, end) = selection()
-                val from = end.coerceIn(0, value.length)
-                val to = (from + n).coerceAtMost(value.length)
-                return value.substring(from, to)
+                val cursor = snapshot.active.coerceIn(0, value.length)
+                val to = if (n < 0) value.length else (cursor + n).coerceAtMost(value.length)
+                return value.substring(cursor, to)
             }
 
             override fun getSelectedText(flags: Int): CharSequence? {
+                val snapshot = current() ?: return null
                 val value = BubbleNative.focusedText()
-                val (rawStart, rawEnd) = selection()
-                val start = minOf(rawStart, rawEnd).coerceIn(0, value.length)
-                val end = maxOf(rawStart, rawEnd).coerceIn(0, value.length)
+                val start = snapshot.start.coerceIn(0, value.length)
+                val end = snapshot.end.coerceIn(0, value.length)
                 if (start == end) return null
                 return value.substring(start, end)
             }
 
             override fun setSelection(start: Int, end: Int): Boolean {
-                sendEdit(4, "", start, end)
+                val snapshot = current() ?: return false
+                return wrote(BubbleNative.editSelect(snapshot.session, start, end))
+            }
+
+            override fun beginBatchEdit(): Boolean {
+                val snapshot = current() ?: return false
+                if (BubbleNative.editBatchBegin(snapshot.session) != 0) return false
+                batchDepth += 1
                 return true
             }
 
+            override fun endBatchEdit(): Boolean {
+                if (batchDepth == 0) return false
+                val snapshot = current()
+                if (snapshot == null) {
+                    BubbleNative.editBatchAbort(expectedSession)
+                    batchDepth = 0
+                    return false
+                }
+                if (BubbleNative.editBatchEnd(snapshot.session) != 0) return false
+                batchDepth -= 1
+                if (batchDepth == 0) {
+                    refresh()
+                    publishCursor()
+                }
+                return true
+            }
+
+            override fun closeConnection() {
+                if (batchDepth > 0) {
+                    BubbleNative.editBatchAbort(expectedSession)
+                    batchDepth = 0
+                }
+                super.closeConnection()
+            }
+
+            override fun getExtractedText(
+                request: android.view.inputmethod.ExtractedTextRequest?,
+                flags: Int,
+            ): android.view.inputmethod.ExtractedText? {
+                val snapshot = current() ?: return null
+                val value = BubbleNative.focusedText()
+                val extracted = android.view.inputmethod.ExtractedText()
+                extracted.text = value
+                extracted.startOffset = 0
+                extracted.partialStartOffset = -1
+                extracted.partialEndOffset = -1
+                extracted.selectionStart = snapshot.start
+                extracted.selectionEnd = snapshot.end
+                extracted.flags = if (
+                    (editorType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) == 0
+                ) {
+                    android.view.inputmethod.ExtractedText.FLAG_SINGLE_LINE
+                } else {
+                    0
+                }
+                return extracted
+            }
+
             override fun sendKeyEvent(event: android.view.KeyEvent): Boolean {
-                if (event.action == android.view.KeyEvent.ACTION_DOWN && event.keyCode == android.view.KeyEvent.KEYCODE_DEL) {
-                    sendEdit(2, "")
-                    return true
+                if (event.action != android.view.KeyEvent.ACTION_DOWN) {
+                    return super.sendKeyEvent(event)
                 }
-                if (event.action == android.view.KeyEvent.ACTION_DOWN && event.keyCode == android.view.KeyEvent.KEYCODE_FORWARD_DEL) {
-                    sendEdit(3, "")
-                    return true
+                val snapshot = current() ?: return false
+                return when (event.keyCode) {
+                    android.view.KeyEvent.KEYCODE_DEL -> {
+                        if (snapshot.hasComposition) {
+                            replaceRange(snapshot, false, "", 1)
+                        } else {
+                            wrote(BubbleNative.editDeleteSurrounding(snapshot.session, 1, 0))
+                        }
+                    }
+                    android.view.KeyEvent.KEYCODE_FORWARD_DEL -> {
+                        if (snapshot.hasComposition) {
+                            replaceRange(snapshot, false, "", 1)
+                        } else {
+                            wrote(BubbleNative.editDeleteSurrounding(snapshot.session, 0, 1))
+                        }
+                    }
+                    else -> super.sendKeyEvent(event)
                 }
-                return super.sendKeyEvent(event)
             }
 
             override fun requestCursorUpdates(cursorUpdateMode: Int): Boolean {
                 publishCursor()
                 return true
-            }
-
-            private fun selection(): Pair<Int, Int> {
-                val raw = BubbleNative.selection()
-                if (raw.size < 2) return 0 to 0
-                return raw[0] to raw[1]
             }
         }
     }
