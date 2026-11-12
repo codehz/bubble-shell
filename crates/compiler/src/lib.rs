@@ -1046,7 +1046,8 @@ fn prune_shell_imports(program: &mut Program<'_>) {
     while index < program.body.len() {
         let drop = match &mut program.body[index] {
             Statement::ImportDeclaration(declaration) => {
-                let is_shell = declaration.source.value.as_str() == Some(SHELL_MODULE);
+                let source = declaration.source.value.as_str();
+                let is_shell = source == Some(SHELL_MODULE) || source == Some(RT_MODULE);
                 match declaration.specifiers.as_mut() {
                     Some(specifiers) if is_shell => {
                         specifiers.retain(|specifier| {

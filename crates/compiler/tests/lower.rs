@@ -31,7 +31,8 @@ ticks.update((n) => n + 1);
     assert!(code.contains("from \"bubble-shell\""), "{code}");
     assert!(code.contains("signal"), "{code}");
     assert!(!code.contains("import { signal, mount }"), "{code}");
-    assert!(code.contains("from \"bubble:rt\""), "{code}");
+    // A module without JSX does not need the runtime module at all.
+    assert!(!code.contains("bubble:rt"), "{code}");
 }
 
 #[test]
