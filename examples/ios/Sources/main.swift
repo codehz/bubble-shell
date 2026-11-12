@@ -90,6 +90,7 @@ func bubble_last_error() -> UnsafePointer<CChar>?
 struct BubbleHost {
     var measure: (@convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, Float, Float, UInt16, Float, Int32, UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?) -> Void)?
     var ctx: UnsafeMutableRawPointer?
+    var layout: (@convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, Float, Float, Float, UInt16, UInt8, Float, UInt64, UnsafeMutablePointer<UInt8>?, UInt32) -> Int32)?
 }
 
 var hostFamily = "Arial"
@@ -116,6 +117,109 @@ let measure: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UI
         outH?.pointee = Float(ceil(rect.height))
     }
 }
+
+let layoutText: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, Float, Float, Float, UInt16, UInt8, Float, UInt64, UnsafeMutablePointer<UInt8>?, UInt32) -> Int32 = { _, text, len, width, fontSize, lineHeight, weight, align, density, revision, out, cap in
+    let bytes = text.map { Array(UnsafeBufferPointer(start: $0, count: Int(len))) } ?? []
+    let string = String(bytes: bytes, encoding: .utf8) ?? ""
+    let data = layoutSnapshot(string, CGFloat(width), CGFloat(fontSize), CGFloat(lineHeight), weight, align, density, revision)
+    if data.count > Int(cap) { return Int32(data.count) }
+    guard let out else { return -1 }
+    data.withUnsafeBytes { raw in
+        if let base = raw.bindMemory(to: UInt8.self).baseAddress {
+            out.update(from: base, count: data.count)
+        }
+    }
+    return Int32(data.count)
+}
+
+func layoutSnapshot(_ text: String, _ width: CGFloat, _ fontSize: CGFloat, _ lineHeight: CGFloat, _ weight: UInt16, _ align: UInt8, _ density: Float, _ revision: UInt64) -> Data {
+    let font = hostFamily.isEmpty
+        ? UIFont.systemFont(ofSize: fontSize, weight: weight >= 600 ? .semibold : .regular)
+        : (UIFont(name: hostFamily, size: fontSize) ?? UIFont.systemFont(ofSize: fontSize))
+    let paragraph = NSMutableParagraphStyle()
+    if lineHeight > 0 {
+        paragraph.minimumLineHeight = lineHeight
+        paragraph.maximumLineHeight = lineHeight
+    }
+    paragraph.alignment = align == 1 ? .center : (align == 2 ? .right : .left)
+    let attributed = NSAttributedString(string: text, attributes: [.font: font, .paragraphStyle: paragraph])
+    let setter = CTFramesetterCreateWithAttributedString(attributed)
+    let pathHeight: CGFloat = 100000
+    let path = CGPath(rect: CGRect(x: 0, y: 0, width: max(width, 1), height: pathHeight), transform: nil)
+    let frame = CTFramesetterCreateFrame(setter, CFRange(location: 0, length: attributed.length), path, nil)
+    let lines = (CTFrameGetLines(frame) as? [CTLine]) ?? []
+    var origins = Array(repeating: CGPoint.zero, count: max(lines.count, 1))
+    if !lines.isEmpty {
+        CTFrameGetLineOrigins(frame, CFRange(location: 0, length: 0), &origins)
+    }
+    let units = text.utf16.count
+    var carets = Array(repeating: (Float(0), Float(0), Float(lineHeight)), count: units + 1)
+    var runs: [(UInt32, UInt32, Float, Float, Float, Float, UInt8)] = []
+    if lines.isEmpty {
+        carets[0] = (0, 0, Float(lineHeight))
+    }
+    for (index, line) in lines.enumerated() {
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        var leading: CGFloat = 0
+        CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+        let y = Float(pathHeight - origins[index].y - ascent)
+        let h = Float(max(lineHeight, ascent + descent))
+        let range = CTLineGetStringRange(line)
+        let start = range.location
+        var end = range.location + range.length
+        let ns = text as NSString
+        while end > start {
+            let ch = ns.character(at: end - 1)
+            if ch != 10 && ch != 13 { break }
+            end -= 1
+        }
+        if start <= units {
+            for unit in start...min(end, units) {
+                let x = Float(CTLineGetOffsetForStringIndex(line, unit, nil))
+                carets[unit] = (x, y, h)
+            }
+        }
+        if end > start {
+            let glyphRuns = (CTLineGetGlyphRuns(line) as? [CTRun]) ?? []
+            for run in glyphRuns {
+                let rr = CTRunGetStringRange(run)
+                let runStart = max(rr.location, start)
+                let runEnd = min(rr.location + rr.length, end)
+                if runStart >= runEnd { continue }
+                let x0 = CGFloat(CTLineGetOffsetForStringIndex(line, runStart, nil))
+                let x1 = CGFloat(CTLineGetOffsetForStringIndex(line, runEnd, nil))
+                let level: UInt8 = CTRunGetStatus(run).contains(.rightToLeft) ? 1 : 0
+                runs.append((UInt32(runStart), UInt32(runEnd), Float(min(x0, x1)), y, Float(abs(x1 - x0)), h, level))
+            }
+        }
+    }
+    var data = Data()
+    func put32(_ value: UInt32) { var v = value.littleEndian; data.append(Data(bytes: &v, count: 4)) }
+    func put16(_ value: UInt16) { var v = value.littleEndian; data.append(Data(bytes: &v, count: 2)) }
+    func put64(_ value: UInt64) { var v = value.littleEndian; data.append(Data(bytes: &v, count: 8)) }
+    func putF(_ value: Float) { var v = value.bitPattern.littleEndian; data.append(Data(bytes: &v, count: 4)) }
+    put32(0x314C5342)
+    put32(UInt32(units))
+    put32(UInt32(runs.count))
+    putF(Float(width))
+    putF(Float(fontSize))
+    putF(Float(lineHeight))
+    putF(density)
+    put16(weight)
+    data.append(align)
+    data.append(0)
+    put64(revision)
+    for caret in carets {
+        putF(caret.0); putF(caret.1); putF(caret.2)
+    }
+    for run in runs {
+        put32(run.0); put32(run.1); putF(run.2); putF(run.3); putF(run.4); putF(run.5)
+        data.append(run.6); data.append(0); data.append(0); data.append(0)
+    }
+    return data
+}
+
 
 final class BubbleView: UIView {
     var paint = Data()
@@ -321,11 +425,26 @@ final class BubbleView: UIView {
                     paragraph.maximumLineHeight = lineHeight
                 }
                 paragraph.alignment = align == 1 ? .center : (align == 2 ? .right : .left)
-                (text as NSString).draw(in: CGRect(x: x, y: y, width: max(w, 1), height: max(h, 1)), withAttributes: [
+                let color = colorOf(red, green, blue, alpha)
+                let attributed = NSAttributedString(string: text, attributes: [
                     .font: uiFont,
-                    .foregroundColor: colorOf(red, green, blue, alpha),
+                    .foregroundColor: color,
                     .paragraphStyle: paragraph,
                 ])
+                let pathHeight: CGFloat = 100000
+                let setter = CTFramesetterCreateWithAttributedString(attributed)
+                let path = CGPath(rect: CGRect(x: 0, y: 0, width: max(CGFloat(w), 1), height: pathHeight), transform: nil)
+                let frame = CTFramesetterCreateFrame(setter, CFRange(location: 0, length: attributed.length), path, nil)
+                if let ctx = UIGraphicsGetCurrentContext() {
+                    ctx.saveGState()
+                    ctx.translateBy(x: CGFloat(x), y: CGFloat(y))
+                    ctx.clip(to: CGRect(x: 0, y: 0, width: CGFloat(max(w, 0)), height: CGFloat(max(h, 0))))
+                    ctx.translateBy(x: 0, y: pathHeight)
+                    ctx.scaleBy(x: 1, y: -1)
+                    ctx.setFillColor(color.cgColor)
+                    CTFrameDraw(frame, ctx)
+                    ctx.restoreGState()
+                }
             case 7:
                 guard let x = f32(), let y = f32(), let w = f32(), let h = f32(), let radius = f32(), let fit = u8(), let nbytes = u32() else { return }
                 guard let raw = take(Int(nbytes)) else { return }
@@ -1024,7 +1143,7 @@ final class AppDriver {
     }
 
     func start() {
-        var host = BubbleHost(measure: measure, ctx: nil)
+        var host = BubbleHost(measure: measure, ctx: nil, layout: layoutText)
         guard bubble_create(&host) == 0 else { return }
         engineReady = true
         bubble_set_visible(appVisible ? 1 : 0)

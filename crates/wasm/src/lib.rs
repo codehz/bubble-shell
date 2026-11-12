@@ -9,9 +9,10 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
 use bubble_core::{
-    encode_edit_events, encode_events, encode_paint, encode_set_text, validate_bundle_hashes,
-    ComputationKind, EditCommand, EditEvent, GestureEvent, GestureKind, NodeDesc, Op, PointerAction,
-    PointerInput, Sched, Shell, Turn, Value, DEFERRED_PROPS, SPAWN_PROPS,
+    decode_layout, encode_edit_events, encode_events, encode_paint, encode_set_text,
+    validate_bundle_hashes, ComputationKind, EditCommand, EditEvent, GestureEvent, GestureKind,
+    LayoutRequest, NodeDesc, Op, PointerAction, PointerInput, Sched, Shell, Turn, Value,
+    DEFERRED_PROPS, SPAWN_PROPS,
 };
 
 thread_local! {
@@ -37,6 +38,20 @@ unsafe extern "C" {
         avail: f32,
         out_ptr: u32,
     );
+    fn host_layout(
+        text_ptr: u32,
+        text_len: u32,
+        width: f32,
+        font_size: f32,
+        line_height: f32,
+        weight: u32,
+        align: u32,
+        density: f32,
+        revision_lo: u32,
+        revision_hi: u32,
+        out_ptr: u32,
+        out_cap: u32,
+    ) -> i32;
     fn host_run(id: u32) -> i32;
     fn host_cleanup(id: u32);
     fn host_body();
@@ -58,6 +73,39 @@ impl Sched for WasmHost {
 fn set_error(message: String) {
     ERROR.with(|slot| *slot.borrow_mut() = message);
 }
+
+fn wasm_layout(req: &LayoutRequest<'_>) -> Result<bubble_core::LayoutSnapshot, String> {
+    let mut cap = (req.text.len() as u32).saturating_mul(64).saturating_add(4096);
+    for _ in 0..2 {
+        let mut buf = vec![0u8; cap as usize];
+        let n = unsafe {
+            host_layout(
+                req.text.as_ptr() as u32,
+                req.text.len() as u32,
+                req.key.width,
+                req.key.font_size,
+                req.key.line_height,
+                u32::from(req.key.font_weight),
+                u32::from(req.key.align),
+                req.key.density,
+                req.key.revision as u32,
+                (req.key.revision >> 32) as u32,
+                buf.as_mut_ptr() as u32,
+                cap,
+            )
+        };
+        if n < 0 {
+            return Err("host layout failed".into());
+        }
+        if n as u32 > cap {
+            cap = n as u32;
+            continue;
+        }
+        return decode_layout(&buf[..n as usize]);
+    }
+    Err("host layout did not fit".into())
+}
+
 
 fn store_scratch(bytes: Vec<u8>) -> u32 {
     let len = bytes.len() as u32;
@@ -605,22 +653,7 @@ pub extern "C" fn field_at(x: f32, y: f32) -> u32 {
 pub extern "C" fn focus_at(x: f32, y: f32) -> u32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            let handle = shell.focus_point(x, y, &mut |text, font_size, line_height, font_weight, max_width| {
-                let mut out = [0f32; 2];
-                unsafe {
-                    host_measure(
-                        text.as_ptr() as u32,
-                        text.len() as u32,
-                        font_size,
-                        line_height,
-                        font_weight as u32,
-                        u32::from(max_width.is_some()),
-                        max_width.unwrap_or(0.0),
-                        out.as_mut_ptr() as u32,
-                    );
-                }
-                (out[0], out[1])
-            })?;
+            let handle = shell.focus_point_with(x, y, &mut wasm_layout)?;
             collect_events(shell);
             Ok(handle)
         })
@@ -639,22 +672,7 @@ pub extern "C" fn focus_at(x: f32, y: f32) -> u32 {
 pub extern "C" fn unit_at(x: f32, y: f32) -> u32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            shell.unit_at(x, y, &mut |text, font_size, line_height, font_weight, max_width| {
-                let mut out = [0f32; 2];
-                unsafe {
-                    host_measure(
-                        text.as_ptr() as u32,
-                        text.len() as u32,
-                        font_size,
-                        line_height,
-                        font_weight as u32,
-                        u32::from(max_width.is_some()),
-                        max_width.unwrap_or(0.0),
-                        out.as_mut_ptr() as u32,
-                    );
-                }
-                (out[0], out[1])
-            })
+            shell.unit_at_with(x, y, &mut wasm_layout)
         })
     });
     match result {
@@ -667,7 +685,13 @@ pub extern "C" fn unit_at(x: f32, y: f32) -> u32 {
 #[no_mangle]
 pub extern "C" fn caret_box() -> u32 {
     drain_pending().ok();
-    let Some((x, y, w, h)) = with_shell(|shell| Ok(shell.caret_box())).ok().flatten() else {
+    let Some((x, y, w, h)) = with_shell(|shell| {
+        shell.refresh_caret(&mut wasm_layout)?;
+        Ok(shell.caret_box())
+    })
+    .ok()
+    .flatten()
+    else {
         return store_scratch(Vec::new());
     };
     let mut bytes = Vec::with_capacity(16);
@@ -1285,24 +1309,23 @@ pub extern "C" fn commit() -> u32 {
 pub extern "C" fn layout() -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            shell.layout(
-                &mut |text, font_size, line_height, font_weight, max_width| {
-                    let mut out = [0f32; 2];
-                    unsafe {
-                        host_measure(
-                            text.as_ptr() as u32,
-                            text.len() as u32,
-                            font_size,
-                            line_height,
-                            font_weight as u32,
-                            u32::from(max_width.is_some()),
-                            max_width.unwrap_or(0.0),
-                            out.as_mut_ptr() as u32,
-                        );
-                    }
-                    (out[0], out[1])
-                },
-            )
+            shell.compute_layout(&mut |text, font_size, line_height, font_weight, max_width| {
+                let mut out = [0f32; 2];
+                unsafe {
+                    host_measure(
+                        text.as_ptr() as u32,
+                        text.len() as u32,
+                        font_size,
+                        line_height,
+                        font_weight as u32,
+                        u32::from(max_width.is_some()),
+                        max_width.unwrap_or(0.0),
+                        out.as_mut_ptr() as u32,
+                    );
+                }
+                (out[0], out[1])
+            })?;
+            shell.refresh_caret(&mut wasm_layout)
         })
     });
     match result {

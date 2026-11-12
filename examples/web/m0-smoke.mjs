@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dispatchGestureEvents, setApi } from "./runtime.js";
+import { layoutSnapshot } from "./textlayout.js";
 
 const fixture = process.argv[2] ?? "counter";
 const wasmBytes = readFileSync(new URL("./bubble.wasm", import.meta.url));
@@ -21,6 +22,23 @@ const { instance } = await WebAssembly.instantiate(wasmBytes, {
       const out = new DataView(memory().buffer, outPtr, 8);
       out.setFloat32(0, mode && avail > 0 ? Math.min(width, avail) : width, true);
       out.setFloat32(4, lines * line, true);
+    },
+    host_layout(textPtr, textLen, width, fontSize, lineHeight, weight, align, density, revisionLo, revisionHi, outPtr, outCap) {
+      const text = decoder.decode(new Uint8Array(memory().buffer, textPtr, textLen));
+      const laid = layoutSnapshot({
+        text,
+        width,
+        fontSize,
+        lineHeight,
+        weight,
+        align,
+        density,
+        revision: revisionLo + revisionHi * 2 ** 32,
+        measure: (line) => line.length * fontSize * 0.5,
+      });
+      if (laid.bytes.length > outCap) return laid.bytes.length;
+      new Uint8Array(memory().buffer, outPtr, laid.bytes.length).set(laid.bytes);
+      return laid.bytes.length;
     },
     host_run: (id) => globalThis.__bubbleRun?.(id) ?? 0,
     host_cleanup: (id) => globalThis.__bubbleCleanup?.(id),

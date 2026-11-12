@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use bubble_core::{
-    encode_edit_events, encode_events, encode_paint, EditCommand, EditEvent, GestureEvent,
-    PointerAction, PointerInput, Shell,
+    decode_layout, encode_edit_events, encode_events, encode_paint, wrapping_layout, EditCommand,
+    EditEvent, GestureEvent, LayoutRequest, LayoutSnapshot, PointerAction, PointerInput, Shell,
 };
 
 use script::Cmd;
@@ -30,6 +30,7 @@ pub struct HostRequest {
 
 struct HostFns {
     measure: Option<MeasureFn>,
+    layout: Option<LayoutFn>,
     ctx: usize,
 }
 
@@ -48,6 +49,21 @@ type MeasureFn = extern "C" fn(
     *mut f32,
     *mut f32,
 );
+
+type LayoutFn = extern "C" fn(
+    *mut c_void,
+    *const u8,
+    u32,
+    f32,
+    f32,
+    f32,
+    u16,
+    u8,
+    f32,
+    u64,
+    *mut u8,
+    u32,
+) -> i32;
 
 /// Taffy's compact lengths contain tag bits that are not heap pointers in this
 /// build. The tree is only locked by the caller/frame thread.
@@ -202,11 +218,11 @@ pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
         if slot.is_some() {
             return Err("a shell already exists".into());
         }
-        let (measure, ctx) = unsafe {
+        let (measure, layout, ctx) = unsafe {
             if host.is_null() {
-                (None, 0)
+                (None, None, 0)
             } else {
-                ((*host).measure, (*host).ctx as usize)
+                ((*host).measure, (*host).layout, (*host).ctx as usize)
             }
         };
         let shell = Shell::blank().map_err(|err| err)?;
@@ -215,7 +231,7 @@ pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
             pending: Mutex::new(VecDeque::new()),
             reset: AtomicBool::new(false),
             viewport: Mutex::new((0.0, 0.0)),
-            host: HostFns { measure, ctx },
+            host: HostFns { measure, layout, ctx },
             last_error: Mutex::new(String::new()),
             paint: Mutex::new(Vec::new()),
             status: Mutex::new("created".into()),
@@ -320,28 +336,10 @@ pub extern "C" fn bubble_frame(
             .map_err(|_| "tree lock poisoned".to_string())?;
         shell.set_viewport(width, height);
         let host = &engine.shared.host;
-        shell.layout(&mut |text, font_size, line_height, font_weight, max_width| {
-            if let Some(measure) = host.measure {
-                let mut w = 0.0f32;
-                let mut h = 0.0f32;
-                let has_max = max_width.is_some();
-                measure(
-                    host.ctx as *mut c_void,
-                    text.as_ptr(),
-                    text.len() as u32,
-                    font_size,
-                    line_height,
-                    font_weight,
-                    max_width.unwrap_or(0.0),
-                    i32::from(has_max),
-                    &mut w,
-                    &mut h,
-                );
-                (w, h)
-            } else {
-                fallback_measure(text, font_size, line_height)
-            }
+        shell.compute_layout(&mut |text, font_size, line_height, font_weight, max_width| {
+            host_measure(host, text, font_size, line_height, font_weight, max_width)
         })?;
+        shell.refresh_caret(&mut |req| field_layout(host, req))?;
         let bytes = encode_paint(&shell.paint());
         drop(shell);
         let mut slot = engine
@@ -897,28 +895,7 @@ pub extern "C" fn bubble_focus_at(x: f32, y: f32) -> u32 {
                 .lock()
                 .map_err(|_| "tree lock poisoned".to_string())?;
             let host = &engine.shared.host;
-            let handle = shell.focus_point(x, y, &mut |text, font_size, line_height, font_weight, max_width| {
-                if let Some(measure) = host.measure {
-                    let mut w = 0.0f32;
-                    let mut h = 0.0f32;
-                    let has_max = max_width.is_some();
-                    measure(
-                        host.ctx as *mut c_void,
-                        text.as_ptr(),
-                        text.len() as u32,
-                        font_size,
-                        line_height,
-                        font_weight,
-                        max_width.unwrap_or(0.0),
-                        i32::from(has_max),
-                        &mut w,
-                        &mut h,
-                    );
-                    (w, h)
-                } else {
-                    fallback_measure(text, font_size, line_height)
-                }
-            })?;
+            let handle = shell.focus_point_with(x, y, &mut |req| field_layout(host, req))?;
             let events = shell.take_edit_events();
             Ok::<_, String>((handle, events))
         }?;
@@ -939,11 +916,13 @@ pub extern "C" fn bubble_caret(
     let result = catch(|| {
         let engine = engine()?;
         drain_pending(&engine.shared)?;
-        let shell = engine
+        let mut shell = engine
             .shared
             .shell
             .lock()
             .map_err(|_| "tree lock poisoned".to_string())?;
+        let host = &engine.shared.host;
+        shell.refresh_caret(&mut |req| field_layout(host, req))?;
         let Some((cx, cy, cw, ch)) = shell.caret_box() else {
             return Err("no caret".into());
         };
@@ -1064,6 +1043,45 @@ fn host_measure(
         fallback_measure(text, font_size, line_height)
     }
 }
+fn field_layout(host: &HostFns, req: &LayoutRequest<'_>) -> Result<LayoutSnapshot, String> {
+    if let Some(layout) = host.layout {
+        let mut cap = (req.text.len() as u32).saturating_mul(64).saturating_add(4096);
+        for _ in 0..2 {
+            let mut buf = vec![0u8; cap as usize];
+            let n = layout(
+                host.ctx as *mut c_void,
+                req.text.as_ptr(),
+                req.text.len() as u32,
+                req.key.width,
+                req.key.font_size,
+                req.key.line_height,
+                req.key.font_weight,
+                req.key.align,
+                req.key.density,
+                req.key.revision,
+                buf.as_mut_ptr(),
+                cap,
+            );
+            if n < 0 {
+                return Err("host layout failed".into());
+            }
+            if (n as u32) > cap {
+                cap = n as u32;
+                continue;
+            }
+            return decode_layout(&buf[..n as usize]);
+        }
+        return Err("host layout did not fit".into());
+    }
+    #[cfg(target_os = "android")]
+    if let Some(snapshot) = android::layout_snapshot(req) {
+        return snapshot;
+    }
+    Ok(wrapping_layout(req, |line| {
+        host_measure(host, line, req.key.font_size, req.key.line_height, req.key.font_weight, None).0
+    }))
+}
+
 
 #[no_mangle]
 pub extern "C" fn bubble_unit_at(x: f32, y: f32, unit: *mut u32) -> i32 {
@@ -1076,9 +1094,7 @@ pub extern "C" fn bubble_unit_at(x: f32, y: f32, unit: *mut u32) -> i32 {
             .lock()
             .map_err(|_| "tree lock poisoned".to_string())?;
         let host = &engine.shared.host;
-        let Some(offset) = shell.unit_at(x, y, &mut |text, font_size, line_height, font_weight, max_width| {
-            host_measure(host, text, font_size, line_height, font_weight, max_width)
-        })?
+        let Some(offset) = shell.unit_at_with(x, y, &mut |req| field_layout(host, req))?
         else {
             return Err("no focused field".into());
         };
@@ -1101,9 +1117,7 @@ pub extern "C" fn bubble_caret_at(unit: u32, x: *mut f32, y: *mut f32, w: *mut f
             .lock()
             .map_err(|_| "tree lock poisoned".to_string())?;
         let host = &engine.shared.host;
-        let Some((cx, cy, cw, ch)) = shell.caret_rect_at(unit, &mut |text, font_size, line_height, font_weight, max_width| {
-            host_measure(host, text, font_size, line_height, font_weight, max_width)
-        })?
+        let Some((cx, cy, cw, ch)) = shell.caret_rect_at_with(unit, &mut |req| field_layout(host, req))?
         else {
             return Err("no focused field".into());
         };
@@ -1131,11 +1145,13 @@ pub extern "C" fn bubble_selection_count() -> u32 {
     let result = catch(|| {
         let engine = engine()?;
         drain_pending(&engine.shared)?;
-        let shell = engine
+        let mut shell = engine
             .shared
             .shell
             .lock()
             .map_err(|_| "tree lock poisoned".to_string())?;
+        let host = &engine.shared.host;
+        shell.refresh_caret(&mut |req| field_layout(host, req))?;
         Ok(shell.selection_rects().len() as u32)
     });
     result.unwrap_or(0)
@@ -1152,11 +1168,13 @@ pub extern "C" fn bubble_selection_rect(
     let result = catch(|| {
         let engine = engine()?;
         drain_pending(&engine.shared)?;
-        let shell = engine
+        let mut shell = engine
             .shared
             .shell
             .lock()
             .map_err(|_| "tree lock poisoned".to_string())?;
+        let host = &engine.shared.host;
+        shell.refresh_caret(&mut |req| field_layout(host, req))?;
         let rect = shell
             .selection_rects()
             .get(index as usize)
@@ -1480,6 +1498,7 @@ pub extern "C" fn bubble_finish_request(id: u32, ok: i32, result: *const c_char)
 pub struct BubbleHost {
     pub measure: Option<MeasureFn>,
     pub ctx: *mut c_void,
+    pub layout: Option<LayoutFn>,
 }
 
 fn finish(result: Result<(), String>) -> i32 {
@@ -1548,18 +1567,67 @@ fn fallback_measure(text: &str, font_size: f32, line_height: f32) -> (f32, f32) 
 mod android {
     use std::os::raw::c_void;
     use std::ptr;
+    use std::sync::OnceLock;
 
-    use jni::objects::{JByteArray, JClass, JObject, JString};
+    use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
     use jni::sys::{jfloat, jint, jlong};
-    use jni::JNIEnv;
+    use jni::{JNIEnv, JavaVM};
 
     use super::BubbleHost;
 
+    static VM: OnceLock<JavaVM> = OnceLock::new();
+
+    pub(super) fn layout_snapshot(
+        req: &bubble_core::LayoutRequest<'_>,
+    ) -> Option<Result<bubble_core::LayoutSnapshot, String>> {
+        let vm = VM.get()?;
+        let mut env = vm.get_env().ok()?;
+        Some(invoke_layout(&mut env, req))
+    }
+
+    fn invoke_layout(
+        env: &mut JNIEnv<'_>,
+        req: &bubble_core::LayoutRequest<'_>,
+    ) -> Result<bubble_core::LayoutSnapshot, String> {
+        let text = env
+            .byte_array_from_slice(req.text.as_bytes())
+            .map_err(|err| err.to_string())?;
+        let value = env
+            .call_static_method(
+                "dev/bubble/shell/BubbleView",
+                "layoutSnapshot",
+                "([BFFFFIIJ)[B",
+                &[
+                    JValue::Object(&text),
+                    JValue::Float(req.key.width),
+                    JValue::Float(req.key.font_size),
+                    JValue::Float(req.key.line_height),
+                    JValue::Float(req.key.density),
+                    JValue::Int(i32::from(req.key.font_weight)),
+                    JValue::Int(i32::from(req.key.align)),
+                    JValue::Long(req.key.revision as i64),
+                ],
+            )
+            .map_err(|err| err.to_string())?;
+        let array = value.l().map_err(|err| err.to_string())?;
+        let bytes = env
+            .convert_byte_array(JByteArray::from(array))
+            .map_err(|err| err.to_string())?;
+        let snapshot = bubble_core::decode_layout(&bytes)?;
+        if !snapshot.matches(&req.key) {
+            return Err("stale layout snapshot".into());
+        }
+        Ok(snapshot)
+    }
+
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_create<'a>(
-        _env: JNIEnv<'a>,
+        env: JNIEnv<'a>,
         _class: JClass<'a>,
     ) -> jint {
+        if let Ok(vm) = env.get_java_vm() {
+            let _ = VM.set(vm);
+        }
         super::bubble_create(ptr::null())
     }
 

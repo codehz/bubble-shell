@@ -1,5 +1,6 @@
 import { commandsForDom, dragSelection, menuActions } from "./ime.js";
 import { dispatchEditEvents, dispatchGestureEvents, setApi } from "./runtime.js";
+import { layoutSnapshot, wrapLines } from "./textlayout.js";
 
 const canvas = document.querySelector("canvas");
 const ctx = canvas.getContext("2d");
@@ -32,31 +33,28 @@ function lineHeightOf(fontSize, lineHeight) {
 
 function wrapText(text, fontSize, weight, maxWidth) {
   ctx.font = fontOf(fontSize, weight);
-  const lines = [];
-  for (const paragraph of text.split("\n")) {
-    if (maxWidth === null || maxWidth <= 0) {
-      lines.push(paragraph);
-      continue;
-    }
-    let line = "";
-    for (const char of paragraph) {
-      const next = line + char;
-      if (line && ctx.measureText(next).width > maxWidth) {
-        const space = line.lastIndexOf(" ");
-        if (space > 0) {
-          lines.push(line.slice(0, space));
-          line = line.slice(space + 1) + char;
-        } else {
-          lines.push(line);
-          line = char;
-        }
-      } else {
-        line = next;
-      }
-    }
-    lines.push(line);
-  }
-  return lines.length ? lines : [""];
+  return wrapLines(text, maxWidth, (line) => ctx.measureText(line).width).map((line) => line.text);
+}
+
+function hostLayout(textPtr, textLen, width, fontSize, lineHeight, weight, align, density, revisionLo, revisionHi, outPtr, outCap) {
+  const text = decoder.decode(new Uint8Array(memory().buffer, textPtr, textLen));
+  const revision = revisionLo + revisionHi * 2 ** 32;
+  ctx.font = fontOf(fontSize, weight);
+  const laid = layoutSnapshot({
+    text,
+    width,
+    fontSize,
+    lineHeight,
+    weight,
+    align,
+    density,
+    revision,
+    font: fontOf(fontSize, weight),
+    measure: (line) => ctx.measureText(line).width,
+  });
+  if (laid.bytes.length > outCap) return laid.bytes.length;
+  new Uint8Array(memory().buffer, outPtr, laid.bytes.length).set(laid.bytes);
+  return laid.bytes.length;
 }
 
 const wasm = await WebAssembly.instantiateStreaming(fetch("./bubble.wasm"), {
@@ -76,6 +74,7 @@ const wasm = await WebAssembly.instantiateStreaming(fetch("./bubble.wasm"), {
       out.setFloat32(0, width, true);
       out.setFloat32(4, height, true);
     },
+    host_layout: hostLayout,
     host_run: (id) => globalThis.__bubbleRun?.(id) ?? 0,
     host_cleanup: (id) => globalThis.__bubbleCleanup?.(id),
     host_body: () => globalThis.__bubbleBody?.(),
@@ -272,14 +271,22 @@ function paint() {
       ctx.font = fontOf(fontSize, weight);
       ctx.textBaseline = "top";
       const lineH = lineHeightOf(fontSize, lineHeight);
-      const lines = wrapText(text, fontSize, weight, w > 0 ? w : null);
-      for (let index = 0; index < lines.length; index += 1) {
-        const line = lines[index];
-        const lineWidth = ctx.measureText(line).width;
-        let lineX = x;
-        if (align === 1) lineX = x + Math.max(0, (w - lineWidth) / 2);
-        else if (align === 2) lineX = x + Math.max(0, w - lineWidth);
-        if (index * lineH < h || h <= 0) ctx.fillText(line, lineX, y + index * lineH);
+      const laid = layoutSnapshot({
+        text,
+        width: w,
+        fontSize,
+        lineHeight,
+        weight,
+        align,
+        density: 1,
+        revision: 0,
+        font: ctx.font,
+        measure: (line) => ctx.measureText(line).width,
+      });
+      for (const line of laid.lines) {
+        if (line.text && (index === 0 || line.y < h || h <= 0)) {
+          ctx.fillText(line.text, x + (line.x || 0), y + line.y);
+        }
       }
     } else if (tag === 7) {
       const x = f32();

@@ -8,8 +8,14 @@
 
 typedef struct BubbleHost {
     void (*measure)(void *ctx, const uint8_t *text, uint32_t text_len, float font_size,
-                    float max_width, int has_max, float *out_w, float *out_h);
+                    float line_height, uint16_t weight, float max_width, int has_max,
+                    float *out_w, float *out_h);
     void *ctx;
+    /* Bytes are a BLS1 layout snapshot. Return the byte count, or a larger count
+     * when `cap` is too small, or -1 on failure. Coordinates match the draw. */
+    int (*layout)(void *ctx, const uint8_t *text, uint32_t text_len, float width, float font_size,
+                  float line_height, uint16_t weight, uint8_t align, float density, uint64_t revision,
+                  uint8_t *out, uint32_t cap);
 } BubbleHost;
 
 int bubble_create(const BubbleHost *host);

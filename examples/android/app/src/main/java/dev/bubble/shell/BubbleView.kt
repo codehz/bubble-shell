@@ -10,8 +10,6 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
-import android.text.Layout
-import android.text.StaticLayout
 import android.text.TextPaint
 import android.view.MotionEvent
 import android.view.View
@@ -45,6 +43,7 @@ class BubbleView(context: Context) : View(context) {
 
     fun setHostTypeface(typeface: Typeface) {
         family = typeface
+        FieldLayout.hostFamily = typeface
     }
 
     fun paintSize(): Int = paintBytes.size
@@ -114,18 +113,7 @@ class BubbleView(context: Context) : View(context) {
                     buffer.get(raw)
                     val text = String(raw, Charsets.UTF_8)
                     if (text.isNotEmpty() && w > 0f) {
-                        val spacing = if (lineHeight > 0f) (lineHeight / font).coerceAtLeast(0.1f) else 1f
-                        val alignment = when (align) {
-                            1 -> Layout.Alignment.ALIGN_CENTER
-                            2 -> Layout.Alignment.ALIGN_OPPOSITE
-                            else -> Layout.Alignment.ALIGN_NORMAL
-                        }
-                        val layout = StaticLayout.Builder
-                            .obtain(text, 0, text.length, textPaint, w.toInt().coerceAtLeast(1))
-                            .setIncludePad(false)
-                            .setLineSpacing(0f, spacing)
-                            .setAlignment(alignment)
-                            .build()
+                        val layout = FieldLayout.build(text, textPaint, w, lineHeight, font, align)
                         canvas.save()
                         canvas.translate(x, y)
                         canvas.clipRect(0f, 0f, w, h)
@@ -537,6 +525,25 @@ class BubbleView(context: Context) : View(context) {
     private fun color(red: Float, green: Float, blue: Float, alpha: Float): Int {
         fun channel(value: Float): Int = (value.coerceIn(0f, 1f) * 255f).roundToInt()
         return Color.argb(channel(alpha), channel(red), channel(green), channel(blue))
+    }
+
+    companion object {
+        @JvmStatic
+        fun layoutSnapshot(
+            text: ByteArray,
+            width: Float,
+            fontSize: Float,
+            lineHeight: Float,
+            density: Float,
+            weight: Int,
+            align: Int,
+            revision: Long,
+        ): ByteArray {
+            val value = String(text, Charsets.UTF_8)
+            val paint = FieldLayout.paint(fontSize, weight)
+            val layout = FieldLayout.build(value, paint, width, lineHeight, fontSize, align)
+            return FieldLayout.snapshot(value, layout, width, fontSize, lineHeight, density, weight, align, revision)
+        }
     }
 }
 

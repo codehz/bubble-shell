@@ -4,8 +4,11 @@ use std::cell::{Cell, Ref, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use crate::editing::{
-    display_text, hit_unit, text_metrics, DocRange, EditCommand, EditConfig, EditError, EditEvent,
-    EditOp, EditOutcome, EditSession, FieldState, Selection, SessionId,
+    display_text, utf16_len, DocRange, EditCommand, EditConfig, EditError, EditEvent, EditOp,
+    EditOutcome, EditSession, FieldState, Selection, SessionId,
+};
+use crate::layout::{
+    snap_unit, wrapping_layout, LayoutKey, LayoutRequest, LayoutSnapshot,
 };
 use crate::gesture::{GestureEvent, GestureKind, PointerAction, PointerInput, Recognizer};
 use crate::color::Color;
@@ -227,6 +230,13 @@ pub enum PaintCmd {
     PopOpacity,
 }
 
+struct FieldGeom {
+    text: String,
+    origin_x: f32,
+    origin_y: f32,
+    key: LayoutKey,
+}
+
 impl Shell {
     /// Empty viewport root. Function components append children with `spawn`.
     pub fn blank() -> Result<Self, String> {
@@ -414,6 +424,29 @@ impl Shell {
         &mut self,
         measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
     ) -> Result<(), String> {
+        self.compute_layout(measure)?;
+        self.refresh_caret(&mut |req| {
+            Ok(wrapping_layout(req, |line| {
+                measure(line, req.key.font_size, req.key.line_height, req.key.font_weight, None).0
+            }))
+        })
+    }
+
+    /// Lay out, then take editing geometry from `host`. The host snapshot must
+    /// match the field key; this is the path platform editors use.
+    pub fn layout_with(
+        &mut self,
+        measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
+        host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
+    ) -> Result<(), String> {
+        self.compute_layout(measure)?;
+        self.refresh_caret(host)
+    }
+
+    pub fn compute_layout(
+        &mut self,
+        measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
+    ) -> Result<(), String> {
         if self.viewport.width <= 0.0 || self.viewport.height <= 0.0 {
             return Err("viewport is empty".into());
         }
@@ -478,7 +511,6 @@ impl Shell {
             )
             .map_err(|err| err.to_string())?;
         self.place(1, 0.0, 0.0)?;
-        self.layout_caret(measure);
         let limits: Vec<(usize, f32, f32)> = self
             .nodes
             .iter()
@@ -654,25 +686,28 @@ impl Shell {
         y: f32,
         measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
     ) -> Result<Option<u32>, String> {
+        self.unit_at_with(x, y, &mut |req| {
+            Ok(wrapping_layout(req, |line| {
+                measure(line, req.key.font_size, req.key.line_height, req.key.font_weight, None).0
+            }))
+        })
+    }
+
+    pub fn unit_at_with(
+        &self,
+        x: f32,
+        y: f32,
+        host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
+    ) -> Result<Option<u32>, String> {
         let handle = self.focused;
         if handle == 0 {
             return Ok(None);
         }
-        let node = self.node(handle)?;
-        let pads = self.pads(handle);
-        let font_size = node.font_size;
-        let weight = node.font_weight;
-        let lh = if node.line_height > 0.0 {
-            node.line_height
-        } else {
-            font_size * 1.2
-        };
-        let text = display_text(&node.text, node.secure);
-        let local_x = x - (node.x + pads[0]);
-        let local_y = y - (node.y + pads[2]);
-        Ok(Some(hit_unit(&text, local_x, local_y, lh, |line| {
-            measure(line, font_size, lh, weight, None).0
-        })))
+        let (geom, snapshot) = self.field_snapshot(handle, host)?;
+        Ok(Some(snap_unit(
+            &geom.text,
+            snapshot.hit(x - geom.origin_x, y - geom.origin_y),
+        )))
     }
 
     /// Caret rect for a UTF-16 offset in the focused field, viewport coordinates.
@@ -681,28 +716,30 @@ impl Shell {
         unit: u32,
         measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
     ) -> Result<Option<(f32, f32, f32, f32)>, String> {
+        self.caret_rect_at_with(unit, &mut |req| {
+            Ok(wrapping_layout(req, |line| {
+                measure(line, req.key.font_size, req.key.line_height, req.key.font_weight, None).0
+            }))
+        })
+    }
+
+    pub fn caret_rect_at_with(
+        &self,
+        unit: u32,
+        host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
+    ) -> Result<Option<(f32, f32, f32, f32)>, String> {
         let handle = self.focused;
         if handle == 0 {
             return Ok(None);
         }
-        let node = self.node(handle)?;
-        let pads = self.pads(handle);
-        let font_size = node.font_size;
-        let weight = node.font_weight;
-        let lh = if node.line_height > 0.0 {
-            node.line_height
-        } else {
-            font_size * 1.2
-        };
-        let text = display_text(&node.text, node.secure);
-        let metrics = text_metrics(&text, unit, unit, lh, |line| {
-            measure(line, font_size, lh, weight, None).0
-        });
+        let (geom, snapshot) = self.field_snapshot(handle, host)?;
+        let unit = snap_unit(&geom.text, unit).min(snapshot.units);
+        let caret = snapshot.caret(unit).ok_or("layout has no caret")?;
         Ok(Some((
-            node.x + pads[0] + metrics.caret_x,
-            node.y + pads[2] + metrics.caret_y,
+            geom.origin_x + caret.x,
+            geom.origin_y + caret.y,
             1.0,
-            metrics.caret_h,
+            caret.h,
         )))
     }
 
@@ -718,26 +755,26 @@ impl Shell {
         y: f32,
         measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
     ) -> Result<u32, String> {
+        self.focus_point_with(x, y, &mut |req| {
+            Ok(wrapping_layout(req, |line| {
+                measure(line, req.key.font_size, req.key.line_height, req.key.font_weight, None).0
+            }))
+        })
+    }
+
+    pub fn focus_point_with(
+        &mut self,
+        x: f32,
+        y: f32,
+        host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
+    ) -> Result<u32, String> {
         let handle = self.field_at(x, y);
         if handle == 0 {
             return Ok(0);
         }
         self.focus(handle)?;
-        let node = self.node(handle)?;
-        let pads = self.pads(handle);
-        let font_size = node.font_size;
-        let weight = node.font_weight;
-        let lh = if node.line_height > 0.0 {
-            node.line_height
-        } else {
-            font_size * 1.2
-        };
-        let text = display_text(&node.text, node.secure);
-        let local_x = x - (node.x + pads[0]);
-        let local_y = y - (node.y + pads[2]);
-        let unit = hit_unit(&text, local_x, local_y, lh, |line| {
-            measure(line, font_size, lh, weight, None).0
-        });
+        let (geom, snapshot) = self.field_snapshot(handle, host)?;
+        let unit = snap_unit(&geom.text, snapshot.hit(x - geom.origin_x, y - geom.origin_y));
         self.edit(EditCommand::SetSelection { start: unit, end: unit })?;
         Ok(handle)
     }
@@ -1722,53 +1759,90 @@ impl Shell {
         (content - visible).max(0.0)
     }
 
-    fn layout_caret(&mut self, measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32)) {
+    /// Recompute caret and selection from the current platform snapshot.
+    /// An old revision or a mismatched width/font/align/density is an error.
+    pub fn refresh_caret(
+        &mut self,
+        host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
+    ) -> Result<(), String> {
         self.caret_handle = 0;
         self.caret_box = None;
         self.selection_rects.clear();
         let handle = self.focused;
         if handle == 0 {
-            return;
+            return Ok(());
         }
         let Some(state) = self.fields.get(&handle).cloned() else {
-            return;
+            return Ok(());
         };
-        let Ok(node) = self.node(handle) else {
-            return;
+        if self.node(handle).ok().filter(|node| node.kind == Kind::Field).is_none() {
+            return Ok(());
+        }
+        let (geom, snapshot) = self.field_snapshot(handle, host)?;
+        let active = snap_unit(&geom.text, state.sel_end()).min(snapshot.units);
+        let caret = snapshot.caret(active).ok_or("layout has no caret")?;
+        self.caret_handle = handle;
+        self.selection_rects = snapshot
+            .selection_rects(state.sel_start(), state.sel_end())
+            .into_iter()
+            .map(|[x, y, w, h]| (geom.origin_x + x, geom.origin_y + y, w, h))
+            .collect();
+        self.caret_box = Some((
+            geom.origin_x + caret.x,
+            geom.origin_y + caret.y,
+            1.0,
+            caret.h,
+        ));
+        Ok(())
+    }
+
+    fn field_snapshot(
+        &self,
+        handle: u32,
+        host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
+    ) -> Result<(FieldGeom, LayoutSnapshot), String> {
+        let geom = self.field_geom(handle)?;
+        let req = LayoutRequest {
+            text: &geom.text,
+            key: geom.key,
         };
+        let snapshot = host(&req)?;
+        if snapshot.units != utf16_len(&geom.text) || snapshot.carets.len() != snapshot.units as usize + 1 {
+            return Err("layout snapshot does not cover the field text".into());
+        }
+        if !snapshot.matches(&geom.key) {
+            return Err("stale layout snapshot".into());
+        }
+        Ok((geom, snapshot))
+    }
+
+    fn field_geom(&self, handle: u32) -> Result<FieldGeom, String> {
+        let node = self.node(handle)?;
         if node.kind != Kind::Field {
-            return;
+            return Err(format!("handle {handle} is not a text field"));
         }
         let pads = self.pads(handle);
         let font_size = node.font_size;
-        let weight = node.font_weight;
-        let lh = if node.line_height > 0.0 {
+        let line_height = if node.line_height > 0.0 {
             node.line_height
         } else {
             font_size * 1.2
         };
-        let text = display_text(&node.text, node.secure);
-        let origin_x = node.x + pads[0];
-        let origin_y = node.y + pads[2];
-        let metrics = text_metrics(
-            &text,
-            state.sel_start(),
-            state.sel_end(),
-            lh,
-            |line| measure(line, font_size, lh, weight, None).0,
-        );
-        self.caret_handle = handle;
-        self.selection_rects = metrics
-            .selection
-            .into_iter()
-            .map(|[x, y, w, h]| (origin_x + x, origin_y + y, w, h))
-            .collect();
-        self.caret_box = Some((
-            origin_x + metrics.caret_x,
-            origin_y + metrics.caret_y,
-            1.0,
-            metrics.caret_h,
-        ));
+        let revision = self.fields.get(&handle).map(|state| state.revision()).unwrap_or(0);
+        Ok(FieldGeom {
+            text: display_text(&node.text, node.secure),
+            origin_x: node.x + pads[0],
+            origin_y: node.y + pads[2],
+            key: LayoutKey {
+                revision,
+                width: (node.w - pads[0] - pads[1]).max(0.0),
+                font_size,
+                font_weight: node.font_weight,
+                line_height,
+                align: node.text_align,
+                density: 1.0,
+            },
+        })
     }
 
     fn paint_node(&self, id: u32, out: &mut Vec<PaintCmd>) {

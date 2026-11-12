@@ -10,6 +10,7 @@ mod color;
 mod editing;
 mod gesture;
 mod ir;
+mod layout;
 mod manifest;
 mod ops;
 mod paint;
@@ -20,10 +21,13 @@ mod turn;
 
 pub use color::{parse as parse_color, Color};
 pub use editing::{
-    display_text, encode_edit_events, hit_unit, text_metrics, utf16_len, Affinity,
-    CompositionChange, DocPosition, DocRange, EditCommand, EditConfig, EditDelta, EditError,
-    EditEvent, EditOp, EditOutcome, EditSession, Expect, FieldState, Revision, Selection,
-    SessionId, TextMetrics,
+    display_text, encode_edit_events, utf16_len, Affinity, CompositionChange, DocPosition, DocRange,
+    EditCommand, EditConfig, EditDelta, EditError, EditEvent, EditOp, EditOutcome, EditSession,
+    Expect, FieldState, Revision, Selection, SessionId,
+};
+pub use layout::{
+    decode_layout, encode_layout, snap_unit, wrapping_layout, CaretEdge, LayoutKey, LayoutRequest,
+    LayoutRun, LayoutSnapshot, LAYOUT_MAGIC,
 };
 pub use gesture::{
     encode_events, GestureConfig, GestureDecl, GestureEvent, GestureKind, PointerAction,

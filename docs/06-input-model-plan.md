@@ -8,7 +8,7 @@
 
 本计划接在 [手势与滚动协商计划](05-gestures-plan.md) 之后，是下一个开发计划；完成后继续 M2 的焦点、无障碍和输入控件收尾工作。
 
-**状态（2026-11-12）**：阶段 A、B、C、D 已实现。`crates/core/src/editing.rs` 的 `EditSession` 是字段权威文档，提供 UTF-16 文档位置/affinity、方向性选区、独立组合区、`session/revision/conflict`、嵌套原子批次和可重放 delta；`Shell` 按批次聚合并通过 `BSED` v2 发布一条 delta 事件加最终快照。C ABI、JNI 与 WASM 已暴露批次入口，旧 v1 事件路径已删除。阶段 A 契约测试在 `crates/core/tests/edit_session.rs`，端到端批次与 IME 事务测试在 `crates/native/tests/m1.rs`。Android `InputConnection` 已改为 session 绑定的事务读写，删除 Kotlin 侧重复 composition 状态与逐次退格循环；iOS `UITextInput` 与 Web 隐藏 `textarea` 已迁移到同一事务、组合区与 revision 规则，Web 宿主在编辑后回读快照同步代理选区。
+**状态（2026-11-12）**：阶段 A–E 已实现。`EditSession` 仍是字段权威文档。编辑几何改为 `LayoutSnapshot`（`crates/core/src/layout.rs`）：失效键是 revision、可用宽度、字号、字重、行高、对齐和密度；旧 revision 不能驱动光标、命中或选区。Android `StaticLayout`、iOS Core Text 与 Web canvas/DOM 测量各自生成同一 BLS1 快照，绘制与 IME 查询共用该结果。前缀测宽 `text_metrics` / `hit_unit` 已从编辑路径删除；没有平台快照时核心只保留测试用的 LTR 换行回退。阶段 F（模拟器矩阵与文档切换）仍未完成。
 
 ## 2. 源码现状与问题
 
@@ -16,7 +16,7 @@
 
 - `crates/core/src/editing.rs` 以 UTF-16 单位记录选区和组合区，但组合更新把光标固定到组合文本末尾；组合期间拒绝选区、普通插入和删除。
 - `examples/android/app/src/main/java/dev/bubble/shell/BubbleView.kt` 的 `InputConnection` 忽略 `newCursorPosition`，并把 `deleteSurroundingText` 转成重复退格。`composing` / `composingText` 在 Kotlin 和 Rust 两处维护，可能分叉。
-- 当前几何计算 `text_metrics` / `hit_unit` 根据显式换行和前缀测宽推导位置；Android 绘制使用 `StaticLayout`。自动换行、双向文本下测量、命中、绘制和 IME 坐标可能不一致。
+- 阶段 E 之前，几何由 `text_metrics` / `hit_unit` 按显式换行和前缀测宽推导，和 Android `StaticLayout` 不一致。现已改为平台 `LayoutSnapshot`。
 - `BSED` v1 每个编辑事件携带完整字符串；Android 单命令逐次调用会导致同一 IME batch 多次桥接和刷新。
 - iOS `UITextInput`、Web 隐藏 `textarea` 各自适配现有内核。iOS 标记文本内部选择同样固定在末尾；三端必须一起迁移，避免保留两套编辑语义。
 
@@ -80,7 +80,7 @@ IME 命令是当前活动组合的唯一编辑者。普通应用 `SetEditingValu
 
 可并行实现的阶段内平台工作应共享 A/B 固定的 ABI 与 `LayoutSnapshot` 契约；不能各自发明平台私有编辑语义。
 
-阶段 A、B、C、D 已完成；剩余 E（几何快照）与 F（集成验收和文档切换）。
+阶段 A–E 已完成；剩余 F（集成验收和文档切换）。
 
 ## 5. 验收矩阵
 
