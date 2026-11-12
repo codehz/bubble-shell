@@ -8,7 +8,7 @@
 
 本计划接在 [手势与滚动协商计划](05-gestures-plan.md) 之后，是下一个开发计划；完成后继续 M2 的焦点、无障碍和输入控件收尾工作。
 
-**状态（2026-11-12）**：阶段 A 已实现。`crates/core/src/editing.rs` 的 `EditSession` 是字段权威文档，提供 UTF-16 文档位置/affinity、方向性选区、独立组合区、`session/revision/conflict`、嵌套原子批次和可重放 delta；`Shell` 与新会话对接，脚本冲突可通过 `Shell::take_edit_conflicts` 读取。`BSED` v1 与三端桥接尚未切换，按阶段 B 做一次锁步迁移。阶段 A 的契约测试在 `crates/core/tests/edit_session.rs`。
+**状态（2026-11-12）**：阶段 A、B 已实现。`crates/core/src/editing.rs` 的 `EditSession` 是字段权威文档，提供 UTF-16 文档位置/affinity、方向性选区、独立组合区、`session/revision/conflict`、嵌套原子批次和可重放 delta；`Shell` 按批次聚合并通过 `BSED` v2 发布一条 delta 事件加最终快照。C ABI、JNI 与 WASM 已暴露批次入口，旧 v1 事件路径已删除。阶段 A 契约测试在 `crates/core/tests/edit_session.rs`，端到端批次测试在 `crates/native/tests/m1.rs`。
 
 ## 2. 源码现状与问题
 
@@ -80,7 +80,7 @@ IME 命令是当前活动组合的唯一编辑者。普通应用 `SetEditingValu
 
 可并行实现的阶段内平台工作应共享 A/B 固定的 ABI 与 `LayoutSnapshot` 契约；不能各自发明平台私有编辑语义。
 
-阶段 A 已完成；阶段 B（delta + ABI 锁步迁移）尚未开始。
+阶段 A、B 已完成；阶段 C（Android InputConnection）尚未开始。
 
 ## 5. 验收矩阵
 

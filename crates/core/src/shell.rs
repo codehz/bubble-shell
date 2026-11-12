@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::editing::{
     display_text, hit_unit, text_metrics, EditCommand, EditConfig, EditError, EditEvent, EditOp,
-    EditSession, FieldState, Selection, SessionId,
+    EditOutcome, EditSession, FieldState, Selection, SessionId,
 };
 use crate::gesture::{GestureEvent, GestureKind, PointerAction, PointerInput, Recognizer};
 use crate::color::Color;
@@ -144,6 +144,7 @@ pub struct Shell {
     focused: u32,
     edit_events: Vec<EditEvent>,
     edit_conflicts: Vec<EditConflict>,
+    edit_batch: Option<EditBatch>,
     caret_handle: u32,
     caret_box: Option<(f32, f32, f32, f32)>,
     selection_rects: Vec<(f32, f32, f32, f32)>,
@@ -156,6 +157,12 @@ pub struct EditConflict {
     pub session: SessionId,
     pub revision: u64,
     pub error: EditError,
+}
+
+struct EditBatch {
+    handle: u32,
+    handler: u32,
+    depth: u32,
 }
 
 /// Per-axis result of routing a wheel or touch delta through the hit path.
@@ -286,6 +293,7 @@ impl Shell {
             focused: 0,
             edit_events: Vec::new(),
             edit_conflicts: Vec::new(),
+            edit_batch: None,
             caret_handle: 0,
             caret_box: None,
             selection_rects: Vec::new(),
@@ -577,6 +585,9 @@ impl Shell {
 
     /// Focus a text field. `0` blurs. Only `Kind::Field` accepts focus.
     pub fn focus(&mut self, handle: u32) -> Result<(), String> {
+        if self.focused != handle {
+            self.abort_edit_batch();
+        }
         if handle == 0 {
             self.focused = 0;
             self.paint_dirty.set(true);
@@ -781,6 +792,103 @@ impl Shell {
         std::mem::take(&mut self.edit_conflicts)
     }
 
+    /// Open a nested edit batch on the focused field. Commands accumulate
+    /// deltas and commit one revision and one script event at the outermost
+    /// `end_edit_batch`.
+    pub fn begin_edit_batch(&mut self) -> Result<(), String> {
+        let handle = self.focused;
+        if handle == 0 {
+            return Err("no focused field".into());
+        }
+        if let Some(batch) = self.edit_batch.as_mut() {
+            if batch.handle != handle {
+                return Err("edit batch targets another field".into());
+            }
+            let session = self
+                .fields
+                .get_mut(&handle)
+                .ok_or_else(|| format!("handle {handle} has no editing session"))?;
+            session.begin_batch().map_err(|err| err.to_string())?;
+            batch.depth += 1;
+            return Ok(());
+        }
+        let handler = self.node(handle)?.handler;
+        let session = self
+            .fields
+            .get_mut(&handle)
+            .ok_or_else(|| format!("handle {handle} has no editing session"))?;
+        session.begin_batch().map_err(|err| err.to_string())?;
+        self.edit_batch = Some(EditBatch {
+            handle,
+            handler,
+            depth: 1,
+        });
+        Ok(())
+    }
+
+    /// Close one batch level. The outermost level publishes one `BSED` event
+    /// with ordered deltas and the final selection/composition snapshot.
+    pub fn end_edit_batch(&mut self) -> Result<(), String> {
+        let Some(batch) = self.edit_batch.as_mut() else {
+            return Err("no edit batch".into());
+        };
+        let handle = batch.handle;
+        let handler = batch.handler;
+        batch.depth -= 1;
+        if batch.depth > 0 {
+            let session = self
+                .fields
+                .get_mut(&handle)
+                .ok_or_else(|| format!("handle {handle} has no editing session"))?;
+            session.end_batch().map_err(|err| err.to_string())?;
+            return Ok(());
+        }
+        self.edit_batch = None;
+        let outcome = {
+            let session = self
+                .fields
+                .get_mut(&handle)
+                .ok_or_else(|| format!("handle {handle} has no editing session"))?;
+            session.end_batch().map_err(|err| err.to_string())?
+        };
+        if !outcome.changed {
+            return Ok(());
+        }
+        let value = self
+            .fields
+            .get(&handle)
+            .ok_or_else(|| format!("handle {handle} has no editing session"))?
+            .value()
+            .to_owned();
+        if !outcome.deltas.is_empty() {
+            self.node_mut(handle)?.text = value.clone();
+            self.refresh_measure(handle)?;
+        }
+        self.push_edit_event(handle, handler, value, outcome);
+        self.paint_dirty.set(true);
+        Ok(())
+    }
+
+    pub fn edit_batch_active(&self) -> bool {
+        self.edit_batch.is_some()
+    }
+
+    fn abort_edit_batch(&mut self) {
+        if let Some(batch) = self.edit_batch.take() {
+            let restored = self.fields.get_mut(&batch.handle).map(|session| {
+                session.abort_batch();
+                session.value().to_owned()
+            });
+            if let Some(value) = restored {
+                if let Ok(node) = self.node_mut(batch.handle) {
+                    node.text = value;
+                }
+                let _ = self.refresh_measure(batch.handle);
+                self.paint_dirty.set(true);
+            }
+        }
+    }
+
     /// Mutate the focused field. No-ops that do not change state emit nothing.
     pub fn edit(&mut self, command: EditCommand) -> Result<(), String> {
         let handle = self.focused;
@@ -808,7 +916,7 @@ impl Shell {
                 },
             )
         };
-        let outcome = {
+        let result = {
             let session = self
                 .fields
                 .get_mut(&handle)
@@ -823,13 +931,29 @@ impl Shell {
                 }
                 EditCommand::CompositionStart => session.begin_composition(),
                 EditCommand::CompositionUpdate(text) => session.composition_update(&text),
-                EditCommand::CompositionEnd(text) => {
-                    session.end_composition(Some(&text), None)
-                }
+                EditCommand::CompositionEnd(text) => session.end_composition(Some(&text), None),
                 EditCommand::Undo => session.apply(EditOp::Undo, None),
                 EditCommand::Redo => session.apply(EditOp::Redo, None),
             }
-            .map_err(|err| err.to_string())?
+        };
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                if self.edit_batch.is_some() {
+                    let restored = self.fields.get_mut(&handle).map(|session| {
+                        session.abort_batch();
+                        session.value().to_owned()
+                    });
+                    if let Some(value) = restored {
+                        if let Ok(node) = self.node_mut(handle) {
+                            node.text = value;
+                        }
+                        let _ = self.refresh_measure(handle);
+                    }
+                    self.edit_batch = None;
+                }
+                return Err(err.to_string());
+            }
         };
         self.finish_edit(handle, handler, outcome)
     }
@@ -838,7 +962,7 @@ impl Shell {
         &mut self,
         handle: u32,
         handler: u32,
-        outcome: crate::editing::EditOutcome,
+        outcome: EditOutcome,
     ) -> Result<(), String> {
         if !outcome.changed {
             return Ok(());
@@ -849,23 +973,42 @@ impl Shell {
             .ok_or_else(|| format!("handle {handle} has no editing session"))?
             .value()
             .to_owned();
-        let state = outcome.snapshot;
-        let event = EditEvent {
-            handle,
-            handler,
-            revision: state.revision,
-            value: value.clone(),
-            sel_start: state.sel_start(),
-            sel_end: state.sel_end(),
-            composition: state.composition,
-        };
+        if !outcome.deltas.is_empty() || self.edit_batch.is_some() {
+            self.node_mut(handle)?.text = value.clone();
+        }
+        if self.edit_batch.is_some() {
+            // Reads see the live document; layout and the script event wait
+            // for the outermost end_edit_batch.
+            self.paint_dirty.set(true);
+            return Ok(());
+        }
         if !outcome.deltas.is_empty() {
-            self.node_mut(handle)?.text = value;
             self.refresh_measure(handle)?;
         }
-        self.edit_events.push(event);
+        self.push_edit_event(handle, handler, value, outcome);
         self.paint_dirty.set(true);
         Ok(())
+    }
+
+    fn push_edit_event(
+        &mut self,
+        handle: u32,
+        handler: u32,
+        value: String,
+        outcome: EditOutcome,
+    ) {
+        let state = outcome.snapshot;
+        self.edit_events.push(EditEvent {
+            handle,
+            handler,
+            session: state.session,
+            revision: state.revision,
+            deltas: outcome.deltas,
+            selection: state.selection,
+            composition: state.composition,
+            composing: state.composing,
+            value,
+        });
     }
 
     fn set_editing_value(
@@ -1405,6 +1548,13 @@ impl Shell {
             self.destroy_subtree(child)?;
         }
         let taffy_id = self.node(handle)?.taffy;
+        if self
+            .edit_batch
+            .as_ref()
+            .is_some_and(|batch| batch.handle == handle)
+        {
+            self.edit_batch = None;
+        }
         self.taffy.remove(taffy_id).map_err(|err| err.to_string())?;
         self.nodes[handle as usize] = None;
         if let Some(mut session) = self.fields.remove(&handle) {

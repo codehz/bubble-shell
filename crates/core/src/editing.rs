@@ -988,27 +988,45 @@ pub fn display_text(value: &str, secure: bool) -> String {
 pub struct EditEvent {
     pub handle: u32,
     pub handler: u32,
+    pub session: SessionId,
     pub revision: u64,
-    pub value: String,
-    pub sel_start: u32,
-    pub sel_end: u32,
+    /// Ordered text replacements from the previous event value.
+    pub deltas: Vec<EditDelta>,
+    /// Final directional selection.
+    pub selection: Selection,
+    /// Final composition range, if any.
     pub composition: Option<(u32, u32)>,
+    /// Whether a composition is open, including before it has a range.
+    pub composing: bool,
+    /// Final document value. Sent once per batch for controlled fields.
+    pub value: String,
 }
 
 pub fn encode_edit_events(events: &[EditEvent]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(b"BSED");
-    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
     out.extend_from_slice(&(events.len() as u32).to_le_bytes());
     for event in events {
         out.extend_from_slice(&event.handler.to_le_bytes());
         out.extend_from_slice(&event.handle.to_le_bytes());
+        out.extend_from_slice(&event.session.get().to_le_bytes());
         out.extend_from_slice(&event.revision.to_le_bytes());
-        out.extend_from_slice(&event.sel_start.to_le_bytes());
-        out.extend_from_slice(&event.sel_end.to_le_bytes());
+        out.extend_from_slice(&event.selection.anchor.offset.to_le_bytes());
+        out.extend_from_slice(&event.selection.active.offset.to_le_bytes());
         let (comp_start, comp_end) = event.composition.unwrap_or((u32::MAX, u32::MAX));
         out.extend_from_slice(&comp_start.to_le_bytes());
         out.extend_from_slice(&comp_end.to_le_bytes());
+        let flags = u32::from(event.composing);
+        out.extend_from_slice(&flags.to_le_bytes());
+        out.extend_from_slice(&(event.deltas.len() as u32).to_le_bytes());
+        for delta in &event.deltas {
+            out.extend_from_slice(&delta.start.to_le_bytes());
+            out.extend_from_slice(&delta.end.to_le_bytes());
+            let bytes = delta.insert.as_bytes();
+            out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            out.extend_from_slice(bytes);
+        }
         let bytes = event.value.as_bytes();
         out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
         out.extend_from_slice(bytes);

@@ -1,6 +1,6 @@
 use bubble_core::{
-    utf16_len, CompositionChange, DocRange, EditConfig, EditDelta, EditError, EditOp, EditSession,
-    Expect, Selection,
+    encode_edit_events, utf16_len, CompositionChange, DocRange, EditConfig, EditDelta, EditError,
+    EditEvent, EditOp, EditSession, Expect, Selection,
 };
 
 fn byte_index(value: &str, units: u32) -> usize {
@@ -334,4 +334,57 @@ fn session_identity_is_unique_and_expect_checks_revision() {
         Err(EditError::StaleRevision { .. })
     ));
     assert_eq!(session.value(), "a");
+}
+
+#[test]
+fn edit_events_encode_v2_deltas_and_final_snapshot() {
+    let mut session = EditSession::new("a", EditConfig::default());
+    let outcome = session
+        .apply(EditOp::Insert("b".into()), None)
+        .unwrap();
+    let event = EditEvent {
+        handle: 7,
+        handler: 9,
+        session: session.id(),
+        revision: outcome.revision,
+        deltas: outcome.deltas,
+        selection: outcome.snapshot.selection,
+        composition: None,
+        composing: false,
+        value: session.value().to_owned(),
+    };
+    let bytes = encode_edit_events(&[event]);
+    assert_eq!(&bytes[..4], b"BSED");
+    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 2);
+    assert_eq!(read_u32(&bytes, 6), 1);
+
+    let offset = 10;
+    assert_eq!(read_u32(&bytes, offset), 9);
+    assert_eq!(read_u32(&bytes, offset + 4), 7);
+    assert_eq!(read_u64(&bytes, offset + 8), session.id().get());
+    assert_eq!(read_u64(&bytes, offset + 16), outcome.revision);
+    assert_eq!(read_u32(&bytes, offset + 24), 2);
+    assert_eq!(read_u32(&bytes, offset + 28), 2);
+    assert_eq!(read_u32(&bytes, offset + 32), u32::MAX);
+    assert_eq!(read_u32(&bytes, offset + 36), u32::MAX);
+    assert_eq!(read_u32(&bytes, offset + 40), 0);
+    assert_eq!(read_u32(&bytes, offset + 44), 1);
+
+    let delta = offset + 48;
+    assert_eq!(read_u32(&bytes, delta), 1);
+    assert_eq!(read_u32(&bytes, delta + 4), 1);
+    assert_eq!(read_u32(&bytes, delta + 8), 1);
+    assert_eq!(&bytes[delta + 12..delta + 13], b"b");
+
+    let value = delta + 13;
+    assert_eq!(read_u32(&bytes, value), 2);
+    assert_eq!(&bytes[value + 4..], b"ab");
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
 }

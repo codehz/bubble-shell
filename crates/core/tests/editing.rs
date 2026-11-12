@@ -364,7 +364,9 @@ fn selection_direction_survives_the_shell_boundary() {
     assert_eq!(state.active(), 1);
     assert_eq!((state.sel_start(), state.sel_end()), (1, 3));
     let event = shell.take_edit_events().pop().unwrap();
-    assert_eq!((event.sel_start, event.sel_end), (1, 3));
+    assert_eq!(event.selection.anchor.offset, 3);
+    assert_eq!(event.selection.active.offset, 1);
+    assert!(event.deltas.is_empty());
 }
 
 #[test]
@@ -415,4 +417,54 @@ fn rejected_script_writes_enter_the_conflict_queue() {
         conflicts[0].error,
         EditError::StaleRevision { .. }
     ));
+}
+
+#[test]
+fn nested_edit_batches_publish_one_event() {
+    let mut shell = Shell::blank().unwrap();
+    let handle = focused(&mut shell, "ab");
+    shell.begin_edit_batch().unwrap();
+    shell.edit(EditCommand::Insert("c".into())).unwrap();
+    shell.begin_edit_batch().unwrap();
+    shell.edit(EditCommand::Insert("d".into())).unwrap();
+    assert!(shell.take_edit_events().is_empty());
+    shell.end_edit_batch().unwrap();
+    assert!(shell.take_edit_events().is_empty());
+    shell.end_edit_batch().unwrap();
+
+    let events = shell.take_edit_events();
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.value, "abcd");
+    assert_eq!(event.handle, handle);
+    assert_eq!(event.revision, 1);
+    assert_eq!(event.deltas.len(), 2);
+    assert_eq!(event.selection.active.offset, 4);
+    assert_eq!(event.composition, None);
+    assert!(!event.composing);
+}
+
+#[test]
+fn a_failed_batch_command_discards_the_batch() {
+    let mut shell = Shell::blank().unwrap();
+    let handle = focused(&mut shell, "ab");
+    shell.begin_edit_batch().unwrap();
+    shell.edit(EditCommand::Insert("x".into())).unwrap();
+    assert!(shell.edit(EditCommand::CompositionEnd("".into())).is_err());
+    assert_eq!(shell.field(handle).unwrap().0, "ab");
+    assert_eq!(shell.end_edit_batch().unwrap_err(), "no edit batch");
+    assert!(shell.take_edit_events().is_empty());
+}
+
+#[test]
+fn focus_loss_discards_an_open_batch() {
+    let mut shell = Shell::blank().unwrap();
+    let handle = focused(&mut shell, "ab");
+    shell.begin_edit_batch().unwrap();
+    shell.edit(EditCommand::Insert("x".into())).unwrap();
+    shell.focus(0).unwrap();
+    assert_eq!(shell.field(handle).unwrap().0, "ab");
+    assert_eq!(shell.text(handle).unwrap(), "ab");
+    assert!(shell.take_edit_events().is_empty());
+    assert_eq!(shell.end_edit_batch().unwrap_err(), "no edit batch");
 }

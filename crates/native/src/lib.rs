@@ -476,6 +476,49 @@ pub extern "C" fn bubble_edit(
     finish(result)
 }
 
+/// Open a nested edit batch on the focused field. Events are published by
+/// `bubble_edit_batch_end`.
+#[no_mangle]
+pub extern "C" fn bubble_edit_batch_begin() -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            shell.begin_edit_batch()?;
+            shell.take_edit_events()
+        };
+        send_edits(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
+}
+
+/// Close one batch level. The outermost level emits one delta event.
+#[no_mangle]
+pub extern "C" fn bubble_edit_batch_end() -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            shell.end_edit_batch()?;
+            shell.take_edit_events()
+        };
+        send_edits(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
+}
+
 /// Deepest text field under the point, or `0`.
 #[no_mangle]
 pub extern "C" fn bubble_field_at(x: f32, y: f32) -> u32 {
@@ -1278,6 +1321,22 @@ mod android {
             a as u32,
             b as u32,
         )
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editBatchBegin<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+    ) -> jint {
+        super::bubble_edit_batch_begin()
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editBatchEnd<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+    ) -> jint {
+        super::bubble_edit_batch_end()
     }
 
     #[no_mangle]

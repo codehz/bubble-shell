@@ -13,6 +13,8 @@ object BubbleNative {
     external fun tick(timeMs: Double): Int
     external fun scroll(x: Float, y: Float, dx: Float, dy: Float)
     external fun edit(action: Int, text: ByteArray, a: Int, b: Int): Int
+    external fun editBatchBegin(): Int
+    external fun editBatchEnd(): Int
     external fun fieldAt(x: Float, y: Float): Int
     external fun focusAt(x: Float, y: Float): Int
     external fun fieldFlags(handle: Int): Int

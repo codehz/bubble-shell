@@ -116,7 +116,7 @@ assets/
 | `SetEditingValue` | handle, epoch, value, selection | 受控文本 |
 | `SetAsset` | handle, contentHash | 预留；当前 `Image` 通过 `SetProp src` 交给宿主解析 |
 
-当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`、`Focus`、`SetEditingValue`，以及手势声明 op。`TextField`（kind 4）的编辑状态在 UI 线程：UTF-16 选区、`revision`、`epoch`、composition。`BSED` v1 把 `input` 事件交给脚本。iOS `UITextInput`、Android `InputConnection`、Web 隐藏 textarea 已接入文本编辑；无障碍桥尚未接入。其余 op（含 `InsertNode`、动画、语义）随后续里程碑。
+当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`、`Focus`、`SetEditingValue`，以及手势声明 op。`TextField`（kind 4）的编辑状态在 UI 线程，由 `EditSession` 持有 UTF-16 文档位置、方向性选区、独立组合区、`revision` 与撤销历史；`BSED` v2 每批向脚本投递有序 delta 和最终快照。iOS `UITextInput`、Android `InputConnection`、Web 隐藏 textarea 已接入文本编辑；无障碍桥尚未接入。其余 op（含 `InsertNode`、动画、语义）随后续里程碑。
 
 节点描述为 `BNOD` v2：固定字段后跟 `u32` 长度的 TLV 扩展块，新增字段不移动既有偏移。`Spawn` 载荷复用同一 v2 body；`BSOP` 也是 v2。滚动描述符的单个标志字节是位掩码：bit 0 为纵向 `overflow="scroll"`，bit 1 为横向，其余位保留且解码时拒绝。
 
@@ -156,23 +156,33 @@ Event {
 
 ### 文本编辑协议
 
-```text
-EditingChanged {
-  handle, revision, value, selection, composition
-}
+`BSED` v2 每批携带一条或多条编辑事件。每条事件是增量文本操作加最终快照：
 
+```text
+BSED { version: 2, count }
+EditingChanged {
+  handle, handler, session, revision,
+  deltas: [{ start, end, insert }],
+  selection: { anchor, active },
+  composition: { start, end } | null,
+  composing,
+  value
+}
 SetEditingValue {
   handle, epoch, value, selection
 }
 ```
 
-- 编辑状态由 UI 线程持有；`revision` 单调递增。
-- 字段权威状态是 core 的 `EditSession`：方向性选区、独立组合区、撤销历史、嵌套批次与冲突结果都在同一会话内；平台桥接通过 `Shell::field` / `Shell::session_id` 读取快照。脚本写入被拒绝时进入 `Shell::take_edit_conflicts`，日志不含用户文本。
-- 脚本用 `epoch` 下发受控值；epoch 落后则忽略。
-- composition 未提交时以 UI 线程为准；提交后再通知脚本。
-- 脚本不能在 composition 期间强制改写文本，除非显式取消输入。
+- `deltas` 按旧 UTF-16 文档坐标顺序应用；`value` 是该批结束后的最终值，只发送一次，供受控字段和诊断使用。
+- `selection` 保留方向（`anchor` 固定端、`active` 光标端）；`composition` 与选区独立，`composing` 在组合尚未产生范围时也为真。
+- 编辑状态由 UI 线程持有；`revision` 单调递增。一个批次只提交一次 revision、一条事件和一步撤销。
+- 批次 API：C ABI `bubble_edit_batch_begin` / `bubble_edit_batch_end`，WASM `edit_batch_begin` / `edit_batch_end`，JNI `editBatchBegin` / `editBatchEnd`。嵌套批次只在最外层发布事件。
+- 批次内读取反映当前事务状态；命令失败、连接关闭或失焦会丢弃整个未提交批次。
+- 脚本用 `epoch` 下发受控值；epoch 不匹配返回 stale conflict。composition 未提交时，普通脚本写入返回 composition conflict；显式 `cancel` 先取消组合再 reset。
+- 被拒绝的脚本写入进入 `Shell::take_edit_conflicts`，不静默丢弃，也不记录用户文本。
+- 版本 2 与生产端、Web 解码端锁步切换；旧 BSED v1 路径已删除。
 
-本节描述当前已接入的文本编辑协议；下一版事务、delta 事件、会话失效与跨平台几何契约见 [自绘输入模型重设计计划](06-input-model-plan.md)。实施后应以该计划阶段 F 更新本节并删除过时协议说明。
+平台几何快照与 Android `InputConnection` 迁移仍按 [自绘输入模型重设计计划](06-input-model-plan.md) 后续阶段实施。
 
 ## 4. 线程模型
 

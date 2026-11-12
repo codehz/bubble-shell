@@ -266,6 +266,42 @@ pub extern "C" fn edit(action: u32, ptr: *const u8, len: u32, a: u32, b: u32) ->
     }
 }
 
+#[no_mangle]
+pub extern "C" fn edit_batch_begin() -> i32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            shell.begin_edit_batch()?;
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn edit_batch_end() -> i32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            shell.end_edit_batch()?;
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
 /// Deepest text field under the point, or `0`.
 #[no_mangle]
 pub extern "C" fn field_at(x: f32, y: f32) -> u32 {

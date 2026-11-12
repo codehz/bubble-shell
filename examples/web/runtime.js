@@ -1165,21 +1165,37 @@ function decodeEditEvents(bytes) {
     throw new Error("bad edit event batch");
   }
   const version = view.getUint16(4, true);
-  if (version !== 1) throw new Error(`unsupported edit event version ${version}`);
+  if (version !== 2) throw new Error(`unsupported edit event version ${version}`);
   const count = view.getUint32(6, true);
   const events = [];
   let offset = 10;
   for (let index = 0; index < count; index += 1) {
-    if (offset + 36 > bytes.byteLength) throw new Error("truncated edit event");
+    if (offset + 48 > bytes.byteLength) throw new Error("truncated edit event");
     const handler = view.getUint32(offset, true);
     const handle = view.getUint32(offset + 4, true);
-    const revision = Number(view.getBigUint64(offset + 8, true));
-    const selStart = view.getUint32(offset + 16, true);
-    const selEnd = view.getUint32(offset + 20, true);
-    const compStart = view.getUint32(offset + 24, true);
-    const compEnd = view.getUint32(offset + 28, true);
-    const len = view.getUint32(offset + 32, true);
-    offset += 36;
+    const session = Number(view.getBigUint64(offset + 8, true));
+    const revision = Number(view.getBigUint64(offset + 16, true));
+    const anchor = view.getUint32(offset + 24, true);
+    const active = view.getUint32(offset + 28, true);
+    const compStart = view.getUint32(offset + 32, true);
+    const compEnd = view.getUint32(offset + 36, true);
+    const flags = view.getUint32(offset + 40, true);
+    const deltaCount = view.getUint32(offset + 44, true);
+    offset += 48;
+    const deltas = [];
+    for (let d = 0; d < deltaCount; d += 1) {
+      if (offset + 12 > bytes.byteLength) throw new Error("truncated edit delta");
+      const start = view.getUint32(offset, true);
+      const end = view.getUint32(offset + 4, true);
+      const len = view.getUint32(offset + 8, true);
+      offset += 12;
+      if (offset + len > bytes.byteLength) throw new Error("truncated edit delta text");
+      deltas.push({ start, end, insert: decodeUtf8(bytes, offset, offset + len) });
+      offset += len;
+    }
+    if (offset + 4 > bytes.byteLength) throw new Error("truncated edit value");
+    const len = view.getUint32(offset, true);
+    offset += 4;
     if (offset + len > bytes.byteLength) throw new Error("truncated edit value");
     const value = decodeUtf8(bytes, offset, offset + len);
     offset += len;
@@ -1187,10 +1203,13 @@ function decodeEditEvents(bytes) {
       type: "input",
       handler,
       handle,
+      session,
       revision,
+      deltas,
       value,
-      selection: [selStart, selEnd],
+      selection: [anchor, active],
       composition: compStart === 0xffffffff ? null : [compStart, compEnd],
+      composing: (flags & 1) !== 0,
     });
   }
   return events;
