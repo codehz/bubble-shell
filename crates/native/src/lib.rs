@@ -626,10 +626,10 @@ pub extern "C" fn bubble_selection(
         let (_, state) = shell.field(handle)?;
         unsafe {
             if !start.is_null() {
-                *start = state.sel_start;
+                *start = state.sel_start();
             }
             if !end.is_null() {
-                *end = state.sel_end;
+                *end = state.sel_end();
             }
             let (ms, me) = state.composition.unwrap_or((0, u32::MAX));
             if !mark_start.is_null() {

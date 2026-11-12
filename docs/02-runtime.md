@@ -167,6 +167,7 @@ SetEditingValue {
 ```
 
 - 编辑状态由 UI 线程持有；`revision` 单调递增。
+- 字段权威状态是 core 的 `EditSession`：方向性选区、独立组合区、撤销历史、嵌套批次与冲突结果都在同一会话内；平台桥接通过 `Shell::field` / `Shell::session_id` 读取快照。脚本写入被拒绝时进入 `Shell::take_edit_conflicts`，日志不含用户文本。
 - 脚本用 `epoch` 下发受控值；epoch 落后则忽略。
 - composition 未提交时以 UI 线程为准；提交后再通知脚本。
 - 脚本不能在 composition 期间强制改写文本，除非显式取消输入。

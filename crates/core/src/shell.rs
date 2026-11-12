@@ -4,8 +4,8 @@ use std::cell::{Cell, Ref, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use crate::editing::{
-    apply_command, apply_script, display_text, hit_unit, text_metrics, EditCommand, EditEvent,
-    EditHistory, FieldState,
+    display_text, hit_unit, text_metrics, EditCommand, EditConfig, EditError, EditEvent, EditOp,
+    EditSession, FieldState, Selection, SessionId,
 };
 use crate::gesture::{GestureEvent, GestureKind, PointerAction, PointerInput, Recognizer};
 use crate::color::Color;
@@ -140,13 +140,22 @@ pub struct Shell {
     paint_cache: RefCell<Vec<PaintCmd>>,
     paint_dirty: Cell<bool>,
     recognizer: Recognizer,
-    fields: HashMap<u32, FieldState>,
-    history: HashMap<u32, EditHistory>,
+    fields: HashMap<u32, EditSession>,
     focused: u32,
     edit_events: Vec<EditEvent>,
+    edit_conflicts: Vec<EditConflict>,
     caret_handle: u32,
     caret_box: Option<(f32, f32, f32, f32)>,
     selection_rects: Vec<(f32, f32, f32, f32)>,
+}
+
+/// A rejected script or IME write. Never contains user text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditConflict {
+    pub handle: u32,
+    pub session: SessionId,
+    pub revision: u64,
+    pub error: EditError,
 }
 
 /// Per-axis result of routing a wheel or touch delta through the hit path.
@@ -274,9 +283,9 @@ impl Shell {
             paint_dirty: Cell::new(true),
             recognizer: Recognizer::new(),
             fields: HashMap::new(),
-            history: HashMap::new(),
             focused: 0,
             edit_events: Vec::new(),
+            edit_conflicts: Vec::new(),
             caret_handle: 0,
             caret_box: None,
             selection_rects: Vec::new(),
@@ -751,12 +760,25 @@ impl Shell {
         if node.kind != Kind::Field {
             return Err(format!("handle {handle} is not a text field"));
         }
-        let state = self
+        let session = self
             .fields
             .get(&handle)
-            .ok_or_else(|| format!("handle {handle} has no editing session"))?
-            .clone();
-        Ok((node.text.clone(), state))
+            .ok_or_else(|| format!("handle {handle} has no editing session"))?;
+        Ok((session.value().to_owned(), session.field_state()))
+    }
+
+    /// Session identity for a field, used by platform input connections.
+    pub fn session_id(&self, handle: u32) -> Result<SessionId, String> {
+        self.fields
+            .get(&handle)
+            .map(EditSession::id)
+            .ok_or_else(|| format!("handle {handle} has no editing session"))
+    }
+
+    /// Drain writes rejected for a stale revision, an open composition, or a
+    /// closed session. Diagnostics never include user text.
+    pub fn take_edit_conflicts(&mut self) -> Vec<EditConflict> {
+        std::mem::take(&mut self.edit_conflicts)
     }
 
     /// Mutate the focused field. No-ops that do not change state emit nothing.
@@ -773,102 +795,75 @@ impl Shell {
     }
 
     fn edit_handle(&mut self, handle: u32, command: EditCommand) -> Result<(), String> {
-        let (multiline, max_length, handler, mut value) = {
+        let (handler, config) = {
             let node = self.node(handle)?;
             if node.kind != Kind::Field {
                 return Err(format!("handle {handle} is not a text field"));
             }
             (
-                node.multiline,
-                node.max_length,
                 node.handler,
-                node.text.clone(),
+                EditConfig {
+                    multiline: node.multiline,
+                    max_length: node.max_length,
+                },
             )
         };
-        if matches!(command, EditCommand::Undo | EditCommand::Redo) {
-            let (sel_start, sel_end) = {
-                let state = self
-                    .fields
-                    .get(&handle)
-                    .ok_or_else(|| format!("handle {handle} has no editing session"))?;
-                (state.sel_start, state.sel_end)
-            };
-            let restored = {
-                let history = self.history.entry(handle).or_default();
-                if matches!(command, EditCommand::Undo) {
-                    history.undo(&value, sel_start, sel_end)
-                } else {
-                    history.redo(&value, sel_start, sel_end)
-                }
-            };
-            let Some((next, sel_start, sel_end)) = restored else {
-                return Ok(());
-            };
-            let state = self
+        let outcome = {
+            let session = self
                 .fields
                 .get_mut(&handle)
                 .ok_or_else(|| format!("handle {handle} has no editing session"))?;
-            state.composing = false;
-            state.composition = None;
-            state.sel_start = sel_start;
-            state.sel_end = sel_end;
-            state.revision += 1;
-            value = next;
-            let event = EditEvent {
-                handle,
-                handler,
-                revision: state.revision,
-                value: value.clone(),
-                sel_start: state.sel_start,
-                sel_end: state.sel_end,
-                composition: None,
-            };
-            self.node_mut(handle)?.text = value;
-            self.edit_events.push(event);
-            self.refresh_measure(handle)?;
-            self.paint_dirty.set(true);
-            return Ok(());
-        }
-        let (sel_start, sel_end) = {
-            let state = self
-                .fields
-                .get(&handle)
-                .ok_or_else(|| format!("handle {handle} has no editing session"))?;
-            (state.sel_start, state.sel_end)
+            session.set_config(config);
+            match command {
+                EditCommand::Insert(text) => session.insert(&text),
+                EditCommand::Backspace => session.apply(EditOp::Backspace, None),
+                EditCommand::DeleteForward => session.apply(EditOp::DeleteForward, None),
+                EditCommand::SetSelection { start, end } => {
+                    session.apply(EditOp::Select(Selection::new(start, end)), None)
+                }
+                EditCommand::CompositionStart => session.begin_composition(),
+                EditCommand::CompositionUpdate(text) => session.composition_update(&text),
+                EditCommand::CompositionEnd(text) => {
+                    session.end_composition(Some(&text), None)
+                }
+                EditCommand::Undo => session.apply(EditOp::Undo, None),
+                EditCommand::Redo => session.apply(EditOp::Redo, None),
+            }
+            .map_err(|err| err.to_string())?
         };
-        let checkpoint = self
-            .history
-            .entry(handle)
-            .or_default()
-            .checkpoint(&command, &value, sel_start, sel_end);
-        let state = self
-            .fields
-            .get_mut(&handle)
-            .ok_or_else(|| format!("handle {handle} has no editing session"))?;
-        let changed = apply_command(state, &mut value, command, multiline, max_length)?;
-        let revision = state.revision;
-        let sel_start = state.sel_start;
-        let sel_end = state.sel_end;
-        let composition = state.composition;
-        self.history
-            .entry(handle)
-            .or_default()
-            .commit(checkpoint, changed);
-        if !changed {
+        self.finish_edit(handle, handler, outcome)
+    }
+
+    fn finish_edit(
+        &mut self,
+        handle: u32,
+        handler: u32,
+        outcome: crate::editing::EditOutcome,
+    ) -> Result<(), String> {
+        if !outcome.changed {
             return Ok(());
         }
+        let value = self
+            .fields
+            .get(&handle)
+            .ok_or_else(|| format!("handle {handle} has no editing session"))?
+            .value()
+            .to_owned();
+        let state = outcome.snapshot;
         let event = EditEvent {
             handle,
             handler,
-            revision,
+            revision: state.revision,
             value: value.clone(),
-            sel_start,
-            sel_end,
-            composition,
+            sel_start: state.sel_start(),
+            sel_end: state.sel_end(),
+            composition: state.composition,
         };
-        self.node_mut(handle)?.text = value;
+        if !outcome.deltas.is_empty() {
+            self.node_mut(handle)?.text = value;
+            self.refresh_measure(handle)?;
+        }
         self.edit_events.push(event);
-        self.refresh_measure(handle)?;
         self.paint_dirty.set(true);
         Ok(())
     }
@@ -882,51 +877,43 @@ impl Shell {
         sel_end: u32,
         cancel: bool,
     ) -> Result<(), String> {
-        let (multiline, max_length, handler, mut value) = {
+        let (handler, config) = {
             let node = self.node(handle)?;
             if node.kind != Kind::Field {
                 return Err(format!("handle {handle} is not a text field"));
             }
             (
-                node.multiline,
-                node.max_length,
                 node.handler,
-                node.text.clone(),
+                EditConfig {
+                    multiline: node.multiline,
+                    max_length: node.max_length,
+                },
             )
         };
-        let state = self
+        let session = self
             .fields
             .get_mut(&handle)
             .ok_or_else(|| format!("handle {handle} has no editing session"))?;
-        if !apply_script(
-            state,
-            &mut value,
+        let session_id = session.id();
+        session.set_config(config);
+        let outcome = match session.script_reset(
             epoch,
             next,
-            sel_start,
-            sel_end,
+            Selection::new(sel_start, sel_end),
             cancel,
-            multiline,
-            max_length,
         ) {
-
-            return Ok(());
-        }
-        let event = EditEvent {
-            handle,
-            handler,
-            revision: state.revision,
-            value: value.clone(),
-            sel_start: state.sel_start,
-            sel_end: state.sel_end,
-            composition: state.composition,
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.edit_conflicts.push(EditConflict {
+                    handle,
+                    session: session_id,
+                    revision: session.revision(),
+                    error,
+                });
+                return Ok(());
+            }
         };
-        self.history.remove(&handle);
-        self.node_mut(handle)?.text = value;
-        self.edit_events.push(event);
-        self.refresh_measure(handle)?;
-        self.paint_dirty.set(true);
-        Ok(())
+        self.finish_edit(handle, handler, outcome)
     }
 
 
@@ -1332,7 +1319,16 @@ impl Shell {
         self.sync_children(parent)?;
         self.high_water = self.high_water.max(handle);
         if desc.kind == Kind::Field {
-            self.fields.insert(handle, FieldState::new(&desc.text));
+            self.fields.insert(
+                handle,
+                EditSession::new(
+                    &desc.text,
+                    EditConfig {
+                        multiline: false,
+                        max_length: 0,
+                    },
+                ),
+            );
         }
         Ok(())
     }
@@ -1411,8 +1407,9 @@ impl Shell {
         let taffy_id = self.node(handle)?.taffy;
         self.taffy.remove(taffy_id).map_err(|err| err.to_string())?;
         self.nodes[handle as usize] = None;
-        self.fields.remove(&handle);
-        self.history.remove(&handle);
+        if let Some(mut session) = self.fields.remove(&handle) {
+            session.close();
+        }
         if self.focused == handle {
             self.focused = 0;
         }
@@ -1499,9 +1496,13 @@ impl Shell {
         let text = display_text(&node.text, node.secure);
         let origin_x = node.x + pads[0];
         let origin_y = node.y + pads[2];
-        let metrics = text_metrics(&text, state.sel_start, state.sel_end, lh, |line| {
-            measure(line, font_size, lh, weight, None).0
-        });
+        let metrics = text_metrics(
+            &text,
+            state.sel_start(),
+            state.sel_end(),
+            lh,
+            |line| measure(line, font_size, lh, weight, None).0,
+        );
         self.caret_handle = handle;
         self.selection_rects = metrics
             .selection

@@ -1,5 +1,5 @@
 use bubble_core::{
-    encode, EditCommand, Kind, NodeDesc, Op, Shell, Value, DEFERRED_PROPS,
+    encode, EditCommand, EditError, Kind, NodeDesc, Op, Shell, Value, DEFERRED_PROPS,
 };
 
 fn field(shell: &mut Shell, text: &str) -> u32 {
@@ -27,7 +27,7 @@ fn insert_backspace_and_surrogate_round_trip_through_ops() {
     shell.edit(EditCommand::Insert("a😀b".into())).unwrap();
     let (value, state) = shell.field(handle).unwrap();
     assert_eq!(value, "a😀b");
-    assert_eq!(state.sel_start, 4);
+    assert_eq!(state.sel_start(), 4);
     assert_eq!(state.revision, 1);
 
     shell
@@ -36,12 +36,12 @@ fn insert_backspace_and_surrogate_round_trip_through_ops() {
     shell.edit(EditCommand::Backspace).unwrap();
     let (value, state) = shell.field(handle).unwrap();
     assert_eq!(value, "a😀");
-    assert_eq!(state.sel_start, 3);
+    assert_eq!(state.sel_start(), 3);
 
     shell.edit(EditCommand::Backspace).unwrap();
     let (value, state) = shell.field(handle).unwrap();
     assert_eq!(value, "a");
-    assert_eq!(state.sel_start, 1);
+    assert_eq!(state.sel_start(), 1);
 
     let batch = encode(
         1,
@@ -57,7 +57,7 @@ fn insert_backspace_and_surrogate_round_trip_through_ops() {
     shell.apply_ops(&batch).unwrap();
     let (value, state) = shell.field(handle).unwrap();
     assert_eq!(value, "ok");
-    assert_eq!((state.sel_start, state.sel_end), (1, 2));
+    assert_eq!((state.sel_start(), state.sel_end()), (1, 2));
     let stale = state.revision;
     shell
         .apply_ops(&encode(
@@ -161,9 +161,9 @@ fn max_length_counts_utf16_and_secure_paint_masks() {
     assert_eq!(shell.field(handle).unwrap().0, "😀");
     shell.layout(&mut |_, _, _, _, _| (10.0, 16.0)).unwrap();
     let paint = shell.paint();
-    let masked = paint.iter().any(|cmd| {
-        matches!(cmd, bubble_core::PaintCmd::Text { text, .. } if text == "••")
-    });
+    let masked = paint
+        .iter()
+        .any(|cmd| matches!(cmd, bubble_core::PaintCmd::Text { text, .. } if text == "••"));
     assert!(masked);
     assert!(DEFERRED_PROPS.contains(&"maxLength"));
 }
@@ -184,9 +184,7 @@ fn field_at_returns_the_deepest_field() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 80.0);
     let handle = field(&mut shell, "");
-    shell
-        .layout(&mut |_, _, _, _, _| (10.0, 16.0))
-        .unwrap();
+    shell.layout(&mut |_, _, _, _, _| (10.0, 16.0)).unwrap();
     let (x, y, w, h) = shell.node_box(handle).unwrap();
     assert!(w > 0.0 && h > 0.0);
     assert_eq!(shell.field_at(x + 1.0, y + 1.0), handle);
@@ -203,12 +201,23 @@ fn focus_point_places_the_caret_on_the_tapped_line() {
     };
     shell.layout(&mut measure).unwrap();
     let (x, y, _, _) = shell.node_box(handle).unwrap();
-    assert_eq!(shell.focus_point(x + 25.0, y + 4.0, &mut measure).unwrap(), handle);
-    assert_eq!(shell.field(handle).unwrap().1.sel_start, 2);
-    assert_eq!(shell.focus_point(x + 5.0, y + 20.0, &mut measure).unwrap(), handle);
+    assert_eq!(
+        shell.focus_point(x + 25.0, y + 4.0, &mut measure).unwrap(),
+        handle
+    );
+    assert_eq!(shell.field(handle).unwrap().1.sel_start(), 2);
+    assert_eq!(
+        shell.focus_point(x + 5.0, y + 20.0, &mut measure).unwrap(),
+        handle
+    );
     let state = shell.field(handle).unwrap().1;
-    assert_eq!((state.sel_start, state.sel_end), (3, 3));
-    assert_eq!(shell.focus_point(x + 400.0, y + 400.0, &mut measure).unwrap(), 0);
+    assert_eq!((state.sel_start(), state.sel_end()), (3, 3));
+    assert_eq!(
+        shell
+            .focus_point(x + 400.0, y + 400.0, &mut measure)
+            .unwrap(),
+        0
+    );
 }
 
 #[test]
@@ -227,8 +236,12 @@ fn undo_redo_and_script_reset() {
     assert_eq!(shell.field(handle).unwrap().0, "ac");
 
     shell.edit(EditCommand::CompositionStart).unwrap();
-    shell.edit(EditCommand::CompositionUpdate("中".into())).unwrap();
-    shell.edit(EditCommand::CompositionEnd("中".into())).unwrap();
+    shell
+        .edit(EditCommand::CompositionUpdate("中".into()))
+        .unwrap();
+    shell
+        .edit(EditCommand::CompositionEnd("中".into()))
+        .unwrap();
     assert_eq!(shell.field(handle).unwrap().0, "ac中");
     shell.edit(EditCommand::Undo).unwrap();
     assert_eq!(shell.field(handle).unwrap().0, "ac");
@@ -264,8 +277,11 @@ fn unit_at_does_not_move_the_caret() {
     };
     shell.layout(&mut measure).unwrap();
     let (x, y, _, _) = shell.node_box(handle).unwrap();
-    assert_eq!(shell.unit_at(x + 25.0, y + 4.0, &mut measure).unwrap(), Some(2));
-    assert_eq!(shell.field(handle).unwrap().1.sel_start, 0);
+    assert_eq!(
+        shell.unit_at(x + 25.0, y + 4.0, &mut measure).unwrap(),
+        Some(2)
+    );
+    assert_eq!(shell.field(handle).unwrap().1.sel_start(), 0);
     let (cx, cy, cw, ch) = shell.caret_rect_at(2, &mut measure).unwrap().unwrap();
     assert!(cx >= x + 20.0);
     assert!(cy >= y && ch > 0.0 && cw == 1.0);
@@ -326,10 +342,77 @@ fn focused_field_paints_a_caret_and_reports_keyboard_flags() {
                 if (*tx - (nx + 8.0)).abs() < 0.01 && (*ty - (ny + 6.0)).abs() < 0.01
         )
     });
-    let caret_at = paint.iter().position(|cmd| matches!(
-        cmd,
-        bubble_core::PaintCmd::Fill { x: cx, w: cw, .. } if *cw == 1.0 && (*cx - x).abs() < 0.01
-    ));
+    let caret_at = paint.iter().position(|cmd| {
+        matches!(
+            cmd,
+            bubble_core::PaintCmd::Fill { x: cx, w: cw, .. } if *cw == 1.0 && (*cx - x).abs() < 0.01
+        )
+    });
     assert!(text_at.is_some() && caret_at.is_some() && caret_at > text_at);
     let _ = y;
+}
+
+#[test]
+fn selection_direction_survives_the_shell_boundary() {
+    let mut shell = Shell::blank().unwrap();
+    let handle = focused(&mut shell, "abcd");
+    shell
+        .edit(EditCommand::SetSelection { start: 3, end: 1 })
+        .unwrap();
+    let state = shell.field(handle).unwrap().1;
+    assert_eq!(state.anchor(), 3);
+    assert_eq!(state.active(), 1);
+    assert_eq!((state.sel_start(), state.sel_end()), (1, 3));
+    let event = shell.take_edit_events().pop().unwrap();
+    assert_eq!((event.sel_start, event.sel_end), (1, 3));
+}
+
+#[test]
+fn rejected_script_writes_enter_the_conflict_queue() {
+    let mut shell = Shell::blank().unwrap();
+    let handle = focused(&mut shell, "");
+    shell.edit(EditCommand::CompositionStart).unwrap();
+    shell
+        .edit(EditCommand::CompositionUpdate("中".into()))
+        .unwrap();
+    let revision = shell.field(handle).unwrap().1.revision;
+    shell
+        .apply_ops(&encode(
+            1,
+            &[Op::SetEditingValue {
+                handle,
+                epoch: revision,
+                value: "x".into(),
+                sel_start: 1,
+                sel_end: 1,
+                cancel: false,
+            }],
+        ))
+        .unwrap();
+    assert_eq!(shell.field(handle).unwrap().0, "中");
+    let conflicts = shell.take_edit_conflicts();
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].handle, handle);
+    assert_eq!(conflicts[0].error, EditError::CompositionConflict);
+
+    shell
+        .apply_ops(&encode(
+            2,
+            &[Op::SetEditingValue {
+                handle,
+                epoch: revision - 1,
+                value: "y".into(),
+                sel_start: 0,
+                sel_end: 0,
+                cancel: true,
+            }],
+        ))
+        .unwrap();
+    assert_eq!(shell.field(handle).unwrap().0, "中");
+    let conflicts = shell.take_edit_conflicts();
+    assert_eq!(conflicts.len(), 1);
+    assert!(matches!(
+        conflicts[0].error,
+        EditError::StaleRevision { .. }
+    ));
 }

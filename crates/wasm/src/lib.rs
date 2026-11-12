@@ -374,7 +374,7 @@ pub extern "C" fn selection() -> u32 {
         }
         let (_, state) = shell.field(handle)?;
         let (mark_start, mark_end) = state.composition.unwrap_or((0, u32::MAX));
-        Ok(Some((state.sel_start, state.sel_end, mark_start, mark_end)))
+        Ok(Some((state.sel_start(), state.sel_end(), mark_start, mark_end)))
     })
     .ok()
     .flatten() else {
