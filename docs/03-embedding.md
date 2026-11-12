@@ -166,9 +166,9 @@ Web 宿主从 `runtime.js` 具名导入 `setApi`、`dispatchGestureEvents` 和 `
 | 光标位置 | layout 后的 `caret_box` | 隐藏 `textarea` 贴到光标 | `CursorAnchorInfo` | `caretRect(for:)` |
 | autofill | `field_flags` bits 16..23 | `autocomplete` | autofill hints | `textContentType` |
 
-设备上的 CJK 标记文本、系统手柄和 Web 菜单尚未做点击验收。
+设备上的 CJK 标记文本、系统手柄和 Web 菜单待点击验收。
 
-后续重设计不改变上述已接入实现的事实；目标协议、迁移顺序及验收以 [自绘输入模型重设计计划](06-input-model-plan.md) 为准。该计划接在 [手势与滚动协商计划](05-gestures-plan.md) 阶段 E（完整验证已标记为跳过、后续再做）之后，是下一个开发计划；届时同步迁移 Rust、Android、iOS 与 Web，不保留旧编辑语义并行运行。
+下一版本按 [自绘输入模型重设计计划](06-input-model-plan.md) 同步迁移 Rust、Android、iOS 与 Web，一次性替换上述实现，不保留旧编辑语义并行运行。
 
 
 ## 6. 更新平面

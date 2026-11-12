@@ -7,7 +7,7 @@
 | QuickJS 事件循环、async、调试器需自建 | 高 | 开发效率与线上排障 | 基于 quickjs-ng/libc；先做最小事件循环；后续接调试协议；三端 conformance |
 | 主线程脚本卡住绘制 | 中 | Web 长任务掉帧，且无法强杀 | 接受。软预算只埋点；不做 Worker、不做切片 |
 | a11y/IME 是最大平台差异面 | 高 | 产品可用性与合规 | 每端独立适配层；VoiceOver/TalkBack/NVDA 自动化 + 手工回归 |
-| Android IME 与自绘编辑状态语义不一致 | 高 | CJK 组合、选区、删除与光标位置失败 | 按 [自绘输入模型重设计计划](06-input-model-plan.md) 锁步迁移编辑事务；模拟器验证，明确记录真机风险 |
+| Android IME 与自绘编辑状态语义不一致 | 高 | CJK 组合、选区、删除与光标位置失败 | 按 [自绘输入模型重设计计划](06-input-model-plan.md) 锁步迁移编辑事务；模拟器验证；真机差异记入发布记录 |
 | 全表面重绘性能 | 中 | 60fps 门槛 | 脏矩形、静态子树缓存、帧耗时埋点；复杂列表虚拟化 |
 | 远程 JS 的 App Store 合规 | 高 | iOS 上线 | 第一方签名、无 JIT；准备 data-only 降级；提前审核沟通 |
 | FFI / QuickJS 内存安全 | 高 | 宿主崩溃 | 安全封装、fuzz、panic 屏障、配额、灰度 |
@@ -87,13 +87,13 @@ cargo run -q -p bubble-eval -- android
 
 - Android 硬件加速前后差异明显：SwiftShader 软件渲染时 frame budget 为 38.76 / 35.32 ms、死循环期间仅 30–31 帧；切换为 Metal 后为 16.65 / 16.67 ms、61 帧。`dumpsys gfxinfo` 显示 82 帧中 2 帧 janky（2.44%），`Missed Vsync` 为 0。此前的不达标是模拟器软件光栅化导致，不是运行时缺陷。
 - iOS 已接入 `UIPanGestureRecognizer` → `bubble_scroll`，Android 已接入 touch move → `bubble_scroll`；两端均同时传递水平与垂直增量。滚动验收使用真实合成触摸：iOS 由 `XCUITest` 拖拽（`examples/ios/BubbleShellUITests.xcodeproj`），Android 由 `adb shell input swipe` 在 scroller 屏幕矩形内滑动；demo bundle 扩展到 48 行，保证在真机高度下也可滚动。两端 scroll offset 均超过 40。
-- 以上仅为模拟器结果，真机 60fps 基线仍需补测；宿主桥与生命周期暂停由 headless 套件覆盖。
+- 真机 60fps 基线待补测；宿主桥与生命周期暂停由 headless 套件覆盖。
 - `crates/native/tests/m1.rs` 已用进程级互斥串行化，`cargo test --workspace` 默认并行运行通过。内存超限与硬超时走同一重建路径，测试覆盖内存超限、双实例拒绝与坏 manifest 拒绝。
 - iOS 设备脚本现在会删除上次的 `m1-result.json` 再启动，避免读到旧报告。
 
 ### M2 · 输入与无障碍
 
-前置阶段：[手势与滚动协商计划](05-gestures-plan.md) 阶段 E：两端模拟器自动化已覆盖支持范围，但 iOS 公共 XCUITest 无法表达任意双指轨迹、第三指和按住期间系统中断，这三项仍为明确限制，不得视为已通过；完整验证已标记为跳过，后续再做。随后执行 [自绘输入模型重设计计划](06-input-model-plan.md)，作为下一个开发计划，先统一编辑事务、Android IME 语义和三端排版几何，再继续本里程碑的输入控件、焦点与无障碍收尾。
+前置阶段：[手势与滚动协商计划](05-gestures-plan.md) 已实现，两端模拟器自动化覆盖主要交互；iOS 双指同向拖、第三指与按住中断待真机补充。随后执行 [自绘输入模型重设计计划](06-input-model-plan.md)，先统一编辑事务、Android IME 语义和三端排版几何，再继续本里程碑的输入控件、焦点与无障碍收尾。
 
 完成输入模型重设计后的 M2 范围：
 

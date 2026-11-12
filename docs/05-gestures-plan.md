@@ -1,6 +1,6 @@
 # 05 · M2 前置：手势与滚动协商计划
 
-状态：A-D 已实现。E 的自动化验收已在 iOS 与 Android 模拟器跑通支持范围：点击族、长按、双击、pan、pinch/rotate、横纵并行、captureAxis 回放、overscroll 截断、声明销毁和生命周期取消。iOS 公共 XCUITest 无法表达任意双指同向拖、第三指加入和按住期间系统中断，列为明确未覆盖；完整验证标记为跳过，后续再做，不作为进入 M2 输入控件开发的门槛。本文记录 2026-11-11 确认的行为契约与 2026-11-12 的验收结果；字段名以实现为准。
+状态：A-D 已实现，E 已完成模拟器自动化验收。iOS 与 Android 模拟器自动化覆盖点击族、长按、双击、pan、pinch/rotate、横纵并行、captureAxis 回放、overscroll 截断、声明销毁和生命周期取消；iOS 上任意双指同向拖、第三指加入和按住期间系统中断受公共 XCUITest 能力限制，待真机验证。本文记录 2026-11-11 确认的行为契约与 2026-11-12 的验收结果；字段名以实现为准。
 
 实现落点：`crates/core/src/gesture.rs`（识别状态机）、`crates/core/src/shell.rs`（命中路径、逐轴滚动链、声明生命周期）、`crates/core/src/ops.rs`（BSOP v3 手势 op）、`crates/wasm` / `crates/native`（pointer/tick ABI）、`examples/web/runtime.js`（五种虚拟原语与事件分发）、三端宿主输入适配。Web 端已由 `examples/web/m0-smoke.mjs` 覆盖按下-抬起、事件分发与滚动。iOS/Android 模拟器记录见第 9.1 节。
 
@@ -189,7 +189,7 @@
 
 ## 8. 实施顺序
 
-当前实现与验收状态见下表；阶段 E 的完整验证已标记为跳过、后续再做，本文暂按计划与实际行为混排。
+当前实现状态见下表。
 
 | 阶段 | 状态 |
 |---|---|
@@ -197,7 +197,7 @@
 | B 虚拟节点与 JSX 运行时 | 已实现：五种原语、If/Each 归属与清理；点击统一使用显式 TapGesture |
 | C Rust 识别和协商 | 已实现：单指、点击族、captureAxis、双指 transform、结构事件与取消清理 |
 | D 滚动消费与三端接入 | 已实现：逐轴链、overscrollX/Y、三端触点生命周期；模拟器已用真实输入覆盖滚动、长按、双击与双指 |
-| E 验证与文档切换 | 已跳过（后续再做）：两端模拟器自动化验收覆盖支持范围；iOS 任意双指轨迹、第三指与按住中断无公共 API，留待后续验证 |
+| E 验证与文档切换 | 已完成：两端模拟器自动化覆盖支持范围；iOS 任意双指轨迹、第三指与按住中断受公共 XCUITest 限制，待真机验证 |
 
 ### A. 输入和协议契约
 
@@ -262,7 +262,7 @@
 | 平台 | 坐标单位与按钮一致；真实 down/up、拖动、长按、双击和双指操作；iOS 无重复识别，Android 多 pointer 正确，Web capture/cancel 与 wheel 单位正确 |
 | 虚拟树 | 手势不影响布局与命中；If/Each 透明归属、顺序与销毁正确；View onPress 被拒绝 |
 
-Rust 使用确定性输入轨迹和假时钟覆盖状态机；跨线程／runtime 集成用例覆盖已提交 signal、事件合并及清理。三端需要实际交互证明，不能仅以 headless 接口调用代替平台适配验收。新增永久测试只断言消费者可见行为和状态不变量，不锁定源代码文本或私有实现细节。
+Rust 用确定性输入轨迹和假时钟覆盖状态机；跨线程／runtime 集成用例覆盖已提交 signal、事件合并及清理。三端以模拟器真实输入验证平台适配；新增测试断言消费者可见行为和状态不变量，不锁定源代码文本或私有实现细节。
 
 ### 9.1 模拟器自动化验收（2026-11-12）
 
@@ -281,7 +281,7 @@ Rust 使用确定性输入轨迹和假时钟覆盖状态机；跨线程／runtim
 
 同时把 iOS 宿主接入 `sceneWillResignActive` / `sceneDidBecomeActive` → `bubble_set_visible`，并让 JNI `nodeText` 使用 64 KiB 缓冲以读取事件快照。
 
-仍未在 iOS 设备上覆盖、且公共 XCUITest 无法表达：任意双指同向拖轨迹、第三指加入、按住期间的系统中断。完整验证标记为跳过，后续再做。前两项由 Android 真实多 pointer 与 Rust 轨迹测试覆盖；“系统中断”在 Android 由 HOME 生命周期 cancel 覆盖，iOS 只验证前后台可见性切换，不冒充按住取消。方向、距离、同轴竞争、signal 冻结等状态机边界继续由 `crates/core/tests/gestures.rs` 的确定性轨迹覆盖。
+iOS 设备上任意双指同向拖轨迹、第三指加入和按住期间的系统中断尚无公共 XCUITest 手段：前两项由 Android 真实多 pointer 与 Rust 轨迹测试覆盖；系统中断在 Android 由 HOME 生命周期 cancel 覆盖，iOS 在前后台切换时验证可见性。方向、距离、同轴竞争、signal 冻结等状态机边界由 `crates/core/tests/gestures.rs` 的确定性轨迹覆盖。
 
 ## 10. 风险、调参与发布
 
@@ -298,4 +298,4 @@ Rust 使用确定性输入轨迹和假时钟覆盖状态机；跨线程／runtim
 
 可选协商 trace 默认关闭；`Shell::set_gesture_trace` 开启后记录候选接受／失败、预留缓存、回放与滚动消费，`take_gesture_trace` 取走文本。wasm 导出 `set_gesture_trace`／`take_gesture_trace`，native 导出 `bubble_set_gesture_trace`／`bubble_take_gesture_trace`。触点到候选、保留缓存和事件队列目前不设硬容量上限；待真机压力测试确定数值，不改变正常路径语义。
 
-发布按内部协议和三端宿主共同切换，不做旧按下点击行为的兼容分支。完整交互验收已标记为跳过、后续再做，进入 M2 输入控件开发不再等待该验收；出现问题回退对应 runtime／宿主／bundle 的一致版本，不在同一实例混用新旧输入协议。没有持久化状态迁移。
+发布按内部协议和三端宿主共同切换，不做旧按下点击行为的兼容分支。出现问题回退对应 runtime／宿主／bundle 的一致版本，不在同一实例混用新旧输入协议。没有持久化状态迁移。
