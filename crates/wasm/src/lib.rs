@@ -271,6 +271,40 @@ pub extern "C" fn field_at(x: f32, y: f32) -> u32 {
     with_shell(|shell| Ok(shell.field_at(x, y))).unwrap_or(0)
 }
 
+/// Focus the field under the point and place the caret. Returns the handle, or 0.
+#[no_mangle]
+pub extern "C" fn focus_at(x: f32, y: f32) -> u32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            let handle = shell.focus_point(x, y, &mut |text, font_size, line_height, font_weight, max_width| {
+                let mut out = [0f32; 2];
+                unsafe {
+                    host_measure(
+                        text.as_ptr() as u32,
+                        text.len() as u32,
+                        font_size,
+                        line_height,
+                        font_weight as u32,
+                        u32::from(max_width.is_some()),
+                        max_width.unwrap_or(0.0),
+                        out.as_mut_ptr() as u32,
+                    );
+                }
+                (out[0], out[1])
+            })?;
+            collect_events(shell);
+            Ok(handle)
+        })
+    });
+    match result {
+        Ok(handle) => handle,
+        Err(err) => {
+            set_error(err);
+            0
+        }
+    }
+}
+
 /// Writes x, y, width, height of the focused caret into scratch. Returns 16, or 0.
 #[no_mangle]
 pub extern "C" fn caret_box() -> u32 {

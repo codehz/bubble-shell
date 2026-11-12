@@ -16,6 +16,8 @@ func bubble_pointer(_ action: UInt32, _ id: UInt32, _ x: Float, _ y: Float, _ ti
 func bubble_edit(_ action: UInt32, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ a: UInt32, _ b: UInt32) -> Int32
 @_silgen_name("bubble_field_at")
 func bubble_field_at(_ x: Float, _ y: Float) -> UInt32
+@_silgen_name("bubble_focus_at")
+func bubble_focus_at(_ x: Float, _ y: Float) -> UInt32
 @_silgen_name("bubble_field_flags")
 func bubble_field_flags(_ handle: UInt32) -> UInt32
 @_silgen_name("bubble_tick")
@@ -260,7 +262,7 @@ final class BubbleView: UIView {
         for touch in touches {
             sendPointer(2, touch)
             let point = touch.location(in: self)
-            let handle = bubble_field_at(
+            let handle = bubble_focus_at(
                 Float(point.x - safeAreaInsets.left),
                 Float(point.y - safeAreaInsets.top)
             )
@@ -274,7 +276,6 @@ final class BubbleView: UIView {
                 case 4: keyboardKind = .phonePad
                 default: keyboardKind = .default
                 }
-                _ = bubble_edit(0, nil, 0, handle, 0)
                 _ = becomeFirstResponder()
                 reloadInputViews()
             }

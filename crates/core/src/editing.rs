@@ -417,6 +417,46 @@ pub fn text_metrics(
     }
 }
 
+/// UTF-16 offset nearest to a point relative to the text origin.
+/// `advance` is the width of one line, measured without wrapping.
+pub fn hit_unit(
+    text: &str,
+    x: f32,
+    y: f32,
+    line_height: f32,
+    mut advance: impl FnMut(&str) -> f32,
+) -> u32 {
+    let lh = if line_height.is_finite() && line_height > 0.0 {
+        line_height
+    } else {
+        0.0
+    };
+    let lines: Vec<&str> = text.split('\n').collect();
+    let lines: Vec<&str> = if lines.is_empty() { vec![""] } else { lines };
+    let index = if lh == 0.0 || y < lh {
+        0
+    } else {
+        ((y / lh).floor() as usize).min(lines.len() - 1)
+    };
+    let mut base = 0u32;
+    for line in lines.iter().take(index) {
+        base += utf16_len(line) + 1;
+    }
+    let line = lines[index];
+    let total = utf16_len(line);
+    let mut best = 0u32;
+    let mut best_dist = f32::MAX;
+    for col in 0..=total {
+        let width = advance(&line[..boundary(line, col)]);
+        let dist = (width - x).abs();
+        if dist < best_dist {
+            best_dist = dist;
+            best = col;
+        }
+    }
+    base + best
+}
+
 pub fn utf16_len(value: &str) -> u32 {
     value.chars().map(|ch| ch.len_utf16() as u32).sum()
 }

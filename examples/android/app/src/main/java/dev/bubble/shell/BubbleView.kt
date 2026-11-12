@@ -293,10 +293,9 @@ class BubbleView(context: Context) : View(context) {
             MotionEvent.ACTION_POINTER_UP -> sendPointer(2, event.actionIndex, event)
             MotionEvent.ACTION_UP -> {
                 sendPointer(2, event.actionIndex, event)
-                val handle = BubbleNative.fieldAt(localX(event.x), localY(event.y))
+                val handle = BubbleNative.focusAt(localX(event.x), localY(event.y))
                 if (handle != 0) {
                     editorType = editorType(BubbleNative.fieldFlags(handle))
-                    sendEdit(0, "", handle, 0)
                     requestFocus()
                     val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                     imm.restartInput(this)

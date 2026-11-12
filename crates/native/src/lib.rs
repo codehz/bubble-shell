@@ -490,6 +490,50 @@ pub extern "C" fn bubble_field_at(x: f32, y: f32) -> u32 {
     result.unwrap_or(0)
 }
 
+/// Focus the field under the point and place the caret. Returns the handle, or 0.
+#[no_mangle]
+pub extern "C" fn bubble_focus_at(x: f32, y: f32) -> u32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            let host = &engine.shared.host;
+            let handle = shell.focus_point(x, y, &mut |text, font_size, line_height, font_weight, max_width| {
+                if let Some(measure) = host.measure {
+                    let mut w = 0.0f32;
+                    let mut h = 0.0f32;
+                    let has_max = max_width.is_some();
+                    measure(
+                        host.ctx as *mut c_void,
+                        text.as_ptr(),
+                        text.len() as u32,
+                        font_size,
+                        line_height,
+                        font_weight,
+                        max_width.unwrap_or(0.0),
+                        i32::from(has_max),
+                        &mut w,
+                        &mut h,
+                    );
+                    (w, h)
+                } else {
+                    fallback_measure(text, font_size, line_height)
+                }
+            })?;
+            let events = shell.take_edit_events();
+            Ok::<_, String>((handle, events))
+        }?;
+        send_edits(&engine.shared, events.1);
+        Ok(events.0)
+    });
+    result.unwrap_or(0)
+}
+
 /// Focused caret: x, y, width, height. Returns 0 when a field is focused.
 #[no_mangle]
 pub extern "C" fn bubble_caret(
@@ -1041,6 +1085,16 @@ mod android {
         y: jfloat,
     ) -> jint {
         super::bubble_field_at(x, y) as jint
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_focusAt<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        x: jfloat,
+        y: jfloat,
+    ) -> jint {
+        super::bubble_focus_at(x, y) as jint
     }
 
     #[no_mangle]

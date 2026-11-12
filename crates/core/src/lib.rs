@@ -20,7 +20,7 @@ mod turn;
 
 pub use color::{parse as parse_color, Color};
 pub use editing::{
-    apply_command, apply_script, display_text, encode_edit_events, text_metrics, utf16_len,
+    apply_command, apply_script, display_text, encode_edit_events, hit_unit, text_metrics, utf16_len,
     EditCommand, EditEvent, FieldState, TextMetrics,
 };
 pub use gesture::{

@@ -194,6 +194,24 @@ fn field_at_returns_the_deepest_field() {
 }
 
 #[test]
+fn focus_point_places_the_caret_on_the_tapped_line() {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 80.0);
+    let handle = field(&mut shell, "ab\ncd");
+    let mut measure = |text: &str, font: f32, _: f32, _: u16, _: Option<f32>| {
+        (text.chars().count() as f32 * 10.0, font)
+    };
+    shell.layout(&mut measure).unwrap();
+    let (x, y, _, _) = shell.node_box(handle).unwrap();
+    assert_eq!(shell.focus_point(x + 25.0, y + 4.0, &mut measure).unwrap(), handle);
+    assert_eq!(shell.field(handle).unwrap().1.sel_start, 2);
+    assert_eq!(shell.focus_point(x + 5.0, y + 20.0, &mut measure).unwrap(), handle);
+    let state = shell.field(handle).unwrap().1;
+    assert_eq!((state.sel_start, state.sel_end), (3, 3));
+    assert_eq!(shell.focus_point(x + 400.0, y + 400.0, &mut measure).unwrap(), 0);
+}
+
+#[test]
 fn focused_field_paints_a_caret_and_reports_keyboard_flags() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 80.0);

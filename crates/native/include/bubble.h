@@ -28,6 +28,7 @@ void bubble_set_visible(int visible);
 int bubble_edit(uint32_t action, const uint8_t *text, uint32_t text_len, uint32_t a, uint32_t b);
 /* Deepest text field under the point, or 0. */
 uint32_t bubble_field_at(float x, float y);
+uint32_t bubble_focus_at(float x, float y);
 int bubble_caret(float *x, float *y, float *w, float *h);
 uint32_t bubble_field_flags(uint32_t handle);
 

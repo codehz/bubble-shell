@@ -494,9 +494,8 @@ for (const type of ["beforeinput", "compositionstart", "compositionupdate", "com
 
 canvas.addEventListener("pointerup", (event) => {
   const [x, y] = point(event);
-  const handle = exports.field_at(x, y);
+  const handle = exports.focus_at(x, y);
   if (!handle) return;
-  exports.edit(0, 0, 0, handle, 0);
   exports.layout();
   const flags = exports.field_flags(handle);
   ime.type = flags & 2 ? "password" : "text";

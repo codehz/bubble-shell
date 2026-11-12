@@ -4,7 +4,8 @@ use std::cell::{Cell, Ref, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use crate::editing::{
-    apply_command, apply_script, display_text, text_metrics, EditCommand, EditEvent, FieldState,
+    apply_command, apply_script, display_text, hit_unit, text_metrics, EditCommand, EditEvent,
+    FieldState,
 };
 use crate::gesture::{GestureEvent, GestureKind, PointerAction, PointerInput, Recognizer};
 use crate::color::Color;
@@ -610,6 +611,38 @@ impl Shell {
     /// Focused caret in viewport coordinates: x, y, width, height.
     pub fn caret_box(&self) -> Option<(f32, f32, f32, f32)> {
         self.caret_box
+    }
+
+    /// Focus the field under the point and collapse the caret to the nearest
+    /// UTF-16 offset. Returns `0` when the point misses every field.
+    pub fn focus_point(
+        &mut self,
+        x: f32,
+        y: f32,
+        measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
+    ) -> Result<u32, String> {
+        let handle = self.field_at(x, y);
+        if handle == 0 {
+            return Ok(0);
+        }
+        self.focus(handle)?;
+        let node = self.node(handle)?;
+        let pads = self.pads(handle);
+        let font_size = node.font_size;
+        let weight = node.font_weight;
+        let lh = if node.line_height > 0.0 {
+            node.line_height
+        } else {
+            font_size * 1.2
+        };
+        let text = display_text(&node.text, node.secure);
+        let local_x = x - (node.x + pads[0]);
+        let local_y = y - (node.y + pads[2]);
+        let unit = hit_unit(&text, local_x, local_y, lh, |line| {
+            measure(line, font_size, lh, weight, None).0
+        });
+        self.edit(EditCommand::SetSelection { start: unit, end: unit })?;
+        Ok(handle)
     }
 
     /// Deepest text field containing the point, or `0`.
