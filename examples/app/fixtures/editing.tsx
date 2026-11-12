@@ -48,6 +48,27 @@ function Editing() {
         label="Note"
         onChange={(event) => note.update(() => event.value)}
       />
+      <View
+        overflowY="scroll"
+        height={96}
+        flexShrink={0}
+        label="Activity log"
+        role="list"
+        backgroundColor="#111827"
+      >
+        <Text color="#cbd5e1" fontSize={14}>Row 1</Text>
+        <Text color="#cbd5e1" fontSize={14}>Row 2</Text>
+        <Text color="#cbd5e1" fontSize={14}>Row 3</Text>
+        <Text color="#cbd5e1" fontSize={14}>Row 4</Text>
+        <Text color="#cbd5e1" fontSize={14}>Row 5</Text>
+        <Text color="#cbd5e1" fontSize={14}>Row 6</Text>
+        <Text color="#cbd5e1" fontSize={14}>Row 7</Text>
+        <Text color="#cbd5e1" fontSize={14}>Row 8</Text>
+        <Text color="#cbd5e1" fontSize={14}>Row 9</Text>
+        <Text color="#cbd5e1" fontSize={14}>Row 10</Text>
+        <Text color="#cbd5e1" fontSize={14}>Row 11</Text>
+        <Text color="#cbd5e1" fontSize={14}>Row 12</Text>
+      </View>
     </View>
   );
 }

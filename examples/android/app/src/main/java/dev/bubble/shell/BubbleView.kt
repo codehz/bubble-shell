@@ -32,6 +32,18 @@ import android.text.InputType
 import org.json.JSONArray
 import org.json.JSONObject
 
+private const val A11Y_SCROLL_FORWARD = 8
+private const val A11Y_SCROLL_BACKWARD = 16
+private const val A11Y_SCROLL_LEFT = 32
+private const val A11Y_SCROLL_RIGHT = 64
+private const val A11Y_SCROLL_UP = 128
+private const val A11Y_SCROLL_DOWN = 256
+
+private val ACTION_SCROLL_LEFT_ID = AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id
+private val ACTION_SCROLL_RIGHT_ID = AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id
+private val ACTION_SCROLL_UP_ID = AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id
+private val ACTION_SCROLL_DOWN_ID = AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id
+
 class BubbleView(context: Context) : View(context) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
@@ -173,10 +185,14 @@ class BubbleView(context: Context) : View(context) {
             if (actions and 1 != 0) info.addAction(AccessibilityNodeInfo.ACTION_FOCUS)
             if (actions and 2 != 0) info.addAction(AccessibilityNodeInfo.ACTION_CLICK)
             if (editable) info.addAction(AccessibilityNodeInfo.ACTION_SET_TEXT)
-            if (info.isScrollable) {
+            if (actions and A11Y_SCROLL_FORWARD != 0) {
                 info.addAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
                 info.addAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
             }
+            if (actions and A11Y_SCROLL_LEFT != 0) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT)
+            if (actions and A11Y_SCROLL_RIGHT != 0) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT)
+            if (actions and A11Y_SCROLL_UP != 0) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP)
+            if (actions and A11Y_SCROLL_DOWN != 0) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN)
             return info
         }
 
@@ -220,17 +236,21 @@ class BubbleView(context: Context) : View(context) {
                 }
                 AccessibilityNodeInfo.ACTION_SCROLL_FORWARD,
                 AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD,
+                ACTION_SCROLL_LEFT_ID,
+                ACTION_SCROLL_RIGHT_ID,
+                ACTION_SCROLL_UP_ID,
+                ACTION_SCROLL_DOWN_ID,
                 -> {
-                    val rect = screenRect(node)
-                    val delta = if (action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) 40f else -40f
-                    val density = resources.displayMetrics.density
-                    BubbleNative.scroll(
-                        (rect.exactCenterX() - paddingLeft) / density,
-                        (rect.exactCenterY() - paddingTop) / density,
-                        0f,
-                        delta,
-                    )
-                    refresh()
+                    val scroll = when (action) {
+                        AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> 3
+                        AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> 4
+                        ACTION_SCROLL_LEFT_ID -> 5
+                        ACTION_SCROLL_RIGHT_ID -> 6
+                        ACTION_SCROLL_UP_ID -> 7
+                        else -> 8
+                    }
+                    if (BubbleNative.a11yAction(virtualViewId, scroll, "") != 0) return false
+                    afterA11yAction()
                     return true
                 }
             }

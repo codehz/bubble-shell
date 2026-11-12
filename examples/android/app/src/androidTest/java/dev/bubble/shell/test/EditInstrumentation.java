@@ -10,6 +10,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityNodeProvider;
 
 import dev.bubble.shell.BubbleNative;
 import dev.bubble.shell.BubbleView;
@@ -79,6 +81,7 @@ public class EditInstrumentation extends Instrumentation {
             return;
         }
         BubbleView shell = (BubbleView) view;
+        checkAccessibility(shell);
         float[] box = BubbleNative.INSTANCE.nodeBox(4);
         int handle = BubbleNative.INSTANCE.focusAt(box[0] + box[2] / 2f, box[1] + box[3] / 2f);
         check("focus", handle == 4, "handle=" + handle + " box=" + box[0] + "," + box[1]);
@@ -216,6 +219,67 @@ public class EditInstrumentation extends Instrumentation {
         int next = BubbleNative.INSTANCE.focusAt(other[0] + other[2] / 2f, other[1] + other[3] / 2f);
         check("focus other", next == 7, "handle=" + next);
         check("stale connection rejected", !ic.commitText("Z", 1), "old connection accepted input");
+    }
+
+    private void checkAccessibility(BubbleView shell) {
+        try {
+            JSONArray nodes = new JSONObject(BubbleNative.INSTANCE.semantics()).getJSONArray("nodes");
+            int textboxes = 0;
+            JSONObject log = null;
+            JSONObject note = null;
+            for (int index = 0; index < nodes.length(); index++) {
+                JSONObject node = nodes.getJSONObject(index);
+                if ("textbox".equals(node.optString("role"))) textboxes++;
+                if ("Activity log".equals(node.optString("label"))) log = node;
+                if ("Note".equals(node.optString("label"))) note = node;
+            }
+            check("a11y textboxes", textboxes >= 3, "count=" + textboxes);
+            check("a11y scroll node", log != null && log.optBoolean("scrollable"),
+                    log == null ? "missing" : log.toString());
+            if (log == null) return;
+            int handle = log.getInt("handle");
+            AccessibilityNodeProvider provider = shell.getAccessibilityNodeProvider();
+            AccessibilityNodeInfo info = provider.createAccessibilityNodeInfo(handle);
+            check("a11y node", info != null && info.isScrollable(),
+                    info == null ? "null" : "scrollable=" + info.isScrollable());
+            if (info != null) {
+                check("a11y actions",
+                        info.getActionList().contains(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD)
+                                && info.getActionList().contains(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN)
+                                && !info.getActionList().contains(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT),
+                        info.getActionList().toString());
+            }
+            boolean down = provider.performAction(
+                    handle,
+                    AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.getId(),
+                    null);
+            float afterDown = BubbleNative.INSTANCE.scrollYOf(handle);
+            check("a11y scroll down", down && afterDown > 0f, "ok=" + down + " y=" + afterDown);
+            boolean up = provider.performAction(
+                    handle,
+                    AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.getId(),
+                    null);
+            float afterUp = BubbleNative.INSTANCE.scrollYOf(handle);
+            check("a11y scroll up", up && afterUp < afterDown, "ok=" + up + " y=" + afterUp);
+            boolean forward = provider.performAction(
+                    handle,
+                    AccessibilityNodeInfo.ACTION_SCROLL_FORWARD,
+                    null);
+            float afterForward = BubbleNative.INSTANCE.scrollYOf(handle);
+            check("a11y scroll forward", forward && afterForward > afterUp,
+                    "ok=" + forward + " y=" + afterForward);
+            if (note != null) {
+                int noteHandle = note.getInt("handle");
+                boolean focused = provider.performAction(
+                        noteHandle,
+                        AccessibilityNodeInfo.ACTION_FOCUS,
+                        null);
+                check("a11y focus", focused && BubbleNative.INSTANCE.focused() == noteHandle,
+                        "ok=" + focused + " focused=" + BubbleNative.INSTANCE.focused());
+            }
+        } catch (Throwable error) {
+            check("a11y", false, String.valueOf(error));
+        }
     }
 
     private void check(String name, boolean ok, String detail) {

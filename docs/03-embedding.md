@@ -116,7 +116,7 @@ Web 覆盖层要求：
 
 - Rust 维护焦点树与 tab 顺序；`focusable`、交互 `role` 和 `TextField` 参与 Tab，`hidden`/`disabled` 节点跳过。
 - Tab/Shift-Tab、Enter/Space、Esc、Left/Right/Home/End 在 UI 线程处理；Enter/Space 激活目标上的 `TapGesture`，Esc 清除焦点。
-- 读屏 action（`focus`、`activate`、`setValue`）经 `bubble_a11y_action` / wasm `a11y_action` 路由到 Rust。`scroll` 由平台按语义边界调用滚动链。
+- 读屏 action 经 `bubble_a11y_action` / wasm `a11y_action` 路由到 Rust：`focus`、`activate`、`setValue`，以及 `scroll` 的 forward/backward/left/right/up/down。滚动 action 从收到的语义节点向上找第一个接受该轴的可滚动祖先，步长为可见范围的 80%，再走与触摸相同的 `scroll_path`；Android 依据 `actions` 位添加对应系统 action，iOS 把 `UIAccessibilityScrollDirection` 映射到同一组 action。无角色但可滚动的容器也进入语义树，平台不再自行计算像素增量。
 - `modal` 容器把 Tab 顺序限制在子树内，并把背景语义标记为 hidden；Esc 退出当前焦点。
 
 ## 5. 文本输入与 IME
@@ -178,7 +178,7 @@ cargo run -q -p bubble-eval -- editing-android
 cargo run -q -p bubble-eval -- editing-ios
 ```
 
-2026-11-12 本机结果：Rust 核心/协议通过；Web 4/4；Android（Android 16 / SDK 36，Fcitx5 `0.1.3-0-g048f581c`）74 项；iOS 27.2 模拟器 27 项。Android 覆盖 CJK 组合更新、组合内移动/删除/确认、`newCursorPosition`、嵌套 batch、周边文本、代码点删除、`CursorAnchorInfo` 和旧连接拒绝；iOS 覆盖标记文本内部选区与光标/选区几何。视觉选区手柄拖动与系统编辑菜单现已接入；实体设备、厂商键盘与读屏器实测仍属 M2 收尾。
+2026-11-12 本机结果：Rust 核心/协议通过；Web 4/4；Android（Android 16 / SDK 36，Fcitx5 `0.1.3-0-g048f581c`）82 项；iOS 27.2 模拟器 27 项。Android 覆盖 CJK 组合更新、组合内移动/删除/确认、`newCursorPosition`、嵌套 batch、周边文本、代码点删除、`CursorAnchorInfo`、旧连接拒绝，以及通过真实 `AccessibilityNodeProvider` 校验语义节点、方向滚动 action、滚动结果与焦点 action；iOS 覆盖标记文本内部选区与光标/选区几何。视觉选区手柄拖动与系统编辑菜单现已接入；实体设备、厂商键盘与读屏器实测仍属 M2 收尾。
 
 ## 6. 更新平面
 

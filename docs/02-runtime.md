@@ -125,7 +125,7 @@ assets/
 - 手势是虚拟子节点：`TapGesture`、`DoubleTapGesture`、`LongPressGesture`、`PanGesture`、`TransformGesture`。没有 `View onPress`。事件名为 `onTap` / `onTapStart` / `onTapEnd` / `onTapCancel`、`onDoubleTap*`、`onLongPress` / `onLongPressEnd` / `onLongPressCancel`、`onPanStart` / `onPanUpdate` / `onPanEnd` / `onPanCancel`、`onTransformStart` / `onTransformUpdate` / `onTransformEnd` / `onTransformCancel`。Transform 用 `mode`（字符串或字符串数组：`pan` / `pinch` / `rotate`）。`direction` 是方向字符串数组。`captureAxis="none"|"x"|"y"|"both"` 把该轴滚动让给这条手势。
 - `SPAWN_PROPS`：`overflow`、`overflowX`、`overflowY`、`fontSize`、`radius`、`opacity`、`width`、`height`、`flexGrow`、`flexShrink`、`flexDirection`、`padding`。
 - `DEFERRED_PROPS`：`backgroundColor`、`color`、`lineHeight`、`textAlign`、`fontWeight`、`margin`、`gap`、`alignItems`、`justifyContent`、`position`、`inset`、`src`、`fit`、`overscrollX`、`overscrollY`、`multiline`、`secure`、`maxLength`、`keyboard`、`autofill`、`role`、`label`、`disabled`、`hidden`、`focusable`、`modal`、`checked`、`selected`、`expanded`。
-- 无障碍属性：`role`（`button`、`link`、`textbox`、`checkbox`、`heading`、`dialog` 等）、`label`、`disabled`、`hidden`（仅语义隐藏）、`focusable`、`modal`（焦点陷阱）、`checked`、`selected`、`expanded`。`Text`、`Image`、`TextField` 分别派生 text/image/textbox 角色；`TextField` 的语义值在 `secure` 时为空。
+- 无障碍属性：`role`（`button`、`link`、`textbox`、`checkbox`、`heading`、`dialog` 等）、`label`、`disabled`、`hidden`（仅语义隐藏）、`focusable`、`modal`（焦点陷阱）、`checked`、`selected`、`expanded`。`Text`、`Image`、`TextField` 分别派生 text/image/textbox 角色；`TextField` 的语义值在 `secure` 时为空。可滚动容器即使没有角色或标签也会进入语义树，并输出对应方向的滚动 action 位。
 
 手势事件以 `BSGE` v1 传输，start/update/end/cancel 按序投递。内部 slot 0 是声明销毁确认：排在该声明的终结事件之后，不调用应用回调；JS 收到确认后才释放 handler，因此在事件回调中销毁声明也能收到 cancel。胜出的手势只产生一次 end 或 cancel，双指中任一配对触点离开后，剩余触点不恢复单指识别。
 
@@ -278,6 +278,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 - 滚动由 UI 线程本地执行，不依赖脚本线程。横纵两轴各自维护偏移与范围；`overflowX` / `overflowY` 为 `"scroll"` 时启用，`"visible"` 的轴不产生滚动且 `ScrollTo` 将其归零。
 - 滚轮/拖拽按实际命中路径逐轴消费 `(dx, dy)`：内层先 clamp，未消费部分在同次输入继续交给祖先；`overscrollX/Y={false}` 在对应轴截断剩余量。触摸识别时冻结该轴策略，wheel 每次读取最新已提交配置。
 - `Shell::scroll_of` 返回 `(left, top)`；宿主分别通过 `bubble_scroll_x_of` / `bubble_scroll_y_of` 读取。
+- 读屏滚动 action 复用同一 `scroll_path`：目标为语义节点最近的、接受该轴的可滚动祖先，步长为可见范围的 80%；无可用祖先或轴时返回错误，平台不得自行累加像素。
 - 虚拟化列表协议：UI 线程计算可见区间并发送 `VisibleRangeChanged`；脚本创建/销毁 item 节点；未测量项用估算高度占位。滚动位置归 UI 线程，脚本只能 `ScrollTo`。
 
 ## 6. 故障与资源

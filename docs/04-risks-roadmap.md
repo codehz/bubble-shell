@@ -95,9 +95,9 @@ cargo run -q -p bubble-eval -- android
 
 前置阶段：[手势与滚动协商计划](05-gestures-plan.md) 已实现，两端模拟器自动化覆盖主要交互；iOS 双指同向拖、第三指与按住中断待真机补充。[自绘输入模型重设计计划](06-input-model-plan.md) 的 A–F 已完成：编辑事务、Android IME 语义、三端排版几何和输入模型验收矩阵均落地，验收入口为 `cargo run -q -p bubble-eval -- editing-{web,android,ios}`。
 
-M2 实现进展（2026-11-12）：核心已具备焦点树、Tab/Shift-Tab、Enter/Space 激活、Esc、Left/Right/Home/End、`modal` 焦点陷阱；语义树由 `role`/`label`/`disabled`/`hidden`/`checked`/`selected`/`expanded` 与节点类型派生，支持 `focus`/`activate`/`setValue` action。Web 使用透明 ARIA 覆盖层与 canvas 键盘入口；Android 使用 `AccessibilityNodeProvider`；iOS 使用 `UIAccessibilityElement`。三端均绘制选区手柄并支持拖动；Web/Android/iOS 编辑菜单分别走核心 `edit_menu`、系统 IME 菜单与 `UIMenuController`。`cargo test --workspace`、`cargo run -q -p bubble-eval -- editing-web` 与三端构建通过；Web 已人工验证 Tab 焦点、拖动选区、手柄和右键菜单。
+M2 实现进展（2026-11-12）：核心已具备焦点树、Tab/Shift-Tab、Enter/Space 激活、Esc、Left/Right/Home/End、`modal` 焦点陷阱；语义树由 `role`/`label`/`disabled`/`hidden`/`checked`/`selected`/`expanded` 与节点类型派生，支持 `focus`/`activate`/`setValue` action。Web 使用透明 ARIA 覆盖层与 canvas 键盘入口；Android 使用 `AccessibilityNodeProvider`；iOS 使用 `UIAccessibilityElement`。三端均绘制选区手柄并支持拖动；Web/Android/iOS 编辑菜单分别走核心 `edit_menu`、系统 IME 菜单与 `UIMenuController`。读屏滚动 action 已收归核心：语义节点输出 forward/backward/left/right/up/down 位，Android `AccessibilityNodeProvider` 与 iOS `accessibilityScroll` 映射到同一 action，滚动目标为最近的可滚动祖先，步长由核心按可见范围计算。`cargo test --workspace`、`cargo run -q -p bubble-eval -- editing-web` 与三端构建通过；`editing-android` 新增 8 项真实 provider 检查并达到 82 项通过；Web 已人工验证 Tab 焦点、拖动选区、手柄和右键菜单。
 
-M2 尚未完成的部分是设备级读屏验收与平台差异收尾：VoiceOver / TalkBack / NVDA 的核心路径尚未自动化回归，实体设备与厂商键盘差异未测；Android 的滚动 a11y action 依赖平台滚动，增量/减量 action 尚未实现；弹层焦点陷阱的跨端交互测试待补。
+M2 尚未完成的部分是设备级读屏验收与平台差异收尾：VoiceOver / TalkBack / NVDA 的核心路径尚未自动化回归，实体设备与厂商键盘差异未测；Web 读屏滚动仍依赖 canvas 指针/滚轮路径，尚未把 ARIA 覆盖层焦点接到滚动 action；弹层焦点陷阱的跨端交互测试待补。
 
 M2 范围：
 

@@ -25,7 +25,7 @@ cargo run -q -p bubble-eval -- editing-ios
 |---|---|---|
 | Rust 核心/协议 | `cargo test --workspace` | 通过 |
 | Web | Node `examples/web/ime.test.mjs` | 3/3 通过（菜单行为已迁到核心） |
-| Android | `sdk_phone64_arm64`，Android 16（SDK 36），Fcitx5 `0.1.3-0-g048f581c` | 74 项检查通过 |
+| Android | `sdk_phone64_arm64`，Android 16（SDK 36），Fcitx5 `0.1.3-0-g048f581c` | 82 项检查通过（含 8 项读屏语义/滚动） |
 | iOS | iPhone 18 Pro 模拟器，iOS 27.2 | 27 项检查通过 |
 
 Android 自动化覆盖焦点、IME `commit`/`setComposingText`/`setComposingRegion`/`finishComposingText`、组合内选区与删除、`newCursorPosition` 正负与零、嵌套 batch 单 revision、`getTextBefore/After/Selected/Extracted`、代码点删除、`CursorAnchorInfo`、关闭连接与切换字段后的旧连接拒绝。iOS 覆盖 `setMarkedText` 内部选区、`caretRect`/`firstRect`/`selectionRects` 几何、`unmarkText`、删除、非 BMP 字符与字段切换。实体设备与厂商键盘差异仍按第 6 节留待后续。

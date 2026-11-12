@@ -755,6 +755,22 @@ final class BubbleA11yElement: UIAccessibilityElement {
         bubble_a11y_action(handle, 1, nil, 0) == 0
     }
 
+    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        let action: UInt32
+        switch direction {
+        case .left: action = 5
+        case .right: action = 6
+        case .up: action = 7
+        case .down: action = 8
+        case .next: action = 3
+        case .previous: action = 4
+        @unknown default: return false
+        }
+        guard bubble_a11y_action(handle, action, nil, 0) == 0 else { return false }
+        view?.refresh()
+        return true
+    }
+
     override func accessibilityElementDidBecomeFocused() {
         _ = bubble_a11y_action(handle, 0, nil, 0)
     }
