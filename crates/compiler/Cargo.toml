@@ -2,11 +2,13 @@
 name = "bubble-compiler"
 version = "0.1.0"
 edition = "2021"
-description = "M0 TSX lowering to bubble renderer calls"
+description = "Bubble module compiler: strips TypeScript and lowers JSX to bubble:rt calls"
 license = "MIT"
 
 [dependencies]
-oxc_allocator = "0.61"
-oxc_ast = "0.61"
-oxc_parser = "0.61"
-oxc_span = "0.61"
+oxc = { version = "=0.158.0", default-features = false, features = [
+    "ast_visit",
+    "codegen",
+    "semantic",
+    "transformer",
+] }
