@@ -308,9 +308,10 @@ fn focused_field_paints_a_caret_and_reports_keyboard_flags() {
     let (x, _, w, h) = shell.caret_box().unwrap();
     assert!(w > 0.0 && h > 0.0);
     let paint = shell.paint();
-    assert!(paint.iter().any(|cmd| matches!(
+    let text_at = paint.iter().position(|cmd| matches!(cmd, bubble_core::PaintCmd::Text { .. }));
+    let caret_at = paint.iter().position(|cmd| matches!(
         cmd,
         bubble_core::PaintCmd::Fill { x: cx, w: cw, .. } if *cw == 1.0 && (*cx - x).abs() < 0.01
-    )));
-    let _ = x;
+    ));
+    assert!(text_at.is_some() && caret_at.is_some() && caret_at > text_at);
 }

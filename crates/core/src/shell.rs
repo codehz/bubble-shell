@@ -1557,16 +1557,6 @@ impl Shell {
                     color: Color::new(0.2, 0.45, 1.0, 0.35),
                 });
             }
-            if let Some((cx, cy, cw, ch)) = self.caret_box {
-                out.push(PaintCmd::Fill {
-                    x: cx,
-                    y: cy,
-                    w: cw,
-                    h: ch,
-                    radius: 0.0,
-                    color,
-                });
-            }
         }
         let shown = if kind == Kind::Field {
             display_text(&text, secure)
@@ -1596,6 +1586,18 @@ impl Shell {
                 fit: node.fit,
                 src: node.src.clone(),
             });
+        }
+        if kind == Kind::Field && id == self.caret_handle {
+            if let Some((cx, cy, cw, ch)) = self.caret_box {
+                out.push(PaintCmd::Fill {
+                    x: cx,
+                    y: cy,
+                    w: cw,
+                    h: ch,
+                    radius: 0.0,
+                    color,
+                });
+            }
         }
         if scrolls {
             out.push(PaintCmd::PushClip {
