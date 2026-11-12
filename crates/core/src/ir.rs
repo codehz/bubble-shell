@@ -27,7 +27,10 @@ pub struct NodeDesc {
     /// Bit 0 of the descriptor scroll byte; bit 1 is `scroll_x`.
     pub scroll_y: bool,
     pub scroll_x: bool,
+    /// `0xAARRGGBB`. Authored colors normally arrive as deferred `SetProp`
+    /// values instead, which also accept CSS color strings.
     pub background: u32,
+    /// `0xAARRGGBB`; same deferral rule as `background`.
     pub color: u32,
     pub font_size: f32,
     pub radius: f32,

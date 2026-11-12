@@ -743,12 +743,9 @@ fn generic_set_prop_updates_style_and_paint() {
     let paint = shell.paint();
     assert!(paint.iter().any(|cmd| matches!(
         cmd,
-        bubble_core::PaintCmd::Fill {
-            color: 0xff00_0000,
-            ..
-        }
+        bubble_core::PaintCmd::Fill { color, .. } if color.to_argb() == 0xff00_0000
     )));
-    assert!(paint.iter().any(|cmd| matches!(cmd, bubble_core::PaintCmd::Text { color: 0xffff_0000, font_size, .. } if (*font_size - 20.0).abs() < f32::EPSILON)));
+    assert!(paint.iter().any(|cmd| matches!(cmd, bubble_core::PaintCmd::Text { color, font_size, .. } if color.to_argb() == 0xffff_0000 && (*font_size - 20.0).abs() < f32::EPSILON)));
     assert!(paint.iter().any(|cmd| matches!(cmd, bubble_core::PaintCmd::PushOpacity { opacity } if (*opacity - 0.5).abs() < f32::EPSILON)));
     assert!(paint
         .iter()
@@ -760,5 +757,37 @@ fn generic_set_prop_updates_style_and_paint() {
         key: "nope".into(),
         value: Value::Null,
     });
+    assert!(shell.apply_ops(&turn.commit().unwrap()).is_err());
+}
+
+#[test]
+fn set_prop_accepts_css_color_strings() {
+    use bubble_core::{Color, Turn, Value};
+
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 120.0);
+    let mut turn = Turn::new();
+    let label = turn.spawn(NodeDesc::text(0, 1, "Hi")).unwrap();
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+
+    turn.set_prop(label, "color", Value::String("rgb(255 0 0 / 50%)".into()));
+    turn.set_prop(label, "backgroundColor", Value::String("#00f".into()));
+    shell.apply_ops(&turn.commit().unwrap()).unwrap();
+    shell.layout(&mut measure).unwrap();
+
+    let paint = shell.paint();
+    assert!(paint.iter().any(|cmd| matches!(
+        cmd,
+        bubble_core::PaintCmd::Text { color, .. }
+            if color.to_argb() == 0x80ff_0000
+    )));
+    assert!(paint.iter().any(|cmd| matches!(
+        cmd,
+        bubble_core::PaintCmd::Fill { color, .. }
+            if color.to_argb() == 0xff00_00ff
+    )));
+    drop(paint);
+
+    turn.set_prop(label, "color", Value::String("nope".into()));
     assert!(shell.apply_ops(&turn.commit().unwrap()).is_err());
 }

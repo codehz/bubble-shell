@@ -123,8 +123,10 @@ assets/
 属性分两类：
 
 - 手势是虚拟子节点：`TapGesture`、`DoubleTapGesture`、`LongPressGesture`、`PanGesture`、`TransformGesture`。没有 `View onPress`。事件名为 `onTap` / `onTapStart` / `onTapEnd` / `onTapCancel`、`onDoubleTap*`、`onLongPress` / `onLongPressEnd` / `onLongPressCancel`、`onPanStart` / `onPanUpdate` / `onPanEnd` / `onPanCancel`、`onTransformStart` / `onTransformUpdate` / `onTransformEnd` / `onTransformCancel`。Transform 用 `mode`（字符串或字符串数组：`pan` / `pinch` / `rotate`）。`direction` 是方向字符串数组。`captureAxis="none"|"x"|"y"|"both"` 把该轴滚动让给这条手势。
-- `SPAWN_PROPS`：`overflow`、`overflowX`、`overflowY`、`backgroundColor`、`color`、`fontSize`、`radius`、`opacity`、`width`、`height`、`flexGrow`、`flexShrink`、`flexDirection`、`padding`。
-- `DEFERRED_PROPS`：`lineHeight`、`textAlign`、`fontWeight`、`margin`、`gap`、`alignItems`、`justifyContent`、`position`、`inset`、`src`、`fit`、`overscrollX`、`overscrollY`。
+- `SPAWN_PROPS`：`overflow`、`overflowX`、`overflowY`、`fontSize`、`radius`、`opacity`、`width`、`height`、`flexGrow`、`flexShrink`、`flexDirection`、`padding`。
+- `DEFERRED_PROPS`：`backgroundColor`、`color`、`lineHeight`、`textAlign`、`fontWeight`、`margin`、`gap`、`alignItems`、`justifyContent`、`position`、`inset`、`src`、`fit`、`overscrollX`、`overscrollY`。
+
+`color` / `backgroundColor` 在 spawn 描述符里保留默认槽，但作者传入的值一律作为紧随 `Spawn` 的 `SetProp` 下发，由 Rust 统一解析：数字仍按 `0xAARRGGBB`（alpha 在高字节），字符串按 CSS 颜色语法。支持命名色、`transparent`、`#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa`、`rgb()`/`rgba()`、`hsl()`/`hsla()`、`hwb()`、`lab()`、`lch()`、`oklab()`、`oklch()`，以及 `color()` 的 `srgb`、`srgb-linear`、`display-p3`、`a98-rgb`、`prophoto-rgb`、`rec2020`、`xyz`、`xyz-d50`、`xyz-d65` 空间；逗号与空格/斜杠语法都接受。`currentColor`、相对颜色、`color-mix()`、系统色与 CSS 变量不支持——这些依赖级联或计算样式，请在脚本里用 `computed()` 求值。所有颜色归一为扩展非线性 sRGB 交给宿主：支持广色域的宿主保留越界分量，只画 sRGB 的宿主自行裁剪。
 
 `overflow` 取值 `"visible"` 或 `"scroll"`。`"hidden"` 预定为裁切且不滚动，当前拒绝。`flexDirection` 为 `"row"` 或 `"column"`。`overscrollX` / `overscrollY` 为布尔：`true`（默认）把剩余增量交给外层，`false` 在当前容器截断。`padding` / `margin` / `inset` 按 CSS 简写（1、2 或 4 个数，4 个数为上右下左）。
 
@@ -226,7 +228,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 | 视觉 | `backgroundColor`、border、radius、opacity、2D transform |
 | 文本 | font-family/size/weight/style、line-height、letter-spacing、text-align、color |
 
-不支持：grid、选择器、级联、伪类、隐式继承。样式是显式 props/tokens，不解析 CSS 文本。当前已实现 flex 方向、grow/shrink、尺寸、padding、margin、gap、align/justify、relative/absolute 定位与 inset。border、transform、min/max 仍在路线图。`overflow="hidden"` 的预定行为是裁切且不滚动，当前拒绝。
+不支持：grid、选择器、级联、伪类、隐式继承、CSS 变量。样式是显式 props/tokens，不解析 CSS 样式表；只有颜色值的字面量按 CSS 颜色语法解析。当前已实现 flex 方向、grow/shrink、尺寸、padding、margin、gap、align/justify、relative/absolute 定位与 inset。border、transform、min/max 仍在路线图。`overflow="hidden"` 的预定行为是裁切且不滚动，当前拒绝。
 
 ### 布局
 

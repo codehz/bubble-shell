@@ -4,6 +4,7 @@
 
 use std::io::{Cursor, Read};
 
+use crate::color::Color;
 use crate::ir::{NodeDesc, NODE_VERSION};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -35,6 +36,20 @@ impl Value {
         match self {
             Value::Null => Ok(None),
             other => Ok(Some(other.as_f32()?)),
+        }
+    }
+
+    /// Numeric colors are `0xAARRGGBB`; strings are parsed as CSS colors.
+    pub fn as_color(&self) -> Result<Color, String> {
+        match self {
+            Value::Int(value) => u32::try_from(*value)
+                .map(Color::from_argb)
+                .map_err(|_| format!("invalid numeric color {value}")),
+            Value::Float(value) if value.is_finite() && *value >= 0.0 && *value <= u32::MAX as f64 => {
+                Ok(Color::from_argb(*value as u32))
+            }
+            Value::String(text) => crate::color::parse(text),
+            _ => Err("property value is not a color".into()),
         }
     }
 

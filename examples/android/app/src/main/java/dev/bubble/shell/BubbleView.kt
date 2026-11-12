@@ -17,6 +17,7 @@ import android.view.View
 import android.view.WindowInsets
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.roundToInt
 
 class BubbleView(context: Context) : View(context) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -81,7 +82,7 @@ class BubbleView(context: Context) : View(context) {
                     val w = buffer.float
                     val h = buffer.float
                     val radius = buffer.float
-                    fill.color = color(buffer.int)
+                    fill.color = color(buffer.float, buffer.float, buffer.float, buffer.float)
                     fill.style = Paint.Style.FILL
                     path.reset()
                     path.addRoundRect(x, y, x + w, y + h, radius, radius, Path.Direction.CW)
@@ -93,7 +94,7 @@ class BubbleView(context: Context) : View(context) {
                     val w = buffer.float
                     val h = buffer.float
                     val font = buffer.float
-                    textPaint.color = color(buffer.int)
+                    textPaint.color = color(buffer.float, buffer.float, buffer.float, buffer.float)
                     val lineHeight = buffer.float
                     val weight = buffer.short.toInt() and 0xffff
                     val align = buffer.get().toInt() and 0xff
@@ -243,5 +244,9 @@ class BubbleView(context: Context) : View(context) {
     private fun localX(x: Float) = (x - paddingLeft) / resources.displayMetrics.density
     private fun localY(y: Float) = (y - paddingTop) / resources.displayMetrics.density
 
-    private fun color(argb: Int): Int = argb
+    // Paint carries extended nonlinear sRGB; Android renders sRGB, so clamp.
+    private fun color(red: Float, green: Float, blue: Float, alpha: Float): Int {
+        fun channel(value: Float): Int = (value.coerceIn(0f, 1f) * 255f).roundToInt()
+        return Color.argb(channel(alpha), channel(red), channel(green), channel(blue))
+    }
 }

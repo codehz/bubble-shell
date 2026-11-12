@@ -6,6 +6,7 @@
 //! unique and never reused. A bundle signature must be non-empty; it is not
 //! verified cryptographically yet.
 
+mod color;
 mod gesture;
 mod ir;
 mod manifest;
@@ -16,6 +17,7 @@ mod reactive;
 mod shell;
 mod turn;
 
+pub use color::{parse as parse_color, Color};
 pub use gesture::{
     encode_events, GestureConfig, GestureDecl, GestureEvent, GestureKind, PointerAction,
     PointerInput, Recognizer, ScrollRequest, REASON_HOST_CANCEL,

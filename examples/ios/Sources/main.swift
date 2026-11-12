@@ -170,11 +170,11 @@ final class BubbleView: UIView {
             cursor += 1
             switch tag {
             case 1:
-                guard let x = f32(), let y = f32(), let w = f32(), let h = f32(), let radius = f32(), let color = u32() else { return }
-                colorOf(color).setFill()
+                guard let x = f32(), let y = f32(), let w = f32(), let h = f32(), let radius = f32(), let red = f32(), let green = f32(), let blue = f32(), let alpha = f32() else { return }
+                colorOf(red, green, blue, alpha).setFill()
                 UIBezierPath(roundedRect: CGRect(x: x, y: y, width: w, height: h), cornerRadius: radius).fill()
             case 2:
-                guard let x = f32(), let y = f32(), let w = f32(), let h = f32(), let font = f32(), let color = u32(), let lineHeight = f32(), let weight = u16(), let align = u8(), let nbytes = u32() else { return }
+                guard let x = f32(), let y = f32(), let w = f32(), let h = f32(), let font = f32(), let red = f32(), let green = f32(), let blue = f32(), let alpha = f32(), let lineHeight = f32(), let weight = u16(), let align = u8(), let nbytes = u32() else { return }
                 guard let raw = take(Int(nbytes)) else { return }
                 let text = String(data: raw, encoding: .utf8) ?? ""
                 let uiFont: UIFont = hostFamily.isEmpty
@@ -188,7 +188,7 @@ final class BubbleView: UIView {
                 paragraph.alignment = align == 1 ? .center : (align == 2 ? .right : .left)
                 (text as NSString).draw(in: CGRect(x: x, y: y, width: max(w, 1), height: max(h, 1)), withAttributes: [
                     .font: uiFont,
-                    .foregroundColor: colorOf(color),
+                    .foregroundColor: colorOf(red, green, blue, alpha),
                     .paragraphStyle: paragraph,
                 ])
             case 7:
@@ -263,12 +263,9 @@ final class BubbleView: UIView {
     }
 }
 
-func colorOf(_ rgba: UInt32) -> UIColor {
-    let a = CGFloat((rgba >> 24) & 0xff) / 255
-    let r = CGFloat((rgba >> 16) & 0xff) / 255
-    let g = CGFloat((rgba >> 8) & 0xff) / 255
-    let b = CGFloat(rgba & 0xff) / 255
-    return UIColor(red: r, green: g, blue: b, alpha: a)
+// Extended nonlinear sRGB: components may exceed 1 for wide-gamut colors.
+func colorOf(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat, _ alpha: CGFloat) -> UIColor {
+    UIColor(red: red, green: green, blue: blue, alpha: min(1, max(0, alpha)))
 }
 
 func nodeText(_ handle: UInt32) -> String {

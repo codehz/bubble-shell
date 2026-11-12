@@ -1,7 +1,8 @@
 //! Versioned binary encoding of `PaintCmd` for host painters.
 //!
 //! `tag u8` + little-endian payloads; the list is prefixed with its command
-//! count. Hosts decode the same bytes on web, iOS, and Android.
+//! count. Colors are four `f32` channels in extended nonlinear sRGB (RGB then
+//! alpha). Hosts decode the same bytes on web, iOS, and Android.
 
 use crate::shell::PaintCmd;
 
@@ -24,7 +25,7 @@ pub fn encode_paint(cmds: &[PaintCmd]) -> Vec<u8> {
                 push_f32(&mut out, *w);
                 push_f32(&mut out, *h);
                 push_f32(&mut out, *radius);
-                out.extend_from_slice(&color.to_le_bytes());
+                push_color(&mut out, *color);
             }
             PaintCmd::Text {
                 x,
@@ -44,7 +45,7 @@ pub fn encode_paint(cmds: &[PaintCmd]) -> Vec<u8> {
                 push_f32(&mut out, *w);
                 push_f32(&mut out, *h);
                 push_f32(&mut out, *font_size);
-                out.extend_from_slice(&color.to_le_bytes());
+                push_color(&mut out, *color);
                 push_f32(&mut out, *line_height);
                 out.extend_from_slice(&weight.to_le_bytes());
                 out.push(*align);
@@ -92,4 +93,12 @@ pub fn encode_paint(cmds: &[PaintCmd]) -> Vec<u8> {
 
 fn push_f32(out: &mut Vec<u8>, value: f32) {
     out.extend_from_slice(&value.to_le_bytes());
+}
+
+/// Extended nonlinear sRGB, alpha last. Hosts that only paint sRGB clamp.
+fn push_color(out: &mut Vec<u8>, color: crate::color::Color) {
+    push_f32(out, color.r);
+    push_f32(out, color.g);
+    push_f32(out, color.b);
+    push_f32(out, color.a);
 }

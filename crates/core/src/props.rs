@@ -98,8 +98,6 @@ pub const SPAWN_PROPS: &[&str] = &[
     "overflow",
     "overflowX",
     "overflowY",
-    "backgroundColor",
-    "color",
     "fontSize",
     "radius",
     "opacity",
@@ -113,6 +111,8 @@ pub const SPAWN_PROPS: &[&str] = &[
 
 /// Properties applied with `SetProp` immediately after `Spawn`.
 pub const DEFERRED_PROPS: &[&str] = &[
+    "backgroundColor",
+    "color",
     "lineHeight",
     "textAlign",
     "fontWeight",

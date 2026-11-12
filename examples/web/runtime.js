@@ -223,8 +223,6 @@ const SPEC_PROPS = new Set([
   "overflow",
   "overflowX",
   "overflowY",
-  "backgroundColor",
-  "color",
   "fontSize",
   "radius",
   "opacity",
@@ -254,9 +252,11 @@ function specBytes(kind, props, text) {
   offset += 1;
   view.setUint8(offset, scrollFlags(props));
   offset += 1;
-  view.setUint32(offset, (props.backgroundColor ?? 0) >>> 0, true);
+  // Color props are deferred so Rust parses numeric ARGB and CSS strings
+  // through one implementation; the descriptor keeps its default slots.
+  view.setUint32(offset, 0, true);
   offset += 4;
-  view.setUint32(offset, (props.color ?? 0xffffffff) >>> 0, true);
+  view.setUint32(offset, 0xffffffff, true);
   offset += 4;
   view.setFloat32(offset, props.fontSize ?? 16, true);
   offset += 4;

@@ -4,6 +4,7 @@ use std::cell::{Cell, Ref, RefCell};
 use std::collections::HashSet;
 
 use crate::gesture::{GestureEvent, GestureKind, PointerAction, PointerInput, Recognizer};
+use crate::color::Color;
 use crate::ir::{Kind, NodeDesc};
 use crate::ops::{decode_ops, Op, Value};
 use crate::props::Prop;
@@ -86,8 +87,8 @@ struct Node {
     kind: Kind,
     scroll_x: bool,
     scroll_y: bool,
-    background: u32,
-    color: u32,
+    background: Color,
+    color: Color,
     font_size: f32,
     radius: f32,
     opacity: f32,
@@ -158,7 +159,7 @@ pub enum PaintCmd {
         w: f32,
         h: f32,
         radius: f32,
-        color: u32,
+        color: Color,
     },
     Text {
         x: f32,
@@ -166,7 +167,7 @@ pub enum PaintCmd {
         w: f32,
         h: f32,
         font_size: f32,
-        color: u32,
+        color: Color,
         line_height: f32,
         weight: u16,
         align: u8,
@@ -209,8 +210,8 @@ impl Shell {
                     kind: Kind::View,
                     scroll_x: false,
                     scroll_y: false,
-                    background: 0,
-                    color: 0xffff_ffff,
+                    background: Color::TRANSPARENT,
+                    color: Color::WHITE,
                     font_size: 16.0,
                     radius: 0.0,
                     opacity: 1.0,
@@ -682,8 +683,8 @@ impl Shell {
             return Err(format!("unsupported prop {key}"));
         };
         match prop {
-            Prop::Color => self.node_mut(id)?.color = value.as_u32()?,
-            Prop::BackgroundColor => self.node_mut(id)?.background = value.as_u32()?,
+            Prop::Color => self.node_mut(id)?.color = value.as_color()?,
+            Prop::BackgroundColor => self.node_mut(id)?.background = value.as_color()?,
             Prop::Radius => self.node_mut(id)?.radius = value.as_f32()?,
             Prop::Opacity => {
                 self.node_mut(id)?.opacity = value.as_f32()?.clamp(0.0, 1.0);
@@ -861,8 +862,8 @@ impl Shell {
             kind: desc.kind,
             scroll_x: desc.scroll_x,
             scroll_y: desc.scroll_y,
-            background: desc.background,
-            color: desc.color,
+            background: Color::from_argb(desc.background),
+            color: Color::from_argb(desc.color),
             font_size: desc.font_size,
             radius: desc.radius,
             opacity: desc.opacity,
@@ -1051,7 +1052,7 @@ impl Shell {
         if opacity < 1.0 {
             out.push(PaintCmd::PushOpacity { opacity });
         }
-        if background != 0 {
+        if background.is_visible() {
             out.push(PaintCmd::Fill {
                 x,
                 y,

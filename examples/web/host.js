@@ -238,8 +238,7 @@ function paint() {
       const w = f32();
       const h = f32();
       const radius = f32();
-      const color = view.getUint32(offset, true);
-      offset += 4;
+      const color = readColor();
       fill(x, y, w, h, radius, color);
     } else if (tag === 2) {
       const x = f32();
@@ -247,8 +246,7 @@ function paint() {
       const w = f32();
       const h = f32();
       const fontSize = f32();
-      const color = view.getUint32(offset, true);
-      offset += 4;
+      const color = readColor();
       const lineHeight = f32();
       const weight = view.getUint16(offset, true);
       offset += 2;
@@ -341,6 +339,10 @@ function paint() {
     offset += 4;
     return value;
   }
+
+  function readColor() {
+    return { r: f32(), g: f32(), b: f32(), a: f32() };
+  }
 }
 
 function fill(x, y, w, h, radius, color) {
@@ -350,12 +352,17 @@ function fill(x, y, w, h, radius, color) {
   ctx.fill();
 }
 
+const supportsColorFunction =
+  typeof CSS !== "undefined" &&
+  typeof CSS.supports === "function" &&
+  CSS.supports("color", "color(srgb 0 0 0)");
+
 function css(color) {
-  const a = (color >>> 24) & 255;
-  const r = (color >>> 16) & 255;
-  const g = (color >>> 8) & 255;
-  const b = color & 255;
-  return `rgba(${r},${g},${b},${(a / 255).toFixed(3)})`;
+  if (supportsColorFunction) {
+    return `color(srgb ${color.r} ${color.g} ${color.b} / ${color.a})`;
+  }
+  const channel = (value) => Math.round(Math.min(1, Math.max(0, value)) * 255);
+  return `rgba(${channel(color.r)},${channel(color.g)},${channel(color.b)},${Math.min(1, Math.max(0, color.a)).toFixed(3)})`;
 }
 
 function point(event) {

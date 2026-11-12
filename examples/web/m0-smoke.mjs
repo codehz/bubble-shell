@@ -164,8 +164,7 @@ function paintList() {
       const w = f32();
       const h = f32();
       const radius = f32();
-      const color = view.getUint32(offset, true);
-      offset += 4;
+      const color = readColor();
       cmds.push({ tag, x, y, w, h, radius, color });
     } else if (tag === 2) {
       const x = f32();
@@ -173,8 +172,7 @@ function paintList() {
       const w = f32();
       const h = f32();
       const fontSize = f32();
-      const color = view.getUint32(offset, true);
-      offset += 4;
+      const color = readColor();
       const lineHeight = f32();
       const weight = view.getUint16(offset, true);
       offset += 2;
@@ -215,6 +213,9 @@ function paintList() {
       throw new Error(`unknown paint tag ${tag}`);
     }
   }
+  function readColor() {
+    return { r: f32(), g: f32(), b: f32(), a: f32() };
+  }
   function f32() {
     const value = view.getFloat32(offset, true);
     offset += 4;
@@ -223,6 +224,10 @@ function paintList() {
   return cmds;
 }
 
+function argb(color) {
+  const channel = (value) => Math.round(Math.min(1, Math.max(0, value)) * 255);
+  return (((channel(color.a) << 24) | (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b)) >>> 0);
+}
 function textOf(cmds, value) {
   const found = cmds.find((cmd) => cmd.tag === 2 && cmd.text === value);
   if (!found) throw new Error(`missing text ${value}`);
@@ -231,8 +236,9 @@ function textOf(cmds, value) {
 
 const first = paintList();
 const firstFrameMs = performance.now() - started;
-textOf(first, "Count: 0");
-const button = first.find((cmd) => cmd.tag === 1 && cmd.color === 0xff3b82f6);
+const countText = textOf(first, "Count: 0");
+if (argb(countText.color) !== 0xffffffff) throw new Error("CSS string text color was not applied");
+const button = first.find((cmd) => cmd.tag === 1 && argb(cmd.color) === 0xff3b82f6);
 if (!button) throw new Error("increment button was not painted");
 function pumpGestures() {
   let len = exports.take_gesture_events();
@@ -255,7 +261,7 @@ sendPointer(0, 1, x, y, 0);
 sendPointer(2, 1, x, y, 20);
 textOf(paintList(), "Count: 1");
 
-const pad = paintList().find((cmd) => cmd.tag === 1 && cmd.color === 0xff222222);
+const pad = paintList().find((cmd) => cmd.tag === 1 && argb(cmd.color) === 0xff222222);
 if (!pad) throw new Error("gesture pad was not painted");
 const px = pad.x + pad.w / 2;
 const py = pad.y + pad.h / 2;
