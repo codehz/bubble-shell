@@ -57,6 +57,7 @@ class BubbleView(context: Context) : View(context) {
     private var semanticChildren: Map<Int, List<Int>> = emptyMap()
     private var semanticRoots: List<Int> = emptyList()
     private var accessibilityFocus = 0
+    private var semanticSnapshot = ""
     private var selectionDrag: Pair<Int, Int>? = null
 
     init {
@@ -79,11 +80,15 @@ class BubbleView(context: Context) : View(context) {
         val size = contentSize()
         paintBytes = BubbleNative.frame(size[0], size[1])
         updateSemantics()
+        updateInputSession()
         invalidate()
     }
 
     private fun updateSemantics() {
         val raw = BubbleNative.semantics()
+        if (raw == semanticSnapshot) return
+        semanticSnapshot = raw
+        val previousFocus = semanticNodes.entries.firstOrNull { it.value.optBoolean("focused") }?.key
         val nodes = LinkedHashMap<Int, JSONObject>()
         val children = HashMap<Int, MutableList<Int>>()
         val roots = mutableListOf<Int>()
@@ -110,8 +115,28 @@ class BubbleView(context: Context) : View(context) {
         if (accessibilityFocus != 0 &&
             (nodes[accessibilityFocus] == null || nodes[accessibilityFocus]?.optBoolean("hidden") == true)
         ) {
+            val previous = accessibilityFocus
             accessibilityFocus = 0
+            sendSemanticEvent(previous, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED)
         }
+        sendSemanticEvent(AccessibilityNodeProvider.HOST_VIEW_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        val focused = nodes.entries.firstOrNull { it.value.optBoolean("focused") }?.key
+        if (focused != null && focused != previousFocus) {
+            sendSemanticEvent(focused, AccessibilityEvent.TYPE_VIEW_FOCUSED)
+        }
+    }
+
+    private fun sendSemanticEvent(handle: Int, type: Int) {
+        val manager = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as android.view.accessibility.AccessibilityManager
+        if (!manager.isEnabled) return
+        val event = AccessibilityEvent.obtain(type)
+        event.packageName = context.packageName
+        event.className = "android.view.View"
+        event.setSource(this, handle)
+        if (type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            event.contentChangeTypes = AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE
+        }
+        parent?.requestSendAccessibilityEvent(this, event)
     }
 
     private fun screenRect(node: JSONObject): Rect {
@@ -134,6 +159,17 @@ class BubbleView(context: Context) : View(context) {
     override fun getAccessibilityNodeProvider(): AccessibilityNodeProvider = semanticProvider
 
     private val semanticProvider = object : AccessibilityNodeProvider() {
+        override fun findFocus(focus: Int): AccessibilityNodeInfo? {
+            val handle = if (focus == AccessibilityNodeInfo.FOCUS_ACCESSIBILITY) {
+                accessibilityFocus.takeIf { it != 0 }
+            } else if (focus == AccessibilityNodeInfo.FOCUS_INPUT) {
+                semanticNodes.entries.firstOrNull { it.value.optBoolean("focused") }?.key
+            } else {
+                null
+            }
+            return handle?.let { createAccessibilityNodeInfo(it) }
+        }
+
         override fun createAccessibilityNodeInfo(virtualViewId: Int): AccessibilityNodeInfo? {
             if (virtualViewId == HOST_VIEW_ID) {
                 val info = AccessibilityNodeInfo.obtain(this@BubbleView)
@@ -184,6 +220,12 @@ class BubbleView(context: Context) : View(context) {
             info.isSelected = node.optBoolean("selected")
             if (node.has("checked")) info.isChecked = node.optBoolean("checked")
             info.setBoundsInScreen(screenRect(node))
+            if (!hidden && info.isEnabled) {
+                info.addAction(
+                    if (info.isAccessibilityFocused) AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS
+                    else AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                )
+            }
             if (actions and 1 != 0) info.addAction(AccessibilityNodeInfo.ACTION_FOCUS)
             if (actions and 2 != 0) info.addAction(AccessibilityNodeInfo.ACTION_CLICK)
             if (actions and 4 != 0) info.addAction(AccessibilityNodeInfo.ACTION_SET_TEXT)
@@ -218,14 +260,18 @@ class BubbleView(context: Context) : View(context) {
                 }
                 AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS -> {
                     if (node.optBoolean("hidden") || node.optBoolean("disabled")) return false
+                    if (accessibilityFocus == virtualViewId) return false
+                    if (accessibilityFocus != 0) {
+                        sendSemanticEvent(accessibilityFocus, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED)
+                    }
                     accessibilityFocus = virtualViewId
-                    sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED)
+                    sendSemanticEvent(virtualViewId, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED)
                     return true
                 }
                 AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS -> {
                     if (accessibilityFocus == virtualViewId) {
                         accessibilityFocus = 0
-                        sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED)
+                        sendSemanticEvent(virtualViewId, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED)
                     }
                     return true
                 }
@@ -262,8 +308,7 @@ class BubbleView(context: Context) : View(context) {
     }
 
     private fun afterA11yAction() {
-        refresh()
-        sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        afterKey()
     }
 
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
@@ -291,17 +336,24 @@ class BubbleView(context: Context) : View(context) {
 
     private fun afterKey() {
         refresh()
-        val handle = BubbleNative.focused()
+    }
+
+    private var inputSession = 0L
+
+    private fun updateInputSession() {
+        val session = editSnapshot()?.session ?: 0L
+        if (session == inputSession) return
+        inputSession = session
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        if (handle == 0) {
+        if (session == 0L) {
             imm.hideSoftInputFromWindow(windowToken, 0)
         } else {
-            val flags = BubbleNative.fieldFlags(handle)
+            val flags = BubbleNative.fieldFlags(BubbleNative.focused())
             editorType = editorType(flags)
             autofillHints = autofillHints(flags)
             setAutofillHints(*autofillHints)
-            imm.restartInput(this)
         }
+        imm.restartInput(this)
     }
 
     override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
@@ -520,17 +572,17 @@ class BubbleView(context: Context) : View(context) {
         lastCursorAnchorInfo = info
     }
 
-    override fun onCheckIsTextEditor(): Boolean = true
+    override fun onCheckIsTextEditor(): Boolean = editSnapshot() != null
 
-    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
+        val initial = editSnapshot() ?: return null
         outAttrs.inputType = editorType
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
         setAutofillHints(*autofillHints)
-        val initial = editSnapshot()
-        outAttrs.initialSelStart = initial?.start ?: 0
-        outAttrs.initialSelEnd = initial?.end ?: 0
+        outAttrs.initialSelStart = initial.start
+        outAttrs.initialSelEnd = initial.end
         return object : BaseInputConnection(this, true) {
-            private val expectedSession = initial?.session ?: 0L
+            private val expectedSession = initial.session
             private var batchDepth = 0
             private var closed = false
 
@@ -818,14 +870,10 @@ class BubbleView(context: Context) : View(context) {
                 sendPointer(2, event.actionIndex, event)
                 val handle = BubbleNative.focusAt(localX(event.x), localY(event.y))
                 if (handle != 0) {
-                    val flags = BubbleNative.fieldFlags(handle)
-                    editorType = editorType(flags)
-                    autofillHints = autofillHints(flags)
-                    setAutofillHints(*autofillHints)
+                    refresh()
                     importantForAutofill = IMPORTANT_FOR_AUTOFILL_YES
                     requestFocus()
                     val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                    imm.restartInput(this)
                     imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
                 }
             }

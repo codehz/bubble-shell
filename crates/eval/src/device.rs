@@ -441,6 +441,36 @@ pub fn editing_android() -> Result<SuiteReport, String> {
     Ok(report)
 }
 
+pub fn focus_android() -> Result<SuiteReport, String> {
+    let root = workspace();
+    let out = build_android(&root)?;
+    install_android_tests(&root, &out)?;
+    let _ = run(Command::new("adb").args([
+        "shell",
+        "run-as",
+        "dev.bubble.shell",
+        "rm",
+        "-f",
+        "files/focus-result.json",
+    ]));
+    let output = run(Command::new("adb").args([
+        "shell",
+        "am",
+        "instrument",
+        "-w",
+        "dev.bubble.shell.test/.FocusInstrumentation",
+    ]))?;
+    let body = run(Command::new("adb").args([
+        "shell",
+        "run-as",
+        "dev.bubble.shell",
+        "cat",
+        "files/focus-result.json",
+    ]))
+    .map_err(|err| format!("{err}\n{output}"))?;
+    Ok(decode("focus.android", &body))
+}
+
 fn android_device(gestures: bool) -> Result<SuiteReport, String> {
     let root = workspace();
     let out = build_android(&root)?;

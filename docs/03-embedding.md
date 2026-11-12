@@ -122,6 +122,9 @@ Web 覆盖层要求：
 - 直接 focus、指针字段聚焦与读屏 action 均拒绝 hidden、disabled 或活动 modal 外的目标；读屏滚动不能越过 modal 边界去滚动背景祖先。失败的聚焦请求不取消当前字段的编辑批次。
 - 一个 op 批次完成后，若当前焦点已隐藏、禁用、移出活动 modal 或失去可聚焦能力，则清除焦点并中止未提交编辑批次。Esc 清除当前焦点，不关闭弹层；下一次 Tab/Shift-Tab 从活动 modal 的首/尾项继续。
 - Web 的键盘焦点跟随 Rust：文本字段进入 IME 代理，其他控件进入 ARIA 元素；焦点目标移除或隐藏后回到 canvas。未打开的编辑菜单保持隐藏，不参与读屏导航。
+- Android 的编辑器声明与 `InputConnection` 仅在实际字段会话存在时启用；会话变化统一触发 `restartInput`，退出字段时隐藏 IME，避免按钮 Enter/Space 被输入法截走。语义快照变化才通知系统 subtree 更新；键盘/读屏焦点事件带虚拟节点 source，provider 的 `findFocus` 返回对应 input/accessibility 焦点。
+
+Android 弹层设备验收入口为 `cargo run -q -p bubble-eval -- focus-android`：通过 `UiAutomation` 读取服务端树并执行 action，结合真实窗口键盘事件，覆盖嵌套弹层隔离、Tab/Shift-Tab、Enter/Space/Esc、IME 会话切换、旧节点/旧输入连接拒绝和关闭后背景恢复。该验收不替代 TalkBack 实测。
 
 ## 5. 文本输入与 IME
 
