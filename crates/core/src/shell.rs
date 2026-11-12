@@ -30,6 +30,10 @@ struct MeasureCtx {
     font_weight: u16,
 }
 
+/// Host text measurement: `(text, font size, line height, weight, max width)`
+/// to a box size.
+type Measure<'a> = &'a mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32);
+
 #[derive(Clone, Copy)]
 struct NodeStyle {
     row: bool,
@@ -557,7 +561,7 @@ impl Shell {
 
     pub fn layout(
         &mut self,
-        measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
+        measure: Measure<'_>,
     ) -> Result<(), String> {
         self.compute_layout(measure)?;
         self.refresh_caret(&mut |req| {
@@ -578,7 +582,7 @@ impl Shell {
     /// match the field key; this is the path platform editors use.
     pub fn layout_with(
         &mut self,
-        measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
+        measure: Measure<'_>,
         host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
     ) -> Result<(), String> {
         self.compute_layout(measure)?;
@@ -587,7 +591,7 @@ impl Shell {
 
     pub fn compute_layout(
         &mut self,
-        measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
+        measure: Measure<'_>,
     ) -> Result<(), String> {
         if self.viewport.width <= 0.0 || self.viewport.height <= 0.0 {
             return Err("viewport is empty".into());
@@ -1334,7 +1338,7 @@ impl Shell {
         &self,
         x: f32,
         y: f32,
-        measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
+        measure: Measure<'_>,
     ) -> Result<Option<u32>, String> {
         self.unit_at_with(x, y, &mut |req| {
             Ok(wrapping_layout(req, |line| {
@@ -1371,7 +1375,7 @@ impl Shell {
     pub fn caret_rect_at(
         &self,
         unit: u32,
-        measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
+        measure: Measure<'_>,
     ) -> Result<Option<(f32, f32, f32, f32)>, String> {
         self.caret_rect_at_with(unit, &mut |req| {
             Ok(wrapping_layout(req, |line| {
@@ -1417,7 +1421,7 @@ impl Shell {
         &mut self,
         x: f32,
         y: f32,
-        measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32),
+        measure: Measure<'_>,
     ) -> Result<u32, String> {
         self.focus_point_with(x, y, &mut |req| {
             Ok(wrapping_layout(req, |line| {
@@ -2800,60 +2804,62 @@ fn nonzero(handler: u32) -> Option<u32> {
 }
 
 fn style_for(node: NodeStyle) -> Style {
-    let mut style = Style::default();
-    style.display = Display::Flex;
-    style.flex_direction = if node.row {
-        FlexDirection::Row
-    } else {
-        FlexDirection::Column
-    };
-    style.flex_grow = node.flex_grow;
-    style.flex_shrink = node.flex_shrink;
-    style.size = Size {
-        width: dim(node.width),
-        height: dim(node.height),
-    };
-    style.padding = Rect {
-        left: length(node.padding[0]),
-        right: length(node.padding[1]),
-        top: length(node.padding[2]),
-        bottom: length(node.padding[3]),
-    };
-    style.margin = Rect {
-        left: length(node.margin[0]),
-        right: length(node.margin[1]),
-        top: length(node.margin[2]),
-        bottom: length(node.margin[3]),
-    };
-    style.gap = Size {
-        width: length(node.gap),
-        height: length(node.gap),
-    };
-    style.align_items = match node.align_items {
-        1 => AlignItems::START,
-        2 => AlignItems::CENTER,
-        3 => AlignItems::END,
-        4 => AlignItems::BASELINE,
-        _ => AlignItems::STRETCH,
-    };
-    style.justify_content = match node.justify_content {
-        1 => JustifyContent::CENTER,
-        2 => JustifyContent::END,
-        3 => JustifyContent::SPACE_BETWEEN,
-        4 => JustifyContent::SPACE_AROUND,
-        5 => JustifyContent::SPACE_EVENLY,
-        _ => JustifyContent::START,
-    };
-    style.position = if node.position == 1 {
-        Position::Absolute
-    } else {
-        Position::Relative
-    };
-    style.inset = Rect {
-        top: inset(node.inset[0]),
-        right: inset(node.inset[1]),
-        bottom: inset(node.inset[2]),
-        left: inset(node.inset[3]),
+    let mut style = Style {
+        display: Display::Flex,
+        flex_direction: if node.row {
+            FlexDirection::Row
+        } else {
+            FlexDirection::Column
+        },
+        flex_grow: node.flex_grow,
+        flex_shrink: node.flex_shrink,
+        size: Size {
+            width: dim(node.width),
+            height: dim(node.height),
+        },
+        padding: Rect {
+            left: length(node.padding[0]),
+            right: length(node.padding[1]),
+            top: length(node.padding[2]),
+            bottom: length(node.padding[3]),
+        },
+        margin: Rect {
+            left: length(node.margin[0]),
+            right: length(node.margin[1]),
+            top: length(node.margin[2]),
+            bottom: length(node.margin[3]),
+        },
+        gap: Size {
+            width: length(node.gap),
+            height: length(node.gap),
+        },
+        align_items: match node.align_items {
+            1 => AlignItems::START,
+            2 => AlignItems::CENTER,
+            3 => AlignItems::END,
+            4 => AlignItems::BASELINE,
+            _ => AlignItems::STRETCH,
+        },
+        justify_content: match node.justify_content {
+            1 => JustifyContent::CENTER,
+            2 => JustifyContent::END,
+            3 => JustifyContent::SPACE_BETWEEN,
+            4 => JustifyContent::SPACE_AROUND,
+            5 => JustifyContent::SPACE_EVENLY,
+            _ => JustifyContent::START,
+        },
+        position: if node.position == 1 {
+            Position::Absolute
+        } else {
+            Position::Relative
+        },
+        inset: Rect {
+            top: inset(node.inset[0]),
+            right: inset(node.inset[1]),
+            bottom: inset(node.inset[2]),
+            left: inset(node.inset[3]),
+        },
+        ..Style::default()
     };
     if node.scroll_x || node.flex_grow > 0.0 {
         style.min_size.width = length(0.0);

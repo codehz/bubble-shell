@@ -5,6 +5,10 @@
 //! the caller/frame thread owns the `Shell` and applies pending batches.
 //! A one-second interrupt rebuilds the context and remounts the loaded bundle.
 
+// These are C ABI exports: foreign callers cannot express Rust's `unsafe`
+// contract, so pointer validity is documented per function instead.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 mod script;
 
 use std::collections::VecDeque;
@@ -216,7 +220,7 @@ pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
                 ((*host).measure, (*host).layout, (*host).ctx as usize)
             }
         };
-        let shell = Shell::blank().map_err(|err| err)?;
+        let shell = Shell::blank()?;
         let shared = Arc::new(Shared {
             shell: ShellSlot(Mutex::new(shell)),
             pending: Mutex::new(VecDeque::new()),

@@ -497,16 +497,10 @@ fn mark_downstream(g: *mut Graph, id: u32) {
 
 fn clean(g: *mut Graph, id: u32, host: &mut dyn Sched) {
     unsafe { (*g).unlink_sources(id) };
-    loop {
-        let Some(child) = (unsafe { (*g).nodes[id as usize].owned.pop() }) else {
-            break;
-        };
+    while let Some(child) = unsafe { (*g).nodes[id as usize].owned.pop() } {
         dispose(g, child, host);
     }
-    loop {
-        let Some(c) = (unsafe { (*g).nodes[id as usize].cleanups.pop() }) else {
-            break;
-        };
+    while let Some(c) = unsafe { (*g).nodes[id as usize].cleanups.pop() } {
         host.cleanup(c);
     }
     unsafe { (*g).nodes[id as usize].state = CLEAN };

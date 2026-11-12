@@ -1369,7 +1369,7 @@ impl Recognizer {
         let distance = (x1 - x0).hypot(y1 - y0);
         let angle = ((y1 - y0) as f64).atan2((x1 - x0) as f64);
         let scale = if state.base_distance > 0.001 {
-            (distance / state.base_distance) as f32
+            distance / state.base_distance
         } else {
             1.0
         };

@@ -29,6 +29,12 @@ pub struct Probe {
     failed: bool,
 }
 
+impl Default for Probe {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Probe {
     pub fn new() -> Self {
         Self {

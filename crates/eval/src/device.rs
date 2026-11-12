@@ -241,7 +241,7 @@ fn build_android(root: &Path) -> Result<PathBuf, String> {
             "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android",
             format!("--sysroot={}", pre.join("sysroot").display()),
         )
-        .current_dir(&root))?;
+        .current_dir(root))?;
     let kotlin = std::env::var("KOTLIN_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -253,7 +253,7 @@ fn build_android(root: &Path) -> Result<PathBuf, String> {
     let out = root.join("examples/android/build");
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(out.join("apk/lib/arm64-v8a")).map_err(|err| err.to_string())?;
-    install_fixtures(&root, &out.join("apk/assets"))?;
+    install_fixtures(root, &out.join("apk/assets"))?;
     let font = Path::new("/System/Library/Fonts/Supplemental/Arial.ttf");
     if font.exists() {
         copy(font, &out.join("apk/assets/HostFont.ttf"))?;

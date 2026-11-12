@@ -21,6 +21,12 @@ pub struct Turn {
     next_gesture: u32,
 }
 
+impl Default for Turn {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Turn {
     pub fn new() -> Self {
         Self {

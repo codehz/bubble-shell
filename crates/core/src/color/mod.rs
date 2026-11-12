@@ -115,8 +115,8 @@ fn parse_hex(digits: &str) -> Result<Color, String> {
         }
         6 | 8 => {
             let mut channels = [255u32; 4];
-            for index in 0..digits.len() / 2 {
-                channels[index] = value(index * 2)? * 16 + value(index * 2 + 1)?;
+            for (index, channel) in channels.iter_mut().take(digits.len() / 2).enumerate() {
+                *channel = value(index * 2)? * 16 + value(index * 2 + 1)?;
             }
             (channels[0], channels[1], channels[2], channels[3])
         }

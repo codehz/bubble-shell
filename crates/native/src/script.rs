@@ -77,7 +77,7 @@ pub enum Cmd {
 pub fn start(shared: Arc<Shared>) -> (Sender<Cmd>, thread::JoinHandle<()>) {
     STOP_WATCH.store(false, Ordering::Relaxed);
     INTERRUPT.store(false, Ordering::Relaxed);
-    thread::spawn(|| watchdog());
+    thread::spawn(watchdog);
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = thread::Builder::new()
         .name("bubble-script".into())

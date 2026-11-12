@@ -771,7 +771,7 @@ fn generic_set_prop_updates_style_and_paint() {
 
 #[test]
 fn set_prop_accepts_css_color_strings() {
-    use bubble_core::{Color, Turn, Value};
+    use bubble_core::{Turn, Value};
 
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 120.0);

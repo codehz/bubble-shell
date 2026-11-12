@@ -135,19 +135,10 @@ impl Selection {
 
 /// Synchronous edit rules for a field. `max_length` is UTF-16 code units;
 /// `0` means unbounded.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EditConfig {
     pub multiline: bool,
     pub max_length: u32,
-}
-
-impl Default for EditConfig {
-    fn default() -> Self {
-        Self {
-            multiline: false,
-            max_length: 0,
-        }
-    }
 }
 
 impl EditConfig {

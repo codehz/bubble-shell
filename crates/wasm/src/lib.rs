@@ -5,6 +5,10 @@
 //! pending queue; layout/paint/hit-test drain that queue into the `Shell`
 //! first. This keeps the tree-owning code on one side of the JS boundary.
 
+// These are raw wasm exports: JS callers cannot express Rust's `unsafe`
+// contract, so pointer validity is documented per function instead.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
