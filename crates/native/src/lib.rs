@@ -490,6 +490,58 @@ pub extern "C" fn bubble_field_at(x: f32, y: f32) -> u32 {
     result.unwrap_or(0)
 }
 
+/// Focused caret: x, y, width, height. Returns 0 when a field is focused.
+#[no_mangle]
+pub extern "C" fn bubble_caret(
+    x: *mut f32,
+    y: *mut f32,
+    w: *mut f32,
+    h: *mut f32,
+) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        let Some((cx, cy, cw, ch)) = shell.caret_box() else {
+            return Err("no caret".into());
+        };
+        if !x.is_null() {
+            unsafe { *x = cx };
+        }
+        if !y.is_null() {
+            unsafe { *y = cy };
+        }
+        if !w.is_null() {
+            unsafe { *w = cw };
+        }
+        if !h.is_null() {
+            unsafe { *h = ch };
+        }
+        Ok(())
+    });
+    finish(result)
+}
+
+/// `bit0` multiline, `bit1` secure, bits 8..15 keyboard kind.
+#[no_mangle]
+pub extern "C" fn bubble_field_flags(handle: u32) -> u32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        shell.field_flags(handle)
+    });
+    result.unwrap_or(0)
+}
+
 #[no_mangle]
 pub extern "C" fn bubble_scroll(x: f32, y: f32, dx: f32, dy: f32) {
     let _ = catch(|| {
@@ -989,6 +1041,15 @@ mod android {
         y: jfloat,
     ) -> jint {
         super::bubble_field_at(x, y) as jint
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_fieldFlags<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        handle: jint,
+    ) -> jint {
+        super::bubble_field_flags(handle as u32) as jint
     }
 
     #[no_mangle]

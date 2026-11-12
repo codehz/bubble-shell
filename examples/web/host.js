@@ -497,6 +497,19 @@ canvas.addEventListener("pointerup", (event) => {
   const handle = exports.field_at(x, y);
   if (!handle) return;
   exports.edit(0, 0, 0, handle, 0);
+  exports.layout();
+  const flags = exports.field_flags(handle);
+  ime.type = flags & 2 ? "password" : "text";
+  const kind = flags >> 8;
+  ime.inputMode = ["text", "numeric", "email", "url", "tel"][kind] || "text";
+  const len = exports.caret_box();
+  if (len >= 16) {
+    const view = new DataView(memory().buffer, exports.scratch_ptr(), 16);
+    const rect = canvas.getBoundingClientRect();
+    ime.style.left = `${rect.left + view.getFloat32(0, true)}px`;
+    ime.style.top = `${rect.top + view.getFloat32(4, true)}px`;
+    ime.style.height = `${Math.max(16, view.getFloat32(12, true))}px`;
+  }
   ime.focus();
 });
 canvas.addEventListener("pointercancel", (event) => releasePointer(3, event));

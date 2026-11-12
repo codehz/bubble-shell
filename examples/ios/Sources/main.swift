@@ -16,6 +16,8 @@ func bubble_pointer(_ action: UInt32, _ id: UInt32, _ x: Float, _ y: Float, _ ti
 func bubble_edit(_ action: UInt32, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ a: UInt32, _ b: UInt32) -> Int32
 @_silgen_name("bubble_field_at")
 func bubble_field_at(_ x: Float, _ y: Float) -> UInt32
+@_silgen_name("bubble_field_flags")
+func bubble_field_flags(_ handle: UInt32) -> UInt32
 @_silgen_name("bubble_tick")
 func bubble_tick(_ timeMs: Double) -> Int32
 @_silgen_name("bubble_scroll")
@@ -103,6 +105,8 @@ final class BubbleView: UIView {
 
     private var pointerIds: [ObjectIdentifier: UInt32] = [:]
     private var nextPointerId: UInt32 = 1
+    var keyboardKind: UIKeyboardType = .default
+    var secureEntry = false
 
     private func pointerId(_ touch: UITouch) -> UInt32 {
         let key = ObjectIdentifier(touch)
@@ -261,8 +265,18 @@ final class BubbleView: UIView {
                 Float(point.y - safeAreaInsets.top)
             )
             if handle != 0 {
+                let flags = bubble_field_flags(handle)
+                secureEntry = flags & 2 != 0
+                switch flags >> 8 {
+                case 1: keyboardKind = .numberPad
+                case 2: keyboardKind = .emailAddress
+                case 3: keyboardKind = .URL
+                case 4: keyboardKind = .phonePad
+                default: keyboardKind = .default
+                }
                 _ = bubble_edit(0, nil, 0, handle, 0)
                 _ = becomeFirstResponder()
+                reloadInputViews()
             }
             pointerIds.removeValue(forKey: ObjectIdentifier(touch))
         }
@@ -279,6 +293,8 @@ final class BubbleView: UIView {
 
 extension BubbleView: UIKeyInput {
     override var canBecomeFirstResponder: Bool { true }
+    override var keyboardType: UIKeyboardType { keyboardKind }
+    override var isSecureTextEntry: Bool { secureEntry }
     var hasText: Bool { true }
 
     func insertText(_ text: String) {

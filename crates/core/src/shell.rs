@@ -4,7 +4,7 @@ use std::cell::{Cell, Ref, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use crate::editing::{
-    apply_command, apply_script, display_text, EditCommand, EditEvent, FieldState,
+    apply_command, apply_script, display_text, text_metrics, EditCommand, EditEvent, FieldState,
 };
 use crate::gesture::{GestureEvent, GestureKind, PointerAction, PointerInput, Recognizer};
 use crate::color::Color;
@@ -141,6 +141,9 @@ pub struct Shell {
     fields: HashMap<u32, FieldState>,
     focused: u32,
     edit_events: Vec<EditEvent>,
+    caret_handle: u32,
+    caret_box: Option<(f32, f32, f32, f32)>,
+    selection_rects: Vec<(f32, f32, f32, f32)>,
 }
 
 /// Per-axis result of routing a wheel or touch delta through the hit path.
@@ -269,6 +272,9 @@ impl Shell {
             fields: HashMap::new(),
             focused: 0,
             edit_events: Vec::new(),
+            caret_handle: 0,
+            caret_box: None,
+            selection_rects: Vec::new(),
         })
     }
 
@@ -450,6 +456,7 @@ impl Shell {
             )
             .map_err(|err| err.to_string())?;
         self.place(1, 0.0, 0.0)?;
+        self.layout_caret(measure);
         let limits: Vec<(usize, f32, f32)> = self
             .nodes
             .iter()
@@ -558,6 +565,7 @@ impl Shell {
     pub fn focus(&mut self, handle: u32) -> Result<(), String> {
         if handle == 0 {
             self.focused = 0;
+            self.paint_dirty.set(true);
             return Ok(());
         }
         if self.node(handle)?.kind != Kind::Field {
@@ -567,11 +575,41 @@ impl Shell {
             return Err(format!("handle {handle} has no editing session"));
         }
         self.focused = handle;
+        self.paint_dirty.set(true);
         Ok(())
     }
 
     pub fn focused(&self) -> u32 {
         self.focused
+    }
+
+    /// `bit0` multiline, `bit1` secure, bits 8..15 keyboard kind
+    /// (`1` number, `2` email, `3` url, `4` phone).
+    pub fn field_flags(&self, handle: u32) -> Result<u32, String> {
+        let node = self.node(handle)?;
+        if node.kind != Kind::Field {
+            return Err(format!("handle {handle} is not a text field"));
+        }
+        let mut bits = 0u32;
+        if node.multiline {
+            bits |= 1;
+        }
+        if node.secure {
+            bits |= 2;
+        }
+        let kind = match node.keyboard.as_str() {
+            "number" | "numeric" => 1,
+            "email" => 2,
+            "url" => 3,
+            "phone" | "tel" => 4,
+            _ => 0,
+        };
+        Ok(bits | (kind << 8))
+    }
+
+    /// Focused caret in viewport coordinates: x, y, width, height.
+    pub fn caret_box(&self) -> Option<(f32, f32, f32, f32)> {
+        self.caret_box
     }
 
     /// Deepest text field containing the point, or `0`.
@@ -1249,6 +1287,51 @@ impl Shell {
         (content - visible).max(0.0)
     }
 
+    fn layout_caret(&mut self, measure: &mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32)) {
+        self.caret_handle = 0;
+        self.caret_box = None;
+        self.selection_rects.clear();
+        let handle = self.focused;
+        if handle == 0 {
+            return;
+        }
+        let Some(state) = self.fields.get(&handle).cloned() else {
+            return;
+        };
+        let Ok(node) = self.node(handle) else {
+            return;
+        };
+        if node.kind != Kind::Field {
+            return;
+        }
+        let pads = self.pads(handle);
+        let font_size = node.font_size;
+        let weight = node.font_weight;
+        let lh = if node.line_height > 0.0 {
+            node.line_height
+        } else {
+            font_size * 1.2
+        };
+        let text = display_text(&node.text, node.secure);
+        let origin_x = node.x + pads[0];
+        let origin_y = node.y + pads[2];
+        let metrics = text_metrics(&text, state.sel_start, state.sel_end, lh, |line| {
+            measure(line, font_size, lh, weight, None).0
+        });
+        self.caret_handle = handle;
+        self.selection_rects = metrics
+            .selection
+            .into_iter()
+            .map(|[x, y, w, h]| (origin_x + x, origin_y + y, w, h))
+            .collect();
+        self.caret_box = Some((
+            origin_x + metrics.caret_x,
+            origin_y + metrics.caret_y,
+            1.0,
+            metrics.caret_h,
+        ));
+    }
+
     fn paint_node(&self, id: u32, out: &mut Vec<PaintCmd>) {
         let node = self.node(id).expect("paint handle");
         let x = node.x;
@@ -1278,6 +1361,28 @@ impl Shell {
                 radius,
                 color: background,
             });
+        }
+        if kind == Kind::Field && id == self.caret_handle {
+            for (sx, sy, sw, sh) in &self.selection_rects {
+                out.push(PaintCmd::Fill {
+                    x: *sx,
+                    y: *sy,
+                    w: *sw,
+                    h: *sh,
+                    radius: 0.0,
+                    color: Color::new(0.2, 0.45, 1.0, 0.35),
+                });
+            }
+            if let Some((cx, cy, cw, ch)) = self.caret_box {
+                out.push(PaintCmd::Fill {
+                    x: cx,
+                    y: cy,
+                    w: cw,
+                    h: ch,
+                    radius: 0.0,
+                    color,
+                });
+            }
         }
         let shown = if kind == Kind::Field {
             display_text(&text, secure)

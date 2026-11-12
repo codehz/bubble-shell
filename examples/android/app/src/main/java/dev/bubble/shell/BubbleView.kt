@@ -217,6 +217,7 @@ class BubbleView(context: Context) : View(context) {
 
     private var composing = false
     private var composingText = ""
+    private var editorType = InputType.TYPE_CLASS_TEXT
 
     private fun sendEdit(action: Int, text: String, a: Int = 0, b: Int = 0) {
         BubbleNative.edit(action, text.toByteArray(Charsets.UTF_8), a, b)
@@ -226,7 +227,7 @@ class BubbleView(context: Context) : View(context) {
     override fun onCheckIsTextEditor(): Boolean = true
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-        outAttrs.inputType = InputType.TYPE_CLASS_TEXT
+        outAttrs.inputType = editorType
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
         return object : BaseInputConnection(this, true) {
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
@@ -294,9 +295,11 @@ class BubbleView(context: Context) : View(context) {
                 sendPointer(2, event.actionIndex, event)
                 val handle = BubbleNative.fieldAt(localX(event.x), localY(event.y))
                 if (handle != 0) {
+                    editorType = editorType(BubbleNative.fieldFlags(handle))
                     sendEdit(0, "", handle, 0)
                     requestFocus()
                     val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                    imm.restartInput(this)
                     imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
                 }
             }
@@ -319,4 +322,22 @@ class BubbleView(context: Context) : View(context) {
         fun channel(value: Float): Int = (value.coerceIn(0f, 1f) * 255f).roundToInt()
         return Color.argb(channel(alpha), channel(red), channel(green), channel(blue))
     }
+}
+
+private fun editorType(flags: Int): Int {
+    val kind = flags shr 8
+    var type = when (kind) {
+        1 -> InputType.TYPE_CLASS_NUMBER
+        2 -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+        3 -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        4 -> InputType.TYPE_CLASS_PHONE
+        else -> InputType.TYPE_CLASS_TEXT
+    }
+    if (flags and 2 != 0) {
+        type = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+    }
+    if (flags and 1 != 0) {
+        type = type or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+    }
+    return type
 }

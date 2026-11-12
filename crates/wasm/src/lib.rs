@@ -271,6 +271,26 @@ pub extern "C" fn field_at(x: f32, y: f32) -> u32 {
     with_shell(|shell| Ok(shell.field_at(x, y))).unwrap_or(0)
 }
 
+/// Writes x, y, width, height of the focused caret into scratch. Returns 16, or 0.
+#[no_mangle]
+pub extern "C" fn caret_box() -> u32 {
+    drain_pending().ok();
+    let Some((x, y, w, h)) = with_shell(|shell| Ok(shell.caret_box())).ok().flatten() else {
+        return store_scratch(Vec::new());
+    };
+    let mut bytes = Vec::with_capacity(16);
+    for value in [x, y, w, h] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    store_scratch(bytes)
+}
+
+#[no_mangle]
+pub extern "C" fn field_flags(handle: u32) -> u32 {
+    drain_pending().ok();
+    with_shell(|shell| shell.field_flags(handle)).unwrap_or(0)
+}
+
 /// Encoded `BSED` batch since the last drain; 0 bytes when empty.
 #[no_mangle]
 pub extern "C" fn take_edit_events() -> u32 {

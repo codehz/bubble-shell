@@ -192,3 +192,40 @@ fn field_at_returns_the_deepest_field() {
     assert_eq!(shell.field_at(x + 1.0, y + 1.0), handle);
     assert_eq!(shell.field_at(x + w + 8.0, y + h + 8.0), 0);
 }
+
+#[test]
+fn focused_field_paints_a_caret_and_reports_keyboard_flags() {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 80.0);
+    let handle = field(&mut shell, "ab");
+    shell
+        .apply_ops(&encode(
+            1,
+            &[
+                Op::SetProp {
+                    handle,
+                    key: "secure".into(),
+                    value: Value::Bool(true),
+                },
+                Op::SetProp {
+                    handle,
+                    key: "keyboard".into(),
+                    value: Value::String("email".into()),
+                },
+            ],
+        ))
+        .unwrap();
+    shell.focus(handle).unwrap();
+    shell
+        .layout(&mut |text, font, _, _, _| (text.chars().count() as f32 * font, font))
+        .unwrap();
+    assert_eq!(shell.field_flags(handle).unwrap(), 2 | (2 << 8));
+    let (x, _, w, h) = shell.caret_box().unwrap();
+    assert!(w > 0.0 && h > 0.0);
+    let paint = shell.paint();
+    assert!(paint.iter().any(|cmd| matches!(
+        cmd,
+        bubble_core::PaintCmd::Fill { x: cx, w: cw, .. } if *cw == 1.0 && (*cx - x).abs() < 0.01
+    )));
+    let _ = x;
+}

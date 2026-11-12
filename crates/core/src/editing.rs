@@ -338,6 +338,85 @@ fn boundary(value: &str, units: u32) -> usize {
     value.len()
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextMetrics {
+    /// Selection rectangles relative to the text origin: x, y, w, h.
+    pub selection: Vec<[f32; 4]>,
+    pub caret_x: f32,
+    pub caret_y: f32,
+    pub caret_h: f32,
+}
+
+/// `advance` is the width of one line, measured without wrapping.
+pub fn text_metrics(
+    text: &str,
+    sel_start: u32,
+    sel_end: u32,
+    line_height: f32,
+    mut advance: impl FnMut(&str) -> f32,
+) -> TextMetrics {
+    let lh = if line_height.is_finite() && line_height > 0.0 {
+        line_height
+    } else {
+        0.0
+    };
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut spans = Vec::new();
+    let mut unit = 0u32;
+    for (index, line) in lines.iter().enumerate() {
+        let len = utf16_len(line);
+        let has_nl = index + 1 != lines.len();
+        spans.push((unit, unit + len, has_nl, *line));
+        unit += len + u32::from(has_nl);
+    }
+    if spans.is_empty() {
+        spans.push((0, 0, false, ""));
+    }
+    let locate = |units: u32| -> (usize, u32) {
+        for (index, &(start, end, _, _)) in spans.iter().enumerate() {
+            if units <= end {
+                return (index, units.saturating_sub(start));
+            }
+        }
+        let last = spans.len() - 1;
+        let (start, end, _, _) = spans[last];
+        (last, end.saturating_sub(start))
+    };
+    let (lo, hi) = if sel_start <= sel_end {
+        (sel_start, sel_end)
+    } else {
+        (sel_end, sel_start)
+    };
+    let mut selection = Vec::new();
+    for (index, &(start, end, has_nl, line)) in spans.iter().enumerate() {
+        let line_hi = end + u32::from(has_nl);
+        let from = lo.max(start);
+        let to = hi.min(line_hi);
+        if from >= to {
+            continue;
+        }
+        let col0 = from.saturating_sub(start).min(end.saturating_sub(start));
+        let col1 = if to > end {
+            end.saturating_sub(start)
+        } else {
+            to.saturating_sub(start)
+        };
+        let x0 = advance(&line[..boundary(line, col0)]);
+        let x1 = advance(&line[..boundary(line, col1)]);
+        if x1 > x0 {
+            selection.push([x0, index as f32 * lh, x1 - x0, lh]);
+        }
+    }
+    let (line, col) = locate(sel_end);
+    let caret_line = spans[line].3;
+    TextMetrics {
+        selection,
+        caret_x: advance(&caret_line[..boundary(caret_line, col)]),
+        caret_y: line as f32 * lh,
+        caret_h: lh,
+    }
+}
+
 pub fn utf16_len(value: &str) -> u32 {
     value.chars().map(|ch| ch.len_utf16() as u32).sum()
 }

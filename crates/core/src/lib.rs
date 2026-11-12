@@ -20,8 +20,8 @@ mod turn;
 
 pub use color::{parse as parse_color, Color};
 pub use editing::{
-    apply_command, apply_script, display_text, encode_edit_events, utf16_len, EditCommand, EditEvent,
-    FieldState,
+    apply_command, apply_script, display_text, encode_edit_events, text_metrics, utf16_len,
+    EditCommand, EditEvent, FieldState, TextMetrics,
 };
 pub use gesture::{
     encode_events, GestureConfig, GestureDecl, GestureEvent, GestureKind, PointerAction,
