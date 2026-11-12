@@ -255,7 +255,7 @@ class BubbleView(context: Context) : View(context) {
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
         outAttrs.inputType = editorType
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
-        outAttrs.setAutofillHints(*autofillHints)
+        setAutofillHints(*autofillHints)
         val (selStart, selEnd) = selection()
         outAttrs.initialSelStart = selStart
         outAttrs.initialSelEnd = selEnd
@@ -380,6 +380,8 @@ class BubbleView(context: Context) : View(context) {
                     val flags = BubbleNative.fieldFlags(handle)
                     editorType = editorType(flags)
                     autofillHints = autofillHints(flags)
+                    setAutofillHints(*autofillHints)
+                    importantForAutofill = IMPORTANT_FOR_AUTOFILL_YES
                     requestFocus()
                     val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                     imm.restartInput(this)
