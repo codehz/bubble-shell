@@ -154,6 +154,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bubble-cli"
+version = "0.1.0"
+dependencies = [
+ "bubble-bundler",
+ "serde_json",
+]
+
+[[package]]
 name = "bubble-compiler"
 version = "0.1.0"
 dependencies = [

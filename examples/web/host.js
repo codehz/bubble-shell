@@ -236,7 +236,15 @@ document.addEventListener(
   true,
 );
 
-function imageFor(src) {
+const bundleBase = new URL("./fixtures/", import.meta.url);
+
+function resolveSource(src) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith("//")) return src;
+  return new URL(src, bundleBase).href;
+}
+
+function imageFor(source) {
+  const src = resolveSource(source);
   let entry = images.get(src);
   if (!entry) {
     const img = new Image();

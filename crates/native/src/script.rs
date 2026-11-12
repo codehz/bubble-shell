@@ -13,7 +13,10 @@ use bubble_core::{
     validate_bundle_hashes, ComputationKind, GestureKind, NodeDesc, Op, Sched, Turn, Value,
     DEFERRED_PROPS, SPAWN_PROPS,
 };
-use rquickjs::{Array, Context, Ctx, Function, Object, Runtime, TypedArray, Value as JsValue};
+use rquickjs::loader::{ImportAttributes, Loader, Resolver};
+use rquickjs::{
+    Array, Context, Ctx, Function, Module, Object, Runtime, TypedArray, Value as JsValue,
+};
 use serde::Deserialize;
 
 use crate::Shared;
@@ -21,7 +24,10 @@ use crate::Shared;
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 const STACK_LIMIT: usize = 256 * 1024;
 const INTERRUPT_MS: u64 = 1000;
-const RUNTIME_JS: &str = include_str!("../../../examples/web/runtime.js");
+const RUNTIME_JS: &str = include_str!("../js/runtime.js");
+/// Both author-facing and compiler-facing specifiers resolve to this module id,
+/// so the runtime is evaluated exactly once per context.
+const RUNTIME_ID: &str = "bubble-shell";
 
 static INTERRUPT: AtomicBool = AtomicBool::new(false);
 static JS_SINCE_MS: AtomicU64 = AtomicU64::new(0);
@@ -230,10 +236,18 @@ impl Session {
         };
         let source =
             String::from_utf8(entry).map_err(|_| "bundle entry is not utf-8".to_string())?;
-        let _ = manifest;
+        let entry_name = serde_json::from_str::<serde_json::Value>(&manifest)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("entry")
+                    .and_then(|entry| entry.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "main.js".to_string());
         self.vm = Some(make_vm()?);
         let vm = self.vm.as_ref().expect("vm");
-        let loaded = guarded(|| install_and_run(vm, &source));
+        let loaded = guarded(|| install_and_run(vm, &source, &entry_name));
         match loaded {
             Ok(()) => Ok(()),
             Err(err) => {
@@ -385,8 +399,60 @@ fn guarded<T>(body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     }
 }
 
+/// Resolve host modules and reject anything a release bundle must not import.
+#[derive(Debug, Default)]
+struct BubbleResolver;
+
+impl Resolver for BubbleResolver {
+    fn resolve<'js>(
+        &mut self,
+        _ctx: &Ctx<'js>,
+        base: &str,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<String> {
+        match name {
+            "bubble-shell" | "bubble:rt" => Ok(RUNTIME_ID.to_string()),
+            other if other.starts_with('.') || other.starts_with('/') => {
+                Err(rquickjs::Error::new_resolving_message(
+                    base,
+                    other,
+                    "release bundles must not contain relative imports",
+                ))
+            }
+            other => Err(rquickjs::Error::new_resolving_message(
+                base,
+                other,
+                "unknown native module",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct BubbleLoader;
+
+impl Loader for BubbleLoader {
+    fn load<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<Module<'js, rquickjs::module::Declared>> {
+        if name == RUNTIME_ID {
+            Module::declare(ctx.clone(), RUNTIME_ID, RUNTIME_JS)
+        } else {
+            Err(rquickjs::Error::new_loading_message(
+                name,
+                "unknown native module",
+            ))
+        }
+    }
+}
+
 fn make_vm() -> Result<Vm, String> {
     let runtime = Runtime::new().map_err(|err| err.to_string())?;
+    runtime.set_loader(BubbleResolver, BubbleLoader);
     runtime.set_memory_limit(MEMORY_LIMIT);
     runtime.set_max_stack_size(STACK_LIMIT);
     runtime.set_interrupt_handler(Some(Box::new(|| INTERRUPT.load(Ordering::Relaxed))));
@@ -394,17 +460,17 @@ fn make_vm() -> Result<Vm, String> {
     Ok(Vm { context, runtime })
 }
 
-fn install_and_run(vm: &Vm, source: &str) -> Result<(), String> {
+fn install_and_run(vm: &Vm, source: &str, entry: &str) -> Result<(), String> {
     enter_js();
     let result = vm.context.with(|ctx| {
         bind_api(&ctx)?;
-        let promise = rquickjs::Module::evaluate(ctx.clone(), "../runtime.js", RUNTIME_JS)?;
+        let promise = Module::evaluate(ctx.clone(), RUNTIME_ID, RUNTIME_JS)?;
         finish_promise(&ctx, &promise)?;
         let set_api: Function = ctx.globals().get("__bubbleSetApi")?;
         let api: Object = ctx.globals().get("__bubble")?;
         set_api.call::<_, ()>((api,))?;
         ctx.eval::<(), _>(PRELUDE)?;
-        let main = rquickjs::Module::evaluate(ctx.clone(), "main.js", source)?;
+        let main = Module::evaluate(ctx.clone(), entry, source)?;
         finish_promise(&ctx, &main)?;
         pump(&ctx);
         Ok(())

@@ -1,6 +1,21 @@
 import { readFileSync } from "node:fs";
+import { registerHooks } from "node:module";
 import { dispatchGestureEvents, setApi } from "./runtime.js";
 import { layoutSnapshot } from "./textlayout.js";
+
+// Fixture bundles import the host modules by specifier; map them like the
+// page's import map does.
+registerHooks({
+  resolve(specifier, context, next) {
+    if (specifier === "bubble-shell" || specifier === "bubble:rt") {
+      return {
+        url: new URL("./runtime.js", import.meta.url).href,
+        shortCircuit: true,
+      };
+    }
+    return next(specifier, context);
+  },
+});
 
 const fixture = process.argv[2] ?? "counter";
 const wasmBytes = readFileSync(new URL("./bubble.wasm", import.meta.url));

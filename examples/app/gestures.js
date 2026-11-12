@@ -1,4 +1,4 @@
-import { signal, batch, flush, mount, view, text, forEach, show, tapGesture, doubleTapGesture, longPressGesture, panGesture, transformGesture } from "../runtime.js";
+import { signal, batch, flush, mount, view, text, forEach, show, tapGesture, doubleTapGesture, longPressGesture, panGesture, transformGesture } from "bubble-shell";
 
 // A dedicated device fixture: handles come from the renderer, not the demo's
 // incidental node order. Only the root status Text has a fixed handle (3).

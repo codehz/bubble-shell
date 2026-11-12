@@ -5,6 +5,7 @@ members = [
     "crates/wasm",
     "crates/compiler",
     "crates/bundler",
+    "crates/cli",
     "crates/native",
     "crates/eval",
 ]
