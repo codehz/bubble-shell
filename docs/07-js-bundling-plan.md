@@ -1,6 +1,6 @@
 # 07 · JS 打包策略重设计
 
-状态：计划稿，2026-11-13。本文是打包策略的详细计划；[02-runtime.md](02-runtime.md) 已同步摘要，细节或冲突处以此文为准。当前实现仍按迁移步骤逐步切换。
+状态：已实现，2026-11-13。第 1–9 节保留为设计与迁移记录，实现偏差见第 13 节；[02-runtime.md](02-runtime.md) 同步摘要，细节或冲突处以此文为准。
 
 ## 1. 目标
 
@@ -339,7 +339,7 @@ sh examples/build-fixtures.sh
 
 post-MVP：
 
-- native 状态保留 HMR + WebSocket dev host。
+- native 状态保留 HMR + WebSocket dev host（当前 Web host 已落地，native 仍重新打包重启）。
 - QuickJS 字节码与版本锁定。
 - minify、split / 动态 import chunks。
 - 发布 source map 或错误符号化。
@@ -357,3 +357,37 @@ post-MVP：
 - 新增资源 fixture 能从 `assets/<name>.<hash8>.<ext>` 加载图片。
 - native 模拟器加载同一 bundle 并完成一次点击/滚动/输入。
 - `bubble dev` 下修改组件文本，页面更新且计数状态保留。
+
+## 13. 实现结果与偏差
+
+落地内容与本文一致的部分不再重复；下面是实现时定下的细节和仍然存在的差距。
+
+### 13.1 版本
+
+- `oxc = "=0.158.0"`，`rolldown = "=1.3.2"`，`rolldown_common/plugin/sourcemap = "=1.3.2"`。
+- `oxc_sourcemap` 由 `oxc_codegen 0.158` 传递依赖到 `9.0.0`，没有单独固定到 10：只有 bundler 把编译器的 map JSON 解析成 `SourceMap<'static>` 时才间接使用。
+- 编译器不再依赖 `string_wizard`；它只做 AST 与 codegen。
+
+### 13.2 编译器
+
+- 入口是 `compile_module(name, source, options)`；`CompileOptions { source_map, hot }`。
+- JSX 降级在 AST 上完成，注入 `import { primitive as __bubble_rt_primitive, … } from "bubble:rt"`。
+- `bubble-shell` 与 `bubble:rt` 的未使用导入按名字引用计数删除；两者指向同一宿主模块。
+- 信号集合按词法作用域收集，闭包继承外层集合；导出的顶层 signal 不进集合。
+- 代码帧按 `file:line:column` 输出，作为 bundler 的 `load` 错误文本。
+
+### 13.3 开发态 HMR
+
+- `build_dev` 用 `preserve_modules + Cjs` 得到每模块一个 factory；`render_dev_bundle` 生成模块表并 `__bubble_hot.define/run`。
+- 浏览器端 `crates/cli/js/hot.js` 就是 `bubble:hot`：模块注册表、稳定组件 proxy、`keep` 表、mount 记录与 WebSocket 客户端。
+- 热补丁只携带**代码有变化的模块**；新增/删除模块或补丁执行失败时整页重载。
+- 服务端每次变化重新跑完整 rolldown 构建，再按模块 diff 决定发送范围；“只重建对应模块”指的是浏览器只重跑变化模块，不是增量编译。
+- 更新后重新 `mount` 同一组件代理：渲染状态清空，信号值按分配顺序快照/恢复，因此计数等状态保留。
+- 构建失败时发送 `error` 消息，页面显示覆盖层；下一次成功且无模块变化时发送 `clear`。
+- 开发态 source map 尚未接入：模块 factory 与拼装后的 dev bundle 都没有 map，`bubble dev` 只提供代码。
+
+### 13.4 其余差距
+
+- 发布页面的 import map 仍由页面静态提供（`examples/web/index.html`），未做成打包器输出。
+- 资源在 Web 已验证（`media` fixture + `assets/logo.<hash8>.png`）；native 目前没有图片绘制路径，`Image` 只在 Web 落地。
+- `bubble dev` 的静态根默认 `examples/web`，可用 `--root` 覆盖；dev 页面由服务器生成，复用 `host.js`。

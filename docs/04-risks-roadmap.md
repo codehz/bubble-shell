@@ -67,7 +67,7 @@ MVP 是一个可运行、可交互的演示，不是验收程序。MVP 完成前
 范围：
 
 - bundle/manifest 加载与验签占位。
-- 编译器 MVP：TSX 函数组件 → 原生渲染调用。M0 的历史实现是单文件直译；打包重设计按 [07-js-bundling-plan.md](07-js-bundling-plan.md) 迁移到 Oxc + rolldown 单 ESM。信号图在 Rust。不做 VDOM、模板 IR 或预编译子树。
+- 编译器 MVP：TSX 函数组件 → 原生渲染调用。M0 的历史实现是单文件直译；现已按 [07-js-bundling-plan.md](07-js-bundling-plan.md) 迁移到 Oxc + rolldown 单 ESM。信号图在 Rust。不做 VDOM、模板 IR 或预编译子树。
 - Rust 保留树 + Taffy 布局。
 - op 协议 + 双缓冲提交。
 - Web：主线程一份 WASM + JS 回放 `PaintCmd`。无 Worker。

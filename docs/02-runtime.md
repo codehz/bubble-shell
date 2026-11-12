@@ -52,7 +52,7 @@ assets/
   logo.1a2b3c4d.png
 ```
 
-发布态 `main.js` 是单个入口 ES module；fixture 构建沿用 `<name>.js`，manifest 的 `entry` 指向实际文件名。开发态由 `bubble dev` 输出多模块与 source map，不进入发布包。运行时模块不在此目录中。
+发布态 `main.js` 是单个入口 ES module；fixture 构建沿用 `<name>.js`，manifest 的 `entry` 指向实际文件名。开发态由 `bubble dev` 提供多模块 factory、`bubble:hot` 运行时与热补丁；开发态 source map 尚未接入。运行时模块不在此目录中。
 
 ### manifest.json
 
