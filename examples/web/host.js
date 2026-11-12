@@ -522,7 +522,6 @@ for (const type of ["beforeinput", "compositionstart", "compositionupdate", "com
 function placeCaret(handle) {
   exports.layout();
   const flags = exports.field_flags(handle);
-  ime.type = flags & 2 ? "password" : "text";
   const kind = (flags >> 8) & 0xff;
   ime.inputMode = ["text", "numeric", "email", "url", "tel"][kind] || "text";
   const autofill = (flags >> 16) & 0xff;

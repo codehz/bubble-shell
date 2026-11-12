@@ -149,6 +149,8 @@ EditingState {
 
 当前接入：Web 隐藏 `textarea` 把 `beforeinput` / composition 映射到 `edit`（`examples/web/ime.js`），含 `historyUndo` / `historyRedo`。在字段上按下并拖动会改选区，不再交给手势；抬起不把插入符折回落点。右键菜单提供剪切、复制、粘贴和全选；密码字段不复制。Android `InputConnection` 提交、composition、删除，并向 IME 报告选区、光标前后文本和 `CursorAnchorInfo`。iOS `UITextInput` 覆盖插入、退格、UTF-16 选区、标记文本（`setMarkedText` / `unmarkText`）和选区矩形；⌘Z / ⇧⌘Z 走同一撤销栈。标记文本内部的选中范围仍固定在组合末尾。点按 `focus_at` 聚焦并把插入符落到最近的 UTF-16 边界。聚焦字段在 layout 后绘制选区与 1px 光标。撤销按字段保留最近 100 步；脚本 `SetEditingValue` 成功后清空该字段的撤销栈。`field_flags` 的 bit0 多行、bit1 密码，bits 8..15 为键盘种类：1 number、2 email、3 url、4 phone。bits 16..23 为 `autofill`：1 username、2 password、3 newPassword、4 email、5 phone、6 oneTimeCode。
 
+Web 宿主从 `runtime.js` 具名导入 `setApi`、`dispatchGestureEvents` 和 `dispatchEditEvents`；编辑事件由 `dispatchEditEvents` 解码并调用字段的 `onChange`。隐藏 `textarea` 通过 `inputMode` 与 `autocomplete` 配置键盘和自动填充，不写入只读的 `type` 属性；密码遮罩由核心绘制。
+
 三端已实现行为的差异：
 
 | 行为 | 核心 | Web | Android | iOS |

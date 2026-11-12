@@ -1138,7 +1138,7 @@ globalThis.__bubblePress = press;
 globalThis.__bubbleGesture = dispatchGestureEvents;
 globalThis.__bubbleEdit = dispatchEditEvents;
 
-function dispatchEditEvents(bytes) {
+export function dispatchEditEvents(bytes) {
   const events = decodeEditEvents(bytes);
   let ran = false;
   batch(() => {
