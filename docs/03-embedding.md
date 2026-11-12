@@ -147,6 +147,8 @@ EditingState {
 
 覆盖能力：键盘类型、autofill、密码、多行、maxlength、输入过滤、撤销/重做。三端行为差异记录在测试矩阵中。
 
+当前接入：Web 隐藏 `textarea` 把 `beforeinput` / composition 映射到 `edit`（`examples/web/ime.js`）。Android `InputConnection` 提交、composition 与删除。iOS 仅 `UIKeyInput`（插入与退格）；标记文本与选区手柄仍待 `UITextInput`。点中字段调用 `field_at` 后聚焦。
+
 ## 6. 更新平面
 
 流程：

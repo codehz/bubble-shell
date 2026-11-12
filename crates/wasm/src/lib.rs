@@ -264,6 +264,13 @@ pub extern "C" fn edit(action: u32, ptr: *const u8, len: u32, a: u32, b: u32) ->
     }
 }
 
+/// Deepest text field under the point, or `0`.
+#[no_mangle]
+pub extern "C" fn field_at(x: f32, y: f32) -> u32 {
+    drain_pending().ok();
+    with_shell(|shell| Ok(shell.field_at(x, y))).unwrap_or(0)
+}
+
 /// Encoded `BSED` batch since the last drain; 0 bytes when empty.
 #[no_mangle]
 pub extern "C" fn take_edit_events() -> u32 {

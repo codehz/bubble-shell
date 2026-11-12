@@ -12,6 +12,8 @@ object BubbleNative {
     external fun pointer(action: Int, id: Int, x: Float, y: Float, timeMs: Double, pointerKind: Int, buttons: Int): Int
     external fun tick(timeMs: Double): Int
     external fun scroll(x: Float, y: Float, dx: Float, dy: Float)
+    external fun edit(action: Int, text: ByteArray, a: Int, b: Int): Int
+    external fun fieldAt(x: Float, y: Float): Int
     external fun scrollXOf(handle: Int): Float
     external fun scrollYOf(handle: Int): Float
     external fun setVisible(visible: Int)

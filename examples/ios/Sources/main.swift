@@ -12,6 +12,10 @@ func bubble_load(_ manifest: UnsafePointer<CChar>?, _ entry: UnsafePointer<UInt8
 func bubble_frame(_ width: Float, _ height: Float, _ paint: UnsafeMutablePointer<UnsafePointer<UInt8>?>?, _ paintLen: UnsafeMutablePointer<UInt32>?) -> Int32
 @_silgen_name("bubble_pointer")
 func bubble_pointer(_ action: UInt32, _ id: UInt32, _ x: Float, _ y: Float, _ timeMs: Double, _ pointerKind: UInt32, _ buttons: UInt32) -> Int32
+@_silgen_name("bubble_edit")
+func bubble_edit(_ action: UInt32, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ a: UInt32, _ b: UInt32) -> Int32
+@_silgen_name("bubble_field_at")
+func bubble_field_at(_ x: Float, _ y: Float) -> UInt32
 @_silgen_name("bubble_tick")
 func bubble_tick(_ timeMs: Double) -> Int32
 @_silgen_name("bubble_scroll")
@@ -251,8 +255,18 @@ final class BubbleView: UIView {
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
             sendPointer(2, touch)
+            let point = touch.location(in: self)
+            let handle = bubble_field_at(
+                Float(point.x - safeAreaInsets.left),
+                Float(point.y - safeAreaInsets.top)
+            )
+            if handle != 0 {
+                _ = bubble_edit(0, nil, 0, handle, 0)
+                _ = becomeFirstResponder()
+            }
             pointerIds.removeValue(forKey: ObjectIdentifier(touch))
         }
+        refresh()
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -260,6 +274,24 @@ final class BubbleView: UIView {
             sendPointer(3, touch)
             pointerIds.removeValue(forKey: ObjectIdentifier(touch))
         }
+    }
+}
+
+extension BubbleView: UIKeyInput {
+    override var canBecomeFirstResponder: Bool { true }
+    var hasText: Bool { true }
+
+    func insertText(_ text: String) {
+        let bytes = Array(text.utf8)
+        bytes.withUnsafeBufferPointer { buffer in
+            _ = bubble_edit(1, buffer.baseAddress, UInt32(bytes.count), 0, 0)
+        }
+        refresh()
+    }
+
+    func deleteBackward() {
+        _ = bubble_edit(2, nil, 0, 0, 0)
+        refresh()
     }
 }
 

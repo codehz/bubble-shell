@@ -574,6 +574,30 @@ impl Shell {
         self.focused
     }
 
+    /// Deepest text field containing the point, or `0`.
+    pub fn field_at(&self, x: f32, y: f32) -> u32 {
+        self.field_in(1, x, y).unwrap_or(0)
+    }
+
+    fn field_in(&self, id: u32, x: f32, y: f32) -> Option<u32> {
+        let node = self.node(id).ok()?;
+        if x < node.x || y < node.y || x >= node.x + node.w || y >= node.y + node.h {
+            return None;
+        }
+        let children = node.children.clone();
+        let kind = node.kind;
+        for child in children.iter().rev() {
+            if let Some(found) = self.field_in(*child, x, y) {
+                return Some(found);
+            }
+        }
+        if kind == Kind::Field {
+            Some(id)
+        } else {
+            None
+        }
+    }
+
     pub fn field(&self, handle: u32) -> Result<(String, FieldState), String> {
         let node = self.node(handle)?;
         if node.kind != Kind::Field {

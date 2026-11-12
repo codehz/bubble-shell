@@ -15,9 +15,14 @@ import android.text.TextPaint
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
+import android.view.inputmethod.BaseInputConnection
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputMethodManager
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.roundToInt
+import android.text.InputType
 
 class BubbleView(context: Context) : View(context) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -31,6 +36,8 @@ class BubbleView(context: Context) : View(context) {
 
     init {
         setBackgroundColor(Color.BLACK)
+        isFocusable = true
+        isFocusableInTouchMode = true
         setOnApplyWindowInsetsListener { _, insets -> onApplyWindowInsets(insets) }
     }
 
@@ -208,6 +215,60 @@ class BubbleView(context: Context) : View(context) {
         refresh()
     }
 
+    private var composing = false
+    private var composingText = ""
+
+    private fun sendEdit(action: Int, text: String, a: Int = 0, b: Int = 0) {
+        BubbleNative.edit(action, text.toByteArray(Charsets.UTF_8), a, b)
+        refresh()
+    }
+
+    override fun onCheckIsTextEditor(): Boolean = true
+
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT
+        outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
+        return object : BaseInputConnection(this, true) {
+            override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
+                val value = text.toString()
+                if (composing) {
+                    sendEdit(7, value)
+                    composing = false
+                    composingText = ""
+                } else if (value.isNotEmpty()) {
+                    sendEdit(1, value)
+                }
+                return true
+            }
+
+            override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
+                val value = text.toString()
+                if (!composing) {
+                    sendEdit(5, "")
+                    composing = true
+                }
+                composingText = value
+                sendEdit(6, value)
+                return true
+            }
+
+            override fun finishComposingText(): Boolean {
+                if (composing) {
+                    sendEdit(7, composingText)
+                    composing = false
+                    composingText = ""
+                }
+                return true
+            }
+
+            override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+                repeat(beforeLength.coerceAtLeast(0)) { sendEdit(2, "") }
+                repeat(afterLength.coerceAtLeast(0)) { sendEdit(3, "") }
+                return true
+            }
+        }
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> sendPointer(0, event.actionIndex, event)
@@ -229,7 +290,16 @@ class BubbleView(context: Context) : View(context) {
                 refresh()
             }
             MotionEvent.ACTION_POINTER_UP -> sendPointer(2, event.actionIndex, event)
-            MotionEvent.ACTION_UP -> sendPointer(2, event.actionIndex, event)
+            MotionEvent.ACTION_UP -> {
+                sendPointer(2, event.actionIndex, event)
+                val handle = BubbleNative.fieldAt(localX(event.x), localY(event.y))
+                if (handle != 0) {
+                    sendEdit(0, "", handle, 0)
+                    requestFocus()
+                    val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                    imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+                }
+            }
             MotionEvent.ACTION_CANCEL -> {
                 for (id in activePointers.toList()) {
                     BubbleNative.pointer(3, id, 0f, 0f, event.eventTime.toDouble(), 0, 0)

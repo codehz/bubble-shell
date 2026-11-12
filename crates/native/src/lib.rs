@@ -474,6 +474,22 @@ pub extern "C" fn bubble_edit(
     finish(result)
 }
 
+/// Deepest text field under the point, or `0`.
+#[no_mangle]
+pub extern "C" fn bubble_field_at(x: f32, y: f32) -> u32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        Ok(shell.field_at(x, y))
+    });
+    result.unwrap_or(0)
+}
+
 #[no_mangle]
 pub extern "C" fn bubble_scroll(x: f32, y: f32, dx: f32, dy: f32) {
     let _ = catch(|| {
@@ -944,6 +960,35 @@ mod android {
         dy: jfloat,
     ) {
         super::bubble_scroll(x, y, dx, dy);
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_edit<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        action: jint,
+        text: JByteArray<'a>,
+        a: jint,
+        b: jint,
+    ) -> jint {
+        let bytes = env.convert_byte_array(text).unwrap_or_default();
+        super::bubble_edit(
+            action as u32,
+            bytes.as_ptr(),
+            bytes.len() as u32,
+            a as u32,
+            b as u32,
+        )
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_fieldAt<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        x: jfloat,
+        y: jfloat,
+    ) -> jint {
+        super::bubble_field_at(x, y) as jint
     }
 
     #[no_mangle]

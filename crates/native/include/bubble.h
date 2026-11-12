@@ -26,6 +26,8 @@ void bubble_set_visible(int visible);
 /* action 0 focus a (0 blurs); 1 insert; 2 backspace; 3 delete; 4 selection a..b;
  * 5 composition start; 6 update; 7 end. Text is UTF-8. Offsets are UTF-16. */
 int bubble_edit(uint32_t action, const uint8_t *text, uint32_t text_len, uint32_t a, uint32_t b);
+/* Deepest text field under the point, or 0. */
+uint32_t bubble_field_at(float x, float y);
 
 void bubble_register_font(const char *family, const uint8_t *data, uint32_t len);
 uint32_t bubble_font_epoch(void);

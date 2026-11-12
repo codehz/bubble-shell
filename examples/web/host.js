@@ -1,3 +1,4 @@
+import { commandsForDom } from "./ime.js";
 import { dispatchEditEvents, dispatchGestureEvents, setApi } from "./runtime.js";
 
 const canvas = document.querySelector("canvas");
@@ -454,6 +455,50 @@ function releasePointer(action, event) {
 }
 
 canvas.addEventListener("pointerup", (event) => releasePointer(2, event));
+
+const ime = document.createElement("textarea");
+ime.setAttribute("aria-hidden", "true");
+ime.autocomplete = "off";
+ime.autocapitalize = "off";
+ime.spellcheck = false;
+Object.assign(ime.style, {
+  position: "fixed",
+  left: "0",
+  top: "0",
+  width: "1px",
+  height: "1px",
+  opacity: "0",
+  pointerEvents: "none",
+});
+document.body.append(ime);
+
+function applyEditCommands(commands) {
+  for (const command of commands) {
+    const bytes = encoder.encode(command.text ?? "");
+    const ptr = bytes.length ? copyBytes(bytes) : 0;
+    exports.edit(command.action, ptr, bytes.length, 0, 0);
+    if (bytes.length) exports.dealloc(ptr, bytes.length);
+  }
+  pumpGestures();
+  if (exports.layout() === 0) paint();
+}
+
+for (const type of ["beforeinput", "compositionstart", "compositionupdate", "compositionend"]) {
+  ime.addEventListener(type, (event) => {
+    const commands = commandsForDom(event);
+    if (commands.length === 0) return;
+    event.preventDefault();
+    applyEditCommands(commands);
+  });
+}
+
+canvas.addEventListener("pointerup", (event) => {
+  const [x, y] = point(event);
+  const handle = exports.field_at(x, y);
+  if (!handle) return;
+  exports.edit(0, 0, 0, handle, 0);
+  ime.focus();
+});
 canvas.addEventListener("pointercancel", (event) => releasePointer(3, event));
 
 function cancelPointers() {

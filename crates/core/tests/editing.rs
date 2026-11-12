@@ -178,3 +178,17 @@ fn dispose_drops_focus() {
     assert_eq!(shell.focused(), 0);
     assert!(shell.edit(EditCommand::Insert("z".into())).is_err());
 }
+
+#[test]
+fn field_at_returns_the_deepest_field() {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 80.0);
+    let handle = field(&mut shell, "");
+    shell
+        .layout(&mut |_, _, _, _, _| (10.0, 16.0))
+        .unwrap();
+    let (x, y, w, h) = shell.node_box(handle).unwrap();
+    assert!(w > 0.0 && h > 0.0);
+    assert_eq!(shell.field_at(x + 1.0, y + 1.0), handle);
+    assert_eq!(shell.field_at(x + w + 8.0, y + h + 8.0), 0);
+}
