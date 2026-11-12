@@ -476,6 +476,11 @@ fn every_runtime_property_is_dispatchable() {
             "multiline" | "secure" => Value::Bool(true),
             "keyboard" => Value::String("text".into()),
             "autofill" => Value::String("email".into()),
+            "role" => Value::String("button".into()),
+            "label" => Value::String("Action".into()),
+            "disabled" | "hidden" | "focusable" | "modal" | "checked" | "selected" | "expanded" => {
+                Value::Bool(true)
+            }
             "maxLength" => Value::Float(4.0),
             "top" | "right" | "bottom" | "left" => Value::Float(4.0),
             _ => Value::Float(4.0),

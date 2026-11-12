@@ -27,9 +27,15 @@ object BubbleNative {
     external fun editFinishComposition(session: Long): Int
     external fun editSelect(session: Long, anchor: Int, active: Int): Int
     external fun fieldAt(x: Float, y: Float): Int
+    external fun unitAt(x: Float, y: Float): Int
     external fun focusAt(x: Float, y: Float): Int
     external fun fieldFlags(handle: Int): Int
     external fun focused(): Int
+    external fun key(action: Int, timeMs: Double): Int
+    external fun semantics(): String
+    external fun a11yAction(handle: Int, action: Int, text: String): Int
+    external fun editMenu(action: Int, clip: String): String
+    external fun selectionHandles(): FloatArray
     external fun focusedText(): String
     external fun selection(): IntArray
     external fun caret(): FloatArray

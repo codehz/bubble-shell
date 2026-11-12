@@ -50,6 +50,21 @@ func bubble_focus_at(_ x: Float, _ y: Float) -> UInt32
 func bubble_field_flags(_ handle: UInt32) -> UInt32
 @_silgen_name("bubble_focused")
 func bubble_focused() -> UInt32
+@_silgen_name("bubble_key")
+func bubble_key(_ action: UInt32, _ timeMs: Double) -> Int32
+@_silgen_name("bubble_semantics")
+func bubble_semantics(_ buf: UnsafeMutablePointer<CChar>?, _ cap: UInt32) -> Int32
+@_silgen_name("bubble_a11y_action")
+func bubble_a11y_action(_ handle: UInt32, _ action: UInt32, _ text: UnsafePointer<UInt8>?, _ len: UInt32) -> Int32
+@_silgen_name("bubble_edit_menu")
+func bubble_edit_menu(_ action: UInt32, _ clip: UnsafePointer<UInt8>?, _ clipLen: UInt32, _ out: UnsafeMutablePointer<CChar>?, _ outCap: UInt32) -> Int32
+@_silgen_name("bubble_selection_handles")
+func bubble_selection_handles(
+    _ sx: UnsafeMutablePointer<Float>?, _ sy: UnsafeMutablePointer<Float>?,
+    _ sw: UnsafeMutablePointer<Float>?, _ sh: UnsafeMutablePointer<Float>?,
+    _ ex: UnsafeMutablePointer<Float>?, _ ey: UnsafeMutablePointer<Float>?,
+    _ ew: UnsafeMutablePointer<Float>?, _ eh: UnsafeMutablePointer<Float>?
+) -> Int32
 @_silgen_name("bubble_selection")
 func bubble_selection(_ start: UnsafeMutablePointer<UInt32>?, _ end: UnsafeMutablePointer<UInt32>?, _ markStart: UnsafeMutablePointer<UInt32>?, _ markEnd: UnsafeMutablePointer<UInt32>?) -> Int32
 @_silgen_name("bubble_unit_at")
@@ -262,6 +277,12 @@ final class BubbleView: UIView {
     private var traceOrigin: [UInt32: CGPoint] = [:]
     private var traceLast: [UInt32: CGPoint] = [:]
     private var traceMoves: [UInt32: Int] = [:]
+    private var selectionDrag: (touch: ObjectIdentifier, anchor: Int)?
+    private var semanticElements: [UIAccessibilityElement] = []
+    override var accessibilityElements: [Any]? {
+        get { semanticElements.isEmpty ? nil : semanticElements }
+        set { _ = newValue }
+    }
 
     private func pointerId(_ touch: UITouch) -> UInt32 {
         let key = ObjectIdentifier(touch)
@@ -372,6 +393,7 @@ final class BubbleView: UIView {
         if code == 0, let ptr, len > 0 {
             paint = Data(bytes: ptr, count: Int(len))
         }
+        updateAccessibility()
         setNeedsDisplay()
     }
     override func draw(_ rect: CGRect) {
@@ -488,16 +510,99 @@ final class BubbleView: UIView {
                 return
             }
         }
+        drawSelectionHandles(ctx)
+    }
+
+    private func drawSelectionHandles(_ ctx: CGContext) {
+        var sx: Float = 0, sy: Float = 0, sw: Float = 0, sh: Float = 0
+        var ex: Float = 0, ey: Float = 0, ew: Float = 0, eh: Float = 0
+        guard bubble_selection_handles(&sx, &sy, &sw, &sh, &ex, &ey, &ew, &eh) == 0 else { return }
+        ctx.setFillColor(UIColor(red: 0.30, green: 0.64, blue: 1.0, alpha: 0.95).cgColor)
+        for (x, y, w, h) in [(sx, sy, sw, sh), (ex, ey, ew, eh)] {
+            ctx.fillEllipse(in: CGRect(x: CGFloat(x) + CGFloat(w) / 2 - 7, y: CGFloat(y) + CGFloat(h) / 2 - 7, width: 14, height: 14))
+        }
+    }
+
+    private func updateAccessibility() {
+        if isAccessibilityElement {
+            return
+        }
+        var buf = [CChar](repeating: 0, count: 262144)
+        guard bubble_semantics(&buf, UInt32(buf.count)) == 0 else { return }
+        let data = Data(buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) })
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let nodes = object["nodes"] as? [[String: Any]] else { return }
+        semanticElements = nodes.compactMap { node in
+            guard let raw = node["handle"] as? NSNumber else { return nil }
+            let element = BubbleA11yElement(accessibilityContainer: self, handle: raw.uint32Value, view: self)
+            let bounds = node["bounds"] as? [Double] ?? [0, 0, 0, 0]
+            element.accessibilityFrameInContainerSpace = CGRect(
+                x: CGFloat(bounds[0]) + safeAreaInsets.left,
+                y: CGFloat(bounds[1]) + safeAreaInsets.top,
+                width: CGFloat(bounds[2]),
+                height: CGFloat(bounds[3])
+            )
+            let role = node["role"] as? String ?? "generic"
+            let label = node["label"] as? String ?? ""
+            let value = node["value"] as? String ?? ""
+            element.accessibilityLabel = role == "textbox" || role == "searchbox"
+                ? [label, value].filter { !$0.isEmpty }.joined(separator: ": ")
+                : (label.isEmpty ? value : label)
+            element.accessibilityValue = role == "textbox" || role == "searchbox" ? value : nil
+            var traits: UIAccessibilityTraits = []
+            switch role {
+            case "button": traits.insert(.button)
+            case "link": traits.insert(.link)
+            case "heading": traits.insert(.header)
+            case "image": traits.insert(.image)
+            case "text": traits.insert(.staticText)
+            case "textbox", "searchbox": traits.insert(.updatesFrequently)
+            default: break
+            }
+            if node["selected"] as? Bool == true { traits.insert(.selected) }
+            if node["hidden"] as? Bool == true || node["disabled"] as? Bool == true {
+                element.accessibilityElementsHidden = true
+            }
+            element.accessibilityTraits = traits
+            return element
+        }
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
+            let local = contentPoint(touch.location(in: self))
+            var sx: Float = 0, sy: Float = 0, sw: Float = 0, sh: Float = 0
+            var ex: Float = 0, ey: Float = 0, ew: Float = 0, eh: Float = 0
+            if bubble_field_at(Float(local.x), Float(local.y)) != 0,
+               bubble_selection_handles(&sx, &sy, &sw, &sh, &ex, &ey, &ew, &eh) == 0 {
+                var start: UInt32 = 0
+                var end: UInt32 = 0
+                var markStart: UInt32 = 0
+                var markEnd: UInt32 = 0
+                _ = bubble_selection(&start, &end, &markStart, &markEnd)
+                let startHit = hypot(local.x - CGFloat(sx + sw / 2), local.y - CGFloat(sy + sh / 2)) <= 16
+                let endHit = hypot(local.x - CGFloat(ex + ew / 2), local.y - CGFloat(ey + eh / 2)) <= 16
+                if startHit || endHit {
+                    selectionDrag = (ObjectIdentifier(touch), Int(startHit ? end : start))
+                    return
+                }
+            }
             sendPointer(0, touch)
         }
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
+            if let drag = selectionDrag, drag.touch == ObjectIdentifier(touch),
+               let snapshot = editSnapshot() {
+                let local = contentPoint(touch.location(in: self))
+                var unit: UInt32 = 0
+                if bubble_unit_at(Float(local.x), Float(local.y), &unit) == 0 {
+                    _ = bubble_edit_select(snapshot.session, UInt32(drag.anchor), unit)
+                    refresh()
+                }
+                return
+            }
             sendPointer(1, touch)
         }
     }
@@ -506,6 +611,11 @@ final class BubbleView: UIView {
         var delivered = false
         for touch in touches {
             let key = ObjectIdentifier(touch)
+            if let drag = selectionDrag, drag.touch == key {
+                selectionDrag = nil
+                showEditMenu()
+                continue
+            }
             guard pointerIds[key] != nil else { continue }
             delivered = true
             sendPointer(2, touch)
@@ -542,11 +652,111 @@ final class BubbleView: UIView {
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        selectionDrag = nil
         for touch in touches {
             let key = ObjectIdentifier(touch)
             guard let id = pointerIds.removeValue(forKey: key) else { continue }
             sendPointer(3, touch, id: id)
         }
+    }
+
+    private func showEditMenu() {
+        guard bubble_focused() != 0 else { return }
+        var start: UInt32 = 0
+        var end: UInt32 = 0
+        var markStart: UInt32 = 0
+        var markEnd: UInt32 = 0
+        _ = bubble_selection(&start, &end, &markStart, &markEnd)
+        guard start != end else { return }
+        var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
+        _ = bubble_selection_rect(0, &x, &y, &w, &h)
+        _ = becomeFirstResponder()
+        UIMenuController.shared.showMenu(
+            from: self,
+            rect: CGRect(
+                x: CGFloat(x) + safeAreaInsets.left,
+                y: CGFloat(y) + safeAreaInsets.top,
+                width: max(1, CGFloat(w)),
+                height: max(1, CGFloat(h))
+            )
+        )
+    }
+
+    private func runEditMenu(_ action: UInt32) {
+        var clip = ""
+        if action == 2 {
+            clip = UIPasteboard.general.string ?? ""
+        }
+        let bytes = Array(clip.utf8)
+        var out = [CChar](repeating: 0, count: 65536)
+        let changed = bytes.withUnsafeBufferPointer { buffer in
+            bubble_edit_menu(action, buffer.baseAddress, UInt32(bytes.count), &out, UInt32(out.count))
+        }
+        if changed >= 0 && (action == 0 || action == 1) {
+            UIPasteboard.general.string = String(decoding: out.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        }
+        UIMenuController.shared.hideMenu()
+        refresh()
+        reloadInputViews()
+    }
+
+    override func cut(_ sender: Any?) { runEditMenu(0) }
+    override func copy(_ sender: Any?) { runEditMenu(1) }
+    override func paste(_ sender: Any?) { runEditMenu(2) }
+    override func selectAll(_ sender: Any?) { runEditMenu(3) }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if bubble_focused() != 0 {
+            if action == #selector(cut(_:)) || action == #selector(copy(_:)) ||
+                action == #selector(paste(_:)) || action == #selector(selectAll(_:)) {
+                return true
+            }
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    @objc func tabForward() {
+        let handled = bubble_key(0, CACurrentMediaTime() * 1000)
+        if handled > 0 { afterNavigationKey() }
+    }
+
+    @objc func tabBackward() {
+        let handled = bubble_key(1, CACurrentMediaTime() * 1000)
+        if handled > 0 { afterNavigationKey() }
+    }
+
+    @objc func escapeKey() {
+        let handled = bubble_key(4, CACurrentMediaTime() * 1000)
+        if handled > 0 { afterNavigationKey() }
+    }
+
+    private func afterNavigationKey() {
+        refresh()
+        if bubble_focused() != 0 {
+            _ = becomeFirstResponder()
+            reloadInputViews()
+        } else {
+            resignFirstResponder()
+        }
+    }
+}
+
+final class BubbleA11yElement: UIAccessibilityElement {
+    let handle: UInt32
+    weak var view: BubbleView?
+
+    init(accessibilityContainer: Any, handle: UInt32, view: BubbleView) {
+        self.handle = handle
+        self.view = view
+        super.init(accessibilityContainer: accessibilityContainer)
+    }
+
+    override func accessibilityActivate() -> Bool {
+        bubble_a11y_action(handle, 1, nil, 0) == 0
+    }
+
+    override func accessibilityElementDidBecomeFocused() {
+        _ = bubble_a11y_action(handle, 0, nil, 0)
     }
 }
 
@@ -608,6 +818,9 @@ extension BubbleView: UITextInput {
         [
             UIKeyCommand(input: "z", modifierFlags: .command, action: #selector(undoEditing)),
             UIKeyCommand(input: "z", modifierFlags: [.command, .shift], action: #selector(redoEditing)),
+            UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(tabForward)),
+            UIKeyCommand(input: "\t", modifierFlags: .shift, action: #selector(tabBackward)),
+            UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeKey)),
         ]
     }
 

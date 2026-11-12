@@ -24,7 +24,7 @@ cargo run -q -p bubble-eval -- editing-ios
 | 目标 | 环境 | 结果 |
 |---|---|---|
 | Rust 核心/协议 | `cargo test --workspace` | 通过 |
-| Web | Node `examples/web/ime.test.mjs` | 4/4 通过 |
+| Web | Node `examples/web/ime.test.mjs` | 3/3 通过（菜单行为已迁到核心） |
 | Android | `sdk_phone64_arm64`，Android 16（SDK 36），Fcitx5 `0.1.3-0-g048f581c` | 74 项检查通过 |
 | iOS | iPhone 18 Pro 模拟器，iOS 27.2 | 27 项检查通过 |
 

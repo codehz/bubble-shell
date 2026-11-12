@@ -103,21 +103,21 @@ Cancel   { id }
 
 - iOS：UIAccessibility container / elements；焦点与激活走语义树。
 - Android：AccessibilityNodeProvider / ExploreByTouchHelper；虚拟节点树。
-- Web：与画布同步的透明 ARIA DOM 覆盖层；Canvas 设 `aria-hidden="true"`。
+- Web：与画布同步的透明 ARIA DOM 覆盖层；Canvas 是可聚焦的 `role="application"` 键盘入口，覆盖层元素 `tabindex="-1"`，避免与 Rust 焦点顺序重复。
 
 Web 覆盖层要求：
 
-- 每个语义节点一个绝对定位元素，bounds 与绘制同步。
-- 使用 `role`、`aria-label`、`aria-valuenow`、`aria-checked`、`tabindex` 等。
-- 焦点环由 runtime 绘制；DOM 只承载语义与焦点。
+- 每个语义节点一个绝对定位元素，bounds 与绘制同步；ARIA 角色由语义 `role` 映射。
+- 使用 `aria-label`、`aria-checked`、`aria-selected`、`aria-expanded`、`aria-disabled`、`aria-hidden`、`tabindex`。
+- 焦点环由核心绘制；键盘 Tab 顺序由 Rust 焦点树决定，不依赖 DOM 原生 Tab。
 - `aria-live` 用于 Toast/状态更新；原生端用 announcement API。
 
 焦点与键盘：
 
-- Rust 维护焦点树与 tab 顺序。
-- Tab/Shift-Tab、Enter/Space、Esc、方向键在 UI 线程处理。
-- 读屏 action（activate、scroll、setValue、increment/decrement）路由到 Rust/脚本。
-- 弹层/模态需要焦点陷阱与背景 `aria-hidden`。
+- Rust 维护焦点树与 tab 顺序；`focusable`、交互 `role` 和 `TextField` 参与 Tab，`hidden`/`disabled` 节点跳过。
+- Tab/Shift-Tab、Enter/Space、Esc、Left/Right/Home/End 在 UI 线程处理；Enter/Space 激活目标上的 `TapGesture`，Esc 清除焦点。
+- 读屏 action（`focus`、`activate`、`setValue`）经 `bubble_a11y_action` / wasm `a11y_action` 路由到 Rust。`scroll` 由平台按语义边界调用滚动链。
+- `modal` 容器把 Tab 顺序限制在子树内，并把背景语义标记为 hidden；Esc 退出当前焦点。
 
 ## 5. 文本输入与 IME
 
@@ -134,9 +134,9 @@ EditSession {
 
 | 平台 | 代理 | 当前接入 |
 |---|---|---|
-| iOS | `UIView` 实现 `UITextInput` / `UIKeyInput` | 光标、选区矩形、标记文本；`UITextInteraction` 手柄与系统编辑菜单未接 |
-| Android | `InputConnection`（自定义 View） | `CursorAnchorInfo`、IME 组合与程序化选区；自绘手柄/菜单未接 |
-| Web | 隐藏 `textarea`，定位到光标 | 自绘选区与菜单；composition 事件 |
+| iOS | `UIView` 实现 `UITextInput` / `UIKeyInput` | 光标、选区矩形、标记文本；自绘选区手柄与拖动、`UIMenuController` 编辑菜单、`UIAccessibilityElement` 语义树、Tab/Esc 硬件键 |
+| Android | `InputConnection`（自定义 View） | `CursorAnchorInfo`、IME 组合与程序化选区；自绘手柄与拖动、`AccessibilityNodeProvider` 虚拟语义树、硬件 Tab/Esc |
+| Web | 隐藏 `textarea`，定位到光标 | 自绘选区/手柄与拖动、核心菜单、透明 ARIA 覆盖层、canvas 键盘事件 |
 
 数据流：
 
@@ -150,7 +150,7 @@ EditSession {
 
 测试入口按职责拆分：`examples/build-fixtures.sh` 编译 `examples/app/fixtures/*.tsx` 并生成 `examples/web/fixtures/<name>.{js,json}`；Web 用 `?fixture=counter|editing|gestures` 选择，Android 用 `bubble_fixture` intent extra，iOS 用 `BUBBLE_FIXTURE` 环境变量。原生桥只实现一次，设备测试只选择对应 bundle，不复制入口。
 
-当前接入：Web 隐藏 `textarea` 把 `beforeinput` / composition 映射为事务命令（commit/compose/delete/replace/select/undo/redo，`examples/web/ime.js`），宿主按快照的 session 提交并回读选区同步代理，含 `historyUndo` / `historyRedo`。在字段上按下并拖动会改选区，不再交给手势；抬起不把插入符折回落点。右键菜单提供剪切、复制、粘贴和全选；密码字段不复制。iOS `UITextInput` 的 `insertText` / `deleteBackward` / `replace` / `setMarkedText` / `unmarkText` 通过 `bubble_edit_snapshot` 读取 session，再走 commit/compose/replace/select/batch，标记文本内部选区不再固定到末尾。Android `InputConnection` 绑定创建时的 `EditSession`，每次读写校验 session；`commitText` / `setComposingText` 走范围事务并应用 `newCursorPosition`，支持内部组合选区、`setComposingRegion`、UTF-16 与代码点两种 `deleteSurroundingText`、嵌套 batch edit、`getTextBefore/After`、`getSelectedText`、`getExtractedText` 和 `CursorAnchorInfo`。连接关闭或字段切换后旧 session 写入被拒绝，Kotlin 不再维护第二份 composition 状态。iOS `UITextInput` 覆盖插入、退格、UTF-16 选区、标记文本（`setMarkedText` / `unmarkText`）和选区矩形；⌘Z / ⇧⌘Z 走同一撤销栈。标记文本内部的选中范围仍固定在组合末尾。点按 `focus_at` 聚焦并把插入符落到最近的 UTF-16 边界。聚焦字段在 layout 后绘制选区与 1px 光标。撤销按字段保留最近 100 步；脚本 `SetEditingValue` 成功后清空该字段的撤销栈。`field_flags` 的 bit0 多行、bit1 密码，bits 8..15 为键盘种类：1 number、2 email、3 url、4 phone。bits 16..23 为 `autofill`：1 username、2 password、3 newPassword、4 email、5 phone、6 oneTimeCode。
+当前接入：Web 隐藏 `textarea` 把 `beforeinput` / composition 映射为事务命令（commit/compose/delete/replace/select/undo/redo，`examples/web/ime.js`），宿主按快照的 session 提交并回读选区同步代理，含 `historyUndo` / `historyRedo`。在字段上按下并拖动会改选区，不再交给手势；抬起不把插入符折回落点。选区手柄由核心给出几何并由宿主绘制；拖动手柄保持另一端锚点。右键菜单调用核心 `edit_menu` 执行剪切、复制、粘贴和全选，密码字段不复制。iOS `UITextInput` 的 `insertText` / `deleteBackward` / `replace` / `setMarkedText` / `unmarkText` 通过 `bubble_edit_snapshot` 读取 session，再走 commit/compose/replace/select/batch，标记文本内部选区不再固定到末尾。Android `InputConnection` 绑定创建时的 `EditSession`，每次读写校验 session；`commitText` / `setComposingText` 走范围事务并应用 `newCursorPosition`，支持内部组合选区、`setComposingRegion`、UTF-16 与代码点两种 `deleteSurroundingText`、嵌套 batch edit、`getTextBefore/After`、`getSelectedText`、`getExtractedText` 和 `CursorAnchorInfo`。连接关闭或字段切换后旧 session 写入被拒绝，Kotlin 不再维护第二份 composition 状态。iOS `UITextInput` 覆盖插入、退格、UTF-16 选区、标记文本（`setMarkedText` / `unmarkText`）和选区矩形；⌘Z / ⇧⌘Z 走同一撤销栈。标记文本内部的选中范围仍固定在组合末尾。点按 `focus_at` 聚焦并把插入符落到最近的 UTF-16 边界。聚焦字段在 layout 后绘制选区与 1px 光标。撤销按字段保留最近 100 步；脚本 `SetEditingValue` 成功后清空该字段的撤销栈。`field_flags` 的 bit0 多行、bit1 密码，bits 8..15 为键盘种类：1 number、2 email、3 url、4 phone。bits 16..23 为 `autofill`：1 username、2 password、3 newPassword、4 email、5 phone、6 oneTimeCode。
 
 Web 宿主从 `runtime.js` 具名导入 `setApi`、`dispatchGestureEvents` 和 `dispatchEditEvents`；编辑事件由 `dispatchEditEvents` 解码并调用字段的 `onChange`。隐藏 `textarea` 通过 `inputMode` 与 `autocomplete` 配置键盘和自动填充，不写入只读的 `type` 属性；密码遮罩由核心绘制。
 
@@ -164,8 +164,8 @@ Web 宿主从 `runtime.js` 具名导入 `setApi`、`dispatchGestureEvents` 和 `
 | 多行回车 | 去掉 `\r`，保留 `\n` | 同核心 | 同核心 | 同核心 |
 | composition | 独立组合区；未 `cancel` 时忽略脚本写入 | `composition*` 事件；`insertCompositionText` 丢弃 | session 内组合区；`setComposingText` / `setComposingRegion` / 内部选区 | `setMarkedText` / `unmarkText`；标记文本内部选区可独立设置 |
 | 撤销 | 每字段 100 步；脚本值清空 | `historyUndo` / `historyRedo` | 未接按键 | ⌘Z / ⇧⌘Z |
-| 拖动选区 | `SetSelection` | 字段上的拖动不交给手势 | `InputConnection.setSelection`；触摸拖动未接 | `UITextInput` 选区矩形；未接 `UITextInteraction` 手柄 |
-| 菜单 | 无 | 自绘剪切/复制/粘贴/全选；密码不复制 | 系统菜单，依赖 IME | 系统编辑菜单未接 |
+| 拖动选区 | `SetSelection`；选区手柄几何 | 字段拖动与手柄拖动 | 字段拖动与手柄拖动 | 字段拖动与手柄拖动 |
+| 菜单 | `edit_menu` | 核心菜单 | 系统菜单，依赖 IME | `UIMenuController` 标准编辑动作 |
 | 光标位置 | layout 后的 `caret_box` | 隐藏 `textarea` 贴到光标 | `CursorAnchorInfo` | `caretRect(for:)` |
 | autofill | `field_flags` bits 16..23 | `autocomplete` | autofill hints | `textContentType` |
 
@@ -178,7 +178,7 @@ cargo run -q -p bubble-eval -- editing-android
 cargo run -q -p bubble-eval -- editing-ios
 ```
 
-2026-11-12 本机结果：Rust 核心/协议通过；Web 4/4；Android（Android 16 / SDK 36，Fcitx5 `0.1.3-0-g048f581c`）74 项；iOS 27.2 模拟器 27 项。Android 覆盖 CJK 组合更新、组合内移动/删除/确认、`newCursorPosition`、嵌套 batch、周边文本、代码点删除、`CursorAnchorInfo` 和旧连接拒绝；iOS 覆盖标记文本内部选区与光标/选区几何。视觉选区手柄拖动、系统编辑菜单和实体设备差异仍属 M2 输入控件收尾。
+2026-11-12 本机结果：Rust 核心/协议通过；Web 4/4；Android（Android 16 / SDK 36，Fcitx5 `0.1.3-0-g048f581c`）74 项；iOS 27.2 模拟器 27 项。Android 覆盖 CJK 组合更新、组合内移动/删除/确认、`newCursorPosition`、嵌套 batch、周边文本、代码点删除、`CursorAnchorInfo` 和旧连接拒绝；iOS 覆盖标记文本内部选区与光标/选区几何。视觉选区手柄拖动与系统编辑菜单现已接入；实体设备、厂商键盘与读屏器实测仍属 M2 收尾。
 
 ## 6. 更新平面
 

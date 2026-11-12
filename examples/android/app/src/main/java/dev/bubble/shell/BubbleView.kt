@@ -8,12 +8,16 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.text.TextPaint
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityNodeProvider
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.CursorAnchorInfo
 import android.view.inputmethod.EditorInfo
@@ -21,8 +25,12 @@ import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.hypot
 import kotlin.math.roundToInt
+import android.os.Bundle
 import android.text.InputType
+import org.json.JSONArray
+import org.json.JSONObject
 
 class BubbleView(context: Context) : View(context) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -33,11 +41,17 @@ class BubbleView(context: Context) : View(context) {
     private var paintBytes = ByteArray(0)
     private var family: Typeface = Typeface.DEFAULT
     private val activePointers = LinkedHashSet<Int>()
+    private var semanticNodes: Map<Int, JSONObject> = emptyMap()
+    private var semanticChildren: Map<Int, List<Int>> = emptyMap()
+    private var semanticRoots: List<Int> = emptyList()
+    private var accessibilityFocus = 0
+    private var selectionDrag: Pair<Int, Int>? = null
 
     init {
         setBackgroundColor(Color.BLACK)
         isFocusable = true
         isFocusableInTouchMode = true
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
         setOnApplyWindowInsetsListener { _, insets -> onApplyWindowInsets(insets) }
     }
 
@@ -52,7 +66,219 @@ class BubbleView(context: Context) : View(context) {
         BubbleNative.tick(SystemClock.uptimeMillis().toDouble())
         val size = contentSize()
         paintBytes = BubbleNative.frame(size[0], size[1])
+        updateSemantics()
         invalidate()
+    }
+
+    private fun updateSemantics() {
+        val raw = BubbleNative.semantics()
+        val nodes = LinkedHashMap<Int, JSONObject>()
+        val children = HashMap<Int, MutableList<Int>>()
+        val roots = mutableListOf<Int>()
+        try {
+            val array = JSONObject(raw).optJSONArray("nodes") ?: JSONArray()
+            for (index in 0 until array.length()) {
+                val node = array.getJSONObject(index)
+                nodes[node.getInt("handle")] = node
+            }
+            for ((handle, node) in nodes) {
+                val parent = node.optInt("parent", 0)
+                if (parent != 0 && nodes.containsKey(parent)) {
+                    children.getOrPut(parent) { mutableListOf() }.add(handle)
+                } else {
+                    roots.add(handle)
+                }
+            }
+        } catch (_: Exception) {
+            nodes.clear()
+        }
+        semanticNodes = nodes
+        semanticChildren = children
+        semanticRoots = roots
+        if (accessibilityFocus != 0 && !nodes.containsKey(accessibilityFocus)) {
+            accessibilityFocus = 0
+        }
+    }
+
+    private fun screenRect(node: JSONObject): Rect {
+        val density = resources.displayMetrics.density
+        val location = IntArray(2)
+        getLocationOnScreen(location)
+        val bounds = node.optJSONArray("bounds") ?: JSONArray()
+        val x = bounds.optDouble(0, 0.0).toFloat()
+        val y = bounds.optDouble(1, 0.0).toFloat()
+        val w = bounds.optDouble(2, 0.0).toFloat()
+        val h = bounds.optDouble(3, 0.0).toFloat()
+        return Rect(
+            location[0] + paddingLeft + (x * density).roundToInt(),
+            location[1] + paddingTop + (y * density).roundToInt(),
+            location[0] + paddingLeft + ((x + w) * density).roundToInt(),
+            location[1] + paddingTop + ((y + h) * density).roundToInt(),
+        )
+    }
+
+    override fun getAccessibilityNodeProvider(): AccessibilityNodeProvider = semanticProvider
+
+    private val semanticProvider = object : AccessibilityNodeProvider() {
+        override fun createAccessibilityNodeInfo(virtualViewId: Int): AccessibilityNodeInfo? {
+            if (virtualViewId == HOST_VIEW_ID) {
+                val info = AccessibilityNodeInfo.obtain(this@BubbleView)
+                info.packageName = context.packageName
+                info.className = "android.view.View"
+                info.isEnabled = true
+                info.isFocusable = true
+                val location = IntArray(2)
+                getLocationOnScreen(location)
+                info.setBoundsInScreen(
+                    Rect(
+                        location[0] + paddingLeft,
+                        location[1] + paddingTop,
+                        location[0] + width - paddingRight,
+                        location[1] + height - paddingBottom,
+                    ),
+                )
+                for (handle in semanticRoots) {
+                    info.addChild(this@BubbleView, handle)
+                }
+                return info
+            }
+            val node = semanticNodes[virtualViewId] ?: return null
+            val editable = node.optBoolean("editable")
+            val hidden = node.optBoolean("hidden")
+            val actions = node.optInt("actions")
+            val info = AccessibilityNodeInfo.obtain()
+            info.setSource(this@BubbleView, virtualViewId)
+            info.packageName = context.packageName
+            info.className = if (editable) "android.widget.EditText" else "android.view.View"
+            info.setParent(this@BubbleView, node.optInt("parent", 0).takeIf { it != 0 } ?: HOST_VIEW_ID)
+            for (child in semanticChildren[virtualViewId].orEmpty()) {
+                info.addChild(this@BubbleView, child)
+            }
+            val label = node.optString("label")
+            val value = node.optString("value")
+            val role = node.optString("role")
+            if (role == "text") info.text = label else if (editable) info.text = value
+            info.contentDescription = if (editable) label else label.ifEmpty { value }
+            info.isEnabled = !node.optBoolean("disabled")
+            info.isVisibleToUser = !hidden
+            info.isFocusable = node.optBoolean("focusable") || editable
+            info.isFocused = node.optBoolean("focused")
+            info.isAccessibilityFocused = accessibilityFocus == virtualViewId
+            info.isClickable = actions and 2 != 0
+            info.isEditable = editable
+            info.isScrollable = node.optBoolean("scrollable")
+            info.isSelected = node.optBoolean("selected")
+            if (node.has("checked")) info.isChecked = node.optBoolean("checked")
+            info.setBoundsInScreen(screenRect(node))
+            if (actions and 1 != 0) info.addAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            if (actions and 2 != 0) info.addAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (editable) info.addAction(AccessibilityNodeInfo.ACTION_SET_TEXT)
+            if (info.isScrollable) {
+                info.addAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                info.addAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+            }
+            return info
+        }
+
+        override fun performAction(
+            virtualViewId: Int,
+            action: Int,
+            arguments: Bundle?,
+        ): Boolean {
+            if (virtualViewId == HOST_VIEW_ID) return false
+            val node = semanticNodes[virtualViewId] ?: return false
+            when (action) {
+                AccessibilityNodeInfo.ACTION_CLICK -> {
+                    BubbleNative.a11yAction(virtualViewId, 1, "")
+                    afterA11yAction()
+                    return true
+                }
+                AccessibilityNodeInfo.ACTION_FOCUS -> {
+                    BubbleNative.a11yAction(virtualViewId, 0, "")
+                    afterA11yAction()
+                    return true
+                }
+                AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS -> {
+                    accessibilityFocus = virtualViewId
+                    sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED)
+                    return true
+                }
+                AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS -> {
+                    if (accessibilityFocus == virtualViewId) {
+                        accessibilityFocus = 0
+                        sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED)
+                    }
+                    return true
+                }
+                AccessibilityNodeInfo.ACTION_SET_TEXT -> {
+                    val text = arguments?.getCharSequence(
+                        AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                    )?.toString() ?: return false
+                    BubbleNative.a11yAction(virtualViewId, 2, text)
+                    afterA11yAction()
+                    return true
+                }
+                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD,
+                AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD,
+                -> {
+                    val rect = screenRect(node)
+                    val delta = if (action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) 40f else -40f
+                    val density = resources.displayMetrics.density
+                    BubbleNative.scroll(
+                        (rect.exactCenterX() - paddingLeft) / density,
+                        (rect.exactCenterY() - paddingTop) / density,
+                        0f,
+                        delta,
+                    )
+                    refresh()
+                    return true
+                }
+            }
+            return false
+        }
+    }
+
+    private fun afterA11yAction() {
+        refresh()
+        sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+    }
+
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        val action = when (keyCode) {
+            android.view.KeyEvent.KEYCODE_TAB -> if (event.isShiftPressed) 1 else 0
+            android.view.KeyEvent.KEYCODE_ENTER,
+            android.view.KeyEvent.KEYCODE_DPAD_CENTER,
+            -> 2
+            android.view.KeyEvent.KEYCODE_SPACE -> 3
+            android.view.KeyEvent.KEYCODE_ESCAPE -> 4
+            android.view.KeyEvent.KEYCODE_DPAD_LEFT -> 5
+            android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> 6
+            android.view.KeyEvent.KEYCODE_MOVE_HOME -> 7
+            android.view.KeyEvent.KEYCODE_MOVE_END -> 8
+            else -> return super.onKeyDown(keyCode, event)
+        }
+        val handled = BubbleNative.key(action, SystemClock.uptimeMillis().toDouble())
+        if (handled > 0) {
+            afterKey()
+            return true
+        }
+        if (handled < 0) return true
+        return super.onKeyDown(keyCode, event)
+    }
+
+    private fun afterKey() {
+        refresh()
+        val handle = BubbleNative.focused()
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        if (handle == 0) {
+            imm.hideSoftInputFromWindow(windowToken, 0)
+        } else {
+            val flags = BubbleNative.fieldFlags(handle)
+            editorType = editorType(flags)
+            autofillHints = autofillHints(flags)
+            setAutofillHints(*autofillHints)
+            imm.restartInput(this)
+        }
     }
 
     override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
@@ -187,6 +413,19 @@ class BubbleView(context: Context) : View(context) {
                 }
                 else -> return
             }
+        }
+        drawSelectionHandles(canvas)
+    }
+
+    private fun drawSelectionHandles(canvas: Canvas) {
+        val handles = BubbleNative.selectionHandles()
+        if (handles.size < 8) return
+        fill.style = Paint.Style.FILL
+        fill.color = Color.argb(242, 77, 163, 255)
+        for (index in 0 until 2) {
+            val cx = handles[index * 4] + handles[index * 4 + 2] / 2
+            val cy = handles[index * 4 + 1] + handles[index * 4 + 3] / 2
+            canvas.drawCircle(cx, cy, 7f, fill)
         }
     }
 
@@ -438,6 +677,18 @@ class BubbleView(context: Context) : View(context) {
                 if (event.action != android.view.KeyEvent.ACTION_DOWN) {
                     return super.sendKeyEvent(event)
                 }
+                val keyAction = when (event.keyCode) {
+                    android.view.KeyEvent.KEYCODE_TAB -> if (event.isShiftPressed) 1 else 0
+                    android.view.KeyEvent.KEYCODE_ESCAPE -> 4
+                    else -> null
+                }
+                if (keyAction != null) {
+                    val handled = BubbleNative.key(keyAction, event.eventTime.toDouble())
+                    if (handled > 0) {
+                        afterKey()
+                        return true
+                    }
+                }
                 val snapshot = current() ?: return false
                 return when (event.keyCode) {
                     android.view.KeyEvent.KEYCODE_DEL -> {
@@ -487,9 +738,36 @@ class BubbleView(context: Context) : View(context) {
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> sendPointer(0, event.actionIndex, event)
+            MotionEvent.ACTION_DOWN -> {
+                val x = localX(event.x)
+                val y = localY(event.y)
+                val handles = BubbleNative.selectionHandles()
+                if (handles.size >= 8) {
+                    val startHit = hypot(x - (handles[0] + handles[2] / 2), y - (handles[1] + handles[3] / 2)) <= 16f
+                    val endHit = hypot(x - (handles[4] + handles[6] / 2), y - (handles[5] + handles[7] / 2)) <= 16f
+                    if (startHit || endHit) {
+                        val selection = BubbleNative.selection()
+                        if (selection.size >= 2) {
+                            val anchor = if (startHit) selection[1] else selection[0]
+                            selectionDrag = event.getPointerId(0) to anchor
+                            return true
+                        }
+                    }
+                }
+                sendPointer(0, event.actionIndex, event)
+            }
             MotionEvent.ACTION_POINTER_DOWN -> sendPointer(0, event.actionIndex, event)
             MotionEvent.ACTION_MOVE -> {
+                val drag = selectionDrag
+                if (drag != null && drag.first == event.getPointerId(0)) {
+                    val unit = BubbleNative.unitAt(localX(event.x), localY(event.y))
+                    val snapshot = editSnapshot()
+                    if (unit >= 0 && snapshot != null) {
+                        BubbleNative.editSelect(snapshot.session, drag.second, unit)
+                        refresh()
+                    }
+                    return true
+                }
                 for (index in 0 until event.pointerCount) {
                     val id = event.getPointerId(index)
                     if (!activePointers.contains(id)) continue
@@ -505,8 +783,15 @@ class BubbleView(context: Context) : View(context) {
                 }
                 refresh()
             }
-            MotionEvent.ACTION_POINTER_UP -> sendPointer(2, event.actionIndex, event)
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (selectionDrag?.first == event.getPointerId(event.actionIndex)) selectionDrag = null
+                sendPointer(2, event.actionIndex, event)
+            }
             MotionEvent.ACTION_UP -> {
+                if (selectionDrag?.first == event.getPointerId(event.actionIndex)) {
+                    selectionDrag = null
+                    return true
+                }
                 sendPointer(2, event.actionIndex, event)
                 val handle = BubbleNative.focusAt(localX(event.x), localY(event.y))
                 if (handle != 0) {
@@ -521,7 +806,10 @@ class BubbleView(context: Context) : View(context) {
                     imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
                 }
             }
-            MotionEvent.ACTION_CANCEL -> cancelActivePointers(event.eventTime.toDouble())
+            MotionEvent.ACTION_CANCEL -> {
+                selectionDrag = null
+                cancelActivePointers(event.eventTime.toDouble())
+            }
         }
         return true
     }

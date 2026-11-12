@@ -39,38 +39,6 @@ function utf16Slice(value, start, end) {
   return out;
 }
 
-/** Cut, copy, paste, and select-all for the focused field. */
-export function menuActions(field, name, clipboard = "") {
-  const [rawStart, rawEnd] = field.selection;
-  const start = Math.min(rawStart, rawEnd);
-  const end = Math.max(rawStart, rawEnd);
-  const selected = utf16Slice(field.value, start, end);
-  if (name === "copy") {
-    if (field.secure || start === end) return { clipboard: "", commands: [] };
-    return { clipboard: selected, commands: [] };
-  }
-  if (name === "cut") {
-    if (field.secure || start === end) return { clipboard: "", commands: [] };
-    return {
-      clipboard: selected,
-      commands: [{ op: "replace", start, end, text: "" }],
-    };
-  }
-  if (name === "paste") {
-    if (!clipboard) return { clipboard: "", commands: [] };
-    return { clipboard, commands: [{ op: "commit", text: clipboard }] };
-  }
-  if (name === "selectAll") {
-    const len = utf16Len(field.value);
-    if (len === 0 || (start === 0 && end === len)) return { clipboard: "", commands: [] };
-    return {
-      clipboard: "",
-      commands: [{ op: "select", anchor: 0, active: len }],
-    };
-  }
-  return null;
-}
-
 /** Selection covering the pointer-down offset through the current hit. */
 export function dragSelection(anchor, unit) {
   if (!Number.isInteger(anchor) || !Number.isInteger(unit) || anchor < 0 || unit < 0) return null;

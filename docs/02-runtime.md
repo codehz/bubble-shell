@@ -116,7 +116,7 @@ assets/
 | `SetEditingValue` | handle, epoch, value, selection | 受控文本 |
 | `SetAsset` | handle, contentHash | 预留；当前 `Image` 通过 `SetProp src` 交给宿主解析 |
 
-当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`、`Focus`、`SetEditingValue`，以及手势声明 op。`TextField`（kind 4）的编辑状态在 UI 线程，由 `EditSession` 持有 UTF-16 文档位置、方向性选区、独立组合区、`revision` 与撤销历史；`BSED` v2 每批向脚本投递有序 delta 和最终快照。iOS `UITextInput`、Android `InputConnection`、Web 隐藏 textarea 已接入文本编辑；无障碍桥尚未接入。其余 op（含 `InsertNode`、动画、语义）随后续里程碑。
+当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`、`Focus`、`SetEditingValue`，以及手势声明 op。`TextField`（kind 4）的编辑状态在 UI 线程，由 `EditSession` 持有 UTF-16 文档位置、方向性选区、独立组合区、`revision` 与撤销历史；`BSED` v2 每批向脚本投递有序 delta 和最终快照。iOS `UITextInput`、Android `InputConnection`、Web 隐藏 textarea 已接入文本编辑。语义树由节点属性派生并经 `bubble_semantics` / wasm `semantics` 输出 JSON；iOS `UIAccessibility`、Android `AccessibilityNodeProvider` 与 Web ARIA 覆盖层读取同一快照。其余 op（含 `InsertNode`、动画、显式 `SetSemantics`）随后续里程碑。
 
 节点描述为 `BNOD` v2：固定字段后跟 `u32` 长度的 TLV 扩展块，新增字段不移动既有偏移。`Spawn` 载荷复用同一 v2 body；`BSOP` 也是 v2。滚动描述符的单个标志字节是位掩码：bit 0 为纵向 `overflow="scroll"`，bit 1 为横向，其余位保留且解码时拒绝。
 
@@ -124,7 +124,8 @@ assets/
 
 - 手势是虚拟子节点：`TapGesture`、`DoubleTapGesture`、`LongPressGesture`、`PanGesture`、`TransformGesture`。没有 `View onPress`。事件名为 `onTap` / `onTapStart` / `onTapEnd` / `onTapCancel`、`onDoubleTap*`、`onLongPress` / `onLongPressEnd` / `onLongPressCancel`、`onPanStart` / `onPanUpdate` / `onPanEnd` / `onPanCancel`、`onTransformStart` / `onTransformUpdate` / `onTransformEnd` / `onTransformCancel`。Transform 用 `mode`（字符串或字符串数组：`pan` / `pinch` / `rotate`）。`direction` 是方向字符串数组。`captureAxis="none"|"x"|"y"|"both"` 把该轴滚动让给这条手势。
 - `SPAWN_PROPS`：`overflow`、`overflowX`、`overflowY`、`fontSize`、`radius`、`opacity`、`width`、`height`、`flexGrow`、`flexShrink`、`flexDirection`、`padding`。
-- `DEFERRED_PROPS`：`backgroundColor`、`color`、`lineHeight`、`textAlign`、`fontWeight`、`margin`、`gap`、`alignItems`、`justifyContent`、`position`、`inset`、`src`、`fit`、`overscrollX`、`overscrollY`。
+- `DEFERRED_PROPS`：`backgroundColor`、`color`、`lineHeight`、`textAlign`、`fontWeight`、`margin`、`gap`、`alignItems`、`justifyContent`、`position`、`inset`、`src`、`fit`、`overscrollX`、`overscrollY`、`multiline`、`secure`、`maxLength`、`keyboard`、`autofill`、`role`、`label`、`disabled`、`hidden`、`focusable`、`modal`、`checked`、`selected`、`expanded`。
+- 无障碍属性：`role`（`button`、`link`、`textbox`、`checkbox`、`heading`、`dialog` 等）、`label`、`disabled`、`hidden`（仅语义隐藏）、`focusable`、`modal`（焦点陷阱）、`checked`、`selected`、`expanded`。`Text`、`Image`、`TextField` 分别派生 text/image/textbox 角色；`TextField` 的语义值在 `secure` 时为空。
 
 手势事件以 `BSGE` v1 传输，start/update/end/cancel 按序投递。内部 slot 0 是声明销毁确认：排在该声明的终结事件之后，不调用应用回调；JS 收到确认后才释放 handler，因此在事件回调中销毁声明也能收到 cancel。胜出的手势只产生一次 end 或 cancel，双指中任一配对触点离开后，剩余触点不恢复单指识别。
 

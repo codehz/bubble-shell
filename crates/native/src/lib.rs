@@ -16,8 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use bubble_core::{
-    decode_layout, encode_edit_events, encode_events, encode_paint, wrapping_layout, EditCommand,
-    EditEvent, GestureEvent, LayoutRequest, LayoutSnapshot, PointerAction, PointerInput, Shell,
+    decode_layout, encode_edit_events, encode_events, encode_paint, wrapping_layout, A11yAction,
+    EditCommand, EditEvent, EditMenuAction, GestureEvent, Key, LayoutRequest, LayoutSnapshot,
+    PointerAction, PointerInput, Shell,
 };
 
 use script::Cmd;
@@ -37,18 +38,8 @@ struct HostFns {
 unsafe impl Send for HostFns {}
 unsafe impl Sync for HostFns {}
 
-type MeasureFn = extern "C" fn(
-    *mut c_void,
-    *const u8,
-    u32,
-    f32,
-    f32,
-    u16,
-    f32,
-    i32,
-    *mut f32,
-    *mut f32,
-);
+type MeasureFn =
+    extern "C" fn(*mut c_void, *const u8, u32, f32, f32, u16, f32, i32, *mut f32, *mut f32);
 
 type LayoutFn = extern "C" fn(
     *mut c_void,
@@ -231,7 +222,11 @@ pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
             pending: Mutex::new(VecDeque::new()),
             reset: AtomicBool::new(false),
             viewport: Mutex::new((0.0, 0.0)),
-            host: HostFns { measure, layout, ctx },
+            host: HostFns {
+                measure,
+                layout,
+                ctx,
+            },
             last_error: Mutex::new(String::new()),
             paint: Mutex::new(Vec::new()),
             status: Mutex::new("created".into()),
@@ -336,9 +331,11 @@ pub extern "C" fn bubble_frame(
             .map_err(|_| "tree lock poisoned".to_string())?;
         shell.set_viewport(width, height);
         let host = &engine.shared.host;
-        shell.compute_layout(&mut |text, font_size, line_height, font_weight, max_width| {
-            host_measure(host, text, font_size, line_height, font_weight, max_width)
-        })?;
+        shell.compute_layout(
+            &mut |text, font_size, line_height, font_weight, max_width| {
+                host_measure(host, text, font_size, line_height, font_weight, max_width)
+            },
+        )?;
         shell.refresh_caret(&mut |req| field_layout(host, req))?;
         let bytes = encode_paint(&shell.paint());
         drop(shell);
@@ -426,13 +423,7 @@ pub extern "C" fn bubble_tick(time_ms: f64) -> i32 {
 /// 1 inserts UTF-8 text. 2 backspace. 3 delete forward. 4 sets the UTF-16
 /// selection to `a`..`b`. 5 starts composition. 6 updates it. 7 ends it.
 #[no_mangle]
-pub extern "C" fn bubble_edit(
-    action: u32,
-    text: *const u8,
-    text_len: u32,
-    a: u32,
-    b: u32,
-) -> i32 {
+pub extern "C" fn bubble_edit(action: u32, text: *const u8, text_len: u32, a: u32, b: u32) -> i32 {
     let result = catch(|| {
         let engine = engine()?;
         drain_pending(&engine.shared)?;
@@ -611,13 +602,7 @@ pub extern "C" fn bubble_edit_replace(
                 .lock()
                 .map_err(|_| "tree lock poisoned".to_string())?;
             check_edit_session(&shell, session)?;
-            shell.replace_with_cursor(
-                start,
-                end,
-                &text,
-                new_cursor_position,
-                composing != 0,
-            )?;
+            shell.replace_with_cursor(start, end, &text, new_cursor_position, composing != 0)?;
             shell.take_edit_events()
         };
         send_edits(&engine.shared, events);
@@ -724,11 +709,7 @@ pub extern "C" fn bubble_edit_redo(session: u64) -> i32 {
 
 /// Delete UTF-16 units around the focused selection.
 #[no_mangle]
-pub extern "C" fn bubble_edit_delete_surrounding(
-    session: u64,
-    before: u32,
-    after: u32,
-) -> i32 {
+pub extern "C" fn bubble_edit_delete_surrounding(session: u64, before: u32, after: u32) -> i32 {
     let result = catch(|| {
         let engine = engine()?;
         drain_pending(&engine.shared)?;
@@ -866,6 +847,182 @@ pub extern "C" fn bubble_edit_batch_abort(session: u64) -> i32 {
     finish(result)
 }
 
+/// UI-thread keyboard intent. Actions: 0 Tab, 1 Shift+Tab, 2 Enter, 3 Space,
+/// 4 Escape, 5 Left, 6 Right, 7 Home, 8 End. Returns 1 handled, 0 not, -1 error.
+#[no_mangle]
+pub extern "C" fn bubble_key(action: u32, time_ms: f64) -> i32 {
+    let result = catch(|| {
+        let key = Key::parse(action).ok_or_else(|| format!("bad key action {action}"))?;
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let (handled, events) = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            let handled = shell.key(key, time_ms);
+            (handled, shell.take_gesture_events())
+        };
+        send_events(&engine.shared, events);
+        Ok(handled)
+    });
+    match result {
+        Ok(handled) => i32::from(handled),
+        Err(err) => {
+            store_error(&err);
+            -1
+        }
+    }
+}
+
+/// Accessibility semantics snapshot as UTF-8 JSON.
+#[no_mangle]
+pub extern "C" fn bubble_semantics(buf: *mut c_char, cap: u32) -> i32 {
+    copy_text(buf, cap, |engine| {
+        drain_pending(&engine.shared)?;
+        let shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        Ok(shell.semantics_json())
+    })
+}
+
+/// Route a screen-reader action. `action` 0 focus, 1 activate, 2 set value.
+#[no_mangle]
+pub extern "C" fn bubble_a11y_action(
+    handle: u32,
+    action: u32,
+    text: *const u8,
+    text_len: u32,
+) -> i32 {
+    let result = catch(|| {
+        let action =
+            A11yAction::parse(action).ok_or_else(|| format!("bad a11y action {action}"))?;
+        let action = match action {
+            A11yAction::SetValue(_) => A11yAction::SetValue(read_utf8(text, text_len)?),
+            other => other,
+        };
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            shell.a11y_action(handle, action)?;
+            (shell.take_edit_events(), shell.take_gesture_events())
+        };
+        send_edits(&engine.shared, events.0);
+        send_events(&engine.shared, events.1);
+        Ok(())
+    });
+    finish(result)
+}
+
+/// Edit menu command. `action` 0 cut, 1 copy, 2 paste, 3 select all. The
+/// clipboard text is read from `clip` and, for cut/copy, written to `out`.
+/// Returns 1 changed, 0 unchanged, -1 error.
+#[no_mangle]
+pub extern "C" fn bubble_edit_menu(
+    action: u32,
+    clip: *const u8,
+    clip_len: u32,
+    out: *mut c_char,
+    out_cap: u32,
+) -> i32 {
+    let result = catch(|| {
+        let action =
+            EditMenuAction::parse(action).ok_or_else(|| format!("bad menu action {action}"))?;
+        let clipboard = read_utf8(clip, clip_len)?;
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let (menu, events) = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            let menu = shell.edit_menu(action, &clipboard)?;
+            (menu, shell.take_edit_events())
+        };
+        send_edits(&engine.shared, events);
+        if let Some(text) = &menu.clipboard {
+            write_buf(out, out_cap, text);
+        } else {
+            write_buf(out, out_cap, "");
+        }
+        Ok(menu.changed)
+    });
+    match result {
+        Ok(changed) => i32::from(changed),
+        Err(err) => {
+            store_error(&err);
+            -1
+        }
+    }
+}
+
+/// Start and end selection handles. Returns 0 when a range is selected.
+#[no_mangle]
+pub extern "C" fn bubble_selection_handles(
+    start_x: *mut f32,
+    start_y: *mut f32,
+    start_w: *mut f32,
+    start_h: *mut f32,
+    end_x: *mut f32,
+    end_y: *mut f32,
+    end_w: *mut f32,
+    end_h: *mut f32,
+) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let mut shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        let host = &engine.shared.host;
+        shell.refresh_caret(&mut |req| field_layout(host, req))?;
+        let handles = shell.selection_handles();
+        let Some([a, b]) = handles else {
+            return Err("no selection".into());
+        };
+        unsafe {
+            if !start_x.is_null() {
+                *start_x = a.0;
+            }
+            if !start_y.is_null() {
+                *start_y = a.1;
+            }
+            if !start_w.is_null() {
+                *start_w = a.2;
+            }
+            if !start_h.is_null() {
+                *start_h = a.3;
+            }
+            if !end_x.is_null() {
+                *end_x = b.0;
+            }
+            if !end_y.is_null() {
+                *end_y = b.1;
+            }
+            if !end_w.is_null() {
+                *end_w = b.2;
+            }
+            if !end_h.is_null() {
+                *end_h = b.3;
+            }
+        }
+        Ok(())
+    });
+    finish(result)
+}
+
 /// Deepest text field under the point, or `0`.
 #[no_mangle]
 pub extern "C" fn bubble_field_at(x: f32, y: f32) -> u32 {
@@ -907,12 +1064,7 @@ pub extern "C" fn bubble_focus_at(x: f32, y: f32) -> u32 {
 
 /// Focused caret: x, y, width, height. Returns 0 when a field is focused.
 #[no_mangle]
-pub extern "C" fn bubble_caret(
-    x: *mut f32,
-    y: *mut f32,
-    w: *mut f32,
-    h: *mut f32,
-) -> i32 {
+pub extern "C" fn bubble_caret(x: *mut f32, y: *mut f32, w: *mut f32, h: *mut f32) -> i32 {
     let result = catch(|| {
         let engine = engine()?;
         drain_pending(&engine.shared)?;
@@ -1045,7 +1197,9 @@ fn host_measure(
 }
 fn field_layout(host: &HostFns, req: &LayoutRequest<'_>) -> Result<LayoutSnapshot, String> {
     if let Some(layout) = host.layout {
-        let mut cap = (req.text.len() as u32).saturating_mul(64).saturating_add(4096);
+        let mut cap = (req.text.len() as u32)
+            .saturating_mul(64)
+            .saturating_add(4096);
         for _ in 0..2 {
             let mut buf = vec![0u8; cap as usize];
             let n = layout(
@@ -1078,10 +1232,17 @@ fn field_layout(host: &HostFns, req: &LayoutRequest<'_>) -> Result<LayoutSnapsho
         return snapshot;
     }
     Ok(wrapping_layout(req, |line| {
-        host_measure(host, line, req.key.font_size, req.key.line_height, req.key.font_weight, None).0
+        host_measure(
+            host,
+            line,
+            req.key.font_size,
+            req.key.line_height,
+            req.key.font_weight,
+            None,
+        )
+        .0
     }))
 }
-
 
 #[no_mangle]
 pub extern "C" fn bubble_unit_at(x: f32, y: f32, unit: *mut u32) -> i32 {
@@ -1094,8 +1255,7 @@ pub extern "C" fn bubble_unit_at(x: f32, y: f32, unit: *mut u32) -> i32 {
             .lock()
             .map_err(|_| "tree lock poisoned".to_string())?;
         let host = &engine.shared.host;
-        let Some(offset) = shell.unit_at_with(x, y, &mut |req| field_layout(host, req))?
-        else {
+        let Some(offset) = shell.unit_at_with(x, y, &mut |req| field_layout(host, req))? else {
             return Err("no focused field".into());
         };
         if !unit.is_null() {
@@ -1107,7 +1267,13 @@ pub extern "C" fn bubble_unit_at(x: f32, y: f32, unit: *mut u32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_caret_at(unit: u32, x: *mut f32, y: *mut f32, w: *mut f32, h: *mut f32) -> i32 {
+pub extern "C" fn bubble_caret_at(
+    unit: u32,
+    x: *mut f32,
+    y: *mut f32,
+    w: *mut f32,
+    h: *mut f32,
+) -> i32 {
     let result = catch(|| {
         let engine = engine()?;
         drain_pending(&engine.shared)?;
@@ -1117,7 +1283,8 @@ pub extern "C" fn bubble_caret_at(unit: u32, x: *mut f32, y: *mut f32, w: *mut f
             .lock()
             .map_err(|_| "tree lock poisoned".to_string())?;
         let host = &engine.shared.host;
-        let Some((cx, cy, cw, ch)) = shell.caret_rect_at_with(unit, &mut |req| field_layout(host, req))?
+        let Some((cx, cy, cw, ch)) =
+            shell.caret_rect_at_with(unit, &mut |req| field_layout(host, req))?
         else {
             return Err("no focused field".into());
         };
@@ -1865,7 +2032,9 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editDeleteSurroundingCodePoints<'a>(
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editDeleteSurroundingCodePoints<
+        'a,
+    >(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
         session: jlong,
@@ -1908,6 +2077,21 @@ mod android {
         active: jint,
     ) -> jint {
         super::bubble_edit_select(session as u64, anchor as u32, active as u32)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_unitAt<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        x: jfloat,
+        y: jfloat,
+    ) -> jint {
+        let mut unit = u32::MAX;
+        if super::bubble_unit_at(x, y, &mut unit) == 0 {
+            unit as jint
+        } else {
+            -1
+        }
     }
 
     #[no_mangle]
@@ -2003,6 +2187,100 @@ mod android {
     }
 
     #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_key<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        action: jint,
+        time_ms: jni::sys::jdouble,
+    ) -> jint {
+        super::bubble_key(action as u32, time_ms)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_semantics<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+    ) -> JString<'a> {
+        let mut buf = vec![0 as std::os::raw::c_char; 262144];
+        let code = super::bubble_semantics(buf.as_mut_ptr(), buf.len() as u32);
+        let text = if code == 0 {
+            unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            String::new()
+        };
+        env.new_string(text)
+            .unwrap_or_else(|_| env.new_string("").unwrap())
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_a11yAction<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        handle: jint,
+        action: jint,
+        text: JString<'a>,
+    ) -> jint {
+        let Ok(text) = env.get_string(&text) else {
+            return 1;
+        };
+        let bytes = text.to_string_lossy();
+        super::bubble_a11y_action(
+            handle as u32,
+            action as u32,
+            bytes.as_ptr(),
+            bytes.len() as u32,
+        )
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editMenu<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        action: jint,
+        clip: JString<'a>,
+    ) -> JString<'a> {
+        let Ok(clip) = env.get_string(&clip) else {
+            return env.new_string("").unwrap();
+        };
+        let bytes = clip.to_string_lossy();
+        let mut out = vec![0 as std::os::raw::c_char; 65536];
+        let _ = super::bubble_edit_menu(
+            action as u32,
+            bytes.as_ptr(),
+            bytes.len() as u32,
+            out.as_mut_ptr(),
+            out.len() as u32,
+        );
+        let text = unsafe { std::ffi::CStr::from_ptr(out.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        env.new_string(text)
+            .unwrap_or_else(|_| env.new_string("").unwrap())
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_selectionHandles<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+    ) -> jni::objects::JFloatArray<'a> {
+        let (mut sx, mut sy, mut sw, mut sh) = (0.0f32, 0.0, 0.0, 0.0);
+        let (mut ex, mut ey, mut ew, mut eh) = (0.0f32, 0.0, 0.0, 0.0);
+        let array = if super::bubble_selection_handles(
+            &mut sx, &mut sy, &mut sw, &mut sh, &mut ex, &mut ey, &mut ew, &mut eh,
+        ) == 0
+        {
+            let array = env.new_float_array(8).expect("float array");
+            let _ = env.set_float_array_region(&array, 0, &[sx, sy, sw, sh, ex, ey, ew, eh]);
+            array
+        } else {
+            env.new_float_array(0).expect("float array")
+        };
+        array
+    }
+
+    #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_focused<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
@@ -2025,7 +2303,8 @@ mod android {
                 .to_string_lossy()
                 .into_owned()
         };
-        env.new_string(text).unwrap_or_else(|_| env.new_string("").unwrap())
+        env.new_string(text)
+            .unwrap_or_else(|_| env.new_string("").unwrap())
     }
 
     #[no_mangle]
@@ -2043,7 +2322,6 @@ mod android {
         );
         array
     }
-
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_caret<'a>(

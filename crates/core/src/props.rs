@@ -52,6 +52,15 @@ pub enum Prop {
     MaxLength,
     Keyboard,
     Autofill,
+    Role,
+    Label,
+    Disabled,
+    Hidden,
+    Focusable,
+    Modal,
+    Checked,
+    Selected,
+    Expanded,
 }
 
 impl Prop {
@@ -98,6 +107,15 @@ impl Prop {
             "maxLength" => Self::MaxLength,
             "keyboard" => Self::Keyboard,
             "autofill" => Self::Autofill,
+            "role" => Self::Role,
+            "label" => Self::Label,
+            "disabled" => Self::Disabled,
+            "hidden" => Self::Hidden,
+            "focusable" => Self::Focusable,
+            "modal" => Self::Modal,
+            "checked" => Self::Checked,
+            "selected" => Self::Selected,
+            "expanded" => Self::Expanded,
             _ => return None,
         })
     }
@@ -141,6 +159,15 @@ pub const DEFERRED_PROPS: &[&str] = &[
     "maxLength",
     "keyboard",
     "autofill",
+    "role",
+    "label",
+    "disabled",
+    "hidden",
+    "focusable",
+    "modal",
+    "checked",
+    "selected",
+    "expanded",
 ];
 
 pub const SET_PROPS: &[&str] = &[
@@ -185,4 +212,13 @@ pub const SET_PROPS: &[&str] = &[
     "maxLength",
     "keyboard",
     "autofill",
+    "role",
+    "label",
+    "disabled",
+    "hidden",
+    "focusable",
+    "modal",
+    "checked",
+    "selected",
+    "expanded",
 ];

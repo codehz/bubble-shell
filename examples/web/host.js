@@ -1,4 +1,4 @@
-import { commandsForDom, dragSelection, menuActions } from "./ime.js";
+import { commandsForDom, dragSelection } from "./ime.js";
 import { dispatchEditEvents, dispatchGestureEvents, setApi } from "./runtime.js";
 import { layoutSnapshot, wrapLines } from "./textlayout.js";
 
@@ -7,6 +7,187 @@ const ctx = canvas.getContext("2d");
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 const images = new Map();
+
+canvas.tabIndex = 0;
+canvas.setAttribute("role", "application");
+canvas.setAttribute("aria-label", "Bubble canvas");
+
+const a11yRoot = document.createElement("div");
+Object.assign(a11yRoot.style, {
+  position: "fixed",
+  left: "0",
+  top: "0",
+  width: "100%",
+  height: "100%",
+  pointerEvents: "none",
+  zIndex: "1",
+  overflow: "hidden",
+});
+document.body.append(a11yRoot);
+const a11yElements = new Map();
+
+const A11Y_ROLES = {
+  generic: "group",
+  text: "paragraph",
+  button: "button",
+  link: "link",
+  image: "img",
+  textbox: "textbox",
+  searchbox: "searchbox",
+  checkbox: "checkbox",
+  radio: "radio",
+  switch: "switch",
+  heading: "heading",
+  list: "list",
+  listitem: "listitem",
+  group: "group",
+  dialog: "dialog",
+  tab: "tab",
+  menuitem: "menuitem",
+  progressbar: "progressbar",
+  slider: "slider",
+};
+
+function a11yAction(handle, action, text = "") {
+  const bytes = encoder.encode(text);
+  const ptr = bytes.length ? copyBytes(bytes) : 0;
+  exports.a11y_action(handle, action, ptr, bytes.length);
+  if (bytes.length) exports.dealloc(ptr, bytes.length);
+  pumpGestures();
+  if (exports.layout() === 0) paint();
+}
+
+function syncA11y() {
+  const len = exports.semantics();
+  if (!len) return;
+  let data;
+  try {
+    data = JSON.parse(
+      decoder.decode(new Uint8Array(memory().buffer, exports.scratch_ptr(), len)),
+    );
+  } catch {
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const seen = new Set();
+  for (const node of data.nodes) {
+    seen.add(node.handle);
+    let element = a11yElements.get(node.handle);
+    if (!element) {
+      element = document.createElement("div");
+      element.dataset.handle = String(node.handle);
+      element.addEventListener("focus", () => a11yAction(node.handle, 0));
+      element.addEventListener("click", () => a11yAction(node.handle, 1));
+      a11yRoot.append(element);
+      a11yElements.set(node.handle, element);
+    }
+    const role = A11Y_ROLES[node.role] || "group";
+    if (element.getAttribute("role") !== role) element.setAttribute("role", role);
+    const [x, y, w, h] = node.bounds;
+    Object.assign(element.style, {
+      position: "absolute",
+      left: `${rect.left + x}px`,
+      top: `${rect.top + y}px`,
+      width: `${Math.max(0, w)}px`,
+      height: `${Math.max(0, h)}px`,
+      color: "transparent",
+      fontSize: "1px",
+      overflow: "hidden",
+    });
+    const label = node.role === "textbox" || node.role === "searchbox"
+      ? [node.label, node.value].filter(Boolean).join(": ")
+      : node.label || node.value;
+    if (label) element.setAttribute("aria-label", label);
+    else element.removeAttribute("aria-label");
+    element.tabIndex = -1;
+    element.setAttribute("aria-hidden", node.hidden ? "true" : "false");
+    if (node.disabled) element.setAttribute("aria-disabled", "true");
+    else element.removeAttribute("aria-disabled");
+    if (node.selected) element.setAttribute("aria-selected", "true");
+    else element.removeAttribute("aria-selected");
+    if (node.checked == null) element.removeAttribute("aria-checked");
+    else element.setAttribute("aria-checked", node.checked ? "true" : "false");
+    if (node.expanded == null) element.removeAttribute("aria-expanded");
+    else element.setAttribute("aria-expanded", node.expanded ? "true" : "false");
+    if (node.focused) element.setAttribute("data-focused", "true");
+    else element.removeAttribute("data-focused");
+    if (node.focusable) element.setAttribute("tabindex", "-1");
+  }
+  for (const [handle, element] of a11yElements) {
+    if (!seen.has(handle)) {
+      element.remove();
+      a11yElements.delete(handle);
+    }
+  }
+}
+
+function drawSelectionHandles() {
+  const len = exports.selection_handles();
+  if (len !== 32) return;
+  const view = new DataView(memory().buffer, exports.scratch_ptr(), len);
+  ctx.fillStyle = "rgba(77, 163, 255, 0.95)";
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+  ctx.lineWidth = 2;
+  for (let index = 0; index < 2; index += 1) {
+    const x = view.getFloat32(index * 16, true);
+    const y = view.getFloat32(index * 16 + 4, true);
+    const w = view.getFloat32(index * 16 + 8, true);
+    const h = view.getFloat32(index * 16 + 12, true);
+    ctx.beginPath();
+    ctx.arc(x + w / 2, y + h / 2, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+}
+
+function selectionHandleHit(x, y) {
+  const len = exports.selection_handles();
+  if (len !== 32) return null;
+  const view = new DataView(memory().buffer, exports.scratch_ptr(), len);
+  for (let index = 0; index < 2; index += 1) {
+    const cx = view.getFloat32(index * 16, true) + view.getFloat32(index * 16 + 8, true) / 2;
+    const cy = view.getFloat32(index * 16 + 4, true) + view.getFloat32(index * 16 + 12, true) / 2;
+    if (Math.hypot(x - cx, y - cy) <= 16) return index;
+  }
+  return null;
+}
+
+const KEY_ACTIONS = {
+  ArrowLeft: 5,
+  ArrowRight: 6,
+  Home: 7,
+  End: 8,
+};
+
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.target !== canvas && event.target !== ime) return;
+    let action;
+    if (event.key === "Tab") action = event.shiftKey ? 1 : 0;
+    else if (event.key === "Enter") action = 2;
+    else if (event.key === " " || event.key === "Spacebar") action = 3;
+    else if (event.key === "Escape") action = 4;
+    else action = KEY_ACTIONS[event.key];
+    if (action === undefined) return;
+    if (event.target === ime && action !== 0 && action !== 1 && action !== 4) return;
+    const handled = exports.key(action, performance.now());
+    if (handled < 0) return;
+    pumpGestures();
+    if (exports.layout() === 0) paint();
+    if (handled > 0) {
+      event.preventDefault();
+      const handle = exports.focused();
+      const flags = handle ? exports.field_flags(handle) : 0;
+      if (handle && (flags & 3) !== 3) placeCaret(handle);
+      else if (!handle) {
+        ime.blur();
+        canvas.focus({ preventScroll: true });
+      }
+    }
+  },
+  true,
+);
 
 function imageFor(src) {
   let entry = images.get(src);
@@ -362,6 +543,8 @@ function paint() {
   function readColor() {
     return { r: f32(), g: f32(), b: f32(), a: f32() };
   }
+  drawSelectionHandles();
+  syncA11y();
 }
 
 function fill(x, y, w, h, radius, color) {
@@ -449,10 +632,21 @@ let selectDrag = null;
 
 canvas.addEventListener("pointerdown", (event) => {
   event.preventDefault();
+  if (event.button !== 0) return;
   canvas.setPointerCapture(event.pointerId);
   editMenu.hidden = true;
+  editMenu.style.display = "none";
   activePointers.add(event.pointerId);
   const [x, y] = point(event);
+  if (event.button === 0 && exports.focused() && selectionHandleHit(x, y) !== null) {
+    const which = selectionHandleHit(x, y);
+    const len = exports.selection();
+    const view = new DataView(memory().buffer, exports.scratch_ptr(), len);
+    const start = view.getUint32(0, true);
+    const end = view.getUint32(4, true);
+    selectDrag = { id: event.pointerId, anchor: which === 0 ? end : start };
+    return;
+  }
   if (event.button === 0 && exports.field_at(x, y)) {
     const handle = exports.focus_at(x, y);
     let anchor = 0;
@@ -465,6 +659,7 @@ canvas.addEventListener("pointerdown", (event) => {
     return;
   }
   selectDrag = null;
+  canvas.focus({ preventScroll: true });
   sendPointer(0, event);
   startTicking();
 });
@@ -491,7 +686,9 @@ function releasePointer(action, event) {
   activePointers.delete(event.pointerId);
 }
 
-canvas.addEventListener("pointerup", (event) => releasePointer(2, event));
+canvas.addEventListener("pointerup", (event) => {
+  if (event.button === 0) releasePointer(2, event);
+});
 
 const ime = document.createElement("textarea");
 ime.setAttribute("aria-hidden", "true");
@@ -603,6 +800,7 @@ function placeCaret(handle) {
 }
 
 canvas.addEventListener("pointerup", (event) => {
+  if (event.button !== 0) return;
   if (selectDrag && selectDrag.id === event.pointerId) {
     selectDrag = null;
     const handle = exports.focused();
@@ -618,6 +816,7 @@ canvas.addEventListener("pointerup", (event) => {
 const editMenu = document.createElement("div");
 editMenu.hidden = true;
 Object.assign(editMenu.style, {
+  display: "none",
   position: "fixed",
   zIndex: "2",
   display: "flex",
@@ -649,19 +848,32 @@ function focusedField() {
 }
 
 async function runEditMenu(name) {
-  const field = focusedField();
   editMenu.hidden = true;
-  if (!field) return;
+  editMenu.style.display = "none";
+  if (!exports.focused()) return;
+  const action = { cut: 0, copy: 1, paste: 2, selectAll: 3 }[name];
+  if (action === undefined) return;
   let clip = "";
   if (name === "paste") {
     try { clip = await navigator.clipboard.readText(); } catch { clip = ""; }
   }
-  const result = menuActions(field, name, clip);
-  if (!result) return;
-  if ((name === "copy" || name === "cut") && result.clipboard) {
-    try { await navigator.clipboard.writeText(result.clipboard); } catch { return; }
+  const bytes = encoder.encode(clip);
+  const ptr = bytes.length ? copyBytes(bytes) : 0;
+  const code = exports.edit_menu(action, ptr, bytes.length);
+  if (bytes.length) exports.dealloc(ptr, bytes.length);
+  if (code < 0) return;
+  if ((name === "copy" || name === "cut") && code >= 0) {
+    const len = exports.scratch_len();
+    const text = len
+      ? decoder.decode(new Uint8Array(memory().buffer, exports.scratch_ptr(), len))
+      : "";
+    if (text) {
+      try { await navigator.clipboard.writeText(text); } catch { return; }
+    }
   }
-  if (result.commands.length) applyEditCommands(result.commands);
+  pumpGestures();
+  if (exports.layout() === 0) paint();
+  syncIme();
   ime.focus();
 }
 
@@ -669,6 +881,7 @@ canvas.addEventListener("contextmenu", (event) => {
   if (!exports.focused()) return;
   event.preventDefault();
   editMenu.hidden = false;
+  editMenu.style.display = "flex";
   editMenu.style.left = `${event.clientX}px`;
   editMenu.style.top = `${event.clientY}px`;
 });

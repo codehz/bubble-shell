@@ -15,6 +15,7 @@ function Editing() {
         backgroundColor={0xff4b5563}
         radius={6}
         padding={[8, 10, 10, 8]}
+        label="Name"
         autofill="username"
         onChange={(event) => name.update(() => event.value)}
       />
@@ -29,6 +30,7 @@ function Editing() {
         radius={6}
         padding={[8, 10, 10, 8]}
         secure
+        label="Password"
         autofill="password"
         onChange={(event) => secret.update(() => secret().length === event.value.length ? secret() : "*".repeat(event.value.length))}
       />
@@ -43,6 +45,7 @@ function Editing() {
         radius={6}
         padding={[8, 10, 10, 8]}
         multiline
+        label="Note"
         onChange={(event) => note.update(() => event.value)}
       />
     </View>

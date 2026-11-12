@@ -10,9 +10,9 @@ use std::collections::VecDeque;
 
 use bubble_core::{
     decode_layout, encode_edit_events, encode_events, encode_paint, encode_set_text,
-    validate_bundle_hashes, ComputationKind, EditCommand, EditEvent, GestureEvent, GestureKind,
-    LayoutRequest, NodeDesc, Op, PointerAction, PointerInput, Sched, Shell, Turn, Value,
-    DEFERRED_PROPS, SPAWN_PROPS,
+    validate_bundle_hashes, A11yAction, ComputationKind, EditCommand, EditEvent, EditMenuAction,
+    GestureEvent, GestureKind, Key, LayoutRequest, NodeDesc, Op, PointerAction, PointerInput,
+    Sched, Shell, Turn, Value, DEFERRED_PROPS, SPAWN_PROPS,
 };
 
 thread_local! {
@@ -75,7 +75,9 @@ fn set_error(message: String) {
 }
 
 fn wasm_layout(req: &LayoutRequest<'_>) -> Result<bubble_core::LayoutSnapshot, String> {
-    let mut cap = (req.text.len() as u32).saturating_mul(64).saturating_add(4096);
+    let mut cap = (req.text.len() as u32)
+        .saturating_mul(64)
+        .saturating_add(4096);
     for _ in 0..2 {
         let mut buf = vec![0u8; cap as usize];
         let n = unsafe {
@@ -105,7 +107,6 @@ fn wasm_layout(req: &LayoutRequest<'_>) -> Result<bubble_core::LayoutSnapshot, S
     }
     Err("host layout did not fit".into())
 }
-
 
 fn store_scratch(bytes: Vec<u8>) -> u32 {
     let len = bytes.len() as u32;
@@ -272,6 +273,141 @@ pub extern "C" fn take_gesture_events() -> u32 {
     }
 }
 
+/// UI-thread keyboard intent. Actions match the native ABI: 0 Tab,
+/// 1 Shift+Tab, 2 Enter, 3 Space, 4 Escape, 5 Left, 6 Right, 7 Home, 8 End.
+/// Returns 1 handled, 0 not, -1 error.
+#[no_mangle]
+pub extern "C" fn key(action: u32, time_ms: f64) -> i32 {
+    let Some(key) = Key::parse(action) else {
+        set_error(format!("bad key action {action}"));
+        return -1;
+    };
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            let handled = shell.key(key, time_ms);
+            collect_events(shell);
+            Ok(handled)
+        })
+    });
+    match result {
+        Ok(handled) => i32::from(handled),
+        Err(err) => {
+            set_error(err);
+            -1
+        }
+    }
+}
+
+/// Accessibility semantics snapshot as UTF-8 JSON in scratch.
+#[no_mangle]
+pub extern "C" fn semantics() -> u32 {
+    drain_pending().ok();
+    let json = with_shell(|shell| Ok(shell.semantics_json())).unwrap_or_default();
+    store_scratch(json.into_bytes())
+}
+
+/// Screen-reader action: 0 focus, 1 activate, 2 set value.
+#[no_mangle]
+pub extern "C" fn a11y_action(handle: u32, action: u32, ptr: *const u8, len: u32) -> i32 {
+    let Some(action) = A11yAction::parse(action) else {
+        set_error(format!("bad a11y action {action}"));
+        return 1;
+    };
+    let action = match action {
+        A11yAction::SetValue(_) => {
+            let text = if ptr.is_null() || len == 0 {
+                String::new()
+            } else {
+                match std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len as usize) })
+                {
+                    Ok(text) => text.to_owned(),
+                    Err(_) => {
+                        set_error("a11y value is not utf-8".into());
+                        return 1;
+                    }
+                }
+            };
+            A11yAction::SetValue(text)
+        }
+        other => other,
+    };
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            shell.a11y_action(handle, action)?;
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+/// Edit menu command: 0 cut, 1 copy, 2 paste, 3 select all. Writes any
+/// clipboard text to scratch and returns 0 unchanged, 1 changed, -1 error.
+#[no_mangle]
+pub extern "C" fn edit_menu(action: u32, ptr: *const u8, len: u32) -> i32 {
+    let Some(action) = EditMenuAction::parse(action) else {
+        set_error(format!("bad menu action {action}"));
+        return -1;
+    };
+    let clipboard = if ptr.is_null() || len == 0 {
+        String::new()
+    } else {
+        match std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len as usize) }) {
+            Ok(text) => text.to_owned(),
+            Err(_) => {
+                set_error("clipboard is not utf-8".into());
+                return -1;
+            }
+        }
+    };
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            let menu = shell.edit_menu(action, &clipboard)?;
+            collect_events(shell);
+            store_scratch(menu.clipboard.unwrap_or_default().into_bytes());
+            Ok(menu.changed)
+        })
+    });
+    match result {
+        Ok(changed) => i32::from(changed),
+        Err(err) => {
+            set_error(err);
+            -1
+        }
+    }
+}
+
+/// Start and end selection handle boxes as 8 little-endian f32 values in
+/// scratch. Returns the byte length (0 when the selection is collapsed).
+#[no_mangle]
+pub extern "C" fn selection_handles() -> u32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            let Some([a, b]) = shell.selection_handles() else {
+                return Ok(Vec::new());
+            };
+            let mut bytes = Vec::with_capacity(32);
+            for value in [a.0, a.1, a.2, a.3, b.0, b.1, b.2, b.3] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            Ok(bytes)
+        })
+    });
+    match result {
+        Ok(bytes) => store_scratch(bytes),
+        Err(err) => {
+            set_error(err);
+            0
+        }
+    }
+}
+
 /// Same action codes as `bubble_edit`.
 #[no_mangle]
 pub extern "C" fn edit(action: u32, ptr: *const u8, len: u32, a: u32, b: u32) -> i32 {
@@ -356,7 +492,10 @@ pub extern "C" fn edit_batch_end(session: u64) -> i32 {
 pub extern "C" fn edit_batch_abort(session: u64) -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            if shell.focused_state().is_ok_and(|state| state.session.get() == session) {
+            if shell
+                .focused_state()
+                .is_ok_and(|state| state.session.get() == session)
+            {
                 shell.abort_edit_batch();
             }
             collect_events(shell);
@@ -481,13 +620,7 @@ pub extern "C" fn edit_replace(
         let text = edit_text(ptr, len)?;
         with_shell(|shell| {
             wasm_session(shell, session)?;
-            shell.replace_with_cursor(
-                start,
-                end,
-                &text,
-                new_cursor_position,
-                composing != 0,
-            )?;
+            shell.replace_with_cursor(start, end, &text, new_cursor_position, composing != 0)?;
             collect_events(shell);
             Ok(())
         })
@@ -670,11 +803,8 @@ pub extern "C" fn focus_at(x: f32, y: f32) -> u32 {
 /// Nearest UTF-16 offset in the focused field. `u32::MAX` when nothing is focused.
 #[no_mangle]
 pub extern "C" fn unit_at(x: f32, y: f32) -> u32 {
-    let result = drain_pending().and_then(|()| {
-        with_shell(|shell| {
-            shell.unit_at_with(x, y, &mut wasm_layout)
-        })
-    });
+    let result = drain_pending()
+        .and_then(|()| with_shell(|shell| shell.unit_at_with(x, y, &mut wasm_layout)));
     match result {
         Ok(Some(unit)) => unit,
         _ => u32::MAX,
@@ -690,8 +820,7 @@ pub extern "C" fn caret_box() -> u32 {
         Ok(shell.caret_box())
     })
     .ok()
-    .flatten()
-    else {
+    .flatten() else {
         return store_scratch(Vec::new());
     };
     let mut bytes = Vec::with_capacity(16);
@@ -725,7 +854,12 @@ pub extern "C" fn selection() -> u32 {
         }
         let (_, state) = shell.field(handle)?;
         let (mark_start, mark_end) = state.composition.unwrap_or((0, u32::MAX));
-        Ok(Some((state.sel_start(), state.sel_end(), mark_start, mark_end)))
+        Ok(Some((
+            state.sel_start(),
+            state.sel_end(),
+            mark_start,
+            mark_end,
+        )))
     })
     .ok()
     .flatten() else {
@@ -750,7 +884,9 @@ pub extern "C" fn focused_text() -> u32 {
         shell.field(handle).map(|(value, _)| value)
     });
     match text {
-        Ok(value) if !value.is_empty() || with_shell(|shell| Ok(shell.focused())).unwrap_or(0) != 0 => {
+        Ok(value)
+            if !value.is_empty() || with_shell(|shell| Ok(shell.focused())).unwrap_or(0) != 0 =>
+        {
             store_scratch(value.into_bytes())
         }
         _ => store_scratch(Vec::new()),
@@ -1309,22 +1445,24 @@ pub extern "C" fn commit() -> u32 {
 pub extern "C" fn layout() -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            shell.compute_layout(&mut |text, font_size, line_height, font_weight, max_width| {
-                let mut out = [0f32; 2];
-                unsafe {
-                    host_measure(
-                        text.as_ptr() as u32,
-                        text.len() as u32,
-                        font_size,
-                        line_height,
-                        font_weight as u32,
-                        u32::from(max_width.is_some()),
-                        max_width.unwrap_or(0.0),
-                        out.as_mut_ptr() as u32,
-                    );
-                }
-                (out[0], out[1])
-            })?;
+            shell.compute_layout(
+                &mut |text, font_size, line_height, font_weight, max_width| {
+                    let mut out = [0f32; 2];
+                    unsafe {
+                        host_measure(
+                            text.as_ptr() as u32,
+                            text.len() as u32,
+                            font_size,
+                            line_height,
+                            font_weight as u32,
+                            u32::from(max_width.is_some()),
+                            max_width.unwrap_or(0.0),
+                            out.as_mut_ptr() as u32,
+                        );
+                    }
+                    (out[0], out[1])
+                },
+            )?;
             shell.refresh_caret(&mut wasm_layout)
         })
     });

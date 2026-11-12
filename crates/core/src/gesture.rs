@@ -403,6 +403,47 @@ impl Recognizer {
         self.decls.get(id as usize).and_then(Option::as_ref)
     }
 
+    /// Whether `target` has a tap declaration with an `onTap` handler.
+    pub fn has_tap(&self, target: u32) -> bool {
+        self.order.get(&target).is_some_and(|ids| {
+            ids.iter().any(|id| {
+                self.decl(*id).is_some_and(|decl| {
+                    decl.kind == GestureKind::Tap && decl.has_handler(SLOT_TAP)
+                })
+            })
+        })
+    }
+
+    /// Synthesize a successful tap for keyboard or screen-reader activation.
+    pub fn activate(&mut self, target: u32, x: f32, y: f32, time_ms: f64) -> bool {
+        let Some(ids) = self.order.get(&target) else {
+            return false;
+        };
+        let Some(id) = ids.iter().copied().find(|id| {
+            self.decl(*id)
+                .is_some_and(|decl| decl.kind == GestureKind::Tap && decl.has_handler(SLOT_TAP))
+        }) else {
+            return false;
+        };
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        let sequence = self.next_sequence;
+        let decls = &self.decls;
+        push_event(
+            &mut self.events,
+            decls,
+            id,
+            SLOT_TAP,
+            sequence,
+            time_ms,
+            |event| {
+                event.target = target;
+                event.x = x;
+                event.y = y;
+            },
+        );
+        true
+    }
+
     pub fn set_prop(&mut self, id: u32, key: &str, value: &Value) -> Result<(), String> {
         let decl = self
             .decls

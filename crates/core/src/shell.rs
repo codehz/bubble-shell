@@ -3,18 +3,19 @@
 use std::cell::{Cell, Ref, RefCell};
 use std::collections::{HashMap, HashSet};
 
+use crate::color::Color;
 use crate::editing::{
     display_text, utf16_len, DocRange, EditCommand, EditConfig, EditError, EditEvent, EditOp,
     EditOutcome, EditSession, FieldState, Selection, SessionId,
 };
-use crate::layout::{
-    snap_unit, wrapping_layout, LayoutKey, LayoutRequest, LayoutSnapshot,
-};
 use crate::gesture::{GestureEvent, GestureKind, PointerAction, PointerInput, Recognizer};
-use crate::color::Color;
 use crate::ir::{Kind, NodeDesc};
+use crate::layout::{snap_unit, wrapping_layout, LayoutKey, LayoutRequest, LayoutSnapshot};
 use crate::ops::{decode_ops, Op, Value};
 use crate::props::Prop;
+use crate::semantics::{
+    Role, SemanticsNode, SemanticsSnapshot, ACTION_ACTIVATE, ACTION_FOCUS, ACTION_SET_VALUE,
+};
 use taffy::prelude::*;
 use taffy::style::Overflow;
 use taffy::{compute_leaf_layout, NodeId, TaffyTree};
@@ -128,6 +129,15 @@ struct Node {
     max_length: u32,
     keyboard: String,
     autofill: String,
+    role: Option<Role>,
+    label: String,
+    disabled: bool,
+    a11y_hidden: bool,
+    focusable: bool,
+    modal: bool,
+    checked: Option<bool>,
+    selected: bool,
+    expanded: Option<bool>,
     x: f32,
     y: f32,
     w: f32,
@@ -145,6 +155,7 @@ pub struct Shell {
     recognizer: Recognizer,
     fields: HashMap<u32, EditSession>,
     focused: u32,
+    selection_handles: Option<[(f32, f32, f32, f32); 2]>,
     edit_events: Vec<EditEvent>,
     edit_conflicts: Vec<EditConflict>,
     edit_batch: Option<EditBatch>,
@@ -160,6 +171,87 @@ pub struct EditConflict {
     pub session: SessionId,
     pub revision: u64,
     pub error: EditError,
+}
+
+/// UI-thread keyboard intent. Text-producing keys stay with the host/IME;
+/// this surface covers focus traversal, activation, dismissal, and caret
+/// movement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+    Tab,
+    TabBack,
+    Enter,
+    Space,
+    Escape,
+    Left,
+    Right,
+    Home,
+    End,
+}
+
+impl Key {
+    pub fn parse(value: u32) -> Option<Self> {
+        Some(match value {
+            0 => Self::Tab,
+            1 => Self::TabBack,
+            2 => Self::Enter,
+            3 => Self::Space,
+            4 => Self::Escape,
+            5 => Self::Left,
+            6 => Self::Right,
+            7 => Self::Home,
+            8 => Self::End,
+            _ => return None,
+        })
+    }
+}
+
+/// Screen-reader action routed to one semantic node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum A11yAction {
+    Focus,
+    Activate,
+    SetValue(String),
+}
+
+impl A11yAction {
+    pub fn parse(value: u32) -> Option<Self> {
+        Some(match value {
+            0 => Self::Focus,
+            1 => Self::Activate,
+            2 => Self::SetValue(String::new()),
+            _ => return None,
+        })
+    }
+}
+
+/// Native or custom edit menu command. The host owns the clipboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditMenuAction {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+impl EditMenuAction {
+    pub fn parse(value: u32) -> Option<Self> {
+        Some(match value {
+            0 => Self::Cut,
+            1 => Self::Copy,
+            2 => Self::Paste,
+            3 => Self::SelectAll,
+            _ => return None,
+        })
+    }
+}
+
+/// Result of an edit menu command. `clipboard` is `Some` when the caller must
+/// write the returned text to the host clipboard.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MenuResult {
+    pub clipboard: Option<String>,
+    pub changed: bool,
 }
 
 struct EditBatch {
@@ -286,6 +378,15 @@ impl Shell {
                     max_length: 0,
                     keyboard: String::new(),
                     autofill: String::new(),
+                    role: None,
+                    label: String::new(),
+                    disabled: false,
+                    a11y_hidden: false,
+                    focusable: false,
+                    modal: false,
+                    checked: None,
+                    selected: false,
+                    expanded: None,
                     x: 0.0,
                     y: 0.0,
                     w: 0.0,
@@ -301,6 +402,7 @@ impl Shell {
             recognizer: Recognizer::new(),
             fields: HashMap::new(),
             focused: 0,
+            selection_handles: None,
             edit_events: Vec::new(),
             edit_conflicts: Vec::new(),
             edit_batch: None,
@@ -427,7 +529,14 @@ impl Shell {
         self.compute_layout(measure)?;
         self.refresh_caret(&mut |req| {
             Ok(wrapping_layout(req, |line| {
-                measure(line, req.key.font_size, req.key.line_height, req.key.font_weight, None).0
+                measure(
+                    line,
+                    req.key.font_size,
+                    req.key.line_height,
+                    req.key.font_weight,
+                    None,
+                )
+                .0
             }))
         })
     }
@@ -494,13 +603,8 @@ impl Shell {
                                 AvailableSpace::Definite(width) => Some(width),
                                 _ => known.width,
                             };
-                            let (width, height) = measure(
-                                text,
-                                *font_size,
-                                *line_height,
-                                *font_weight,
-                                max_width,
-                            );
+                            let (width, height) =
+                                measure(text, *font_size, *line_height, *font_weight, max_width);
                             Size {
                                 width: known.width.unwrap_or(width),
                                 height: known.height.unwrap_or(height),
@@ -615,7 +719,8 @@ impl Shell {
         self.recognizer.drain_events()
     }
 
-    /// Focus a text field. `0` blurs. Only `Kind::Field` accepts focus.
+    /// Focus a semantic node. `0` blurs. Text fields and nodes marked
+    /// `focusable` (or carrying an interactive role) accept focus.
     pub fn focus(&mut self, handle: u32) -> Result<(), String> {
         if self.focused != handle {
             self.abort_edit_batch();
@@ -625,10 +730,11 @@ impl Shell {
             self.paint_dirty.set(true);
             return Ok(());
         }
-        if self.node(handle)?.kind != Kind::Field {
-            return Err(format!("handle {handle} is not a text field"));
+        let node = self.node(handle)?;
+        if !self.is_focusable(handle) {
+            return Err(format!("handle {handle} is not focusable"));
         }
-        if !self.fields.contains_key(&handle) {
+        if node.kind == Kind::Field && !self.fields.contains_key(&handle) {
             return Err(format!("handle {handle} has no editing session"));
         }
         self.focused = handle;
@@ -638,6 +744,379 @@ impl Shell {
 
     pub fn focused(&self) -> u32 {
         self.focused
+    }
+
+    /// Whether the node participates in Tab order and screen-reader focus.
+    pub fn is_focusable(&self, handle: u32) -> bool {
+        let Ok(node) = self.node(handle) else {
+            return false;
+        };
+        node.kind == Kind::Field || node.focusable || node.role.is_some_and(Role::interactive)
+    }
+
+    /// Move focus through the current Tab order. Modal containers trap the
+    /// order to their subtree. Returns `false` when no focusable node exists.
+    pub fn focus_next(&mut self, forward: bool) -> bool {
+        let order = self.focus_order();
+        if order.is_empty() {
+            return false;
+        }
+        let current = order.iter().position(|handle| *handle == self.focused);
+        let next = match current {
+            Some(index) if forward => (index + 1) % order.len(),
+            Some(index) => (index + order.len() - 1) % order.len(),
+            None if forward => 0,
+            None => order.len() - 1,
+        };
+        self.focus(order[next]).is_ok()
+    }
+
+    /// Deepest modal container, or `0`.
+    pub fn active_modal(&self) -> u32 {
+        let mut found = 0;
+        self.walk_modal(1, &mut found);
+        found
+    }
+
+    fn walk_modal(&self, id: u32, found: &mut u32) {
+        let Ok(node) = self.node(id) else {
+            return;
+        };
+        if node.modal {
+            *found = id;
+        }
+        let children = node.children.clone();
+        for child in children {
+            self.walk_modal(child, found);
+        }
+    }
+
+    fn focus_order(&self) -> Vec<u32> {
+        let modal = self.active_modal();
+        let mut out = Vec::new();
+        self.collect_focusable(1, modal, false, &mut out);
+        out
+    }
+
+    fn collect_focusable(&self, id: u32, modal: u32, hidden: bool, out: &mut Vec<u32>) {
+        let Ok(node) = self.node(id) else {
+            return;
+        };
+        let outside = modal != 0 && !self.contains(modal, id);
+        let hidden = hidden || node.a11y_hidden;
+        if !hidden && !outside && !node.disabled && self.is_focusable(id) {
+            out.push(id);
+        }
+        let children = node.children.clone();
+        for child in children {
+            self.collect_focusable(child, modal, hidden, out);
+        }
+    }
+
+    /// Semantic snapshot in viewport coordinates. Nodes are in pre-order;
+    /// `parent` points at the nearest semantic ancestor.
+    pub fn semantics(&self) -> SemanticsSnapshot {
+        let modal = self.active_modal();
+        let mut nodes = Vec::new();
+        self.collect_semantics(1, 0, 0, false, modal, &mut nodes);
+        SemanticsSnapshot {
+            version: 1,
+            focused: self.focused,
+            modal,
+            nodes,
+        }
+    }
+
+    pub fn semantics_json(&self) -> String {
+        self.semantics().to_json()
+    }
+
+    fn collect_semantics(
+        &self,
+        id: u32,
+        parent: u32,
+        depth: u32,
+        hidden: bool,
+        modal: u32,
+        out: &mut Vec<SemanticsNode>,
+    ) {
+        let Ok(node) = self.node(id) else {
+            return;
+        };
+        let outside = modal != 0 && !self.contains(modal, id);
+        let hidden = hidden || node.a11y_hidden || outside;
+        let role = self.node_role(node);
+        let semantic = node.kind != Kind::View
+            || node.role.is_some()
+            || !node.label.is_empty()
+            || self.is_focusable(id)
+            || node.modal
+            || node.disabled;
+        let mut next_parent = parent;
+        let mut next_depth = depth;
+        if semantic {
+            let mut actions = 0;
+            if self.is_focusable(id) {
+                actions |= ACTION_FOCUS;
+            }
+            if self.recognizer.has_tap(id) {
+                actions |= ACTION_ACTIVATE;
+            }
+            if node.kind == Kind::Field {
+                actions |= ACTION_SET_VALUE;
+            }
+            let editable = node.kind == Kind::Field;
+            let secure = editable && node.secure;
+            let (label, value) = match node.kind {
+                Kind::Text => (
+                    if node.label.is_empty() {
+                        node.text.clone()
+                    } else {
+                        node.label.clone()
+                    },
+                    String::new(),
+                ),
+                Kind::Field => (
+                    node.label.clone(),
+                    if secure {
+                        String::new()
+                    } else {
+                        node.text.clone()
+                    },
+                ),
+                _ => (node.label.clone(), String::new()),
+            };
+            out.push(SemanticsNode {
+                handle: id,
+                parent,
+                depth,
+                role,
+                label,
+                value,
+                bounds: [node.x, node.y, node.w, node.h],
+                actions,
+                focusable: !hidden && !node.disabled && self.is_focusable(id),
+                focused: id == self.focused,
+                disabled: node.disabled,
+                hidden,
+                checked: node.checked,
+                selected: node.selected,
+                expanded: node.expanded,
+                secure,
+                editable,
+                scrollable: node.scroll_x || node.scroll_y,
+            });
+            next_parent = id;
+            next_depth = depth + 1;
+        }
+        let inherited = hidden && !outside;
+        let children = node.children.clone();
+        for child in children {
+            self.collect_semantics(child, next_parent, next_depth, inherited, modal, out);
+        }
+    }
+
+    fn node_role(&self, node: &Node) -> Role {
+        node.role.unwrap_or(match node.kind {
+            Kind::Text => Role::Text,
+            Kind::Field => Role::Textbox,
+            Kind::Image => Role::Image,
+            Kind::View => Role::Generic,
+        })
+    }
+
+    /// Handle one UI-thread keyboard intent. Returns `true` when consumed;
+    /// text-producing keys stay with the platform input method.
+    pub fn key(&mut self, key: Key, time_ms: f64) -> bool {
+        match key {
+            Key::Tab => self.focus_next(true),
+            Key::TabBack => self.focus_next(false),
+            Key::Escape => {
+                if self.focused == 0 {
+                    false
+                } else {
+                    self.focus(0).is_ok()
+                }
+            }
+            Key::Enter => {
+                if self.focused == 0 {
+                    return false;
+                }
+                let multiline = self.node(self.focused).is_ok_and(|node| node.multiline);
+                if multiline
+                    && self
+                        .node(self.focused)
+                        .is_ok_and(|node| node.kind == Kind::Field)
+                {
+                    self.commit_text("\n", 1).is_ok()
+                } else {
+                    self.activate_focused(time_ms)
+                }
+            }
+            Key::Space => {
+                if self.focused == 0 {
+                    return false;
+                }
+                if self
+                    .node(self.focused)
+                    .is_ok_and(|node| node.kind == Kind::Field)
+                {
+                    false
+                } else {
+                    self.activate_focused(time_ms)
+                }
+            }
+            Key::Left => self.move_caret(false, false),
+            Key::Right => self.move_caret(true, false),
+            Key::Home => self.move_caret(false, true),
+            Key::End => self.move_caret(true, true),
+        }
+    }
+
+    fn activate_focused(&mut self, time_ms: f64) -> bool {
+        let handle = self.focused;
+        if handle == 0 {
+            return false;
+        }
+        if self.node(handle).is_ok_and(|node| node.kind == Kind::Field) {
+            return self.focus(handle).is_ok();
+        }
+        let (cx, cy) = self
+            .node(handle)
+            .map(|node| (node.x + node.w / 2.0, node.y + node.h / 2.0))
+            .unwrap_or((0.0, 0.0));
+        self.recognizer.activate(handle, cx, cy, time_ms)
+    }
+
+    fn move_caret(&mut self, forward: bool, line: bool) -> bool {
+        let handle = self.focused;
+        if handle == 0 || !self.node(handle).is_ok_and(|node| node.kind == Kind::Field) {
+            return false;
+        }
+        let Ok((value, state)) = self.field(handle) else {
+            return false;
+        };
+        let (start, end) = (state.sel_start(), state.sel_end());
+        let target = if line {
+            line_edge(&value, state.active(), forward)
+        } else if start != end {
+            if forward {
+                end
+            } else {
+                start
+            }
+        } else {
+            caret_step(&value, state.active(), forward)
+        };
+        self.edit(EditCommand::SetSelection {
+            start: target,
+            end: target,
+        })
+        .is_ok()
+    }
+
+    /// Route a screen-reader action to a semantic node.
+    pub fn a11y_action(&mut self, handle: u32, action: A11yAction) -> Result<(), String> {
+        self.node(handle)?;
+        match action {
+            A11yAction::Focus => self.focus(handle),
+            A11yAction::Activate => {
+                if self.node(handle)?.kind == Kind::Field {
+                    self.focus(handle)
+                } else {
+                    let (cx, cy) = {
+                        let node = self.node(handle)?;
+                        (node.x + node.w / 2.0, node.y + node.h / 2.0)
+                    };
+                    self.recognizer.activate(handle, cx, cy, 0.0);
+                    Ok(())
+                }
+            }
+            A11yAction::SetValue(text) => self.set_field_text(handle, &text),
+        }
+    }
+
+    fn set_field_text(&mut self, handle: u32, text: &str) -> Result<(), String> {
+        let (handler, config) = {
+            let node = self.node(handle)?;
+            if node.kind != Kind::Field {
+                return Err(format!("handle {handle} is not a text field"));
+            }
+            (
+                node.handler,
+                EditConfig {
+                    multiline: node.multiline,
+                    max_length: node.max_length,
+                },
+            )
+        };
+        let session = self
+            .fields
+            .get_mut(&handle)
+            .ok_or_else(|| format!("handle {handle} has no editing session"))?;
+        session.set_config(config);
+        if session.field_state().composing {
+            let _ = session.apply(EditOp::CancelComposition, None);
+        }
+        let len = utf16_len(session.value());
+        let selection = Selection::collapsed(utf16_len(text));
+        let outcome = session
+            .apply(
+                EditOp::Replace {
+                    range: DocRange::new(0, len),
+                    text: text.to_owned(),
+                    selection: Some(selection),
+                    composition: crate::editing::CompositionChange::Clear,
+                },
+                None,
+            )
+            .map_err(|err| err.to_string())?;
+        self.finish_edit(handle, handler, outcome)
+    }
+
+    /// Cut, copy, paste, or select all in the focused field. The host owns
+    /// clipboard storage and passes the text in for paste.
+    pub fn edit_menu(
+        &mut self,
+        action: EditMenuAction,
+        clipboard: &str,
+    ) -> Result<MenuResult, String> {
+        let handle = self.focused;
+        if handle == 0 || !self.node(handle).is_ok_and(|node| node.kind == Kind::Field) {
+            return Err("no focused field".into());
+        }
+        let (value, state) = self.field(handle)?;
+        let (start, end) = (state.sel_start(), state.sel_end());
+        let secure = self.node(handle).is_ok_and(|node| node.secure);
+        let mut result = MenuResult::default();
+        match action {
+            EditMenuAction::Copy => {
+                if !secure && start != end {
+                    result.clipboard = Some(utf16_slice(&value, start, end));
+                }
+            }
+            EditMenuAction::Cut => {
+                if !secure && start != end {
+                    result.clipboard = Some(utf16_slice(&value, start, end));
+                    self.commit_text("", 1)?;
+                    result.changed = true;
+                }
+            }
+            EditMenuAction::Paste => {
+                if !clipboard.is_empty() {
+                    self.commit_text(clipboard, 1)?;
+                    result.changed = true;
+                }
+            }
+            EditMenuAction::SelectAll => {
+                let len = utf16_len(&value);
+                if len > 0 && (start, end) != (0, len) {
+                    self.edit(EditCommand::SetSelection { start: 0, end: len })?;
+                    result.changed = true;
+                }
+            }
+        }
+        Ok(result)
     }
 
     /// `bit0` multiline, `bit1` secure, bits 8..15 keyboard kind
@@ -679,6 +1158,12 @@ impl Shell {
         self.caret_box
     }
 
+    /// Start and end selection handle boxes (viewport coordinates), ordered
+    /// as document start and document end. `None` for a collapsed selection.
+    pub fn selection_handles(&self) -> Option<[(f32, f32, f32, f32); 2]> {
+        self.selection_handles
+    }
+
     /// UTF-16 offset in the focused field nearest the point. Does not move the caret.
     pub fn unit_at(
         &self,
@@ -688,7 +1173,14 @@ impl Shell {
     ) -> Result<Option<u32>, String> {
         self.unit_at_with(x, y, &mut |req| {
             Ok(wrapping_layout(req, |line| {
-                measure(line, req.key.font_size, req.key.line_height, req.key.font_weight, None).0
+                measure(
+                    line,
+                    req.key.font_size,
+                    req.key.line_height,
+                    req.key.font_weight,
+                    None,
+                )
+                .0
             }))
         })
     }
@@ -718,7 +1210,14 @@ impl Shell {
     ) -> Result<Option<(f32, f32, f32, f32)>, String> {
         self.caret_rect_at_with(unit, &mut |req| {
             Ok(wrapping_layout(req, |line| {
-                measure(line, req.key.font_size, req.key.line_height, req.key.font_weight, None).0
+                measure(
+                    line,
+                    req.key.font_size,
+                    req.key.line_height,
+                    req.key.font_weight,
+                    None,
+                )
+                .0
             }))
         })
     }
@@ -757,7 +1256,14 @@ impl Shell {
     ) -> Result<u32, String> {
         self.focus_point_with(x, y, &mut |req| {
             Ok(wrapping_layout(req, |line| {
-                measure(line, req.key.font_size, req.key.line_height, req.key.font_weight, None).0
+                measure(
+                    line,
+                    req.key.font_size,
+                    req.key.line_height,
+                    req.key.font_weight,
+                    None,
+                )
+                .0
             }))
         })
     }
@@ -774,8 +1280,14 @@ impl Shell {
         }
         self.focus(handle)?;
         let (geom, snapshot) = self.field_snapshot(handle, host)?;
-        let unit = snap_unit(&geom.text, snapshot.hit(x - geom.origin_x, y - geom.origin_y));
-        self.edit(EditCommand::SetSelection { start: unit, end: unit })?;
+        let unit = snap_unit(
+            &geom.text,
+            snapshot.hit(x - geom.origin_x, y - geom.origin_y),
+        );
+        self.edit(EditCommand::SetSelection {
+            start: unit,
+            end: unit,
+        })?;
         Ok(handle)
     }
 
@@ -983,16 +1495,16 @@ impl Shell {
         self.apply_focused_session(|session| session.delete_surrounding(before, after))
     }
 
-    pub fn delete_surrounding_code_points(&mut self, before: u32, after: u32) -> Result<(), String> {
-        self.apply_focused_session(|session| {
-            session.delete_surrounding_code_points(before, after)
-        })
+    pub fn delete_surrounding_code_points(
+        &mut self,
+        before: u32,
+        after: u32,
+    ) -> Result<(), String> {
+        self.apply_focused_session(|session| session.delete_surrounding_code_points(before, after))
     }
 
     pub fn set_composition_region(&mut self, start: u32, end: u32) -> Result<(), String> {
-        self.apply_focused_session(|session| {
-            session.set_composition(DocRange::new(start, end))
-        })
+        self.apply_focused_session(|session| session.set_composition(DocRange::new(start, end)))
     }
 
     pub fn finish_composition(&mut self) -> Result<(), String> {
@@ -1131,13 +1643,7 @@ impl Shell {
         Ok(())
     }
 
-    fn push_edit_event(
-        &mut self,
-        handle: u32,
-        handler: u32,
-        value: String,
-        outcome: EditOutcome,
-    ) {
+    fn push_edit_event(&mut self, handle: u32, handler: u32, value: String, outcome: EditOutcome) {
         let state = outcome.snapshot;
         self.edit_events.push(EditEvent {
             handle,
@@ -1180,26 +1686,21 @@ impl Shell {
             .ok_or_else(|| format!("handle {handle} has no editing session"))?;
         let session_id = session.id();
         session.set_config(config);
-        let outcome = match session.script_reset(
-            epoch,
-            next,
-            Selection::new(sel_start, sel_end),
-            cancel,
-        ) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                self.edit_conflicts.push(EditConflict {
-                    handle,
-                    session: session_id,
-                    revision: session.revision(),
-                    error,
-                });
-                return Ok(());
-            }
-        };
+        let outcome =
+            match session.script_reset(epoch, next, Selection::new(sel_start, sel_end), cancel) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.edit_conflicts.push(EditConflict {
+                        handle,
+                        session: session_id,
+                        revision: session.revision(),
+                        error,
+                    });
+                    return Ok(());
+                }
+            };
         self.finish_edit(handle, handler, outcome)
     }
-
 
     fn flush_gesture_scroll(&mut self) {
         let requests = self.recognizer.drain_scroll();
@@ -1277,8 +1778,16 @@ impl Shell {
             let scroll_y = node.scroll_y;
             let chain_x = node.chain_x;
             let chain_y = node.chain_y;
-            let limit_x = if scroll_x { self.max_scroll_x(node) } else { 0.0 };
-            let limit_y = if scroll_y { self.max_scroll_y(node) } else { 0.0 };
+            let limit_x = if scroll_x {
+                self.max_scroll_x(node)
+            } else {
+                0.0
+            };
+            let limit_y = if scroll_y {
+                self.max_scroll_y(node)
+            } else {
+                0.0
+            };
             if scroll_x && outcome.remaining_x != 0.0 {
                 let node = self.node_mut(*id).expect("scroll node");
                 let before = node.scroll_left;
@@ -1402,9 +1911,7 @@ impl Shell {
             Prop::Position => self.node_mut(id)?.position = position(value)?,
             Prop::Top => self.node_mut(id)?.inset[0] = value.optional_f32()?.unwrap_or(f32::NAN),
             Prop::Right => self.node_mut(id)?.inset[1] = value.optional_f32()?.unwrap_or(f32::NAN),
-            Prop::Bottom => {
-                self.node_mut(id)?.inset[2] = value.optional_f32()?.unwrap_or(f32::NAN)
-            }
+            Prop::Bottom => self.node_mut(id)?.inset[2] = value.optional_f32()?.unwrap_or(f32::NAN),
             Prop::Left => self.node_mut(id)?.inset[3] = value.optional_f32()?.unwrap_or(f32::NAN),
             Prop::ScrollChainX => self.node_mut(id)?.chain_x = !overscroll_chains(value)?,
             Prop::ScrollChainY => self.node_mut(id)?.chain_y = !overscroll_chains(value)?,
@@ -1433,6 +1940,26 @@ impl Shell {
                 };
                 self.node_mut(id)?.autofill = name.clone();
             }
+            Prop::Role => {
+                let Value::String(name) = value else {
+                    return Err("role must be a string".into());
+                };
+                let role = Role::parse(name).ok_or_else(|| format!("unknown role {name}"))?;
+                self.node_mut(id)?.role = Some(role);
+            }
+            Prop::Label => {
+                let Value::String(text) = value else {
+                    return Err("label must be a string".into());
+                };
+                self.node_mut(id)?.label = text.clone();
+            }
+            Prop::Disabled => self.node_mut(id)?.disabled = value.as_bool()?,
+            Prop::Hidden => self.node_mut(id)?.a11y_hidden = value.as_bool()?,
+            Prop::Focusable => self.node_mut(id)?.focusable = value.as_bool()?,
+            Prop::Modal => self.node_mut(id)?.modal = value.as_bool()?,
+            Prop::Checked => self.node_mut(id)?.checked = Some(value.as_bool()?),
+            Prop::Selected => self.node_mut(id)?.selected = value.as_bool()?,
+            Prop::Expanded => self.node_mut(id)?.expanded = Some(value.as_bool()?),
         }
         self.restyle(id)
     }
@@ -1513,10 +2040,7 @@ impl Shell {
     }
     fn insert_node(&mut self, desc: NodeDesc, parent: u32, index: u32) -> Result<(), String> {
         let handle = desc.id;
-        if handle == 0
-            || self.retired.contains(&handle)
-            || self.node(handle).is_ok()
-        {
+        if handle == 0 || self.retired.contains(&handle) || self.node(handle).is_ok() {
             return Err(format!("handle {handle} is not free"));
         }
         let parent_len = self.node(parent)?.children.len() as u32;
@@ -1592,6 +2116,15 @@ impl Shell {
             max_length: 0,
             keyboard: String::new(),
             autofill: String::new(),
+            role: None,
+            label: String::new(),
+            disabled: false,
+            a11y_hidden: false,
+            focusable: false,
+            modal: false,
+            checked: None,
+            selected: false,
+            expanded: None,
             x: 0.0,
             y: 0.0,
             w: 0.0,
@@ -1768,6 +2301,7 @@ impl Shell {
         self.caret_handle = 0;
         self.caret_box = None;
         self.selection_rects.clear();
+        self.selection_handles = None;
         let handle = self.focused;
         if handle == 0 {
             return Ok(());
@@ -1775,7 +2309,12 @@ impl Shell {
         let Some(state) = self.fields.get(&handle).cloned() else {
             return Ok(());
         };
-        if self.node(handle).ok().filter(|node| node.kind == Kind::Field).is_none() {
+        if self
+            .node(handle)
+            .ok()
+            .filter(|node| node.kind == Kind::Field)
+            .is_none()
+        {
             return Ok(());
         }
         let (geom, snapshot) = self.field_snapshot(handle, host)?;
@@ -1793,6 +2332,27 @@ impl Shell {
             1.0,
             caret.h,
         ));
+        let (start, end) = (state.sel_start(), state.sel_end());
+        if start != end {
+            let start = snap_unit(&geom.text, start).min(snapshot.units);
+            let end = snap_unit(&geom.text, end).min(snapshot.units);
+            if let (Some(a), Some(b)) = (snapshot.caret(start), snapshot.caret(end)) {
+                self.selection_handles = Some([
+                    (
+                        geom.origin_x + a.x - 8.0,
+                        geom.origin_y + a.y + a.h - 4.0,
+                        16.0,
+                        16.0,
+                    ),
+                    (
+                        geom.origin_x + b.x - 8.0,
+                        geom.origin_y + b.y + b.h - 4.0,
+                        16.0,
+                        16.0,
+                    ),
+                ]);
+            }
+        }
         Ok(())
     }
 
@@ -1807,7 +2367,9 @@ impl Shell {
             key: geom.key,
         };
         let snapshot = host(&req)?;
-        if snapshot.units != utf16_len(&geom.text) || snapshot.carets.len() != snapshot.units as usize + 1 {
+        if snapshot.units != utf16_len(&geom.text)
+            || snapshot.carets.len() != snapshot.units as usize + 1
+        {
             return Err("layout snapshot does not cover the field text".into());
         }
         if !snapshot.matches(&geom.key) {
@@ -1828,7 +2390,11 @@ impl Shell {
         } else {
             font_size * 1.2
         };
-        let revision = self.fields.get(&handle).map(|state| state.revision()).unwrap_or(0);
+        let revision = self
+            .fields
+            .get(&handle)
+            .map(|state| state.revision())
+            .unwrap_or(0);
         Ok(FieldGeom {
             text: display_text(&node.text, node.secure),
             origin_x: node.x + pads[0],
@@ -1952,6 +2518,42 @@ impl Shell {
         if scrolls {
             out.push(PaintCmd::PopClip);
         }
+        if id == self.focused && kind != Kind::Field && self.is_focusable(id) {
+            let color = Color::new(0.30, 0.64, 1.0, 0.95);
+            let thickness = 2.0;
+            out.push(PaintCmd::Fill {
+                x,
+                y,
+                w,
+                h: thickness,
+                radius: 0.0,
+                color,
+            });
+            out.push(PaintCmd::Fill {
+                x,
+                y: y + h - thickness,
+                w,
+                h: thickness,
+                radius: 0.0,
+                color,
+            });
+            out.push(PaintCmd::Fill {
+                x,
+                y,
+                w: thickness,
+                h,
+                radius: 0.0,
+                color,
+            });
+            out.push(PaintCmd::Fill {
+                x: x + w - thickness,
+                y,
+                w: thickness,
+                h,
+                radius: 0.0,
+                color,
+            });
+        }
         if opacity < 1.0 {
             out.push(PaintCmd::PopOpacity);
         }
@@ -2015,7 +2617,6 @@ impl Shell {
             handler: nonzero(handler),
         }
     }
-
 }
 
 enum Hit {
@@ -2211,4 +2812,70 @@ fn dim(value: Option<f32>) -> Dimension {
         Some(value) => length(value),
         None => auto(),
     }
+}
+
+fn caret_step(value: &str, offset: u32, forward: bool) -> u32 {
+    let mut seen = 0u32;
+    if forward {
+        for ch in value.chars() {
+            let width = ch.len_utf16() as u32;
+            if seen + width > offset {
+                return seen + width;
+            }
+            seen += width;
+        }
+        utf16_len(value)
+    } else {
+        let mut previous = 0u32;
+        for ch in value.chars() {
+            let width = ch.len_utf16() as u32;
+            if seen >= offset {
+                return previous;
+            }
+            previous = seen;
+            seen += width;
+        }
+        previous
+    }
+}
+
+fn line_edge(value: &str, offset: u32, forward: bool) -> u32 {
+    let mut seen = 0u32;
+    if forward {
+        for ch in value.chars() {
+            if seen >= offset && ch == '\n' {
+                return seen;
+            }
+            seen += ch.len_utf16() as u32;
+        }
+        utf16_len(value)
+    } else {
+        let mut line_start = 0u32;
+        for ch in value.chars() {
+            if seen >= offset {
+                return line_start;
+            }
+            seen += ch.len_utf16() as u32;
+            if ch == '\n' {
+                line_start = seen;
+            }
+        }
+        line_start
+    }
+}
+
+fn utf16_slice(value: &str, start: u32, end: u32) -> String {
+    let mut out = String::new();
+    let mut seen = 0u32;
+    for ch in value.chars() {
+        let width = ch.len_utf16() as u32;
+        if seen >= end {
+            break;
+        }
+        if seen >= start {
+            out.push(ch);
+        }
+        seen += width;
+    }
+    out
 }
