@@ -575,6 +575,43 @@ impl Recognizer {
         self.order.remove(&target);
     }
 
+    /// Drop the live sequence or pending tap that depends on `target`.
+    /// Declarations stay registered so a later show can recognize again.
+    pub(crate) fn conceal_target(&mut self, target: u32) {
+        if self
+            .pending_tap
+            .as_ref()
+            .is_some_and(|pending| pending.target == target)
+        {
+            self.pending_tap = None;
+        }
+        let hit = if let Some(seq) = &self.sequence {
+            seq.path.contains(&target)
+                || seq.tap.as_ref().is_some_and(|family| family.target == target)
+                || seq
+                    .second
+                    .as_ref()
+                    .is_some_and(|pending| pending.target == target)
+                || seq.transform_decl.is_some_and(|id| {
+                    self.decls
+                        .get(id as usize)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|decl| decl.target == target)
+                })
+                || seq.cands.iter().any(|cand| {
+                    self.decls
+                        .get(cand.decl as usize)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|decl| decl.target == target)
+                })
+        } else {
+            false
+        };
+        if hit {
+            self.cancel_sequence(REASON_HOST_CANCEL);
+        }
+    }
+
     pub fn drain_events(&mut self) -> Vec<GestureEvent> {
         std::mem::take(&mut self.events)
     }
@@ -807,26 +844,31 @@ impl Recognizer {
         }
         if let Some(family) = &tap {
             if let Some(id) = family.tap {
-                if decls
-                    .get(id as usize)
-                    .and_then(Option::as_ref)
-                    .is_some_and(|decl| decl.has_handler(SLOT_PRESS_START))
-                {
+                let has = |slot| {
+                    decls
+                        .get(id as usize)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|decl| decl.has_handler(slot))
+                };
+                let start = has(SLOT_PRESS_START);
+                if start || has(SLOT_PRESS_END) || has(SLOT_PRESS_CANCEL) {
                     seq.press_active = true;
-                    let target = family.target;
-                    push_event(
-                        events,
-                        decls,
-                        id,
-                        SLOT_PRESS_START,
-                        sequence,
-                        input.time_ms,
-                        |event| {
-                            event.target = target;
-                            event.x = input.x;
-                            event.y = input.y;
-                        },
-                    );
+                    if start {
+                        let target = family.target;
+                        push_event(
+                            events,
+                            decls,
+                            id,
+                            SLOT_PRESS_START,
+                            sequence,
+                            input.time_ms,
+                            |event| {
+                                event.target = target;
+                                event.x = input.x;
+                                event.y = input.y;
+                            },
+                        );
+                    }
                 }
             }
         }

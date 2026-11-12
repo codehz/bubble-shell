@@ -5,7 +5,15 @@
 //! Rust decoder. `DEFERRED_PROPS` are accepted on the JSX element but applied
 //! as `SetProp` ops immediately after `Spawn`, which keeps the descriptor
 //! stable while the style surface grows. `padding`, `margin`, and `inset`
-//! arrays are split into their edge properties by the JS runtime.
+//! arrays are split into their edge properties by the JS runtime. Authored
+//! `overflow`, `overflowX`, `overflowY`, `display`, and `visibility` are
+//! deferred so static values and dynamic bindings share `SetProp` parsing.
+//! The JS runtime applies an authored `overflow` shorthand before axis
+//! overrides, independent of object key order. A dynamic shorthand shares
+//! one binding with the authored axes and reapplies them after every
+//! shorthand change. A later explicit `setProp` keeps call order until that
+//! binding runs again. The descriptor scroll byte remains for direct Rust
+//! callers.
 //!
 //! `SET_PROPS` is the set `Shell::set_prop` accepts at runtime.
 
@@ -27,6 +35,8 @@ pub enum Prop {
     ScrollX,
     ScrollY,
     Overflow,
+    Display,
+    Visibility,
     Row,
     LineHeight,
     TextAlign,
@@ -82,6 +92,8 @@ impl Prop {
             "overflowX" => Self::ScrollX,
             "overflowY" => Self::ScrollY,
             "overflow" => Self::Overflow,
+            "display" => Self::Display,
+            "visibility" => Self::Visibility,
             "flexDirection" => Self::Row,
             "lineHeight" => Self::LineHeight,
             "textAlign" => Self::TextAlign,
@@ -123,9 +135,6 @@ impl Prop {
 
 /// Properties carried by the `BNOD` descriptor.
 pub const SPAWN_PROPS: &[&str] = &[
-    "overflow",
-    "overflowX",
-    "overflowY",
     "fontSize",
     "radius",
     "opacity",
@@ -168,6 +177,11 @@ pub const DEFERRED_PROPS: &[&str] = &[
     "checked",
     "selected",
     "expanded",
+    "overflow",
+    "overflowX",
+    "overflowY",
+    "display",
+    "visibility",
 ];
 
 pub const SET_PROPS: &[&str] = &[
@@ -221,4 +235,6 @@ pub const SET_PROPS: &[&str] = &[
     "checked",
     "selected",
     "expanded",
+    "display",
+    "visibility",
 ];

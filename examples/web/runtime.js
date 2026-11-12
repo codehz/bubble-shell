@@ -221,9 +221,6 @@ function utf8(value) {
 // BNOD version 2: header (magic + u16 version) + the `NodeDesc` body + TLV.
 // `id`, `parent`, and `handler` are zero; Rust assigns the handle and parent.
 const SPEC_PROPS = new Set([
-  "overflow",
-  "overflowX",
-  "overflowY",
   "fontSize",
   "radius",
   "opacity",
@@ -251,10 +248,12 @@ function specBytes(kind, props, text) {
   offset += 4;
   view.setUint8(offset, kind);
   offset += 1;
-  view.setUint8(offset, scrollFlags(props));
+  // Overflow, color, display, and visibility are deferred SetProps so static
+  // and dynamic values share one Rust parser. The scroll byte stays 0; direct
+  // Rust NodeDesc callers can still set scroll flags.
+  view.setUint8(offset, 0, true);
   offset += 1;
-  // Color props are deferred so Rust parses numeric ARGB and CSS strings
-  // through one implementation; the descriptor keeps its default slots.
+  // Color props keep their descriptor default slots.
   view.setUint32(offset, 0, true);
   offset += 4;
   view.setUint32(offset, 0xffffffff, true);
@@ -293,24 +292,6 @@ function specBytes(kind, props, text) {
 function finite(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : NaN;
 }
-function scrollFlags(props) {
-  let x = "visible";
-  let y = "visible";
-  if (props.overflow != null) {
-    x = props.overflow;
-    y = props.overflow;
-  }
-  if (props.overflowX != null) x = props.overflowX;
-  if (props.overflowY != null) y = props.overflowY;
-  return (overflowBit(y) ? 1 : 0) | (overflowBit(x) ? 2 : 0);
-}
-
-function overflowBit(value) {
-  if (value === "visible") return false;
-  if (value === "scroll") return true;
-  if (value === "hidden") throw new Error("overflow hidden is not implemented");
-  throw new Error(`unsupported overflow ${value}`);
-}
 
 function rowFlag(value) {
   if (value == null || value === "column") return 0;
@@ -348,6 +329,54 @@ function registerChild(parentHandle, handle, index) {
   if (collector && collector.parent === parentHandle) collector.handles.push(handle);
 }
 
+// Authored overflow shorthand is applied before axis overrides, regardless of
+// object key order. A dynamic shorthand shares one binding with the authored
+// axes, so a shorthand change reapplies those axes and they keep precedence.
+// A static or omitted shorthand leaves dynamic axes as independent bindings.
+// Explicit `setProp` calls keep call order until that authored binding runs.
+function overflowRank(key) {
+  if (key === "overflow") return 0;
+  if (key === "overflowX") return 1;
+  if (key === "overflowY") return 2;
+  return -1;
+}
+
+function applyOverflowValue(handle, prop) {
+  setProp(handle, prop.key, prop.run ? prop.run() : prop.value);
+}
+
+function applyNodeProps(handle, deferredValues, dynamics) {
+  const staticRest = [];
+  const overflow = [null, null, null];
+  for (const [key, value] of deferredValues) {
+    const rank = overflowRank(key);
+    if (rank < 0) staticRest.push([key, value]);
+    else overflow[rank] = { key, value };
+  }
+  const dynamicRest = [];
+  for (const [key, run] of dynamics) {
+    const rank = overflowRank(key);
+    if (rank < 0) dynamicRest.push([key, run]);
+    else overflow[rank] = { key, run };
+  }
+  for (const [key, value] of staticRest) setProp(handle, key, value);
+  const shorthand = overflow[0];
+  const axes = overflow.slice(1).filter(Boolean);
+  if (shorthand && shorthand.run) {
+    const authored = [shorthand, ...axes];
+    addBinding(() => {
+      for (const prop of authored) applyOverflowValue(handle, prop);
+    }, handle);
+  } else {
+    if (shorthand) applyOverflowValue(handle, shorthand);
+    for (const axis of axes) {
+      if (axis.run) bindProp(handle, axis.key, axis.run);
+      else applyOverflowValue(handle, axis);
+    }
+  }
+  for (const [key, run] of dynamicRest) bindProp(handle, key, run);
+}
+
 function pack(kind, props, text) {
   props = props ?? {};
   const parentHandle = parent();
@@ -375,8 +404,7 @@ function pack(kind, props, text) {
     if (!handle) throw new Error(api.error() || "spawn failed");
     registerChild(parentHandle, handle);
   }
-  for (const [key, value] of deferredValues) setProp(handle, key, value);
-  for (const [key, run] of dynamics) bindProp(handle, key, run);
+  applyNodeProps(handle, deferredValues, dynamics);
   return handle;
 }
 

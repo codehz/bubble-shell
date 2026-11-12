@@ -118,20 +118,20 @@ assets/
 
 当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`、`Focus`、`SetEditingValue`，以及手势声明 op。`TextField`（kind 4）的编辑状态在 UI 线程，由 `EditSession` 持有 UTF-16 文档位置、方向性选区、独立组合区、`revision` 与撤销历史；`BSED` v2 每批向脚本投递有序 delta 和最终快照。iOS `UITextInput`、Android `InputConnection`、Web 隐藏 textarea 已接入文本编辑。语义树由节点属性派生并经 `bubble_semantics` / wasm `semantics` 输出 JSON；iOS `UIAccessibility`、Android `AccessibilityNodeProvider` 与 Web ARIA 覆盖层读取同一快照。其余 op（含 `InsertNode`、动画、显式 `SetSemantics`）随后续里程碑。
 
-节点描述为 `BNOD` v2：固定字段后跟 `u32` 长度的 TLV 扩展块，新增字段不移动既有偏移。`Spawn` 载荷复用同一 v2 body；`BSOP` 也是 v2。滚动描述符的单个标志字节是位掩码：bit 0 为纵向 `overflow="scroll"`，bit 1 为横向，其余位保留且解码时拒绝。
+节点描述为 `BNOD` v2：固定字段后跟 `u32` 长度的 TLV 扩展块，新增字段不移动既有偏移。`Spawn` 载荷复用同一 v2 body；`BSOP` 也是 v2。滚动描述符的单个标志字节仍是位掩码：bit 0 为纵向滚动，bit 1 为横向，其余位保留且解码时拒绝。直接构造 `NodeDesc` 的 Rust 调用方继续使用该字节。JS 作者的 `overflow` / `overflowX` / `overflowY` 不写入该字节（恒为 0），与 `display`、`visibility` 一样在 `Spawn` 之后用 `SetProp` 下发，静态值和动态绑定共用同一套 Rust 解析。这些字段不新增线协议。
 
 属性分两类：
 
 - 手势是虚拟子节点：`TapGesture`、`DoubleTapGesture`、`LongPressGesture`、`PanGesture`、`TransformGesture`。没有 `View onPress`。事件名为 `onTap` / `onTapStart` / `onTapEnd` / `onTapCancel`、`onDoubleTap*`、`onLongPress` / `onLongPressEnd` / `onLongPressCancel`、`onPanStart` / `onPanUpdate` / `onPanEnd` / `onPanCancel`、`onTransformStart` / `onTransformUpdate` / `onTransformEnd` / `onTransformCancel`。Transform 用 `mode`（字符串或字符串数组：`pan` / `pinch` / `rotate`）。`direction` 是方向字符串数组。`captureAxis="none"|"x"|"y"|"both"` 把该轴滚动让给这条手势。
-- `SPAWN_PROPS`：`overflow`、`overflowX`、`overflowY`、`fontSize`、`radius`、`opacity`、`width`、`height`、`flexGrow`、`flexShrink`、`flexDirection`、`padding`。
-- `DEFERRED_PROPS`：`backgroundColor`、`color`、`lineHeight`、`textAlign`、`fontWeight`、`margin`、`gap`、`alignItems`、`justifyContent`、`position`、`inset`、`src`、`fit`、`overscrollX`、`overscrollY`、`multiline`、`secure`、`maxLength`、`keyboard`、`autofill`、`role`、`label`、`disabled`、`hidden`、`focusable`、`modal`、`checked`、`selected`、`expanded`。
-- 无障碍属性：`role`（`button`、`link`、`textbox`、`checkbox`、`heading`、`dialog` 等）、`label`、`disabled`、`hidden`（仅语义隐藏）、`focusable`、`modal`（焦点陷阱）、`checked`、`selected`、`expanded`。`Text`、`Image`、`TextField` 分别派生 text/image/textbox 角色；`TextField` 的语义值在 `secure` 时为空。可滚动容器即使没有角色或标签也会进入语义树，并输出对应方向的滚动 action 位。
+- `SPAWN_PROPS`：`fontSize`、`radius`、`opacity`、`width`、`height`、`flexGrow`、`flexShrink`、`flexDirection`、`padding`。
+- `DEFERRED_PROPS`：`backgroundColor`、`color`、`lineHeight`、`textAlign`、`fontWeight`、`margin`、`gap`、`alignItems`、`justifyContent`、`position`、`inset`、`src`、`fit`、`overscrollX`、`overscrollY`、`multiline`、`secure`、`maxLength`、`keyboard`、`autofill`、`role`、`label`、`disabled`、`hidden`、`focusable`、`modal`、`checked`、`selected`、`expanded`、`overflow`、`overflowX`、`overflowY`、`display`、`visibility`。
+- 无障碍属性：`role`（`button`、`link`、`textbox`、`checkbox`、`heading`、`dialog` 等）、`label`、`disabled`、`hidden`（仅语义隐藏，不裁切，也不改变布局、绘制、命中或焦点）、`focusable`、`modal`（焦点陷阱）、`checked`、`selected`、`expanded`。`Text`、`Image`、`TextField` 分别派生 text/image/textbox 角色；`TextField` 的语义值在 `secure` 时为空。可滚动容器即使没有角色或标签也会进入语义树，并输出对应方向的滚动 action 位。绘制上的隐藏用 `visibility`、`display` 或 `overflow`。
 
 手势事件以 `BSGE` v1 传输，start/update/end/cancel 按序投递。内部 slot 0 是声明销毁确认：排在该声明的终结事件之后，不调用应用回调；JS 收到确认后才释放 handler，因此在事件回调中销毁声明也能收到 cancel。胜出的手势只产生一次 end 或 cancel，双指中任一配对触点离开后，剩余触点不恢复单指识别。
 
 `color` / `backgroundColor` 在 spawn 描述符里保留默认槽，但作者传入的值一律作为紧随 `Spawn` 的 `SetProp` 下发，由 Rust 统一解析：数字仍按 `0xAARRGGBB`（alpha 在高字节），字符串按 CSS 颜色语法。支持命名色、`transparent`、`#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa`、`rgb()`/`rgba()`、`hsl()`/`hsla()`、`hwb()`、`lab()`、`lch()`、`oklab()`、`oklch()`，以及 `color()` 的 `srgb`、`srgb-linear`、`display-p3`、`a98-rgb`、`prophoto-rgb`、`rec2020`、`xyz`、`xyz-d50`、`xyz-d65` 空间；逗号与空格/斜杠语法都接受。`currentColor`、相对颜色、`color-mix()`、系统色与 CSS 变量不支持——这些依赖级联或计算样式，请在脚本里用 `computed()` 求值。所有颜色归一为扩展非线性 sRGB 交给宿主：支持广色域的宿主保留越界分量，只画 sRGB 的宿主自行裁剪。
 
-`overflow` 取值 `"visible"` 或 `"scroll"`。`"hidden"` 预定为裁切且不滚动，当前拒绝。`flexDirection` 为 `"row"` 或 `"column"`。`overscrollX` / `overscrollY` 为布尔：`true`（默认）把剩余增量交给外层，`false` 在当前容器截断。`padding` / `margin` / `inset` 按 CSS 简写（1、2 或 4 个数，4 个数为上右下左）。
+`overflow` / `overflowX` / `overflowY` 各自取值 `"visible"`、`"hidden"` 或 `"scroll"`，两轴独立。`"scroll"` 在该轴裁切并可滚动；`"hidden"` 在该轴裁切且不可滚动；`"visible"` 不裁切该轴，内容在视口内保持无界。裁切矩形是 padding box（当前没有 border，即节点外框），复用已有 `PushClip` / `PopClip`，不新增绘制命令。作者对象里的简写 `overflow` 先作用于两轴，再由已声明的 `overflowX` / `overflowY` 覆盖对应轴，与对象键顺序无关。简写是动态绑定时，已声明的轴并入同一条绑定：简写信号变化会先重算简写，再重算这些轴，轴覆盖保持优先；未声明的轴不会被恢复。简写是静态值或省略时，动态轴仍是各自的绑定，只更新该轴。节点创建之后的显式 `setProp` 不加入该绑定，保持调用顺序；下一次作者绑定重跑会按简写然后已声明的轴再次写回。`display` 为 `"flex"`（默认）或 `"none"`；`"none"` 将整棵子树排除出布局、绘制、命中、焦点和语义 action。`visibility` 为 `"visible"`（默认）或 `"hidden"`；`"hidden"` 不绘制、不命中、不聚焦、不发布语义 action，但保留布局占位，后代不能覆盖为可见。动态改为 `display="none"` 或 `visibility="hidden"` 时，清除该子树内的焦点，并取消其中活动的和待决的手势。`flexDirection` 为 `"row"` 或 `"column"`。`overscrollX` / `overscrollY` 为布尔：`true`（默认）把剩余增量交给外层，`false` 在当前容器截断。`padding` / `margin` / `inset` 按 CSS 简写（1、2 或 4 个数，4 个数为上右下左）。
 
 基础原语为 `View`、`Text`、`Image`。`Image` 的 `src` 是宿主可解析的路径/URL，`fit` 为 `contain`、`cover` 或 `fill`；解析失败时该帧跳过图片，不阻断其他绘制。
 
@@ -236,15 +236,16 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 
 | 类别 | 支持 |
 |---|---|
-| display | flex、none |
+| display | `flex`（默认）、`none`。`none` 将整棵子树排除出布局、绘制、命中、焦点和语义 action |
+| visibility | `visible`（默认）、`hidden`。`hidden` 隐藏整棵子树但保留布局；后代不能重新显示 |
 | 尺寸 | width/height/min/max、padding、margin |
 | flex | direction、wrap、grow/shrink/basis、align/justify、gap |
 | 定位 | relative、absolute、z-index |
-| 溢出 | `overflow` / `overflowX` / `overflowY` 为 `visible` 或 `scroll`。`hidden` 预定为裁切且不滚动，当前拒绝 |
+| 溢出 | `overflow` / `overflowX` / `overflowY` 独立取 `visible`、`hidden` 或 `scroll`。`hidden` 裁切且不滚动；`scroll` 裁切并可滚动；`visible` 该轴不裁切。裁切在 padding box（无 border 时即节点外框） |
 | 视觉 | `backgroundColor`、border、radius、opacity、2D transform |
 | 文本 | font-family/size/weight/style、line-height、letter-spacing、text-align、color |
 
-不支持：grid、选择器、级联、伪类、隐式继承、CSS 变量。样式是显式 props/tokens，不解析 CSS 样式表；只有颜色值的字面量按 CSS 颜色语法解析。当前已实现 flex 方向、grow/shrink、尺寸、padding、margin、gap、align/justify、relative/absolute 定位与 inset。border、transform、min/max 仍在路线图。`overflow="hidden"` 的预定行为是裁切且不滚动，当前拒绝。
+不支持：grid、选择器、级联、伪类、隐式继承、CSS 变量。样式是显式 props/tokens，不解析 CSS 样式表；只有颜色值的字面量按 CSS 颜色语法解析。当前已实现 flex 方向、grow/shrink、尺寸、padding、margin、gap、align/justify、relative/absolute 定位与 inset、`display`、`visibility`，以及按轴独立的 `overflow`（`visible` / `hidden` / `scroll`，裁切在 padding box）。border、transform、min/max 仍在路线图。
 
 ### 布局
 
@@ -273,9 +274,9 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 
 ### 命中与滚动
 
-- 命中按绘制逆序，考虑 transform、clip、z-index。
+- 命中按绘制逆序，考虑 transform、clip、z-index。`display="none"` 与 `visibility="hidden"` 的子树不参与命中。`overflow` 为 `hidden` 或 `scroll` 的轴把命中限制在该节点 padding box 内；`visible` 轴在视口内不另加裁切。
 - 指针捕获、手势识别在 UI 线程。
-- 滚动由 UI 线程本地执行，不依赖脚本线程。横纵两轴各自维护偏移与范围；`overflowX` / `overflowY` 为 `"scroll"` 时启用，`"visible"` 的轴不产生滚动且 `ScrollTo` 将其归零。
+- 滚动由 UI 线程本地执行，不依赖脚本线程。横纵两轴各自维护偏移与范围；只有 `overflowX` / `overflowY` 为 `"scroll"` 的轴启用滚动。`"hidden"` 裁切且不可滚动，`"visible"` 不裁切也不滚动；这两种轴上 `ScrollTo` 归零。
 - 滚轮/拖拽按实际命中路径逐轴消费 `(dx, dy)`：内层先 clamp，未消费部分在同次输入继续交给祖先；`overscrollX/Y={false}` 在对应轴截断剩余量。触摸识别时冻结该轴策略，wheel 每次读取最新已提交配置。
 - `Shell::scroll_of` 返回 `(left, top)`；宿主分别通过 `bubble_scroll_x_of` / `bubble_scroll_y_of` 读取。
 - 读屏滚动 action 复用同一 `scroll_path`：目标为语义节点最近的、接受该轴的可滚动祖先，步长为可见范围的 80%；无可用祖先或轴时返回错误，平台不得自行累加像素。

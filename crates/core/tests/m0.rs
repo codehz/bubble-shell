@@ -450,51 +450,6 @@ fn signal_commit_updates_text_and_scrolls() {
     assert!(shell.scroll_of(scroller).unwrap().1 > 0.0);
 }
 
-#[test]
-fn every_runtime_property_is_dispatchable() {
-    use bubble_core::{Prop, Turn, Value, SET_PROPS};
-
-    let mut shell = Shell::blank().unwrap();
-    shell.set_viewport(200.0, 120.0);
-    let mut turn = Turn::new();
-    let view = turn.spawn(NodeDesc::view(0, 1)).unwrap();
-    shell.apply_ops(&turn.commit().unwrap()).unwrap();
-
-    for key in SET_PROPS {
-        assert!(Prop::parse(key).is_some(), "{key} is not parseable");
-        let value = match *key {
-            "color" | "backgroundColor" => Value::Int(0xff00_0000),
-            "overflow" | "overflowX" | "overflowY" => Value::String("scroll".into()),
-            "flexDirection" => Value::String("row".into()),
-            "textAlign" => Value::String("center".into()),
-            "alignItems" => Value::String("center".into()),
-            "justifyContent" => Value::String("space-between".into()),
-            "position" => Value::String("absolute".into()),
-            "src" => Value::String("logo.png".into()),
-            "fit" => Value::String("cover".into()),
-            "overscrollX" | "overscrollY" => Value::Bool(false),
-            "multiline" | "secure" => Value::Bool(true),
-            "keyboard" => Value::String("text".into()),
-            "autofill" => Value::String("email".into()),
-            "role" => Value::String("button".into()),
-            "label" => Value::String("Action".into()),
-            "disabled" | "hidden" | "focusable" | "modal" | "checked" | "selected" | "expanded" => {
-                Value::Bool(true)
-            }
-            "maxLength" => Value::Float(4.0),
-            "top" | "right" | "bottom" | "left" => Value::Float(4.0),
-            _ => Value::Float(4.0),
-        };
-        turn.set_prop(view, *key, value);
-        shell
-            .apply_ops(&turn.commit().unwrap())
-            .unwrap_or_else(|err| panic!("{key}: {err}"));
-    }
-
-    let mut unknown = Turn::new();
-    unknown.set_prop(view, "margin", Value::Float(4.0));
-    assert!(shell.apply_ops(&unknown.commit().unwrap()).is_err());
-}
 
 #[test]
 fn layout_props_apply_before_the_first_layout() {

@@ -37,8 +37,9 @@ type Measure<'a> = &'a mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, 
 #[derive(Clone, Copy)]
 struct NodeStyle {
     row: bool,
-    scroll_x: bool,
-    scroll_y: bool,
+    overflow_x: Overflow,
+    overflow_y: Overflow,
+    display: Display,
     flex_grow: f32,
     flex_shrink: f32,
     width: Option<f32>,
@@ -56,8 +57,9 @@ impl NodeStyle {
     fn from_node(node: &Node) -> Self {
         Self {
             row: node.row,
-            scroll_x: node.scroll_x,
-            scroll_y: node.scroll_y,
+            overflow_x: node.overflow_x,
+            overflow_y: node.overflow_y,
+            display: node.taffy_display(),
             flex_grow: node.flex_grow,
             flex_shrink: node.flex_shrink,
             width: node.width,
@@ -77,8 +79,9 @@ impl Default for NodeStyle {
     fn default() -> Self {
         Self {
             row: false,
-            scroll_x: false,
-            scroll_y: false,
+            overflow_x: Overflow::Visible,
+            overflow_y: Overflow::Visible,
+            display: Display::Flex,
             flex_grow: 0.0,
             flex_shrink: 1.0,
             width: None,
@@ -99,8 +102,8 @@ struct Node {
     parent: u32,
     children: Vec<u32>,
     kind: Kind,
-    scroll_x: bool,
-    scroll_y: bool,
+    overflow_x: Overflow,
+    overflow_y: Overflow,
     background: Color,
     color: Color,
     font_size: f32,
@@ -139,6 +142,10 @@ struct Node {
     label: String,
     disabled: bool,
     a11y_hidden: bool,
+    /// `display: none`. The subtree is out of layout, paint, hit, focus, and semantics.
+    display_none: bool,
+    /// `visibility: hidden`. Layout stays; the subtree cannot paint, hit, or take actions.
+    visibility_hidden: bool,
     focusable: bool,
     modal: bool,
     checked: Option<bool>,
@@ -148,6 +155,28 @@ struct Node {
     y: f32,
     w: f32,
     h: f32,
+}
+impl Node {
+    fn scrolls_x(&self) -> bool {
+        self.overflow_x == Overflow::Scroll
+    }
+
+    fn scrolls_y(&self) -> bool {
+        self.overflow_y == Overflow::Scroll
+    }
+
+    fn taffy_display(&self) -> Display {
+        if self.display_none {
+            Display::None
+        } else {
+            Display::Flex
+        }
+    }
+
+    /// Painted and hit-tested only when both layout and visibility include it.
+    fn painted(&self) -> bool {
+        !self.display_none && !self.visibility_hidden
+    }
 }
 
 pub struct Shell {
@@ -373,8 +402,8 @@ impl Shell {
                     parent: 0,
                     children: Vec::new(),
                     kind: Kind::View,
-                    scroll_x: false,
-                    scroll_y: false,
+                    overflow_x: Overflow::Visible,
+                    overflow_y: Overflow::Visible,
                     background: Color::TRANSPARENT,
                     color: Color::WHITE,
                     font_size: 16.0,
@@ -413,6 +442,8 @@ impl Shell {
                     label: String::new(),
                     disabled: false,
                     a11y_hidden: false,
+                    display_none: false,
+                    visibility_hidden: false,
                     focusable: false,
                     modal: false,
                     checked: None,
@@ -654,12 +685,12 @@ impl Shell {
                 let node = node.as_ref()?;
                 Some((
                     index,
-                    if node.scroll_x {
+                    if node.scrolls_x() {
                         self.max_scroll_x(node)
                     } else {
                         0.0
                     },
-                    if node.scroll_y {
+                    if node.scrolls_y() {
                         self.max_scroll_y(node)
                     } else {
                         0.0
@@ -669,12 +700,12 @@ impl Shell {
             .collect();
         for (index, limit_x, limit_y) in limits {
             if let Some(node) = &mut self.nodes[index] {
-                node.scroll_left = if node.scroll_x {
+                node.scroll_left = if node.scrolls_x() {
                     node.scroll_left.clamp(0.0, limit_x)
                 } else {
                     0.0
                 };
-                node.scroll_top = if node.scroll_y {
+                node.scroll_top = if node.scrolls_y() {
                     node.scroll_top.clamp(0.0, limit_y)
                 } else {
                     0.0
@@ -700,10 +731,18 @@ impl Shell {
     /// Handler on the hit node, or the nearest ancestor that has one.
     /// A node without a handler still occludes nodes behind it.
     pub fn tap(&self, x: f32, y: f32) -> Option<u32> {
-        match self.hit(1, x, y) {
-            Hit::Miss => None,
-            Hit::Inside { handler } => handler,
+        let mut path = Vec::new();
+        if !self.hit_path(1, x, y, &mut path) {
+            return None;
         }
+        path.iter().find_map(|id| {
+            let handler = self.node(*id).ok()?.handler;
+            if handler == 0 {
+                None
+            } else {
+                Some(handler)
+            }
+        })
     }
 
     /// Feed one normalized pointer sample. `Down` fixes the real hit path;
@@ -817,7 +856,7 @@ impl Shell {
         let Ok(node) = self.node(id) else {
             return;
         };
-        if node.a11y_hidden {
+        if node.a11y_hidden || node.display_none || node.visibility_hidden {
             return;
         }
         if node.modal && depth >= found.1 {
@@ -840,7 +879,7 @@ impl Shell {
             let Ok(node) = self.node(id) else {
                 return false;
             };
-            if node.a11y_hidden {
+            if node.a11y_hidden || node.display_none || node.visibility_hidden {
                 return false;
             }
             id = node.parent;
@@ -859,8 +898,11 @@ impl Shell {
         let Ok(node) = self.node(id) else {
             return;
         };
+        if node.display_none {
+            return;
+        }
         let outside = modal != 0 && !self.contains(modal, id);
-        let hidden = hidden || node.a11y_hidden;
+        let hidden = hidden || node.a11y_hidden || node.visibility_hidden;
         if !hidden && !outside && !node.disabled && self.is_focusable(id) {
             out.push(id);
         }
@@ -900,8 +942,11 @@ impl Shell {
         let Ok(node) = self.node(id) else {
             return;
         };
+        if node.display_none {
+            return;
+        }
         let outside = modal != 0 && !self.contains(modal, id);
-        let inherited_hidden = hidden || node.a11y_hidden;
+        let inherited_hidden = hidden || node.a11y_hidden || node.visibility_hidden;
         let hidden = inherited_hidden || outside;
         // A modal must not remain under an aria-hidden/background ancestor.
         let (parent, depth) = if id == modal { (0, 0) } else { (parent, depth) };
@@ -909,8 +954,8 @@ impl Shell {
         let semantic = node.kind != Kind::View
             || node.role.is_some()
             || !node.label.is_empty()
-            || node.scroll_x
-            || node.scroll_y
+            || node.scrolls_x()
+            || node.scrolls_y()
             || self.is_focusable(id)
             || node.modal
             || node.disabled;
@@ -927,13 +972,13 @@ impl Shell {
             if node.kind == Kind::Field {
                 actions |= ACTION_SET_VALUE;
             }
-            if node.scroll_x {
+            if node.scrolls_x() {
                 actions |= ACTION_SCROLL_FORWARD
                     | ACTION_SCROLL_BACKWARD
                     | ACTION_SCROLL_LEFT
                     | ACTION_SCROLL_RIGHT;
             }
-            if node.scroll_y {
+            if node.scrolls_y() {
                 actions |= ACTION_SCROLL_FORWARD
                     | ACTION_SCROLL_BACKWARD
                     | ACTION_SCROLL_UP
@@ -981,7 +1026,7 @@ impl Shell {
                 expanded: node.expanded,
                 secure,
                 editable,
-                scrollable: node.scroll_x || node.scroll_y,
+                scrollable: node.scrolls_x() || node.scrolls_y(),
             });
             next_parent = id;
             next_depth = depth + 1;
@@ -1132,7 +1177,7 @@ impl Shell {
                 let node = self.node(target)?;
                 (
                     target,
-                    if node.scroll_y {
+                    if node.scrolls_y() {
                         ScrollAxis::Y
                     } else {
                         ScrollAxis::X
@@ -1187,9 +1232,9 @@ impl Shell {
             }
             let node = self.node(id)?;
             let accepts = match axis {
-                ScrollAxis::X => node.scroll_x,
-                ScrollAxis::Y => node.scroll_y,
-                ScrollAxis::Primary => node.scroll_x || node.scroll_y,
+                ScrollAxis::X => node.scrolls_x(),
+                ScrollAxis::Y => node.scrolls_y(),
+                ScrollAxis::Primary => node.scrolls_x() || node.scrolls_y(),
             };
             if accepts {
                 return Ok(id);
@@ -1445,29 +1490,16 @@ impl Shell {
     }
 
     /// Deepest text field containing the point, or `0`.
+    /// Occlusion, clipping, and hiding match `hit_path`.
     pub fn field_at(&self, x: f32, y: f32) -> u32 {
-        self.field_in(1, x, y)
+        let mut path = Vec::new();
+        if !self.hit_path(1, x, y, &mut path) {
+            return 0;
+        }
+        path.into_iter()
+            .find(|id| self.node(*id).is_ok_and(|node| node.kind == Kind::Field))
             .filter(|handle| self.interaction_available(*handle, self.active_modal()))
             .unwrap_or(0)
-    }
-
-    fn field_in(&self, id: u32, x: f32, y: f32) -> Option<u32> {
-        let node = self.node(id).ok()?;
-        if x < node.x || y < node.y || x >= node.x + node.w || y >= node.y + node.h {
-            return None;
-        }
-        let children = node.children.clone();
-        let kind = node.kind;
-        for child in children.iter().rev() {
-            if let Some(found) = self.field_in(*child, x, y) {
-                return Some(found);
-            }
-        }
-        if kind == Kind::Field {
-            Some(id)
-        } else {
-            None
-        }
     }
 
     pub fn field(&self, handle: u32) -> Result<(String, FieldState), String> {
@@ -1864,36 +1896,59 @@ impl Shell {
         }
     }
 
-    /// Nodes under the point from deepest to root, matching `hit` occlusion.
+    /// Nodes under the point from deepest to root. Hidden and `display: none`
+    /// subtrees miss. A clipped axis stops at the padding box (the outer box);
+    /// a visible axis stays open inside the viewport and ancestor clips.
     fn hit_path(&self, id: u32, x: f32, y: f32, out: &mut Vec<u32>) -> bool {
-        let node = self.node(id).expect("hit path handle");
-        let nx = node.x;
-        let ny = node.y;
-        let nw = node.w;
-        let nh = node.h;
-        if x < nx || y < ny || x >= nx + nw || y >= ny + nh {
+        self.hit_clipped(id, x, y, self.viewport_bounds(), out)
+    }
+
+    fn viewport_bounds(&self) -> Bounds {
+        Bounds {
+            x0: 0.0,
+            y0: 0.0,
+            x1: self.viewport.width,
+            y1: self.viewport.height,
+        }
+    }
+
+    fn hit_clipped(&self, id: u32, x: f32, y: f32, clip: Bounds, out: &mut Vec<u32>) -> bool {
+        let Some(node) = self.nodes.get(id as usize).and_then(Option::as_ref) else {
+            return false;
+        };
+        if !node.painted() || !clip.contains(x, y) {
             return false;
         }
-        if node.scroll_x || node.scroll_y {
-            let pads = self.pads(id);
-            let left = nx + pads[0];
-            let top = ny + pads[2];
-            let right = nx + nw - pads[1];
-            let bottom = ny + nh - pads[3];
-            if x < left || y < top || x >= right || y >= bottom {
-                out.push(id);
-                return true;
+        let next = clip.intersect(axis_bounds(
+            node.overflow_x,
+            node.overflow_y,
+            node.x,
+            node.y,
+            node.w,
+            node.h,
+            self.viewport.width,
+            self.viewport.height,
+        ));
+        let (nx, ny, nw, nh) = (node.x, node.y, node.w, node.h);
+        let count = node.children.len();
+        if next.contains(x, y) {
+            for index in (0..count).rev() {
+                let child = self.nodes[id as usize]
+                    .as_ref()
+                    .expect("hit child")
+                    .children[index];
+                if self.hit_clipped(child, x, y, next, out) {
+                    out.push(id);
+                    return true;
+                }
             }
         }
-        let children = node.children.clone();
-        for child in children.iter().rev() {
-            if self.hit_path(*child, x, y, out) {
-                out.push(id);
-                return true;
-            }
+        if x >= nx && y >= ny && x < nx + nw && y < ny + nh {
+            out.push(id);
+            true
+        } else {
+            false
         }
-        out.push(id);
-        true
     }
 
     /// Wheel/trackpad input: route each axis through the hit path from the
@@ -1929,8 +1984,8 @@ impl Shell {
             let Ok(node) = self.node(*id) else {
                 continue;
             };
-            let scroll_x = node.scroll_x;
-            let scroll_y = node.scroll_y;
+            let scroll_x = node.scrolls_x();
+            let scroll_y = node.scrolls_y();
             let chain_x = node.chain_x;
             let chain_y = node.chain_y;
             let limit_x = if scroll_x {
@@ -1993,7 +2048,7 @@ impl Shell {
     fn scroll_to(&mut self, id: u32, x: f32, y: f32) -> Result<(), String> {
         let (scroll_x, scroll_y) = {
             let node = self.node(id)?;
-            (node.scroll_x, node.scroll_y)
+            (node.scrolls_x(), node.scrolls_y())
         };
         if !scroll_x && !scroll_y {
             return Err(format!("handle {id} is not a scroll container"));
@@ -2038,13 +2093,28 @@ impl Shell {
             Prop::Height => self.node_mut(id)?.height = value.optional_f32()?,
             Prop::FlexGrow => self.node_mut(id)?.flex_grow = value.as_f32()?,
             Prop::FlexShrink => self.node_mut(id)?.flex_shrink = value.as_f32()?,
-            Prop::ScrollX => self.node_mut(id)?.scroll_x = overflow_enabled(value)?,
-            Prop::ScrollY => self.node_mut(id)?.scroll_y = overflow_enabled(value)?,
+            Prop::ScrollX => self.assign_overflow(id, true, parse_overflow(value)?)?,
+            Prop::ScrollY => self.assign_overflow(id, false, parse_overflow(value)?)?,
             Prop::Overflow => {
-                let enabled = overflow_enabled(value)?;
-                let node = self.node_mut(id)?;
-                node.scroll_x = enabled;
-                node.scroll_y = enabled;
+                let mode = parse_overflow(value)?;
+                self.assign_overflow(id, true, mode)?;
+                self.assign_overflow(id, false, mode)?;
+            }
+            Prop::Display => {
+                let hide = parse_display_none(value)?;
+                let changed = self.node(id)?.display_none != hide;
+                self.node_mut(id)?.display_none = hide;
+                if hide && changed {
+                    self.conceal_subtree(id);
+                }
+            }
+            Prop::Visibility => {
+                let hide = parse_visibility_hidden(value)?;
+                let changed = self.node(id)?.visibility_hidden != hide;
+                self.node_mut(id)?.visibility_hidden = hide;
+                if hide && changed {
+                    self.conceal_subtree(id);
+                }
             }
             Prop::Row => self.node_mut(id)?.row = flex_direction_row(value)?,
             Prop::LineHeight => {
@@ -2204,8 +2274,16 @@ impl Shell {
         }
         let style = style_for(NodeStyle {
             row: desc.row,
-            scroll_x: desc.scroll_x,
-            scroll_y: desc.scroll_y,
+            overflow_x: if desc.scroll_x {
+                Overflow::Scroll
+            } else {
+                Overflow::Visible
+            },
+            overflow_y: if desc.scroll_y {
+                Overflow::Scroll
+            } else {
+                Overflow::Visible
+            },
             flex_grow: desc.flex_grow,
             flex_shrink: desc.flex_shrink,
             width: desc.width,
@@ -2235,8 +2313,16 @@ impl Shell {
             parent,
             children: Vec::new(),
             kind: desc.kind,
-            scroll_x: desc.scroll_x,
-            scroll_y: desc.scroll_y,
+            overflow_x: if desc.scroll_x {
+                Overflow::Scroll
+            } else {
+                Overflow::Visible
+            },
+            overflow_y: if desc.scroll_y {
+                Overflow::Scroll
+            } else {
+                Overflow::Visible
+            },
             background: Color::from_argb(desc.background),
             color: Color::from_argb(desc.color),
             font_size: desc.font_size,
@@ -2275,6 +2361,8 @@ impl Shell {
             label: String::new(),
             disabled: false,
             a11y_hidden: false,
+            display_none: false,
+            visibility_hidden: false,
             focusable: false,
             modal: false,
             checked: None,
@@ -2358,6 +2446,40 @@ impl Shell {
             id = self.node(id).map(|node| node.parent).unwrap_or(0);
         }
         false
+    }
+
+    fn assign_overflow(&mut self, id: u32, horizontal: bool, mode: Overflow) -> Result<(), String> {
+        let node = self.node_mut(id)?;
+        if horizontal {
+            node.overflow_x = mode;
+            if mode != Overflow::Scroll {
+                node.scroll_left = 0.0;
+            }
+        } else {
+            node.overflow_y = mode;
+            if mode != Overflow::Scroll {
+                node.scroll_top = 0.0;
+            }
+        }
+        Ok(())
+    }
+
+    /// Cancel active and pending gestures in this subtree without disposing them.
+    fn conceal_subtree(&mut self, id: u32) {
+        self.recognizer.conceal_target(id);
+        let count = self
+            .nodes
+            .get(id as usize)
+            .and_then(Option::as_ref)
+            .map(|node| node.children.len())
+            .unwrap_or(0);
+        for index in 0..count {
+            let child = self.nodes[id as usize]
+                .as_ref()
+                .expect("conceal child")
+                .children[index];
+            self.conceal_subtree(child);
+        }
     }
 
     fn cancel_gestures_in_subtree(&mut self, handle: u32) {
@@ -2568,6 +2690,9 @@ impl Shell {
 
     fn paint_node(&self, id: u32, out: &mut Vec<PaintCmd>) {
         let node = self.node(id).expect("paint handle");
+        if !node.painted() {
+            return;
+        }
         let x = node.x;
         let y = node.y;
         let w = node.w;
@@ -2580,9 +2705,25 @@ impl Shell {
         let color = node.color;
         let font_size = node.font_size;
         let opacity = node.opacity.clamp(0.0, 1.0);
-        let scrolls = node.scroll_x || node.scroll_y;
-        let children = node.children.clone();
+        let line_height = node.line_height;
+        let weight = node.font_weight;
+        let align = node.text_align;
+        let fit = node.fit;
+        let src = node.src.clone();
+        let overflow_x = node.overflow_x;
+        let overflow_y = node.overflow_y;
+        let child_count = node.children.len();
         let pads = self.pads(id);
+        let clip = paint_clip(
+            overflow_x,
+            overflow_y,
+            x,
+            y,
+            w,
+            h,
+            self.viewport.width,
+            self.viewport.height,
+        );
         if opacity < 1.0 {
             out.push(PaintCmd::PushOpacity { opacity });
         }
@@ -2594,6 +2735,14 @@ impl Shell {
                 h,
                 radius,
                 color: background,
+            });
+        }
+        if let Some((cx, cy, cw, ch)) = clip {
+            out.push(PaintCmd::PushClip {
+                x: cx,
+                y: cy,
+                w: cw,
+                h: ch,
             });
         }
         if kind == Kind::Field && id == self.caret_handle {
@@ -2631,20 +2780,20 @@ impl Shell {
                 h: text_h,
                 font_size,
                 color,
-                line_height: node.line_height,
-                weight: node.font_weight,
-                align: node.text_align,
+                line_height,
+                weight,
+                align,
                 text: shown,
             });
-        } else if kind == Kind::Image && !node.src.is_empty() {
+        } else if kind == Kind::Image && !src.is_empty() {
             out.push(PaintCmd::Image {
                 x,
                 y,
                 w,
                 h,
                 radius,
-                fit: node.fit,
-                src: node.src.clone(),
+                fit,
+                src,
             });
         }
         if kind == Kind::Field && id == self.caret_handle {
@@ -2659,18 +2808,11 @@ impl Shell {
                 });
             }
         }
-        if scrolls {
-            out.push(PaintCmd::PushClip {
-                x: x + pads[0],
-                y: y + pads[2],
-                w: (w - pads[0] - pads[1]).max(0.0),
-                h: (h - pads[2] - pads[3]).max(0.0),
-            });
-        }
-        for child in children {
+        for index in 0..child_count {
+            let child = self.node(id).expect("paint child").children[index];
             self.paint_node(child, out);
         }
-        if scrolls {
+        if clip.is_some() {
             out.push(PaintCmd::PopClip);
         }
         if id == self.focused && kind != Kind::Field && self.is_focusable(id) {
@@ -2727,69 +2869,94 @@ impl Shell {
         }
     }
 
-    fn hit(&self, id: u32, x: f32, y: f32) -> Hit {
-        let node = self.node(id).expect("hit handle");
-        let nx = node.x;
-        let ny = node.y;
-        let nw = node.w;
-        let nh = node.h;
-        let scrolls = node.scroll_x || node.scroll_y;
-        let handler = node.handler;
-        let children = node.children.clone();
-        if x < nx || y < ny || x >= nx + nw || y >= ny + nh {
-            return Hit::Miss;
-        }
-        if scrolls {
-            let pads = self.pads(id);
-            let left = nx + pads[0];
-            let top = ny + pads[2];
-            let right = nx + nw - pads[1];
-            let bottom = ny + nh - pads[3];
-            if x < left || y < top || x >= right || y >= bottom {
-                return Hit::Inside {
-                    handler: nonzero(handler),
-                };
-            }
-        }
-        for child in children.iter().rev() {
-            match self.hit(*child, x, y) {
-                Hit::Miss => {}
-                Hit::Inside {
-                    handler: Some(found),
-                } => {
-                    return Hit::Inside {
-                        handler: Some(found),
-                    };
-                }
-                Hit::Inside { handler: None } => {
-                    return Hit::Inside {
-                        handler: nonzero(handler),
-                    };
-                }
-            }
-        }
-        Hit::Inside {
-            handler: nonzero(handler),
+}
+
+
+#[derive(Clone, Copy)]
+struct Bounds {
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+}
+
+impl Bounds {
+    fn contains(self, x: f32, y: f32) -> bool {
+        x >= self.x0 && y >= self.y0 && x < self.x1 && y < self.y1
+    }
+
+    fn intersect(self, other: Self) -> Self {
+        Self {
+            x0: self.x0.max(other.x0),
+            y0: self.y0.max(other.y0),
+            x1: self.x1.min(other.x1),
+            y1: self.y1.min(other.y1),
         }
     }
 }
 
-enum Hit {
-    Miss,
-    Inside { handler: Option<u32> },
+/// Clip rect for one node. A visible axis uses the viewport; a hidden or
+/// scroll axis uses the outer box, which is the padding box when there is no border.
+fn axis_bounds(
+    overflow_x: Overflow,
+    overflow_y: Overflow,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> Bounds {
+    Bounds {
+        x0: if overflow_x == Overflow::Visible { 0.0 } else { x },
+        y0: if overflow_y == Overflow::Visible { 0.0 } else { y },
+        x1: if overflow_x == Overflow::Visible {
+            viewport_w
+        } else {
+            x + w
+        },
+        y1: if overflow_y == Overflow::Visible {
+            viewport_h
+        } else {
+            y + h
+        },
+    }
 }
 
-fn nonzero(handler: u32) -> Option<u32> {
-    if handler == 0 {
-        None
-    } else {
-        Some(handler)
+fn paint_clip(
+    overflow_x: Overflow,
+    overflow_y: Overflow,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> Option<(f32, f32, f32, f32)> {
+    if overflow_x == Overflow::Visible && overflow_y == Overflow::Visible {
+        return None;
     }
+    let bounds = axis_bounds(
+        overflow_x,
+        overflow_y,
+        x,
+        y,
+        w,
+        h,
+        viewport_w,
+        viewport_h,
+    );
+    Some((
+        bounds.x0,
+        bounds.y0,
+        (bounds.x1 - bounds.x0).max(0.0),
+        (bounds.y1 - bounds.y0).max(0.0),
+    ))
 }
 
 fn style_for(node: NodeStyle) -> Style {
     let mut style = Style {
-        display: Display::Flex,
+        display: node.display,
         flex_direction: if node.row {
             FlexDirection::Row
         } else {
@@ -2845,19 +3012,15 @@ fn style_for(node: NodeStyle) -> Style {
         },
         ..Style::default()
     };
-    if node.scroll_x || node.flex_grow > 0.0 {
+    if node.overflow_x == Overflow::Scroll || node.flex_grow > 0.0 {
         style.min_size.width = length(0.0);
     }
-    if node.scroll_y || node.flex_grow > 0.0 {
+    if node.overflow_y == Overflow::Scroll || node.flex_grow > 0.0 {
         style.min_size.height = length(0.0);
     }
-    if node.scroll_x {
-        style.overflow.x = Overflow::Scroll;
-    }
-    if node.scroll_y {
-        style.overflow.y = Overflow::Scroll;
-    }
-    if node.scroll_x || node.scroll_y {
+    style.overflow.x = node.overflow_x;
+    style.overflow.y = node.overflow_y;
+    if node.overflow_x == Overflow::Scroll || node.overflow_y == Overflow::Scroll {
         style.scrollbar_width = 0.0;
     }
     style
@@ -2935,15 +3098,37 @@ fn image_fit(value: &Value) -> Result<u8, String> {
     }
 }
 
-fn overflow_enabled(value: &Value) -> Result<bool, String> {
+fn parse_overflow(value: &Value) -> Result<Overflow, String> {
     let Value::String(text) = value else {
         return Err("overflow must be a string".into());
     };
     match text.as_str() {
-        "visible" => Ok(false),
-        "scroll" => Ok(true),
-        "hidden" => Err("overflow hidden is not implemented".into()),
+        "visible" => Ok(Overflow::Visible),
+        "hidden" => Ok(Overflow::Hidden),
+        "scroll" => Ok(Overflow::Scroll),
         other => Err(format!("unsupported overflow {other}")),
+    }
+}
+
+fn parse_display_none(value: &Value) -> Result<bool, String> {
+    let Value::String(text) = value else {
+        return Err("display must be a string".into());
+    };
+    match text.as_str() {
+        "flex" => Ok(false),
+        "none" => Ok(true),
+        other => Err(format!("unsupported display {other}")),
+    }
+}
+
+fn parse_visibility_hidden(value: &Value) -> Result<bool, String> {
+    let Value::String(text) = value else {
+        return Err("visibility must be a string".into());
+    };
+    match text.as_str() {
+        "visible" => Ok(false),
+        "hidden" => Ok(true),
+        other => Err(format!("unsupported visibility {other}")),
     }
 }
 
