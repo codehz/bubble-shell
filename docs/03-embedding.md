@@ -125,9 +125,7 @@ Web 覆盖层要求：
 - Android 的编辑器声明与 `InputConnection` 仅在实际字段会话存在时启用；会话变化统一触发 `restartInput`，退出字段时隐藏 IME，避免按钮 Enter/Space 被输入法截走。语义快照变化才通知系统 subtree 更新；键盘/读屏焦点事件带虚拟节点 source，provider 的 `findFocus` 返回对应 input/accessibility 焦点。
 - iOS 宿主显式作为无障碍容器，按 handle 复用可见语义元素；禁用节点使用 `.notEnabled`，活动 modal 外节点不进入容器。modal 切换发送 `.screenChanged`，其他快照变化发送 `.layoutChanged`。宿主保留 first responder，硬件 Tab/Shift-Tab/Esc 进入核心；非字段焦点的 Enter/Space（含系统文本输入路径）激活按钮。只有实际字段会话显示系统键盘，字段会话变化时统一更新键盘类型、secure/autofill 和输入视图。
 
-Android 弹层设备验收入口为 `cargo run -q -p bubble-eval -- focus-android`：通过 `UiAutomation` 读取服务端树并执行 action，结合真实窗口键盘事件，覆盖嵌套弹层隔离、Tab/Shift-Tab、Enter/Space/Esc、IME 会话切换、旧节点/旧输入连接拒绝和关闭后背景恢复。该验收不替代 TalkBack 实测。
-
-iOS 对应入口为 `cargo run -q -p bubble-eval -- focus-ios`，通过 XCUITest 查询系统无障碍树并注入键盘事件，验证弹层背景隔离、嵌套循环、Enter/Space/Esc、字段输入及关闭后恢复。XCTest 结果与截图保存在 `target/ios-uitest/Logs/Test/`，该验收不替代 VoiceOver 实测。
+无障碍实现以核心语义树与平台桥为准。真实 VoiceOver / TalkBack / NVDA 验收、实体设备与厂商键盘差异属于 post-MVP backlog，不进入当前里程碑；当前仓库不维护对应的设备验收入口或截图。
 
 ## 5. 文本输入与 IME
 
@@ -179,16 +177,14 @@ Web 宿主从 `runtime.js` 具名导入 `setApi`、`dispatchGestureEvents` 和 `
 | 光标位置 | layout 后的 `caret_box` | 隐藏 `textarea` 贴到光标 | `CursorAnchorInfo` | `caretRect(for:)` |
 | autofill | `field_flags` bits 16..23 | `autocomplete` | autofill hints | `textContentType` |
 
-输入模型验收入口：
+输入模型验证以核心测试和 Web Node 单测为准：
 
 ```sh
 cargo test --workspace
-cargo run -q -p bubble-eval -- editing-web
-cargo run -q -p bubble-eval -- editing-android
-cargo run -q -p bubble-eval -- editing-ios
+node --test examples/web/*.test.mjs
 ```
 
-2026-11-12 本机结果：Rust 核心/协议通过；Web 4/4；Android（Android 16 / SDK 36，Fcitx5 `0.1.3-0-g048f581c`）82 项；iOS 27.2 模拟器 27 项。Android 覆盖 CJK 组合更新、组合内移动/删除/确认、`newCursorPosition`、嵌套 batch、周边文本、代码点删除、`CursorAnchorInfo`、旧连接拒绝，以及通过真实 `AccessibilityNodeProvider` 校验语义节点、方向滚动 action、滚动结果与焦点 action；iOS 覆盖标记文本内部选区与光标/选区几何。视觉选区手柄拖动与系统编辑菜单现已接入；实体设备、厂商键盘与读屏器实测仍属 M2 收尾。
+现有模拟器 harness（`editing-web`、`editing-android`、`editing-ios`）可选运行，不作为 MVP 门槛。实体设备、厂商键盘与真实读屏器实测属于 post-MVP backlog。
 
 ## 6. 更新平面
 
@@ -235,5 +231,5 @@ cargo run -q -p bubble-eval -- editing-ios
 - v1 ambient 能力是明确接受的临时风险；后续加 manifest 允许列表与宿主授权。
 - 脚本不能直接调用原生 FFI；只能走能力桥。
 - QuickJS 内存/栈/超时限制。Web 主线程脚本没有等效的硬终止。
-- FFI 使用安全封装、fuzz、边界隔离；native 不做强沙箱。
+- FFI 使用安全封装、边界隔离；fuzz 属 post-MVP。
 - App Store：不使用 JIT；远程 JS 为第一方签名内容；准备 data-only 降级模式并提前做合规评估。

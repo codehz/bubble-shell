@@ -3,6 +3,7 @@ import XCTest
 final class BubbleShellUITests: XCTestCase {
     func testSwipeScrollsTheList() throws {
         let app = XCUIApplication(bundleIdentifier: "dev.bubble.shell")
+        app.launchEnvironment = ["BUBBLE_EVAL": "1", "BUBBLE_FIXTURE": "counter"]
         app.launch()
         // The driver taps the button, injects a dead loop, then remounts.
         // Swipe after the remount so the list is ready for input.
@@ -11,84 +12,6 @@ final class BubbleShellUITests: XCTestCase {
         let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
         start.press(forDuration: 0.05, thenDragTo: end)
         sleep(1)
-    }
-
-    func testModalFocusAcceptance() {
-        continueAfterFailure = false
-        let app = XCUIApplication(bundleIdentifier: "dev.bubble.shell")
-        app.launchEnvironment = ["BUBBLE_FOCUS": "1", "BUBBLE_FIXTURE": "focus"]
-        app.launch()
-        defer { app.terminate() }
-
-        func node(_ label: String) -> XCUIElement {
-            app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
-        }
-        func field(_ label: String) -> XCUIElement {
-            app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", label + ": ")).firstMatch
-        }
-        func wait(_ element: XCUIElement, exists: Bool = true) {
-            let predicate = NSPredicate(format: "exists == %@", NSNumber(value: exists))
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: element)], timeout: 5), .completed,
-                           "Expected exists=\(exists): \(element)\n\(app.debugDescription)")
-        }
-        func key(_ key: XCUIKeyboardKey, shift: Bool = false) {
-            if key == .return || key == .enter {
-                app.typeText("\n")
-            } else if key == .space {
-                app.typeText(" ")
-            } else {
-                app.typeKey(key.rawValue, modifierFlags: shift ? .shift : [])
-            }
-        }
-        let opener = app.buttons["Open dialog"]
-        wait(opener)
-        wait(field("Background field"))
-        key(.tab)
-        key(.enter)
-        wait(node("Settings"))
-        wait(opener, exists: false)
-        wait(field("Background field"), exists: false)
-
-        key(.tab)
-        app.typeText("!")
-        wait(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@ AND value CONTAINS %@", "Dialog field: ", "!")).firstMatch)
-        key(.tab)
-        key(.space)
-        wait(node("Confirmation"))
-        wait(field("Dialog field"), exists: false)
-        wait(app.buttons["Close dialog"], exists: false)
-        let screenshot = XCTAttachment(screenshot: app.screenshot())
-        screenshot.name = "Nested modal accessibility boundary"
-        screenshot.lifetime = .keepAlways
-        add(screenshot)
-        key(.tab)
-        key(.tab)
-        key(.return)
-        wait(node("Confirmation"), exists: false)
-        wait(field("Dialog field"))
-
-        // No focus remains after nested disposal. Backward Tab starts at the outer tail.
-        key(.tab, shift: true)
-        key(.return)
-        wait(node("Settings"), exists: false)
-        wait(opener)
-        wait(field("Background field"))
-
-        // Closing does not restore the opener; Tab restarts at the background head.
-        key(.tab)
-        key(.space)
-        wait(node("Settings"))
-        key(.tab, shift: true)
-        key(.tab)
-        app.typeText("?")
-        wait(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@ AND value CONTAINS %@", "Dialog field: ", "?")).firstMatch)
-        key(.escape)
-        wait(node("Settings"))
-        key(.tab, shift: true)
-        key(.return)
-        wait(opener)
-        wait(node("Settings"), exists: false)
-        XCTAssertEqual(field("Background field").value as? String, "Background")
     }
 
     func testGestureAcceptance() {

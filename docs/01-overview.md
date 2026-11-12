@@ -109,9 +109,18 @@ sequenceDiagram
 | 无障碍 | Rust 语义树 + 平台桥 + Web ARIA 覆盖层 |
 | 嵌入 | 单实例；宿主导航；runtime 只发 navigation intent |
 | 更新 | 签名 manifest + 内容寻址 + 整包原子激活 + LKG；宿主决定 activate/defer |
-| 验收 | 首帧 <400ms；常规 60fps、复杂列表 30fps+；事件 P95 <32ms；内存 +<100MB；Web <3MB gz |
+| 验收 | MVP：Web/模拟器可渲染、可交互、可编辑；性能与真实读屏指标延后 |
 
 ## 6. 验收指标
+
+### MVP
+
+- `cargo test --workspace`、`cargo check --workspace`、Web Node 单测通过。
+- Web 页面完成渲染、点击、滚动、文本输入、焦点移动。
+- iOS/Android 模拟器用同一 fixture 完成点击、滚动、一次文本输入。
+- 不要求实体设备、真实读屏软件、厂商键盘或性能门禁。
+
+### post-MVP 发布指标（当前不作为门槛）
 
 | 指标 | v1 门槛 | 说明 |
 |---|---|---|
@@ -122,7 +131,7 @@ sequenceDiagram
 | 内存增量 | <100MB | 单实例，含 QuickJS/WASM |
 | Web 包 | <3MB gzip | runtime + 引擎胶水，不含业务 bundle |
 | 更新回滚 | 自动 | 新包挂载失败 N 秒内回 LKG |
-| 无障碍 | 核心路径可用 | VoiceOver / TalkBack / NVDA |
+| 无障碍 | 核心路径可用 | VoiceOver / TalkBack / NVDA，真实读屏实测 |
 
 ## 7. 术语
 

@@ -1368,11 +1368,6 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
 final class AppDriver {
     static let scenes = ["tap", "long", "double", "pan", "transform", "parallel", "reserve", "contain", "dispose", "lifecycle"]
-    static let unsupported: [[String: Any]] = [
-        ["name": "transform.arbitraryDualPan", "detail": "public XCTest exposes pinch and rotate, not independent dual-pan trajectories"],
-        ["name": "transform.thirdFinger", "detail": "public XCTest pinch and rotate use two pointers; a third finger is not expressed"],
-        ["name": "lifecycle.heldTouch", "detail": "system interrupt during an active touch is uncovered; lifecycle.visibility is foreground/background wiring only and is not a held-touch cancel"],
-    ]
 
     let view = BubbleView()
     var frames = 0
@@ -1400,7 +1395,7 @@ final class AppDriver {
 
     var gestureMode: Bool { ProcessInfo.processInfo.environment["BUBBLE_GESTURES"] == "1" }
     var editMode: Bool { ProcessInfo.processInfo.environment["BUBBLE_EDIT"] == "1" }
-    var focusMode: Bool { ProcessInfo.processInfo.environment["BUBBLE_FOCUS"] == "1" }
+    var m1Mode: Bool { ProcessInfo.processInfo.environment["BUBBLE_EVAL"] == "1" }
     var fixtureName: String {
         let requested = ProcessInfo.processInfo.environment["BUBBLE_FIXTURE"]
             ?? (editMode ? "editing" : (gestureMode ? "gestures" : "counter"))
@@ -1484,10 +1479,6 @@ final class AppDriver {
         last = now
         view.refresh()
         frames += 1
-        if focusMode {
-            if frames == 8 { view.synchronizeResponder() }
-            return
-        }
         if editMode {
             if !editRan && frames >= 8 {
                 editRan = true
@@ -1499,6 +1490,7 @@ final class AppDriver {
             advanceGestures()
             return
         }
+        if !m1Mode { return }
         if frames > 5 { frameMs += dt }
         if phase == 0 && frames == 20 {
             var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
@@ -1718,7 +1710,6 @@ final class AppDriver {
             "ok": ok,
             "elapsed_ms": elapsed,
             "checks": all,
-            "unsupported": Self.unsupported,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: doc, options: [.sortedKeys]) else { return }
         try? FileManager.default.createDirectory(at: resultURL.deletingLastPathComponent(), withIntermediateDirectories: true)

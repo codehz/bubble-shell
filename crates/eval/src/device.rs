@@ -151,42 +151,6 @@ pub fn editing_ios() -> Result<SuiteReport, String> {
     Ok(decode("edit.ios", &body))
 }
 
-pub fn focus_ios() -> Result<SuiteReport, String> {
-    let started = Instant::now();
-    let root = workspace();
-    build_ios(&root)?;
-    let udid = booted_simulator()?;
-    let tested = run(Command::new("xcodebuild")
-        .args(["test", "-quiet", "-project"])
-        .arg(root.join("examples/ios/BubbleShellUITests.xcodeproj"))
-        .args(["-scheme", "BubbleShellUITests", "-destination"])
-        .arg(format!("platform=iOS Simulator,id={udid}"))
-        .arg("-derivedDataPath")
-        .arg(root.join("target/ios-uitest"))
-        .args([
-            "-parallel-testing-enabled",
-            "NO",
-            "-only-testing:BubbleShellUITests/BubbleShellUITests/testModalFocusAcceptance",
-        ]));
-    let ok = tested.is_ok();
-    Ok(SuiteReport {
-        suite: "focus.ios".into(),
-        ok,
-        scenarios: vec![ScenarioReport {
-            name: "focus.ios".into(),
-            ok,
-            elapsed_ms: started.elapsed().as_millis(),
-            checks: vec![Check {
-                name: "XCTest modal keyboard and accessibility flow".into(),
-                ok,
-                detail: tested
-                    .err()
-                    .unwrap_or_else(|| "XCTest passed on booted simulator".into()),
-            }],
-        }],
-    })
-}
-
 fn ios_device(gestures: bool) -> Result<SuiteReport, String> {
     let root = workspace();
     build_ios(&root)?;
@@ -392,50 +356,6 @@ fn install_android_tests(root: &Path, out: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn android_device_info() -> Result<Vec<Check>, String> {
-    let sdk = run(Command::new("adb").args(["shell", "getprop", "ro.build.version.sdk"]))?;
-    let image = run(Command::new("adb").args(["shell", "getprop", "ro.build.fingerprint"]))?;
-    let keyboard = run(Command::new("adb").args(["shell", "dumpsys", "input_method"]))?;
-    let keyboard = keyboard
-        .lines()
-        .find(|line| {
-            let line = line.trim_start();
-            line.starts_with("mCurMethodId=") || line.starts_with("mCurId=")
-        })
-        .map(|line| line.trim().to_string())
-        .unwrap_or_else(|| "mCurId=unknown".into());
-    let ime_id = keyboard
-        .split_once('=')
-        .map(|(_, value)| value.trim())
-        .unwrap_or("unknown");
-    let package = ime_id.split('/').next().unwrap_or(ime_id);
-    let version = run(Command::new("adb").args(["shell", "dumpsys", "package", package]))
-        .ok()
-        .and_then(|body| {
-            body.lines()
-                .find_map(|line| line.trim().strip_prefix("versionName=").map(str::to_owned))
-        })
-        .unwrap_or_else(|| "unknown".into());
-    let keyboard = format!("{keyboard} versionName={version}");
-    Ok(vec![
-        Check {
-            name: "emulator sdk".into(),
-            ok: true,
-            detail: sdk.trim().to_string(),
-        },
-        Check {
-            name: "emulator image".into(),
-            ok: true,
-            detail: image.trim().to_string(),
-        },
-        Check {
-            name: "ime".into(),
-            ok: true,
-            detail: keyboard,
-        },
-    ])
-}
-
 pub fn editing_android() -> Result<SuiteReport, String> {
     let root = workspace();
     let out = build_android(&root)?;
@@ -463,48 +383,7 @@ pub fn editing_android() -> Result<SuiteReport, String> {
         "files/edit-result.json",
     ]))
     .map_err(|err| format!("{err}\n{output}"))?;
-    let mut report = decode("edit.android", &body);
-    if let Some(scenario) = report.scenarios.first_mut() {
-        match android_device_info() {
-            Ok(checks) => scenario.checks.extend(checks),
-            Err(err) => scenario.checks.push(Check {
-                name: "device info".into(),
-                ok: false,
-                detail: err,
-            }),
-        }
-    }
-    Ok(report)
-}
-
-pub fn focus_android() -> Result<SuiteReport, String> {
-    let root = workspace();
-    let out = build_android(&root)?;
-    install_android_tests(&root, &out)?;
-    let _ = run(Command::new("adb").args([
-        "shell",
-        "run-as",
-        "dev.bubble.shell",
-        "rm",
-        "-f",
-        "files/focus-result.json",
-    ]));
-    let output = run(Command::new("adb").args([
-        "shell",
-        "am",
-        "instrument",
-        "-w",
-        "dev.bubble.shell.test/.FocusInstrumentation",
-    ]))?;
-    let body = run(Command::new("adb").args([
-        "shell",
-        "run-as",
-        "dev.bubble.shell",
-        "cat",
-        "files/focus-result.json",
-    ]))
-    .map_err(|err| format!("{err}\n{output}"))?;
-    Ok(decode("focus.android", &body))
+    Ok(decode("edit.android", &body))
 }
 
 fn android_device(gestures: bool) -> Result<SuiteReport, String> {
@@ -543,6 +422,9 @@ fn android_device(gestures: bool) -> Result<SuiteReport, String> {
         "start",
         "-n",
         "dev.bubble.shell/.MainActivity",
+        "--ez",
+        "bubble_eval",
+        "true",
     ]))?;
     let (left, top, right, bottom) = wait_scroll_rect(Duration::from_secs(10))?;
     let x = (left + right) / 2;

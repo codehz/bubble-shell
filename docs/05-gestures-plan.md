@@ -1,8 +1,8 @@
 # 05 · M2 前置：手势与滚动协商计划
 
-状态：A-D 已实现，E 已完成模拟器自动化验收。iOS 与 Android 模拟器自动化覆盖点击族、长按、双击、pan、pinch/rotate、横纵并行、captureAxis 回放、overscroll 截断、声明销毁和生命周期取消；iOS 上任意双指同向拖、第三指加入和按住期间系统中断受公共 XCUITest 能力限制，待真机验证。本文记录 2026-11-11 确认的行为契约与 2026-11-12 的验收结果；字段名以实现为准。
+状态：A-D 已实现；E 的文档切换已完成。模拟器 harness 保留为可选回归入口，不是 MVP 门槛。实体设备、任意双指轨迹、第三指、按住期间系统中断与厂商键盘差异进入 post-MVP backlog。本文记录已确认的行为契约；字段名以实现为准。
 
-实现落点：`crates/core/src/gesture.rs`（识别状态机）、`crates/core/src/shell.rs`（命中路径、逐轴滚动链、声明生命周期）、`crates/core/src/ops.rs`（BSOP v3 手势 op）、`crates/wasm` / `crates/native`（pointer/tick ABI）、`examples/web/runtime.js`（五种虚拟原语与事件分发）、三端宿主输入适配。Web 端已由 `examples/web/m0-smoke.mjs` 覆盖按下-抬起、事件分发与滚动。iOS/Android 模拟器记录见第 9.1 节。
+实现落点：`crates/core/src/gesture.rs`（识别状态机）、`crates/core/src/shell.rs`（命中路径、逐轴滚动链、声明生命周期）、`crates/core/src/ops.rs`（BSOP v3 手势 op）、`crates/wasm` / `crates/native`（pointer/tick ABI）、`examples/web/runtime.js`（五种虚拟原语与事件分发）、三端宿主输入适配。Web 端由 `examples/web/m0-smoke.mjs` 覆盖按下-抬起、事件分发与滚动。
 
 ## 1. 目标与边界
 
@@ -196,8 +196,8 @@
 | A 输入和协议契约 | 已实现：BSOP v3、手势声明／配置／移动／销毁 op、`bubble_pointer`／`bubble_tick`、`pointer`／`tick` wasm 导出 |
 | B 虚拟节点与 JSX 运行时 | 已实现：五种原语、If/Each 归属与清理；点击统一使用显式 TapGesture |
 | C Rust 识别和协商 | 已实现：单指、点击族、captureAxis、双指 transform、结构事件与取消清理 |
-| D 滚动消费与三端接入 | 已实现：逐轴链、overscrollX/Y、三端触点生命周期；模拟器已用真实输入覆盖滚动、长按、双击与双指 |
-| E 验证与文档切换 | 已完成：两端模拟器自动化覆盖支持范围；iOS 任意双指轨迹、第三指与按住中断受公共 XCUITest 限制，待真机验证 |
+| D 滚动消费与三端接入 | 已实现：逐轴链、overscrollX/Y、三端触点生命周期；模拟器 harness 保留为可选回归 |
+| E 文档切换 | 已完成；模拟器 harness 不作为 MVP 门槛，真机差异进入 post-MVP backlog |
 
 ### A. 输入和协议契约
 
@@ -240,16 +240,17 @@
 
 交付：同一 bundle 的按压、点击、长按、双击、按轴嵌套滚动及双指手势能在三端实际操作。
 
-### E. 验证与文档切换
+### E. 文档切换
 
-1. 完成下表的行为用例和平台实际交互；记录当前设备与环境限制。
-2. 增加可选、默认关闭的本地协商 trace：候选 ID、目标、配置版本、pending/accept/fail 原因、占轴、回放与滚动消费；不在热路径默认生成字符串或原始轨迹日志。
-3. 更新运行时事件契约、宿主输入契约、路线图和 API 示例；实现完成后再将本文从计划切换为实际行为说明。
-4. 一次迁移内部所有调用方与旧事件协议；点击仅使用显式 TapGesture，不保留 View onPress 或旧按下触发路径。
+1. 行为测试由 Rust 确定性轨迹覆盖；模拟器真实输入只作为可选 smoke，不作为 MVP 门槛。
+2. 更新运行时事件契约、宿主输入契约、路线图和 API 示例；实现完成后再将本文从计划切换为实际行为说明。
+3. 一次迁移内部所有调用方与旧事件协议；点击仅使用显式 TapGesture，不保留 View onPress 或旧按下触发路径。
 
-## 9. 验证矩阵
+## 9. 行为契约
 
-| 层面 | 必须证明的行为 |
+以下行为由 Rust 确定性输入轨迹与假时钟测试覆盖，是实现的回归依据，不是跨端验收矩阵：
+
+| 层面 | 行为 |
 |---|---|
 | 点击族 | 按下不触发 onTap；成功抬起触发；滚动／长按／第二指／取消不误触；双击存在才延迟；不同目标不合并；祖先双击不拖延子按钮 |
 | 协商 | 先满足者胜出；同样本深层优先／同目标顺序；横 pan 与纵滚动并行；不重复消费同轴；明确失败后不可复活 |
@@ -259,35 +260,15 @@
 | transform | 第二指阈值升级并取消单指；共享基线与分量；跨 π 连续；零距离稳定；第三指不入组；一指离开不恢复 pan |
 | 生命周期 | 系统 cancel、失焦、暂停、目标销毁、声明移动、runtime 重建均清理；没有双终结、悬挂保留、失效 handler 或跨 generation 事件 |
 | 事件传输 | start/update/end 顺序；合并 delta 和最终值正确；脚本忙时滚动继续、结构事件不丢；自定义视觉延迟符合已声明限制 |
-| 平台 | 坐标单位与按钮一致；真实 down/up、拖动、长按、双击和双指操作；iOS 无重复识别，Android 多 pointer 正确，Web capture/cancel 与 wheel 单位正确 |
 | 虚拟树 | 手势不影响布局与命中；If/Each 透明归属、顺序与销毁正确；View onPress 被拒绝 |
 
-Rust 用确定性输入轨迹和假时钟覆盖状态机；跨线程／runtime 集成用例覆盖已提交 signal、事件合并及清理。三端以模拟器真实输入验证平台适配；新增测试断言消费者可见行为和状态不变量，不锁定源代码文本或私有实现细节。
-
-### 9.1 模拟器自动化验收（2026-11-12）
-
-命令：`cargo run -q -p bubble-eval -- gestures-ios` 与 `cargo run -q -p bubble-eval -- gestures-android`，两份报告 `ok: true`。两端使用同一份 `examples/app/gestures.js` 夹具；节点 handle 由渲染器返回，不依赖示例中的偶然编号。iOS 另支持 `BUBBLE_GESTURE_ONLY=tap,double` 过滤场景。
-
-| 设备 | 输入方式 | 结果 |
-|---|---|---|
-| iOS 27.2 Simulator，iPhone 18 Pro（`85111F63-1CD1-4C6F-8333-6039F90CD1A5`） | XCUITest 真实触摸：`tap`、`press`、`doubleTap`、拖动、`pinch`、`rotate`、Home/activate | 全部支持项通过；点击 `pressStart → pressEnd → tap`；长按与滚动使点击取消；pinch/rotate 各一次 start/end 且几何有限；并行 pan + scrollY 84.7；captureAxis 回放 120；contain 内层 60、外层 0；声明销毁 cancel 一次且无 later pan |
-| Android 16 模拟器 `emulator-5554`（`sdk_phone64_arm64`） | Instrumentation `UiAutomation.injectInputEvent` 真实 `MotionEvent`，含多 pointer、CANCEL、HOME/恢复 | 全部检查通过；双指 transform、第三指忽略、交错抬指只发一次终结；captureAxis pending=0 / replay 90 / total 110；contain 60/0；销毁 cancel 后无 end；HOME 期间 pan cancel reason 7 且无 end |
-
-真实平台输入还暴露并修复了三个缺陷：
-
-- `Recognizer::advance` 每帧无条件取消点击，导致正常抬手前点击已失败；改为仅长按实际胜出时取消。
-- 双指终止路径可能重复 END，且双指下已接受 pan 在取消后仍可能再发 END；首个配对触点离开即冻结序列，剩余触点不恢复单指。
-- 事件回调中销毁声明时，runtime 过早释放 handler，terminal cancel 丢失；核心在终结事件后追加内部 slot 0 销毁确认，runtime 收到确认才释放。slot 0 不投递应用回调，`BSGE` 版本不变。
-
-同时把 iOS 宿主接入 `sceneWillResignActive` / `sceneDidBecomeActive` → `bubble_set_visible`，并让 JNI `nodeText` 使用 64 KiB 缓冲以读取事件快照。
-
-iOS 设备上任意双指同向拖轨迹、第三指加入和按住期间的系统中断尚无公共 XCUITest 手段：前两项由 Android 真实多 pointer 与 Rust 轨迹测试覆盖；系统中断在 Android 由 HOME 生命周期 cancel 覆盖，iOS 在前后台切换时验证可见性。方向、距离、同轴竞争、signal 冻结等状态机边界由 `crates/core/tests/gestures.rs` 的确定性轨迹覆盖。
+平台适配由现有模拟器 harness 做可选 smoke；真实设备与厂商差异进入 post-MVP backlog。测试只断言消费者可见行为和状态不变量，不锁定源代码文本或私有实现细节。
 
 ## 10. 风险、调参与发布
 
 已接受的权衡：
 
-- captureAxis 失败回放会在释放时造成可见位移跳变；这是保留完整移动距离的选择，需要交互验收。
+- captureAxis 失败回放会在释放时造成可见位移跳变；这是保留完整移动距离的选择。
 - first-ready 意味着更高 minDistance 的子手势可能输给滚动；组件必须显式 captureAxis 才能要求祖先等待。
 - 双指升级不撤销先前滚动，阈值前的列表位移可能可见。
 - signal 在提交之前不可见，胜出后冻结；不能把实时 JS 条件误当 UI 同步条件。
@@ -296,6 +277,6 @@ iOS 设备上任意双指同向拖轨迹、第三指加入和按住期间的系�
 
 已确定的默认值：点击 slop 10，双击窗口 300 ms／空间容差 24，长按 500 ms／最大位移 10，pan 最小距离 10，触摸滚动起始阈值 8，pinch 阈值 0.05，rotate 阈值 5°。点击族与长按的计时由宿主每帧调用 `bubble_tick`／`tick` 推进。
 
-可选协商 trace 默认关闭；`Shell::set_gesture_trace` 开启后记录候选接受／失败、预留缓存、回放与滚动消费，`take_gesture_trace` 取走文本。wasm 导出 `set_gesture_trace`／`take_gesture_trace`，native 导出 `bubble_set_gesture_trace`／`bubble_take_gesture_trace`。触点到候选、保留缓存和事件队列目前不设硬容量上限；待真机压力测试确定数值，不改变正常路径语义。
+可选协商 trace 默认关闭；`Shell::set_gesture_trace` 开启后记录候选接受／失败、预留缓存、回放与滚动消费，`take_gesture_trace` 取走文本。wasm 导出 `set_gesture_trace`／`take_gesture_trace`，native 导出 `bubble_set_gesture_trace`／`bubble_take_gesture_trace`。触点到候选、保留缓存和事件队列目前不设硬容量上限；压力测试延后到 post-MVP。
 
 发布按内部协议和三端宿主共同切换，不做旧按下点击行为的兼容分支。出现问题回退对应 runtime／宿主／bundle 的一致版本，不在同一实例混用新旧输入协议。没有持久化状态迁移。

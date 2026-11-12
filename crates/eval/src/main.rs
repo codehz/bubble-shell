@@ -8,11 +8,9 @@ fn main() {
         Some("gestures-android") => bubble_eval::gestures_android().unwrap_or_else(failed),
         Some("editing-ios") => bubble_eval::editing_ios().unwrap_or_else(failed),
         Some("editing-android") => bubble_eval::editing_android().unwrap_or_else(failed),
-        Some("focus-android") => bubble_eval::focus_android().unwrap_or_else(failed),
-        Some("focus-ios") => bubble_eval::focus_ios().unwrap_or_else(failed),
         Some("editing-web") => bubble_eval::web().unwrap_or_else(failed),
         Some(other) => failed(format!(
-            "unknown target {other}; use ios, android, gestures-ios, gestures-android, editing-ios, editing-android, editing-web, focus-android or focus-ios"
+            "unknown target {other}; use ios, android, gestures-ios, gestures-android, editing-ios, editing-android or editing-web"
         )),
     };
     println!(

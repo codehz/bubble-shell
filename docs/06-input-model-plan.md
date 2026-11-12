@@ -8,27 +8,16 @@
 
 本计划接在 [手势与滚动协商计划](05-gestures-plan.md) 之后，是下一个开发计划；完成后继续 M2 的焦点、无障碍和输入控件收尾工作。
 
-**状态（2026-11-12）**：阶段 A–F 已完成。`EditSession` 仍是字段权威文档。编辑几何改为 `LayoutSnapshot`（`crates/core/src/layout.rs`）：失效键是 revision、可用宽度、字号、字重、行高、对齐和密度；旧 revision 不能驱动光标、命中或选区。Android `StaticLayout`、iOS Core Text 与 Web canvas/DOM 测量各自生成同一 BLS1 快照，绘制与 IME 查询共用该结果。前缀测宽 `text_metrics` / `hit_unit` 已从编辑路径删除；没有平台快照时核心只保留测试用的 LTR 换行回退。阶段 F 已完成输入合同、模拟器矩阵与文档切换；视觉选区手柄拖动属于 M2 输入控件收尾，不在本计划自动化内。
+**状态（2026-11-12）**：阶段 A–F 已实现。`EditSession` 仍是字段权威文档。编辑几何改为 `LayoutSnapshot`（`crates/core/src/layout.rs`）：失效键是 revision、可用宽度、字号、字重、行高、对齐和密度；旧 revision 不能驱动光标、命中或选区。Android `StaticLayout`、iOS Core Text 与 Web canvas/DOM 测量各自生成同一 BLS1 快照，绘制与 IME 查询共用该结果。前缀测宽 `text_metrics` / `hit_unit` 已从编辑路径删除；没有平台快照时核心只保留测试用的 LTR 换行回退。阶段 F 完成输入契约与文档切换；MVP 验证以核心测试和 Web 单测为准，视觉选区手柄拖动、实体设备与厂商键盘差异进入 post-MVP backlog。
 
-验收入口：
+验证命令：
 
 ```sh
 cargo test --workspace
-cargo run -q -p bubble-eval -- editing-web
-cargo run -q -p bubble-eval -- editing-android
-cargo run -q -p bubble-eval -- editing-ios
+node --test examples/web/*.test.mjs
 ```
 
-2026-11-12 本机结果：
-
-| 目标 | 环境 | 结果 |
-|---|---|---|
-| Rust 核心/协议 | `cargo test --workspace` | 通过 |
-| Web | Node `examples/web/ime.test.mjs` | 3/3 通过（菜单行为已迁到核心） |
-| Android | `sdk_phone64_arm64`，Android 16（SDK 36），Fcitx5 `0.1.3-0-g048f581c` | 82 项检查通过（含 8 项读屏语义/滚动） |
-| iOS | iPhone 18 Pro 模拟器，iOS 27.2 | 27 项检查通过 |
-
-Android 自动化覆盖焦点、IME `commit`/`setComposingText`/`setComposingRegion`/`finishComposingText`、组合内选区与删除、`newCursorPosition` 正负与零、嵌套 batch 单 revision、`getTextBefore/After/Selected/Extracted`、代码点删除、`CursorAnchorInfo`、关闭连接与切换字段后的旧连接拒绝。iOS 覆盖 `setMarkedText` 内部选区、`caretRect`/`firstRect`/`selectionRects` 几何、`unmarkText`、删除、非 BMP 字符与字段切换。实体设备与厂商键盘差异仍按第 6 节留待后续。
+现有 `editing-web`、`editing-android`、`editing-ios` 模拟器 harness 可选运行，不作为 MVP 门槛。
 
 ## 2. 源码现状与问题
 
@@ -96,29 +85,24 @@ IME 命令是当前活动组合的唯一编辑者。普通应用 `SetEditingValu
 | C. Android InputConnection | 面向活动会话实现读写；支持 batch edit、newCursorPosition、组合区域/内部选区、周边文本/选择、代码点删除、连接关闭与失效 | 去除 Kotlin 重复 composition 状态和重复退格实现；保留键盘配置、autofill、CursorAnchorInfo、原生手柄/菜单 |
 | D. 平台适配迁移 | iOS `UITextInput`、Web textarea 事件映射和 host 同步迁移 | 三端遵循相同事务、冲突、组合与 revision 规则；移除旧行为 |
 | E. 几何快照 | 三端平台布局快照、版本失效、光标/选区/命中/绘制共用 | 自动换行、组合文本和 bidi 的内部几何一致；淘汰旧前缀测宽的编辑几何路径 |
-| F. 集成验收和文档切换 | 跨端契约、模拟器矩阵、文档/示例、故障定位 | 已完成：`editing-web`/`editing-android`/`editing-ios` 入口、输入文档切换和过期说明删除 |
+| F. 集成与文档切换 | 跨端契约、示例、文档、故障定位 | 已完成：输入契约与文档切换；模拟器矩阵属于可选回归，不作为 MVP 门槛 |
 
 可并行实现的阶段内平台工作应共享 A/B 固定的 ABI 与 `LayoutSnapshot` 契约；不能各自发明平台私有编辑语义。
 
-阶段 A–F 已完成。
+## 5. 行为契约
 
-## 5. 验收矩阵
+以下行为是实现的回归依据，由 Rust 核心测试与 Web Node 单测覆盖，不是跨端验收矩阵：
 
-| 层面 | 必须证明的行为 |
+| 层面 | 行为 |
 |---|---|
 | Rust 文档边界 | UTF-16 代理对边界、反向选区、空文本/文末、范围替换、maxlength、单行过滤、方向 affinity |
 | Composition | CJK 开始/更新/确认/取消；确认后只产生一次组合历史事务；组合区与 selection 独立；组合内选择、删除、替换后状态正确 |
-| Android IME | `newCursorPosition` 正负和边界；`deleteSurroundingText` 与 codepoint 变体；setComposingRegion；嵌套 batch；getTextBefore/After、getSelectedText、getExtractedText；restart/close/失焦后的旧连接拒绝写入；CursorAnchorInfo 更新 |
 | 输入与冲突 | 多次 IME 操作一批一次事件；应用普通写入返回 composing conflict；显式 reset 后旧 IME 输入失效；过期 epoch 返回 stale conflict；错误路径无部分提交或事务泄漏 |
-| iOS | `setMarkedText` 的内部选区准确；replace range/selection/caretRect/selectionRects/firstRect 与当前 session 一致；旧输入代理失效 |
-| Web | beforeinput 与 composition 不双重应用；浏览器代理 selection 与 Rust 状态回读一致；字段切换、reset、过期事件处理正确 |
-| 几何 | 每个平台同一布局结果驱动绘制、点击 caret、拖动选择及 IME 坐标；覆盖自动换行、空文本、非 BMP 字符、混合 RTL/LTR、组合区和布局宽度变化 |
+| 几何 | 同一布局结果驱动绘制、点击 caret、拖动选择及 IME 坐标；覆盖自动换行、空文本、非 BMP 字符、组合区和布局宽度变化 |
 | 事件协议 | delta 顺序可重放到最终快照；批次 revision 单调；旧协议版本按锁步发布，不留兼容路径；所有生产者/消费者同步升级 |
 | 安全与诊断 | 无敏感文本日志；异常/失效会话可诊断且不会写错字段或 generation |
 
-### 发布门槛
-
-通过 Rust 核心/协议测试、Android 模拟器输入自动化，以及 iOS/Web 对应的目标平台检查。Android 模拟器测试至少覆盖 CJK IME 组合中移动、删除、确认与程序化选区查询；记录模拟器 API、系统镜像和键盘版本。视觉选区手柄拖动、实体 Android 设备与厂商键盘差异归入 M2 输入控件收尾和后续发布记录。
+平台输入适配（Android `InputConnection`、iOS `UITextInput`、Web textarea）由现有模拟器 harness 做可选 smoke；实体设备、厂商键盘与真实读屏器进入 post-MVP backlog。
 
 ## 6. 非目标与风险
 
@@ -126,8 +110,8 @@ IME 命令是当前活动组合的唯一编辑者。普通应用 `SetEditingValu
 - 不引入新的文本 shaping 引擎；平台排版仍允许跨端差异。
 - 不以隐藏 `EditText` 作为 Android 后备实现。
 - Android SDK 最低版本在当前仓库中未找到明确配置；开始 C 阶段前必须从实际 Gradle/build 配置确认支持 API 范围，并据此选用受支持的 `InputConnection` 方法。
-- 模拟器不能覆盖各厂商键盘与实体设备差异；真实设备实测留待后续，重点关注 Samsung、Gboard、CJK 和手写输入差异。
-- 事件 delta 减少全量字符串复制，但增加重放与最终快照一致性的协议责任；用属性测试或确定性重放测试保证任意批次后状态一致。
+- 模拟器不能覆盖各厂商键盘与实体设备差异；真实设备实测进入 post-MVP backlog，重点关注 Samsung、Gboard、CJK 和手写输入差异。
+- 事件 delta 减少全量字符串复制，但增加重放与最终快照一致性的协议责任；由确定性重放测试覆盖，不引入属性测试矩阵。
 
 ## 7. 参考方案
 

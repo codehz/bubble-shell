@@ -20,10 +20,12 @@ class MainActivity : Activity() {
     private var scrollLogged = false
     private val started = System.nanoTime()
     private var gestures = false
+    private var acceptance = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         gestures = intent?.getBooleanExtra("bubble_gestures", false) == true
+        acceptance = intent?.getBooleanExtra("bubble_eval", false) == true
         check(BubbleNative.create() == 0)
         assets.open("HostFont.ttf").use { input ->
             val bytes = input.readBytes()
@@ -50,12 +52,12 @@ class MainActivity : Activity() {
             val dt = (now - last) / 1_000_000.0
             last = now
             shell.refresh()
-            frames += 1
-            if (frames > 5) frameMs += dt
-            if (gestures) {
+            if (gestures || !acceptance) {
                 if (!isDestroyed) Choreographer.getInstance().postFrameCallback(this)
                 return
             }
+            frames += 1
+            if (frames > 5) frameMs += dt
             when (phase) {
                 0 -> if (frames == 20) {
                     val box = BubbleNative.nodeBox(4)

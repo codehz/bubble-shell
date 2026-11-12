@@ -287,7 +287,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 - QuickJS 内存上限初始 64MB，栈上限单独设置；内存超限与硬超时走同一故障路径：中断执行、销毁 context、重建并重新挂载 bundle。
 - 故障处理：上报 → 销毁 context → 重建 → 重新挂载 bundle → 错误占位与重试。应用状态丢失，内容级恢复。
 - Web：一次调用返回前页面卡住；无法像 Worker 那样 `terminate()`。硬超时只存在于 native QuickJS。
-- FFI 边界 `catch_unwind`，不允许 Rust panic 跨 C ABI；QuickJS 绑定用安全封装并 fuzz。
+- FFI 边界 `catch_unwind`，不允许 Rust panic 跨 C ABI；QuickJS 绑定用安全封装；fuzz 属 post-MVP。
 - native 为进程内运行，没有强沙箱；依靠签名内容、内存配额、边界隔离降低风险。
 - 配额：图片缓存、bundle 磁盘、网络并发；超限淘汰最旧资源。
 
