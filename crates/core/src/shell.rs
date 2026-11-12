@@ -913,6 +913,14 @@ impl Shell {
             .ok_or_else(|| format!("handle {handle} has no editing session"))
     }
 
+    pub fn commit_text(&mut self, text: &str, new_cursor_position: i32) -> Result<(), String> {
+        self.apply_focused_session(|session| session.commit_text(text, new_cursor_position))
+    }
+
+    pub fn compose_text(&mut self, text: &str, new_cursor_position: i32) -> Result<(), String> {
+        self.apply_focused_session(|session| session.compose_text(text, new_cursor_position))
+    }
+
     /// Replace a focused-field range with IME text and a relative cursor.
     pub fn replace_with_cursor(
         &mut self,

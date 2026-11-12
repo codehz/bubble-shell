@@ -499,15 +499,69 @@ Object.assign(ime.style, {
 });
 document.body.append(ime);
 
+function editSnapshot() {
+  const len = exports.edit_snapshot();
+  if (len < 36) return null;
+  const view = new DataView(memory().buffer, exports.scratch_ptr(), len);
+  return {
+    session: view.getBigUint64(0, true),
+    revision: view.getBigUint64(8, true),
+    anchor: view.getUint32(16, true),
+    active: view.getUint32(20, true),
+    compositionStart: view.getUint32(24, true),
+    compositionEnd: view.getUint32(28, true),
+    composing: view.getUint32(32, true) !== 0,
+  };
+}
+
+function focusedValue() {
+  if (!exports.focused()) return "";
+  const len = exports.focused_text();
+  if (!len) return "";
+  return decoder.decode(new Uint8Array(memory().buffer, exports.scratch_ptr(), len));
+}
+
+function syncIme() {
+  const snapshot = editSnapshot();
+  if (!snapshot || snapshot.composing) return;
+  const value = focusedValue();
+  if (ime.value !== value) ime.value = value;
+  ime.selectionStart = Math.min(snapshot.anchor, snapshot.active);
+  ime.selectionEnd = Math.max(snapshot.anchor, snapshot.active);
+}
+
 function applyEditCommands(commands) {
+  const snapshot = editSnapshot();
+  if (!snapshot) return;
   for (const command of commands) {
     const bytes = encoder.encode(command.text ?? "");
     const ptr = bytes.length ? copyBytes(bytes) : 0;
-    exports.edit(command.action, ptr, bytes.length, command.a ?? 0, command.b ?? 0);
+    if (command.op === "commit") {
+      exports.edit_commit(snapshot.session, ptr, bytes.length, 1);
+    } else if (command.op === "compose") {
+      exports.edit_compose(snapshot.session, ptr, bytes.length, 1);
+    } else if (command.op === "replace") {
+      exports.edit_replace(snapshot.session, command.start, command.end, ptr, bytes.length, 0, 0);
+    } else if (command.op === "delete") {
+      if (snapshot.anchor !== snapshot.active) {
+        exports.edit_commit(snapshot.session, 0, 0, 1);
+      } else {
+        exports.edit_delete_surrounding(snapshot.session, command.before ?? 0, command.after ?? 0);
+      }
+    } else if (command.op === "select") {
+      exports.edit_select(snapshot.session, command.anchor, command.active);
+    } else if (command.op === "undo") {
+      exports.edit_undo(snapshot.session);
+    } else if (command.op === "redo") {
+      exports.edit_redo(snapshot.session);
+    } else if (command.op === "finish") {
+      exports.edit_finish_composition(snapshot.session);
+    }
     if (bytes.length) exports.dealloc(ptr, bytes.length);
   }
   pumpGestures();
   if (exports.layout() === 0) paint();
+  syncIme();
 }
 
 for (const type of ["beforeinput", "compositionstart", "compositionupdate", "compositionend"]) {
@@ -534,6 +588,7 @@ function placeCaret(handle) {
     ime.style.top = `${rect.top + view.getFloat32(4, true)}px`;
     ime.style.height = `${Math.max(16, view.getFloat32(12, true))}px`;
   }
+  syncIme();
   ime.focus();
 }
 
@@ -573,13 +628,14 @@ document.body.append(editMenu);
 function focusedField() {
   const handle = exports.focused();
   if (!handle) return null;
-  if (exports.selection() < 16) return null;
-  const view = new DataView(memory().buffer, exports.scratch_ptr(), 16);
-  const selection = [view.getUint32(0, true), view.getUint32(4, true)];
+  const snapshot = editSnapshot();
+  if (!snapshot) return null;
   const flags = exports.field_flags(handle);
-  const textLen = exports.focused_text();
-  const bytes = textLen ? new Uint8Array(memory().buffer, exports.scratch_ptr(), textLen) : new Uint8Array();
-  return { value: decoder.decode(bytes), selection, secure: (flags & 2) !== 0 };
+  return {
+    value: focusedValue(),
+    selection: [snapshot.anchor, snapshot.active],
+    secure: (flags & 2) !== 0,
+  };
 }
 
 async function runEditMenu(name) {

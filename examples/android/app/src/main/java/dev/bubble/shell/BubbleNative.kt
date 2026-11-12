@@ -17,7 +17,10 @@ object BubbleNative {
     external fun editBatchEnd(session: Long): Int
     external fun editBatchAbort(session: Long): Int
     external fun editSnapshot(): LongArray
-    external fun editReplace(session: Long, start: Int, end: Int, text: ByteArray, newCursorPosition: Int, composing: Int): Int
+    external fun editCommit(session: Long, text: ByteArray, newCursorPosition: Int): Int
+    external fun editCompose(session: Long, text: ByteArray, newCursorPosition: Int): Int
+    external fun editUndo(session: Long): Int
+    external fun editRedo(session: Long): Int
     external fun editDeleteSurrounding(session: Long, before: Int, after: Int): Int
     external fun editDeleteSurroundingCodePoints(session: Long, before: Int, after: Int): Int
     external fun editSetComposition(session: Long, start: Int, end: Int): Int

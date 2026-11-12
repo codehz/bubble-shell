@@ -136,6 +136,65 @@ fn composition_blocks_script_until_cancel_and_single_line_strips_newlines() {
 }
 
 #[test]
+fn ime_commit_replaces_the_composition_as_one_history_step() {
+    let mut shell = Shell::blank().unwrap();
+    let handle = focused(&mut shell, "ab");
+    shell.compose_text("に", 1).unwrap();
+    let (value, state) = shell.field(handle).unwrap();
+    assert_eq!(value, "abに");
+    assert_eq!(state.composition, Some((2, 3)));
+    assert_eq!((state.sel_start(), state.sel_end()), (3, 3));
+
+    shell
+        .edit(EditCommand::SetSelection { start: 2, end: 2 })
+        .unwrap();
+    shell.commit_text("日本", 1).unwrap();
+    let (value, state) = shell.field(handle).unwrap();
+    assert_eq!(value, "ab日本");
+    assert_eq!((state.sel_start(), state.sel_end()), (4, 4));
+    assert!(state.composition.is_none());
+    assert!(!state.composing);
+
+    shell.edit(EditCommand::Undo).unwrap();
+    assert_eq!(shell.field(handle).unwrap().0, "ab");
+    shell.edit(EditCommand::Redo).unwrap();
+    assert_eq!(shell.field(handle).unwrap().0, "ab日本");
+}
+
+#[test]
+fn a_composition_accepts_an_inner_selection_before_commit() {
+    let mut shell = Shell::blank().unwrap();
+    let handle = focused(&mut shell, "");
+    shell.compose_text("abcd", 1).unwrap();
+    shell
+        .edit(EditCommand::SetSelection { start: 1, end: 2 })
+        .unwrap();
+    let (value, state) = shell.field(handle).unwrap();
+    assert_eq!(value, "abcd");
+    assert_eq!((state.sel_start(), state.sel_end()), (1, 2));
+    assert_eq!(state.composition, Some((0, 4)));
+
+    shell.commit_text("X", 1).unwrap();
+    let (value, state) = shell.field(handle).unwrap();
+    assert_eq!(value, "X");
+    assert_eq!((state.sel_start(), state.sel_end()), (1, 1));
+    assert!(state.composition.is_none());
+}
+
+#[test]
+fn an_empty_ime_commit_deletes_only_the_selection() {
+    let mut shell = Shell::blank().unwrap();
+    let handle = focused(&mut shell, "abcd");
+    shell
+        .edit(EditCommand::SetSelection { start: 1, end: 3 })
+        .unwrap();
+    shell.commit_text("", 1).unwrap();
+    let (value, state) = shell.field(handle).unwrap();
+    assert_eq!(value, "ad");
+    assert_eq!((state.sel_start(), state.sel_end()), (1, 1));
+}
+
+#[test]
 fn max_length_counts_utf16_and_secure_paint_masks() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 80.0);

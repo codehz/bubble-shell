@@ -628,6 +628,102 @@ pub extern "C" fn bubble_edit_replace(
     finish(result)
 }
 
+#[no_mangle]
+pub extern "C" fn bubble_edit_commit(
+    session: u64,
+    text: *const u8,
+    text_len: u32,
+    new_cursor_position: i32,
+) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let text = read_utf8(text, text_len)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            check_edit_session(&shell, session)?;
+            shell.commit_text(&text, new_cursor_position)?;
+            shell.take_edit_events()
+        };
+        send_edits(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
+}
+
+#[no_mangle]
+pub extern "C" fn bubble_edit_compose(
+    session: u64,
+    text: *const u8,
+    text_len: u32,
+    new_cursor_position: i32,
+) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let text = read_utf8(text, text_len)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            check_edit_session(&shell, session)?;
+            shell.compose_text(&text, new_cursor_position)?;
+            shell.take_edit_events()
+        };
+        send_edits(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
+}
+
+#[no_mangle]
+pub extern "C" fn bubble_edit_undo(session: u64) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            check_edit_session(&shell, session)?;
+            shell.edit(EditCommand::Undo)?;
+            shell.take_edit_events()
+        };
+        send_edits(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
+}
+
+#[no_mangle]
+pub extern "C" fn bubble_edit_redo(session: u64) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let events = {
+            let mut shell = engine
+                .shared
+                .shell
+                .lock()
+                .map_err(|_| "tree lock poisoned".to_string())?;
+            check_edit_session(&shell, session)?;
+            shell.edit(EditCommand::Redo)?;
+            shell.take_edit_events()
+        };
+        send_edits(&engine.shared, events);
+        Ok(())
+    });
+    finish(result)
+}
+
 /// Delete UTF-16 units around the focused selection.
 #[no_mangle]
 pub extern "C" fn bubble_edit_delete_surrounding(
@@ -1638,26 +1734,55 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editReplace<'a>(
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editCommit<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
         session: jlong,
-        start: jint,
-        end: jint,
         text: JByteArray<'a>,
         new_cursor_position: jint,
-        composing: jint,
     ) -> jint {
         let bytes = env.convert_byte_array(text).unwrap_or_default();
-        super::bubble_edit_replace(
+        super::bubble_edit_commit(
             session as u64,
-            start as u32,
-            end as u32,
             bytes.as_ptr(),
             bytes.len() as u32,
             new_cursor_position,
-            composing as u32,
         )
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editCompose<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        session: jlong,
+        text: JByteArray<'a>,
+        new_cursor_position: jint,
+    ) -> jint {
+        let bytes = env.convert_byte_array(text).unwrap_or_default();
+        super::bubble_edit_compose(
+            session as u64,
+            bytes.as_ptr(),
+            bytes.len() as u32,
+            new_cursor_position,
+        )
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editUndo<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        session: jlong,
+    ) -> jint {
+        super::bubble_edit_undo(session as u64)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editRedo<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        session: jlong,
+    ) -> jint {
+        super::bubble_edit_redo(session as u64)
     }
 
     #[no_mangle]

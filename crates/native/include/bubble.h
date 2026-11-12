@@ -33,6 +33,29 @@ void bubble_set_visible(int visible);
 /* action 0 focus a (0 blurs); 1 insert; 2 backspace; 3 delete; 4 selection a..b;
  * 5 composition start; 6 update; 7 end; 8 undo; 9 redo. Text is UTF-8. Offsets are UTF-16. */
 int bubble_edit(uint32_t action, const uint8_t *text, uint32_t text_len, uint32_t a, uint32_t b);
+
+/* Transactional editing. Every call takes the focused field's session id and
+ * rejects stale ids. Offsets and cursor positions are UTF-16 units. */
+int bubble_edit_snapshot(uint64_t *session, uint64_t *revision, uint32_t *anchor, uint32_t *active,
+                         uint32_t *composition_start, uint32_t *composition_end,
+                         uint32_t *composing);
+int bubble_edit_commit(uint64_t session, const uint8_t *text, uint32_t text_len,
+                       int32_t new_cursor_position);
+int bubble_edit_compose(uint64_t session, const uint8_t *text, uint32_t text_len,
+                        int32_t new_cursor_position);
+int bubble_edit_replace(uint64_t session, uint32_t start, uint32_t end, const uint8_t *text,
+                        uint32_t text_len, int32_t new_cursor_position, uint32_t composing);
+int bubble_edit_delete_surrounding(uint64_t session, uint32_t before, uint32_t after);
+int bubble_edit_delete_surrounding_code_points(uint64_t session, uint32_t before, uint32_t after);
+int bubble_edit_set_composition(uint64_t session, uint32_t start, uint32_t end);
+int bubble_edit_finish_composition(uint64_t session);
+int bubble_edit_select(uint64_t session, uint32_t anchor, uint32_t active);
+int bubble_edit_undo(uint64_t session);
+int bubble_edit_redo(uint64_t session);
+int bubble_edit_batch_begin(uint64_t session);
+int bubble_edit_batch_end(uint64_t session);
+int bubble_edit_batch_abort(uint64_t session);
+
 /* Deepest text field under the point, or 0. */
 uint32_t bubble_field_at(float x, float y);
 uint32_t bubble_focus_at(float x, float y);

@@ -1,19 +1,23 @@
-// DOM input events to `edit` action codes. Composition text is owned by the
+// DOM input events to editing transactions. Composition text is owned by the
 // composition events; `beforeinput` insertCompositionText is ignored so a
 // key is not applied twice.
 
 export function commandsForDom(event) {
-  if (event.type === "compositionstart") return [{ action: 5, text: "" }];
-  if (event.type === "compositionupdate") return [{ action: 6, text: event.data ?? "" }];
-  if (event.type === "compositionend") return [{ action: 7, text: event.data ?? "" }];
+  if (event.type === "compositionstart") return [];
+  if (event.type === "compositionupdate") {
+    return [{ op: "compose", text: event.data ?? "" }];
+  }
+  if (event.type === "compositionend") {
+    return [{ op: "commit", text: event.data ?? "" }];
+  }
   if (event.type !== "beforeinput" || event.inputType === "insertCompositionText") return [];
   if (event.inputType === "insertText" || event.inputType === "insertFromPaste") {
-    return [{ action: 1, text: event.data ?? "" }];
+    return [{ op: "commit", text: event.data ?? "" }];
   }
-  if (event.inputType === "deleteContentBackward") return [{ action: 2, text: "" }];
-  if (event.inputType === "deleteContentForward") return [{ action: 3, text: "" }];
-  if (event.inputType === "historyUndo") return [{ action: 8, text: "" }];
-  if (event.inputType === "historyRedo") return [{ action: 9, text: "" }];
+  if (event.inputType === "deleteContentBackward") return [{ op: "delete", before: 1, after: 0 }];
+  if (event.inputType === "deleteContentForward") return [{ op: "delete", before: 0, after: 1 }];
+  if (event.inputType === "historyUndo") return [{ op: "undo" }];
+  if (event.inputType === "historyRedo") return [{ op: "redo" }];
   return [];
 }
 
@@ -47,16 +51,22 @@ export function menuActions(field, name, clipboard = "") {
   }
   if (name === "cut") {
     if (field.secure || start === end) return { clipboard: "", commands: [] };
-    return { clipboard: selected, commands: [{ action: 2, text: "", a: 0, b: 0 }] };
+    return {
+      clipboard: selected,
+      commands: [{ op: "replace", start, end, text: "" }],
+    };
   }
   if (name === "paste") {
     if (!clipboard) return { clipboard: "", commands: [] };
-    return { clipboard, commands: [{ action: 1, text: clipboard, a: 0, b: 0 }] };
+    return { clipboard, commands: [{ op: "commit", text: clipboard }] };
   }
   if (name === "selectAll") {
     const len = utf16Len(field.value);
     if (len === 0 || (start === 0 && end === len)) return { clipboard: "", commands: [] };
-    return { clipboard: "", commands: [{ action: 4, text: "", a: 0, b: len }] };
+    return {
+      clipboard: "",
+      commands: [{ op: "select", anchor: 0, active: len }],
+    };
   }
   return null;
 }
@@ -64,5 +74,5 @@ export function menuActions(field, name, clipboard = "") {
 /** Selection covering the pointer-down offset through the current hit. */
 export function dragSelection(anchor, unit) {
   if (!Number.isInteger(anchor) || !Number.isInteger(unit) || anchor < 0 || unit < 0) return null;
-  return { action: 4, text: "", a: anchor, b: unit };
+  return { op: "select", anchor, active: unit };
 }

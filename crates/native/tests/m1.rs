@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use bubble_ffi::{
     bubble_create, bubble_destroy, bubble_edit, bubble_edit_batch_begin, bubble_edit_batch_end,
-    bubble_edit_delete_surrounding, bubble_edit_finish_composition, bubble_edit_replace,
+    bubble_edit_commit, bubble_edit_compose, bubble_edit_delete_surrounding,
+    bubble_edit_finish_composition, bubble_edit_replace,
     bubble_edit_snapshot, bubble_eval, bubble_faults, bubble_finish_request,
     bubble_font_count, bubble_font_epoch, bubble_frame, bubble_generation, bubble_last_error,
     bubble_load, bubble_node_box, bubble_node_text, bubble_pointer, bubble_poll_request,
@@ -430,6 +431,29 @@ fn ime_transactions_apply_new_cursor_and_composition() {
     let (_, _, anchor, active, _, _, _) = edit_snapshot();
     assert_eq!((anchor, active), (2, 2));
     assert_eq!(text(4), "ab");
+
+    let mark = CString::new("X").unwrap();
+    assert_eq!(
+        bubble_edit_compose(session, mark.as_ptr() as *const u8, 1, 1),
+        0,
+        "{}",
+        error()
+    );
+    let (_, _, _, _, comp_start, comp_end, composing) = edit_snapshot();
+    assert_eq!((comp_start, comp_end, composing), (2, 3, 1));
+
+    let commit = CString::new("Y").unwrap();
+    assert_eq!(
+        bubble_edit_commit(session, commit.as_ptr() as *const u8, 1, 1),
+        0,
+        "{}",
+        error()
+    );
+    let (_, _, anchor, active, _, comp_end, composing) = edit_snapshot();
+    assert_eq!((anchor, active), (3, 3));
+    assert_eq!(comp_end, u32::MAX);
+    assert_eq!(composing, 0);
+    assert_eq!(text(4), "abY");
 
     assert_ne!(
         bubble_edit_delete_surrounding(session + 1, 1, 0),

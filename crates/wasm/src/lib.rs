@@ -267,9 +267,10 @@ pub extern "C" fn edit(action: u32, ptr: *const u8, len: u32, a: u32, b: u32) ->
 }
 
 #[no_mangle]
-pub extern "C" fn edit_batch_begin() -> i32 {
+pub extern "C" fn edit_batch_begin(session: u64) -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
+            wasm_session(shell, session)?;
             shell.begin_edit_batch()?;
             collect_events(shell);
             Ok(())
@@ -285,10 +286,300 @@ pub extern "C" fn edit_batch_begin() -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn edit_batch_end() -> i32 {
+pub extern "C" fn edit_batch_end(session: u64) -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
+            wasm_session(shell, session)?;
             shell.end_edit_batch()?;
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn edit_batch_abort(session: u64) -> i32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            if shell.focused_state().is_ok_and(|state| state.session.get() == session) {
+                shell.abort_edit_batch();
+            }
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+fn wasm_session(shell: &Shell, session: u64) -> Result<(), String> {
+    let state = shell.focused_state()?;
+    if state.session.get() != session {
+        return Err("stale editing session".into());
+    }
+    Ok(())
+}
+
+fn edit_text(ptr: *const u8, len: u32) -> Result<String, String> {
+    if ptr.is_null() || len == 0 {
+        return Ok(String::new());
+    }
+    std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len as usize) })
+        .map(str::to_owned)
+        .map_err(|_| "edit text is not utf-8".into())
+}
+
+/// 36-byte focused snapshot: session u64, revision u64, anchor, active,
+/// composition start, composition end (u32::MAX when absent), composing.
+#[no_mangle]
+pub extern "C" fn edit_snapshot() -> u32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            let state = shell.focused_state()?;
+            let mut out = Vec::with_capacity(36);
+            out.extend_from_slice(&state.session.get().to_le_bytes());
+            out.extend_from_slice(&state.revision.to_le_bytes());
+            out.extend_from_slice(&state.selection.anchor.offset.to_le_bytes());
+            out.extend_from_slice(&state.selection.active.offset.to_le_bytes());
+            let (start, end) = state.composition.unwrap_or((0, u32::MAX));
+            out.extend_from_slice(&start.to_le_bytes());
+            out.extend_from_slice(&end.to_le_bytes());
+            out.extend_from_slice(&u32::from(state.composing).to_le_bytes());
+            Ok(out)
+        })
+    });
+    match result {
+        Ok(bytes) => store_scratch(bytes),
+        Err(err) => {
+            set_error(err);
+            store_scratch(Vec::new())
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn edit_commit(
+    session: u64,
+    ptr: *const u8,
+    len: u32,
+    new_cursor_position: i32,
+) -> i32 {
+    let result = drain_pending().and_then(|()| {
+        let text = edit_text(ptr, len)?;
+        with_shell(|shell| {
+            wasm_session(shell, session)?;
+            shell.commit_text(&text, new_cursor_position)?;
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn edit_compose(
+    session: u64,
+    ptr: *const u8,
+    len: u32,
+    new_cursor_position: i32,
+) -> i32 {
+    let result = drain_pending().and_then(|()| {
+        let text = edit_text(ptr, len)?;
+        with_shell(|shell| {
+            wasm_session(shell, session)?;
+            shell.compose_text(&text, new_cursor_position)?;
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn edit_replace(
+    session: u64,
+    start: u32,
+    end: u32,
+    ptr: *const u8,
+    len: u32,
+    new_cursor_position: i32,
+    composing: u32,
+) -> i32 {
+    let result = drain_pending().and_then(|()| {
+        let text = edit_text(ptr, len)?;
+        with_shell(|shell| {
+            wasm_session(shell, session)?;
+            shell.replace_with_cursor(
+                start,
+                end,
+                &text,
+                new_cursor_position,
+                composing != 0,
+            )?;
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn edit_delete_surrounding(session: u64, before: u32, after: u32) -> i32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            wasm_session(shell, session)?;
+            shell.delete_surrounding(before, after)?;
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn edit_delete_surrounding_code_points(
+    session: u64,
+    before: u32,
+    after: u32,
+) -> i32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            wasm_session(shell, session)?;
+            shell.delete_surrounding_code_points(before, after)?;
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn edit_set_composition(session: u64, start: u32, end: u32) -> i32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            wasm_session(shell, session)?;
+            shell.set_composition_region(start, end)?;
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn edit_finish_composition(session: u64) -> i32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            wasm_session(shell, session)?;
+            shell.finish_composition()?;
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn edit_select(session: u64, anchor: u32, active: u32) -> i32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            wasm_session(shell, session)?;
+            shell.edit(EditCommand::SetSelection {
+                start: anchor,
+                end: active,
+            })?;
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn edit_undo(session: u64) -> i32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            wasm_session(shell, session)?;
+            shell.edit(EditCommand::Undo)?;
+            collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn edit_redo(session: u64) -> i32 {
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            wasm_session(shell, session)?;
+            shell.edit(EditCommand::Redo)?;
             collect_events(shell);
             Ok(())
         })

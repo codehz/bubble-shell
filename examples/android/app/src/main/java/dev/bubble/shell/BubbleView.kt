@@ -295,36 +295,26 @@ class BubbleView(context: Context) : View(context) {
                 return true
             }
 
-            private fun replaceRange(
-                snapshot: EditSnapshot,
-                composing: Boolean,
-                text: CharSequence,
-                newCursorPosition: Int,
-            ): Boolean {
-                val (start, end) = if (snapshot.hasComposition) {
-                    snapshot.compositionStart to snapshot.compositionEnd
-                } else {
-                    snapshot.start to snapshot.end
-                }
-                val code = BubbleNative.editReplace(
-                    snapshot.session,
-                    start,
-                    end,
-                    bytes(text),
-                    newCursorPosition,
-                    if (composing) 1 else 0,
-                )
-                return wrote(code)
-            }
-
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
                 val snapshot = current() ?: return false
-                return replaceRange(snapshot, false, text, newCursorPosition)
+                return wrote(
+                    BubbleNative.editCommit(
+                        snapshot.session,
+                        bytes(text),
+                        newCursorPosition,
+                    ),
+                )
             }
 
             override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
                 val snapshot = current() ?: return false
-                return replaceRange(snapshot, true, text, newCursorPosition)
+                return wrote(
+                    BubbleNative.editCompose(
+                        snapshot.session,
+                        bytes(text),
+                        newCursorPosition,
+                    ),
+                )
             }
 
             override fun finishComposingText(): Boolean {
@@ -455,15 +445,15 @@ class BubbleView(context: Context) : View(context) {
                 val snapshot = current() ?: return false
                 return when (event.keyCode) {
                     android.view.KeyEvent.KEYCODE_DEL -> {
-                        if (snapshot.hasComposition) {
-                            replaceRange(snapshot, false, "", 1)
+                        if (snapshot.hasComposition || snapshot.start != snapshot.end) {
+                            wrote(BubbleNative.editCommit(snapshot.session, ByteArray(0), 1))
                         } else {
                             wrote(BubbleNative.editDeleteSurrounding(snapshot.session, 1, 0))
                         }
                     }
                     android.view.KeyEvent.KEYCODE_FORWARD_DEL -> {
-                        if (snapshot.hasComposition) {
-                            replaceRange(snapshot, false, "", 1)
+                        if (snapshot.hasComposition || snapshot.start != snapshot.end) {
+                            wrote(BubbleNative.editCommit(snapshot.session, ByteArray(0), 1))
                         } else {
                             wrote(BubbleNative.editDeleteSurrounding(snapshot.session, 0, 1))
                         }

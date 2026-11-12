@@ -698,6 +698,39 @@ impl EditSession {
         Ok(self.commit(before, HistoryMode::None))
     }
 
+    /// Commit IME text over the active composition, or the selection when no
+    /// composition range exists. The composition becomes one history step.
+    pub fn commit_text(
+        &mut self,
+        text: &str,
+        new_cursor_position: i32,
+    ) -> Result<EditOutcome, EditError> {
+        let range = self
+            .composition
+            .map(|(start, end)| DocRange::new(start, end))
+            .unwrap_or_else(|| {
+                let (start, end) = self.selection.range();
+                DocRange::new(start, end)
+            });
+        self.replace_with_cursor(range, text, new_cursor_position, false)
+    }
+
+    /// Replace the active composition (or selection) with new composing text.
+    pub fn compose_text(
+        &mut self,
+        text: &str,
+        new_cursor_position: i32,
+    ) -> Result<EditOutcome, EditError> {
+        let range = self
+            .composition
+            .map(|(start, end)| DocRange::new(start, end))
+            .unwrap_or_else(|| {
+                let (start, end) = self.selection.range();
+                DocRange::new(start, end)
+            });
+        self.replace_with_cursor(range, text, new_cursor_position, true)
+    }
+
     /// Replace a range with IME text and apply Android's `newCursorPosition`
     /// relative to the fitted insertion. `composing` keeps or starts a
     /// composition over the inserted span; otherwise any open composition is

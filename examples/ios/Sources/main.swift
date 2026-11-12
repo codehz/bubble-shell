@@ -14,6 +14,34 @@ func bubble_frame(_ width: Float, _ height: Float, _ paint: UnsafeMutablePointer
 func bubble_pointer(_ action: UInt32, _ id: UInt32, _ x: Float, _ y: Float, _ timeMs: Double, _ pointerKind: UInt32, _ buttons: UInt32) -> Int32
 @_silgen_name("bubble_edit")
 func bubble_edit(_ action: UInt32, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ a: UInt32, _ b: UInt32) -> Int32
+@_silgen_name("bubble_edit_snapshot")
+func bubble_edit_snapshot(_ session: UnsafeMutablePointer<UInt64>?, _ revision: UnsafeMutablePointer<UInt64>?, _ anchor: UnsafeMutablePointer<UInt32>?, _ active: UnsafeMutablePointer<UInt32>?, _ compStart: UnsafeMutablePointer<UInt32>?, _ compEnd: UnsafeMutablePointer<UInt32>?, _ composing: UnsafeMutablePointer<UInt32>?) -> Int32
+@_silgen_name("bubble_edit_commit")
+func bubble_edit_commit(_ session: UInt64, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ newCursorPosition: Int32) -> Int32
+@_silgen_name("bubble_edit_compose")
+func bubble_edit_compose(_ session: UInt64, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ newCursorPosition: Int32) -> Int32
+@_silgen_name("bubble_edit_replace")
+func bubble_edit_replace(_ session: UInt64, _ start: UInt32, _ end: UInt32, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ newCursorPosition: Int32, _ composing: UInt32) -> Int32
+@_silgen_name("bubble_edit_select")
+func bubble_edit_select(_ session: UInt64, _ anchor: UInt32, _ active: UInt32) -> Int32
+@_silgen_name("bubble_edit_set_composition")
+func bubble_edit_set_composition(_ session: UInt64, _ start: UInt32, _ end: UInt32) -> Int32
+@_silgen_name("bubble_edit_finish_composition")
+func bubble_edit_finish_composition(_ session: UInt64) -> Int32
+@_silgen_name("bubble_edit_delete_surrounding")
+func bubble_edit_delete_surrounding(_ session: UInt64, _ before: UInt32, _ after: UInt32) -> Int32
+@_silgen_name("bubble_edit_delete_surrounding_code_points")
+func bubble_edit_delete_surrounding_code_points(_ session: UInt64, _ before: UInt32, _ after: UInt32) -> Int32
+@_silgen_name("bubble_edit_undo")
+func bubble_edit_undo(_ session: UInt64) -> Int32
+@_silgen_name("bubble_edit_redo")
+func bubble_edit_redo(_ session: UInt64) -> Int32
+@_silgen_name("bubble_edit_batch_begin")
+func bubble_edit_batch_begin(_ session: UInt64) -> Int32
+@_silgen_name("bubble_edit_batch_end")
+func bubble_edit_batch_end(_ session: UInt64) -> Int32
+@_silgen_name("bubble_edit_batch_abort")
+func bubble_edit_batch_abort(_ session: UInt64) -> Int32
 @_silgen_name("bubble_field_at")
 func bubble_field_at(_ x: Float, _ y: Float) -> UInt32
 @_silgen_name("bubble_focus_at")
@@ -441,6 +469,20 @@ final class IndexedSelection: UITextSelectionRect {
     override var isVertical: Bool { false }
 }
 
+struct EditSnapshot {
+    let session: UInt64
+    let revision: UInt64
+    let anchor: Int
+    let active: Int
+    let compositionStart: Int
+    let compositionEnd: Int
+    let composing: Bool
+
+    var start: Int { min(anchor, active) }
+    var end: Int { max(anchor, active) }
+    var hasComposition: Bool { compositionEnd != Int(UInt32.max) }
+}
+
 extension BubbleView: UITextInput {
     override var canBecomeFirstResponder: Bool { true }
     override var keyCommands: [UIKeyCommand]? {
@@ -451,11 +493,17 @@ extension BubbleView: UITextInput {
     }
 
     @objc func undoEditing() {
-        changeText { _ = bubble_edit(8, nil, 0, 0, 0) }
+        changeText {
+            guard let snapshot = editSnapshot() else { return }
+            _ = bubble_edit_undo(snapshot.session)
+        }
     }
 
     @objc func redoEditing() {
-        changeText { _ = bubble_edit(9, nil, 0, 0, 0) }
+        changeText {
+            guard let snapshot = editSnapshot() else { return }
+            _ = bubble_edit_redo(snapshot.session)
+        }
     }
 
     var keyboardType: UIKeyboardType {
@@ -487,13 +535,19 @@ extension BubbleView: UITextInput {
 
     func insertText(_ text: String) {
         changeText {
-            editUTF8(1, text)
+            guard let snapshot = editSnapshot() else { return }
+            editCommit(snapshot.session, text: text)
         }
     }
 
     func deleteBackward() {
         changeText {
-            _ = bubble_edit(2, nil, 0, 0, 0)
+            guard let snapshot = editSnapshot() else { return }
+            if snapshot.hasComposition || snapshot.start != snapshot.end {
+                editCommit(snapshot.session, text: "")
+            } else {
+                _ = bubble_edit_delete_surrounding(snapshot.session, 1, 0)
+            }
         }
     }
 
@@ -503,16 +557,20 @@ extension BubbleView: UITextInput {
             return IndexedRange(start, end)
         }
         set {
-            guard let range = newValue as? IndexedRange else { return }
+            guard let range = newValue as? IndexedRange, let snapshot = editSnapshot() else { return }
             changeText {
-                _ = bubble_edit(4, nil, 0, UInt32(range.startIndex), UInt32(range.endIndex))
+                _ = bubble_edit_select(
+                    snapshot.session,
+                    UInt32(range.startIndex),
+                    UInt32(range.endIndex),
+                )
             }
         }
     }
 
     var markedTextRange: UITextRange? {
-        guard let (_, _, markStart, markEnd) = selectionUnits(), markEnd != Int(UInt32.max) else { return nil }
-        return IndexedRange(markStart, markEnd)
+        guard let snapshot = editSnapshot(), snapshot.hasComposition else { return nil }
+        return IndexedRange(snapshot.compositionStart, snapshot.compositionEnd)
     }
 
     func text(in range: UITextRange) -> String? {
@@ -521,34 +579,44 @@ extension BubbleView: UITextInput {
     }
 
     func replace(_ range: UITextRange, withText text: String) {
-        guard let range = range as? IndexedRange else { return }
+        guard let range = range as? IndexedRange, let snapshot = editSnapshot() else { return }
         changeText {
-            if let marked = markedTextRange as? IndexedRange,
-               marked.startIndex == range.startIndex && marked.endIndex == range.endIndex {
-                editUTF8(7, text)
-                return
-            }
-            _ = bubble_edit(4, nil, 0, UInt32(range.startIndex), UInt32(range.endIndex))
-            editUTF8(1, text)
+            _ = editReplace(
+                snapshot.session,
+                start: range.startIndex,
+                end: range.endIndex,
+                text: text,
+                composing: false,
+            )
         }
     }
 
     func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+        guard let snapshot = editSnapshot() else { return }
         let text = markedText ?? ""
+        let location = selectedRange.location == NSNotFound ? text.utf16.count : selectedRange.location
+        let length = selectedRange.length
         changeText {
-            if markedTextRange == nil {
-                _ = bubble_edit(5, nil, 0, 0, 0)
+            _ = bubble_edit_batch_begin(snapshot.session)
+            editCompose(snapshot.session, text: text)
+            if let current = editSnapshot() {
+                let base = current.compositionStart
+                let anchor = min(current.compositionEnd, base + location)
+                let active = min(current.compositionEnd, anchor + length)
+                _ = bubble_edit_select(
+                    snapshot.session,
+                    UInt32(anchor),
+                    UInt32(active),
+                )
             }
-            editUTF8(6, text)
-            _ = selectedRange
+            _ = bubble_edit_batch_end(snapshot.session)
         }
     }
 
     func unmarkText() {
-        guard let marked = markedTextRange as? IndexedRange,
-              let text = text(in: marked) else { return }
+        guard let snapshot = editSnapshot(), snapshot.composing else { return }
         changeText {
-            editUTF8(7, text)
+            _ = bubble_edit_finish_composition(snapshot.session)
         }
     }
 
@@ -663,9 +731,10 @@ extension BubbleView: UITextInput {
     }
 
     private func selectionUnits() -> (Int, Int, Int, Int)? {
-        var start: UInt32 = 0, end: UInt32 = 0, markStart: UInt32 = 0, markEnd: UInt32 = 0
-        if bubble_selection(&start, &end, &markStart, &markEnd) != 0 { return nil }
-        return (Int(start), Int(end), Int(markStart), Int(markEnd))
+        guard let snapshot = editSnapshot() else { return nil }
+        let markStart = snapshot.hasComposition ? snapshot.compositionStart : 0
+        let markEnd = snapshot.hasComposition ? snapshot.compositionEnd : Int(UInt32.max)
+        return (snapshot.start, snapshot.end, markStart, markEnd)
     }
 
     private func focusedFieldText() -> String {
@@ -683,10 +752,66 @@ extension BubbleView: UITextInput {
         return String(decoding: units[lower..<upper], as: UTF16.self)
     }
 
-    private func editUTF8(_ action: UInt32, _ text: String) {
+    private func editSnapshot() -> EditSnapshot? {
+        var session: UInt64 = 0
+        var revision: UInt64 = 0
+        var anchor: UInt32 = 0
+        var active: UInt32 = 0
+        var compositionStart: UInt32 = 0
+        var compositionEnd: UInt32 = 0
+        var composing: UInt32 = 0
+        guard bubble_edit_snapshot(
+            &session,
+            &revision,
+            &anchor,
+            &active,
+            &compositionStart,
+            &compositionEnd,
+            &composing,
+        ) == 0 else { return nil }
+        return EditSnapshot(
+            session: session,
+            revision: revision,
+            anchor: Int(anchor),
+            active: Int(active),
+            compositionStart: Int(compositionStart),
+            compositionEnd: Int(compositionEnd),
+            composing: composing != 0,
+        )
+    }
+
+    private func editCommit(_ session: UInt64, text: String, newCursor: Int32 = 1) {
         let bytes = Array(text.utf8)
         bytes.withUnsafeBufferPointer { buffer in
-            _ = bubble_edit(action, buffer.baseAddress, UInt32(bytes.count), 0, 0)
+            _ = bubble_edit_commit(session, buffer.baseAddress, UInt32(bytes.count), newCursor)
+        }
+    }
+
+    private func editCompose(_ session: UInt64, text: String, newCursor: Int32 = 1) {
+        let bytes = Array(text.utf8)
+        bytes.withUnsafeBufferPointer { buffer in
+            _ = bubble_edit_compose(session, buffer.baseAddress, UInt32(bytes.count), newCursor)
+        }
+    }
+
+    private func editReplace(
+        _ session: UInt64,
+        start: Int,
+        end: Int,
+        text: String,
+        composing: Bool,
+    ) -> Int32 {
+        let bytes = Array(text.utf8)
+        return bytes.withUnsafeBufferPointer { buffer in
+            bubble_edit_replace(
+                session,
+                UInt32(start),
+                UInt32(end),
+                buffer.baseAddress,
+                UInt32(bytes.count),
+                1,
+                composing ? 1 : 0,
+            )
         }
     }
 
