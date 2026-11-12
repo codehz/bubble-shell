@@ -464,14 +464,15 @@ fn every_runtime_property_is_dispatchable() {
         assert!(Prop::parse(key).is_some(), "{key} is not parseable");
         let value = match *key {
             "color" | "backgroundColor" => Value::Int(0xff00_0000),
-            "scrollX" | "scrollY" | "row" => Value::Bool(true),
+            "overflow" | "overflowX" | "overflowY" => Value::String("scroll".into()),
+            "flexDirection" => Value::String("row".into()),
             "textAlign" => Value::String("center".into()),
             "alignItems" => Value::String("center".into()),
             "justifyContent" => Value::String("space-between".into()),
             "position" => Value::String("absolute".into()),
             "src" => Value::String("logo.png".into()),
             "fit" => Value::String("cover".into()),
-            "scrollChainX" | "scrollChainY" => Value::String("contain".into()),
+            "overscrollX" | "overscrollY" => Value::Bool(false),
             "top" | "right" | "bottom" | "left" => Value::Float(4.0),
             _ => Value::Float(4.0),
         };
@@ -507,7 +508,7 @@ fn layout_props_apply_before_the_first_layout() {
     absolute.height = Some(10.0);
     let absolute = turn.spawn(absolute).unwrap();
 
-    turn.set_prop(row, "row", Value::Bool(true));
+    turn.set_prop(row, "flexDirection", Value::String("row".into()));
     turn.set_prop(row, "width", Value::Float(200.0));
     turn.set_prop(row, "height", Value::Float(100.0));
     turn.set_prop(row, "gap", Value::Float(10.0));

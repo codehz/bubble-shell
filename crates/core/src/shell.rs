@@ -700,9 +700,15 @@ impl Shell {
             Prop::Height => self.node_mut(id)?.height = value.optional_f32()?,
             Prop::FlexGrow => self.node_mut(id)?.flex_grow = value.as_f32()?,
             Prop::FlexShrink => self.node_mut(id)?.flex_shrink = value.as_f32()?,
-            Prop::ScrollX => self.node_mut(id)?.scroll_x = value.as_bool()?,
-            Prop::ScrollY => self.node_mut(id)?.scroll_y = value.as_bool()?,
-            Prop::Row => self.node_mut(id)?.row = value.as_bool()?,
+            Prop::ScrollX => self.node_mut(id)?.scroll_x = overflow_enabled(value)?,
+            Prop::ScrollY => self.node_mut(id)?.scroll_y = overflow_enabled(value)?,
+            Prop::Overflow => {
+                let enabled = overflow_enabled(value)?;
+                let node = self.node_mut(id)?;
+                node.scroll_x = enabled;
+                node.scroll_y = enabled;
+            }
+            Prop::Row => self.node_mut(id)?.row = flex_direction_row(value)?,
             Prop::LineHeight => {
                 self.node_mut(id)?.line_height = value.as_f32()?.max(0.0);
                 self.refresh_measure(id)?;
@@ -726,8 +732,8 @@ impl Shell {
                 self.node_mut(id)?.inset[2] = value.optional_f32()?.unwrap_or(f32::NAN)
             }
             Prop::Left => self.node_mut(id)?.inset[3] = value.optional_f32()?.unwrap_or(f32::NAN),
-            Prop::ScrollChainX => self.node_mut(id)?.chain_x = chain_policy(value)?,
-            Prop::ScrollChainY => self.node_mut(id)?.chain_y = chain_policy(value)?,
+            Prop::ScrollChainX => self.node_mut(id)?.chain_x = !overscroll_chains(value)?,
+            Prop::ScrollChainY => self.node_mut(id)?.chain_y = !overscroll_chains(value)?,
             Prop::Src => {
                 let Value::String(source) = value else {
                     return Err("src must be a string".into());
@@ -1318,15 +1324,33 @@ fn image_fit(value: &Value) -> Result<u8, String> {
     }
 }
 
-fn chain_policy(value: &Value) -> Result<bool, String> {
+fn overflow_enabled(value: &Value) -> Result<bool, String> {
     let Value::String(text) = value else {
-        return Err("scroll chain policy must be a string".into());
+        return Err("overflow must be a string".into());
     };
     match text.as_str() {
-        "auto" => Ok(false),
-        "contain" => Ok(true),
-        other => Err(format!("unsupported scroll chain policy {other}")),
+        "visible" => Ok(false),
+        "scroll" => Ok(true),
+        "hidden" => Err("overflow hidden is not implemented".into()),
+        other => Err(format!("unsupported overflow {other}")),
     }
+}
+
+fn flex_direction_row(value: &Value) -> Result<bool, String> {
+    let Value::String(text) = value else {
+        return Err("flexDirection must be a string".into());
+    };
+    match text.as_str() {
+        "row" => Ok(true),
+        "column" => Ok(false),
+        other => Err(format!("unsupported flexDirection {other}")),
+    }
+}
+
+fn overscroll_chains(value: &Value) -> Result<bool, String> {
+    value
+        .as_bool()
+        .map_err(|_| "overscroll must be a bool".into())
 }
 
 fn dim(value: Option<f32>) -> Dimension {

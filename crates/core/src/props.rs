@@ -26,6 +26,7 @@ pub enum Prop {
     FlexShrink,
     ScrollX,
     ScrollY,
+    Overflow,
     Row,
     LineHeight,
     TextAlign,
@@ -64,9 +65,10 @@ impl Prop {
             "height" => Self::Height,
             "flexGrow" => Self::FlexGrow,
             "flexShrink" => Self::FlexShrink,
-            "scrollX" => Self::ScrollX,
-            "scrollY" => Self::ScrollY,
-            "row" => Self::Row,
+            "overflowX" => Self::ScrollX,
+            "overflowY" => Self::ScrollY,
+            "overflow" => Self::Overflow,
+            "flexDirection" => Self::Row,
             "lineHeight" => Self::LineHeight,
             "textAlign" => Self::TextAlign,
             "fontWeight" => Self::FontWeight,
@@ -84,8 +86,8 @@ impl Prop {
             "left" => Self::Left,
             "src" => Self::Src,
             "fit" => Self::Fit,
-            "scrollChainX" => Self::ScrollChainX,
-            "scrollChainY" => Self::ScrollChainY,
+            "overscrollX" => Self::ScrollChainX,
+            "overscrollY" => Self::ScrollChainY,
             _ => return None,
         })
     }
@@ -93,9 +95,10 @@ impl Prop {
 
 /// Properties carried by the `BNOD` descriptor.
 pub const SPAWN_PROPS: &[&str] = &[
-    "scrollX",
-    "scrollY",
-    "background",
+    "overflow",
+    "overflowX",
+    "overflowY",
+    "backgroundColor",
     "color",
     "fontSize",
     "radius",
@@ -104,9 +107,8 @@ pub const SPAWN_PROPS: &[&str] = &[
     "height",
     "flexGrow",
     "flexShrink",
-    "row",
+    "flexDirection",
     "padding",
-    "onPress",
 ];
 
 /// Properties applied with `SetProp` immediately after `Spawn`.
@@ -122,8 +124,8 @@ pub const DEFERRED_PROPS: &[&str] = &[
     "inset",
     "src",
     "fit",
-    "scrollChainX",
-    "scrollChainY",
+    "overscrollX",
+    "overscrollY",
 ];
 
 pub const SET_PROPS: &[&str] = &[
@@ -140,9 +142,10 @@ pub const SET_PROPS: &[&str] = &[
     "height",
     "flexGrow",
     "flexShrink",
-    "scrollX",
-    "scrollY",
-    "row",
+    "overflow",
+    "overflowX",
+    "overflowY",
+    "flexDirection",
     "lineHeight",
     "textAlign",
     "fontWeight",
@@ -160,6 +163,6 @@ pub const SET_PROPS: &[&str] = &[
     "left",
     "src",
     "fit",
-    "scrollChainX",
-    "scrollChainY",
+    "overscrollX",
+    "overscrollY",
 ];

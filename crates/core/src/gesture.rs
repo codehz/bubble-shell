@@ -405,7 +405,7 @@ impl Recognizer {
         let config = &mut decl.config;
         match (kind, key) {
             (_, "enabled") => config.enabled = value.as_bool()?,
-            (_, "reserveScroll") => config.reserve_scroll = scroll_bits(value)?,
+            (_, "captureAxis") => config.reserve_scroll = scroll_bits(value)?,
             (GestureKind::Pan, "axis") => config.axis = axis(value)?,
             (GestureKind::Pan, "direction") => config.direction = direction(value)?,
             (GestureKind::Pan | GestureKind::Transform, "minDistance") => {
@@ -422,9 +422,7 @@ impl Recognizer {
                 config.duration = value.as_f32()?.max(0.0) as f64
             }
             (GestureKind::LongPress, "maxDistance") => config.max_distance = non_negative(value)?,
-            (GestureKind::Transform, "pan") => set_component(config, 1, value.as_bool()?),
-            (GestureKind::Transform, "pinch") => set_component(config, 2, value.as_bool()?),
-            (GestureKind::Transform, "rotate") => set_component(config, 4, value.as_bool()?),
+            (GestureKind::Transform, "mode") => config.components = transform_mode(value)?,
             _ => return Err(format!("gesture {kind:?} has no property {key}")),
         }
         Ok(())
@@ -1959,23 +1957,35 @@ fn direction(value: &Value) -> Result<u8, String> {
 
 fn scroll_bits(value: &Value) -> Result<u8, String> {
     let Value::String(text) = value else {
-        return Err("reserveScroll must be a string".into());
+        return Err("captureAxis must be a string".into());
     };
     match text.as_str() {
         "none" => Ok(0),
         "x" => Ok(1),
         "y" => Ok(2),
         "both" => Ok(3),
-        other => Err(format!("unsupported reserveScroll {other}")),
+        other => Err(format!("unsupported captureAxis {other}")),
     }
 }
 
-fn set_component(config: &mut GestureConfig, bit: u8, on: bool) {
-    if on {
-        config.components |= bit;
-    } else {
-        config.components &= !bit;
+fn transform_mode(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("mode must be a string".into());
+    };
+    let mut mask = 0u8;
+    for part in text.split(',') {
+        mask |= match part.trim() {
+            "pan" => 1,
+            "pinch" => 2,
+            "rotate" => 4,
+            "" => 0,
+            other => return Err(format!("unsupported mode {other}")),
+        };
     }
+    if mask == 0 {
+        return Err("mode must include pan, pinch, or rotate".into());
+    }
+    Ok(mask)
 }
 
 /// `BSGE` version 1: magic, version, count, then fixed records.
@@ -2108,7 +2118,7 @@ mod tests {
         rec.bind(2, SLOT_START, 4).unwrap();
         rec.set_prop(2, "axis", &Value::String("x".into())).unwrap();
         rec.set_prop(2, "minDistance", &Value::Int(100)).unwrap();
-        rec.set_prop(2, "reserveScroll", &Value::String("x".into()))
+        rec.set_prop(2, "captureAxis", &Value::String("x".into()))
             .unwrap();
         rec.set_prop(2, "failCrossDistance", &Value::Int(1)).unwrap();
         rec.pointer(down(0.0, 0.0, &[10, 1]));
@@ -2182,7 +2192,7 @@ mod tests {
         rec.bind(2, SLOT_START, 4).unwrap();
         rec.set_prop(2, "axis", &Value::String("x".into())).unwrap();
         rec.set_prop(2, "minDistance", &Value::Int(100)).unwrap();
-        rec.set_prop(2, "reserveScroll", &Value::String("x".into()))
+        rec.set_prop(2, "captureAxis", &Value::String("x".into()))
             .unwrap();
         rec.pointer(down(0.0, 0.0, &[10, 1]));
         rec.pointer(mv(10.0, 0.0, 10.0));

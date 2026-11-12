@@ -141,8 +141,8 @@ fn nested_scroll_consumes_inner_then_outer_and_contain_truncates() {
             2,
             &[Op::SetProp {
                 handle: 3,
-                key: "scrollChainY".into(),
-                value: Value::String("contain".into()),
+                key: "overscrollY".into(),
+                value: Value::Bool(false),
             }],
         ))
         .unwrap();
@@ -298,8 +298,8 @@ fn transform_scale_is_stable_when_the_baseline_has_no_distance() {
                 },
                 Op::SetGestureProp {
                     gesture: 13,
-                    key: "pinch".into(),
-                    value: Value::Bool(true),
+                    key: "mode".into(),
+                    value: Value::String("pan,pinch".into()),
                 },
                 Op::BindGestureEvent {
                     gesture: 13,
