@@ -107,8 +107,8 @@ Cancel   { id }
 
 Web 覆盖层要求：
 
-- 每个语义节点一个绝对定位元素，bounds 与绘制同步；ARIA 角色由语义 `role` 映射。
-- 使用 `aria-label`、`aria-checked`、`aria-selected`、`aria-expanded`、`aria-disabled`、`aria-hidden`、`tabindex`。
+- 每个语义节点一个固定定位元素，bounds 与绘制同步；DOM 按语义 `parent` 嵌套，避免角色层级丢失。活动 modal 成为独立语义根，不能嵌在 hidden 背景下。
+- 使用 `aria-label`、`aria-checked`、`aria-selected`、`aria-expanded`、`aria-disabled`、`aria-hidden`、`tabindex`；活动 modal 带 `aria-modal="true"`，未声明角色时映射为 `dialog`。
 - 焦点环由核心绘制；键盘 Tab 顺序由 Rust 焦点树决定，不依赖 DOM 原生 Tab。
 - 覆盖层聚焦节点支持 PageDown/PageUp 和方向键滚动：沿语义 `parent` 链检查对应 `actions` 位，再从当前节点调用核心 scroll action；步长与边界由核心处理，滚动后保留 DOM 焦点。文本框、组合输入与带修饰键的快捷键不走此滚动入口。静态节点聚焦时清除旧的核心键盘焦点；Tab/Shift-Tab 继续使用 Rust 焦点顺序，文本框激活后转入 IME。
 - `aria-live` 用于 Toast/状态更新；原生端用 announcement API。
@@ -118,7 +118,10 @@ Web 覆盖层要求：
 - Rust 维护焦点树与 tab 顺序；`focusable`、交互 `role` 和 `TextField` 参与 Tab，`hidden`/`disabled` 节点跳过。
 - Tab/Shift-Tab、Enter/Space、Esc、Left/Right/Home/End 在 UI 线程处理；Enter/Space 激活目标上的 `TapGesture`，Esc 清除焦点。
 - 读屏 action 经 `bubble_a11y_action` / wasm `a11y_action` 路由到 Rust：`focus`、`activate`、`setValue`，以及 `scroll` 的 forward/backward/left/right/up/down。滚动 action 从收到的语义节点向上找第一个接受该轴的可滚动祖先，步长为可见范围的 80%，再走与触摸相同的 `scroll_path`；Android 依据 `actions` 位添加对应系统 action，iOS 把 `UIAccessibilityScrollDirection` 映射到同一组 action。无角色但可滚动的容器也进入语义树，平台不再自行计算像素增量。
-- `modal` 容器把 Tab 顺序限制在子树内，并把背景语义标记为 hidden；Esc 退出当前焦点。
+- 最深的可见 `modal` 容器限制 Tab/Shift-Tab 顺序；同深度以后出现的节点优先，`hidden` 祖先下的 modal 不生效。背景语义标记为 hidden 且不发布 action，活动 modal 的语义 parent/depth 为 0/0。
+- 直接 focus、指针字段聚焦与读屏 action 均拒绝 hidden、disabled 或活动 modal 外的目标；读屏滚动不能越过 modal 边界去滚动背景祖先。失败的聚焦请求不取消当前字段的编辑批次。
+- 一个 op 批次完成后，若当前焦点已隐藏、禁用、移出活动 modal 或失去可聚焦能力，则清除焦点并中止未提交编辑批次。Esc 清除当前焦点，不关闭弹层；下一次 Tab/Shift-Tab 从活动 modal 的首/尾项继续。
+- Web 的键盘焦点跟随 Rust：文本字段进入 IME 代理，其他控件进入 ARIA 元素；焦点目标移除或隐藏后回到 canvas。未打开的编辑菜单保持隐藏，不参与读屏导航。
 
 ## 5. 文本输入与 IME
 

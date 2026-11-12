@@ -107,7 +107,9 @@ class BubbleView(context: Context) : View(context) {
         semanticNodes = nodes
         semanticChildren = children
         semanticRoots = roots
-        if (accessibilityFocus != 0 && !nodes.containsKey(accessibilityFocus)) {
+        if (accessibilityFocus != 0 &&
+            (nodes[accessibilityFocus] == null || nodes[accessibilityFocus]?.optBoolean("hidden") == true)
+        ) {
             accessibilityFocus = 0
         }
     }
@@ -184,7 +186,7 @@ class BubbleView(context: Context) : View(context) {
             info.setBoundsInScreen(screenRect(node))
             if (actions and 1 != 0) info.addAction(AccessibilityNodeInfo.ACTION_FOCUS)
             if (actions and 2 != 0) info.addAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (editable) info.addAction(AccessibilityNodeInfo.ACTION_SET_TEXT)
+            if (actions and 4 != 0) info.addAction(AccessibilityNodeInfo.ACTION_SET_TEXT)
             if (actions and A11Y_SCROLL_FORWARD != 0) {
                 info.addAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
                 info.addAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
@@ -205,16 +207,17 @@ class BubbleView(context: Context) : View(context) {
             val node = semanticNodes[virtualViewId] ?: return false
             when (action) {
                 AccessibilityNodeInfo.ACTION_CLICK -> {
-                    BubbleNative.a11yAction(virtualViewId, 1, "")
+                    if (BubbleNative.a11yAction(virtualViewId, 1, "") != 0) return false
                     afterA11yAction()
                     return true
                 }
                 AccessibilityNodeInfo.ACTION_FOCUS -> {
-                    BubbleNative.a11yAction(virtualViewId, 0, "")
+                    if (BubbleNative.a11yAction(virtualViewId, 0, "") != 0) return false
                     afterA11yAction()
                     return true
                 }
                 AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS -> {
+                    if (node.optBoolean("hidden") || node.optBoolean("disabled")) return false
                     accessibilityFocus = virtualViewId
                     sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED)
                     return true
@@ -230,7 +233,7 @@ class BubbleView(context: Context) : View(context) {
                     val text = arguments?.getCharSequence(
                         AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
                     )?.toString() ?: return false
-                    BubbleNative.a11yAction(virtualViewId, 2, text)
+                    if (BubbleNative.a11yAction(virtualViewId, 2, text) != 0) return false
                     afterA11yAction()
                     return true
                 }

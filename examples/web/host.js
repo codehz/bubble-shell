@@ -72,6 +72,7 @@ function syncA11y() {
     return;
   }
   const rect = canvas.getBoundingClientRect();
+  const hadA11yFocus = a11yRoot.contains(document.activeElement);
   a11yNodes.clear();
   for (const node of data.nodes) a11yNodes.set(node.handle, node);
   const seen = new Set();
@@ -96,14 +97,16 @@ function syncA11y() {
         if (!current || current.hidden || current.disabled) return;
         if (a11yAction(node.handle, 1) && current.editable) placeCaret(node.handle);
       });
-      a11yRoot.append(element);
+      // Attach after all elements exist, following the semantic parent chain.
       a11yElements.set(node.handle, element);
     }
-    const role = A11Y_ROLES[node.role] || "group";
+    const role = node.handle === data.modal && node.role === "generic"
+      ? "dialog"
+      : A11Y_ROLES[node.role] || "group";
     if (element.getAttribute("role") !== role) element.setAttribute("role", role);
     const [x, y, w, h] = node.bounds;
     Object.assign(element.style, {
-      position: "absolute",
+      position: "fixed",
       left: `${rect.left + x}px`,
       top: `${rect.top + y}px`,
       width: `${Math.max(0, w)}px`,
@@ -119,6 +122,9 @@ function syncA11y() {
     else element.removeAttribute("aria-label");
     element.tabIndex = -1;
     element.setAttribute("aria-hidden", node.hidden ? "true" : "false");
+    element.hidden = node.hidden;
+    if (node.handle === data.modal) element.setAttribute("aria-modal", "true");
+    else element.removeAttribute("aria-modal");
     if (node.disabled) element.setAttribute("aria-disabled", "true");
     else element.removeAttribute("aria-disabled");
     if (node.selected) element.setAttribute("aria-selected", "true");
@@ -131,11 +137,20 @@ function syncA11y() {
     else element.removeAttribute("data-focused");
     if (node.focusable) element.setAttribute("tabindex", "-1");
   }
+  for (const node of data.nodes) {
+    const element = a11yElements.get(node.handle);
+    const parent = a11yElements.get(node.parent) || a11yRoot;
+    if (element.parentElement !== parent) parent.append(element);
+  }
   for (const [handle, element] of a11yElements) {
     if (!seen.has(handle)) {
       element.remove();
       a11yElements.delete(handle);
     }
+  }
+  if ((hadA11yFocus && (!a11yRoot.contains(document.activeElement) || document.activeElement.hidden))
+      || (document.activeElement === ime && !a11yNodes.get(data.focused)?.editable)) {
+    canvas.focus({ preventScroll: true });
   }
 }
 
@@ -211,7 +226,7 @@ document.addEventListener(
       const handle = exports.focused();
       const focused = a11yNodes.get(handle);
       if (focused?.editable) placeCaret(handle);
-      else if (handle && node) a11yElements.get(handle)?.focus({ preventScroll: true });
+      else if (handle) a11yElements.get(handle)?.focus({ preventScroll: true });
       else if (!handle) {
         ime.blur();
         canvas.focus({ preventScroll: true });
@@ -851,7 +866,6 @@ Object.assign(editMenu.style, {
   display: "none",
   position: "fixed",
   zIndex: "2",
-  display: "flex",
   gap: "4px",
   padding: "4px",
   background: "#111",

@@ -140,6 +140,113 @@ fn modal_traps_tab_order_and_hides_background_semantics() {
 }
 
 #[test]
+fn modal_rejects_background_focus_and_actions_without_changing_the_field() {
+    let mut shell = Shell::blank().unwrap();
+    let outside = field(&mut shell, "outside");
+    let dialog = view(&mut shell, 240.0, 120.0);
+    let inside = field_in(&mut shell, dialog, "inside");
+    shell.focus(outside).unwrap();
+    set(&mut shell, 1, dialog, "modal", Value::Bool(true));
+    assert_eq!(
+        shell.focused(),
+        0,
+        "opening a modal clears background focus"
+    );
+    shell.focus(inside).unwrap();
+    shell.begin_edit_batch().unwrap();
+    shell.edit(EditCommand::Insert("pending".into())).unwrap();
+
+    assert!(shell.focus(outside).is_err());
+    for action in [
+        A11yAction::Focus,
+        A11yAction::Activate,
+        A11yAction::SetValue("changed".into()),
+        A11yAction::ScrollForward,
+    ] {
+        assert!(shell.a11y_action(outside, action).is_err());
+    }
+    shell.end_edit_batch().unwrap();
+    assert!(shell.field(inside).unwrap().0.contains("pending"));
+    assert_eq!(shell.focused(), inside);
+    assert_eq!(shell.field(outside).unwrap().0, "outside");
+    let snapshot = shell.semantics();
+    let background = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.handle == outside)
+        .unwrap();
+    assert_eq!(background.actions, 0);
+    let modal = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.handle == dialog)
+        .unwrap();
+    assert_eq!((modal.parent, modal.depth), (0, 0));
+}
+
+#[test]
+fn hidden_modals_do_not_trap_focus_and_nested_modals_are_semantic_roots() {
+    let mut shell = Shell::blank().unwrap();
+    let outside = field(&mut shell, "outside");
+    let outer = view(&mut shell, 240.0, 120.0);
+    set(&mut shell, 1, outer, "modal", Value::Bool(true));
+    let inner = shell.next_handle();
+    shell.spawn(NodeDesc::view(inner, outer)).unwrap();
+    set(&mut shell, 2, inner, "modal", Value::Bool(true));
+    let field = field_in(&mut shell, inner, "inside");
+    let sibling = view(&mut shell, 240.0, 120.0);
+    set(&mut shell, 3, sibling, "modal", Value::Bool(true));
+    assert_eq!(
+        shell.active_modal(),
+        inner,
+        "the deepest visible modal wins"
+    );
+    let snapshot = shell.semantics();
+    let modal = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.handle == inner)
+        .unwrap();
+    assert_eq!((modal.parent, modal.depth, modal.hidden), (0, 0, false));
+    assert!(shell.focus_next(false));
+    assert_eq!(shell.focused(), field);
+
+    set(&mut shell, 4, outer, "hidden", Value::Bool(true));
+    assert_eq!(shell.focused(), 0);
+    assert_eq!(shell.active_modal(), sibling);
+    set(&mut shell, 5, sibling, "hidden", Value::Bool(true));
+    assert_eq!(shell.active_modal(), 0);
+    assert!(shell.focus_next(true));
+    assert_eq!(shell.focused(), outside);
+    assert!(
+        shell.focus(field).is_err(),
+        "hidden ancestors block direct focus"
+    );
+}
+
+#[test]
+fn disabling_a_focused_field_prevents_keyboard_edits_and_pointer_focus() {
+    let mut shell = Shell::blank().unwrap();
+    let field = field(&mut shell, "line");
+    set(&mut shell, 1, field, "multiline", Value::Bool(true));
+    shell.focus(field).unwrap();
+    layout(&mut shell);
+    let bounds = shell
+        .semantics()
+        .nodes
+        .into_iter()
+        .find(|node| node.handle == field)
+        .unwrap()
+        .bounds;
+    set(&mut shell, 2, field, "disabled", Value::Bool(true));
+    assert_eq!(shell.focused(), 0);
+    assert!(!shell.key(Key::Enter, 0.0));
+    assert_eq!(shell.field_at(bounds[0] + 1.0, bounds[1] + 1.0), 0);
+    assert!(shell.focus(field).is_err());
+    assert_eq!(shell.field(field).unwrap().0, "line");
+}
+
+#[test]
 fn semantics_report_roles_values_actions_and_secure_fields() {
     let mut shell = Shell::blank().unwrap();
     let name = field(&mut shell, "Ada");
@@ -390,6 +497,15 @@ fn a11y_scroll_actions_move_the_nearest_vertical_container() {
         (0.0, 40.0),
         "failed action does not move the container"
     );
+}
+
+#[test]
+fn modal_scroll_cannot_reach_a_background_scroll_container() {
+    let mut shell = Shell::blank().unwrap();
+    let (scroller, leaf) = scroll_view(&mut shell, false, true, [100.0, 300.0]);
+    set(&mut shell, 2, leaf, "modal", Value::Bool(true));
+    assert!(shell.a11y_action(leaf, A11yAction::ScrollDown).is_err());
+    assert_eq!(shell.scroll_of(scroller).unwrap(), (0.0, 0.0));
 }
 
 #[test]

@@ -545,6 +545,12 @@ impl Shell {
                 } => self.set_editing_value(handle, epoch, &value, sel_start, sel_end, cancel)?,
             }
         }
+        if self.focused != 0
+            && (!self.is_focusable(self.focused)
+                || !self.interaction_available(self.focused, self.active_modal()))
+        {
+            self.focus(0)?;
+        }
         self.paint_dirty.set(true);
         Ok(seq)
     }
@@ -749,10 +755,11 @@ impl Shell {
     /// Focus a semantic node. `0` blurs. Text fields and nodes marked
     /// `focusable` (or carrying an interactive role) accept focus.
     pub fn focus(&mut self, handle: u32) -> Result<(), String> {
-        if self.focused != handle {
-            self.abort_edit_batch();
+        if handle != 0 && !self.interaction_available(handle, self.active_modal()) {
+            return Err(format!("handle {handle} is unavailable"));
         }
         if handle == 0 {
+            self.abort_edit_batch();
             self.focused = 0;
             self.paint_dirty.set(true);
             return Ok(());
@@ -763,6 +770,9 @@ impl Shell {
         }
         if node.kind == Kind::Field && !self.fields.contains_key(&handle) {
             return Err(format!("handle {handle} has no editing session"));
+        }
+        if self.focused != handle {
+            self.abort_edit_batch();
         }
         self.focused = handle;
         self.paint_dirty.set(true);
@@ -798,24 +808,46 @@ impl Shell {
         self.focus(order[next]).is_ok()
     }
 
-    /// Deepest modal container, or `0`.
+    /// Deepest visible modal container, or `0`. Later siblings win ties.
     pub fn active_modal(&self) -> u32 {
-        let mut found = 0;
-        self.walk_modal(1, &mut found);
-        found
+        let mut found = (0, 0);
+        self.walk_modal(1, 0, &mut found);
+        found.0
     }
 
-    fn walk_modal(&self, id: u32, found: &mut u32) {
+    fn walk_modal(&self, id: u32, depth: u32, found: &mut (u32, u32)) {
         let Ok(node) = self.node(id) else {
             return;
         };
-        if node.modal {
-            *found = id;
+        if node.a11y_hidden {
+            return;
         }
-        let children = node.children.clone();
-        for child in children {
-            self.walk_modal(child, found);
+        if node.modal && depth >= found.1 {
+            *found = (id, depth);
         }
+        for &child in &node.children {
+            self.walk_modal(child, depth + 1, found);
+        }
+    }
+
+    fn interaction_available(&self, handle: u32, modal: u32) -> bool {
+        let Ok(node) = self.node(handle) else {
+            return false;
+        };
+        if node.disabled || (modal != 0 && !self.contains(modal, handle)) {
+            return false;
+        }
+        let mut id = handle;
+        while id != 0 {
+            let Ok(node) = self.node(id) else {
+                return false;
+            };
+            if node.a11y_hidden {
+                return false;
+            }
+            id = node.parent;
+        }
+        true
     }
 
     fn focus_order(&self) -> Vec<u32> {
@@ -871,7 +903,10 @@ impl Shell {
             return;
         };
         let outside = modal != 0 && !self.contains(modal, id);
-        let hidden = hidden || node.a11y_hidden || outside;
+        let inherited_hidden = hidden || node.a11y_hidden;
+        let hidden = inherited_hidden || outside;
+        // A modal must not remain under an aria-hidden/background ancestor.
+        let (parent, depth) = if id == modal { (0, 0) } else { (parent, depth) };
         let role = self.node_role(node);
         let semantic = node.kind != Kind::View
             || node.role.is_some()
@@ -905,6 +940,9 @@ impl Shell {
                     | ACTION_SCROLL_BACKWARD
                     | ACTION_SCROLL_UP
                     | ACTION_SCROLL_DOWN;
+            }
+            if hidden || node.disabled {
+                actions = 0;
             }
             let editable = node.kind == Kind::Field;
             let secure = editable && node.secure;
@@ -950,7 +988,7 @@ impl Shell {
             next_parent = id;
             next_depth = depth + 1;
         }
-        let inherited = hidden && !outside;
+        let inherited = inherited_hidden;
         let children = node.children.clone();
         for child in children {
             self.collect_semantics(child, next_parent, next_depth, inherited, modal, out);
@@ -1059,6 +1097,9 @@ impl Shell {
     /// Route a screen-reader action to a semantic node.
     pub fn a11y_action(&mut self, handle: u32, action: A11yAction) -> Result<(), String> {
         self.node(handle)?;
+        if !self.interaction_available(handle, self.active_modal()) {
+            return Err(format!("handle {handle} is unavailable"));
+        }
         match action {
             A11yAction::Focus => self.focus(handle),
             A11yAction::Activate => {
@@ -1141,7 +1182,11 @@ impl Shell {
 
     fn scroll_target(&self, handle: u32, axis: ScrollAxis) -> Result<u32, String> {
         let mut id = handle;
+        let modal = self.active_modal();
         while id != 0 {
+            if !self.interaction_available(id, modal) {
+                break;
+            }
             let node = self.node(id)?;
             let accepts = match axis {
                 ScrollAxis::X => node.scroll_x,
@@ -1413,7 +1458,9 @@ impl Shell {
 
     /// Deepest text field containing the point, or `0`.
     pub fn field_at(&self, x: f32, y: f32) -> u32 {
-        self.field_in(1, x, y).unwrap_or(0)
+        self.field_in(1, x, y)
+            .filter(|handle| self.interaction_available(*handle, self.active_modal()))
+            .unwrap_or(0)
     }
 
     fn field_in(&self, id: u32, x: f32, y: f32) -> Option<u32> {

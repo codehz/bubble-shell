@@ -99,7 +99,9 @@ M2 实现进展（2026-11-12）：核心已具备焦点树、Tab/Shift-Tab、Ent
 
 M2 Web 滚动衔接（2026-11-12）：ARIA 覆盖层已把聚焦节点的 PageDown/PageUp 与方向键路由到核心滚动 action，沿语义父链检查各轴支持能力；静态文本与滚动容器保持 DOM 焦点，文本框保留编辑按键，修饰键与 composition 不触发滚动。覆盖层也接入 Tab/Shift-Tab 与激活后的 IME 切换。`editing-web` 现含 9 项 IME / 无障碍按键验收；Chromium 实际页面验证 96px 容器每页约 76.8px、底部钳制、反向返回、焦点保留、Tab 转入输入框及 Enter/Esc 编辑切换。
 
-M2 尚未完成的部分是设备级读屏验收与平台差异收尾：VoiceOver / TalkBack / NVDA 的核心路径尚未自动化回归，实体设备与厂商键盘差异未测；弹层焦点陷阱的跨端交互测试待补。Web 本轮浏览器验收覆盖 DOM 焦点与核心 action，尚不等于真实读屏软件验收。
+M2 弹层焦点隔离（2026-11-12）：核心统一限制直接 focus、指针字段聚焦与读屏 action，拒绝隐藏/禁用目标和活动 modal 外节点；背景不发布 action，弹层内读屏滚动不会落到背景祖先。活动 modal 按可见深度选择，隐藏祖先下的 modal 不再锁住 Tab；op 批次使原焦点不可用时清除焦点，失败的 focus 不丢弃当前编辑批次。活动弹层输出为独立语义根，Web ARIA DOM 按 parent 嵌套并设置 `aria-modal`，键盘焦点从 IME 切回按钮时同步 DOM，关闭弹层后回到 canvas。新增共享 `focus` fixture（Web：`?fixture=focus`）覆盖外层/嵌套弹层。Chromium 实际页面已验证 Enter 开启、Tab/Shift-Tab 循环、IME/按钮切换、Esc 清焦点、嵌套关闭和关闭后背景恢复可达；核心 116 项、native 7 项、Android 模拟器 82 项、iOS 模拟器 27 项既有输入验收通过。Android provider 同步返回核心 action 拒绝结果并清除隐藏节点的读屏焦点。
+
+M2 尚未完成的部分是设备级读屏验收与平台差异收尾：VoiceOver / TalkBack / NVDA 的核心路径尚未自动化回归，实体设备与厂商键盘差异未测；Android/iOS 弹层焦点陷阱的设备级交互测试待补。Web 本轮浏览器验收覆盖 DOM 焦点、可访问树与核心 action，尚不等于真实读屏软件验收。
 
 M2 范围：
 
