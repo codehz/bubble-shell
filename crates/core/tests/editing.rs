@@ -292,6 +292,11 @@ fn focused_field_paints_a_caret_and_reports_keyboard_flags() {
                     key: "keyboard".into(),
                     value: Value::String("email".into()),
                 },
+                Op::SetProp {
+                    handle,
+                    key: "autofill".into(),
+                    value: Value::String("email".into()),
+                },
             ],
         ))
         .unwrap();
@@ -299,7 +304,7 @@ fn focused_field_paints_a_caret_and_reports_keyboard_flags() {
     shell
         .layout(&mut |text, font, _, _, _| (text.chars().count() as f32 * font, font))
         .unwrap();
-    assert_eq!(shell.field_flags(handle).unwrap(), 2 | (2 << 8));
+    assert_eq!(shell.field_flags(handle).unwrap(), 2 | (2 << 8) | (4 << 16));
     let (x, _, w, h) = shell.caret_box().unwrap();
     assert!(w > 0.0 && h > 0.0);
     let paint = shell.paint();

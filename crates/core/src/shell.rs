@@ -124,6 +124,7 @@ struct Node {
     secure: bool,
     max_length: u32,
     keyboard: String,
+    autofill: String,
     x: f32,
     y: f32,
     w: f32,
@@ -258,6 +259,7 @@ impl Shell {
                     secure: false,
                     max_length: 0,
                     keyboard: String::new(),
+                    autofill: String::new(),
                     x: 0.0,
                     y: 0.0,
                     w: 0.0,
@@ -587,7 +589,8 @@ impl Shell {
     }
 
     /// `bit0` multiline, `bit1` secure, bits 8..15 keyboard kind
-    /// (`1` number, `2` email, `3` url, `4` phone).
+    /// (`1` number, `2` email, `3` url, `4` phone), bits 16..23 autofill
+    /// (`1` username, `2` password, `3` newPassword, `4` email, `5` phone, `6` oneTimeCode).
     pub fn field_flags(&self, handle: u32) -> Result<u32, String> {
         let node = self.node(handle)?;
         if node.kind != Kind::Field {
@@ -607,7 +610,16 @@ impl Shell {
             "phone" | "tel" => 4,
             _ => 0,
         };
-        Ok(bits | (kind << 8))
+        let autofill = match node.autofill.as_str() {
+            "username" => 1,
+            "password" | "current-password" => 2,
+            "newPassword" | "new-password" => 3,
+            "email" => 4,
+            "phone" | "tel" => 5,
+            "oneTimeCode" | "one-time-code" => 6,
+            _ => 0,
+        };
+        Ok(bits | (kind << 8) | (autofill << 16))
     }
 
     /// Focused caret in viewport coordinates: x, y, width, height.
@@ -1144,6 +1156,12 @@ impl Shell {
                 };
                 self.node_mut(id)?.keyboard = name.clone();
             }
+            Prop::Autofill => {
+                let Value::String(name) = value else {
+                    return Err("autofill must be a string".into());
+                };
+                self.node_mut(id)?.autofill = name.clone();
+            }
         }
         self.restyle(id)
     }
@@ -1302,6 +1320,7 @@ impl Shell {
             secure: false,
             max_length: 0,
             keyboard: String::new(),
+            autofill: String::new(),
             x: 0.0,
             y: 0.0,
             w: 0.0,

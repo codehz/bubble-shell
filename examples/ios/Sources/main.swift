@@ -123,6 +123,7 @@ final class BubbleView: UIView {
     private var nextPointerId: UInt32 = 1
     var keyboardKind: UIKeyboardType = .default
     var secureEntry = false
+    var contentKind: UITextContentType? = nil
 
     private func pointerId(_ touch: UITouch) -> UInt32 {
         let key = ObjectIdentifier(touch)
@@ -283,12 +284,21 @@ final class BubbleView: UIView {
             if handle != 0 {
                 let flags = bubble_field_flags(handle)
                 secureEntry = flags & 2 != 0
-                switch flags >> 8 {
+                switch (flags >> 8) & 0xff {
                 case 1: keyboardKind = .numberPad
                 case 2: keyboardKind = .emailAddress
                 case 3: keyboardKind = .URL
                 case 4: keyboardKind = .phonePad
                 default: keyboardKind = .default
+                }
+                switch (flags >> 16) & 0xff {
+                case 1: contentKind = .username
+                case 2: contentKind = .password
+                case 3: contentKind = .newPassword
+                case 4: contentKind = .emailAddress
+                case 5: contentKind = .telephoneNumber
+                case 6: contentKind = .oneTimeCode
+                default: contentKind = nil
                 }
                 _ = becomeFirstResponder()
                 reloadInputViews()
@@ -367,6 +377,10 @@ extension BubbleView: UITextInput {
     }
     var isSecureTextEntry: Bool {
         get { secureEntry }
+        set { _ = newValue }
+    }
+    var textContentType: UITextContentType! {
+        get { contentKind }
         set { _ = newValue }
     }
     var autocorrectionType: UITextAutocorrectionType {

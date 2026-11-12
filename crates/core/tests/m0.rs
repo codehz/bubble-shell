@@ -475,6 +475,7 @@ fn every_runtime_property_is_dispatchable() {
             "overscrollX" | "overscrollY" => Value::Bool(false),
             "multiline" | "secure" => Value::Bool(true),
             "keyboard" => Value::String("text".into()),
+            "autofill" => Value::String("email".into()),
             "maxLength" => Value::Float(4.0),
             "top" | "right" | "bottom" | "left" => Value::Float(4.0),
             _ => Value::Float(4.0),

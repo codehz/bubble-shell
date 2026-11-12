@@ -218,6 +218,7 @@ class BubbleView(context: Context) : View(context) {
     private var composing = false
     private var composingText = ""
     private var editorType = InputType.TYPE_CLASS_TEXT
+    private var autofillHints = emptyArray<String>()
 
     private fun sendEdit(action: Int, text: String, a: Int = 0, b: Int = 0) {
         BubbleNative.edit(action, text.toByteArray(Charsets.UTF_8), a, b)
@@ -229,6 +230,7 @@ class BubbleView(context: Context) : View(context) {
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
         outAttrs.inputType = editorType
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
+        outAttrs.setAutofillHints(*autofillHints)
         return object : BaseInputConnection(this, true) {
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
                 val value = text.toString()
@@ -295,7 +297,9 @@ class BubbleView(context: Context) : View(context) {
                 sendPointer(2, event.actionIndex, event)
                 val handle = BubbleNative.focusAt(localX(event.x), localY(event.y))
                 if (handle != 0) {
-                    editorType = editorType(BubbleNative.fieldFlags(handle))
+                    val flags = BubbleNative.fieldFlags(handle)
+                    editorType = editorType(flags)
+                    autofillHints = autofillHints(flags)
                     requestFocus()
                     val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                     imm.restartInput(this)
@@ -324,7 +328,7 @@ class BubbleView(context: Context) : View(context) {
 }
 
 private fun editorType(flags: Int): Int {
-    val kind = flags shr 8
+    val kind = flags shr 8 and 0xff
     var type = when (kind) {
         1 -> InputType.TYPE_CLASS_NUMBER
         2 -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
@@ -339,4 +343,16 @@ private fun editorType(flags: Int): Int {
         type = type or InputType.TYPE_TEXT_FLAG_MULTI_LINE
     }
     return type
+}
+
+private fun autofillHints(flags: Int): Array<String> {
+    return when (flags shr 16 and 0xff) {
+        1 -> arrayOf(View.AUTOFILL_HINT_USERNAME)
+        2 -> arrayOf(View.AUTOFILL_HINT_PASSWORD)
+        3 -> arrayOf("newPassword")
+        4 -> arrayOf(View.AUTOFILL_HINT_EMAIL_ADDRESS)
+        5 -> arrayOf(View.AUTOFILL_HINT_PHONE)
+        6 -> arrayOf("smsOTPCode")
+        else -> emptyArray()
+    }
 }

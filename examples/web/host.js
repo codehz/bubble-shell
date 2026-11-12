@@ -499,8 +499,10 @@ canvas.addEventListener("pointerup", (event) => {
   exports.layout();
   const flags = exports.field_flags(handle);
   ime.type = flags & 2 ? "password" : "text";
-  const kind = flags >> 8;
+  const kind = (flags >> 8) & 0xff;
   ime.inputMode = ["text", "numeric", "email", "url", "tel"][kind] || "text";
+  const autofill = (flags >> 16) & 0xff;
+  ime.autocomplete = ["off", "username", "current-password", "new-password", "email", "tel", "one-time-code"][autofill] || "off";
   const len = exports.caret_box();
   if (len >= 16) {
     const view = new DataView(memory().buffer, exports.scratch_ptr(), 16);

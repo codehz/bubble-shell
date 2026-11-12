@@ -51,6 +51,7 @@ pub enum Prop {
     Secure,
     MaxLength,
     Keyboard,
+    Autofill,
 }
 
 impl Prop {
@@ -96,6 +97,7 @@ impl Prop {
             "secure" => Self::Secure,
             "maxLength" => Self::MaxLength,
             "keyboard" => Self::Keyboard,
+            "autofill" => Self::Autofill,
             _ => return None,
         })
     }
@@ -138,6 +140,7 @@ pub const DEFERRED_PROPS: &[&str] = &[
     "secure",
     "maxLength",
     "keyboard",
+    "autofill",
 ];
 
 pub const SET_PROPS: &[&str] = &[
@@ -181,4 +184,5 @@ pub const SET_PROPS: &[&str] = &[
     "secure",
     "maxLength",
     "keyboard",
+    "autofill",
 ];
