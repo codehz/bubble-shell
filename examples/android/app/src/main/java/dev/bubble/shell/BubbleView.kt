@@ -225,12 +225,21 @@ class BubbleView(context: Context) : View(context) {
         refresh()
     }
 
+    private fun selection(): Pair<Int, Int> {
+        val raw = BubbleNative.selection()
+        if (raw.size < 2) return 0 to 0
+        return raw[0] to raw[1]
+    }
+
     override fun onCheckIsTextEditor(): Boolean = true
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
         outAttrs.inputType = editorType
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
         outAttrs.setAutofillHints(*autofillHints)
+        val (selStart, selEnd) = selection()
+        outAttrs.initialSelStart = selStart
+        outAttrs.initialSelEnd = selEnd
         return object : BaseInputConnection(this, true) {
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
                 val value = text.toString()
@@ -268,6 +277,53 @@ class BubbleView(context: Context) : View(context) {
                 repeat(beforeLength.coerceAtLeast(0)) { sendEdit(2, "") }
                 repeat(afterLength.coerceAtLeast(0)) { sendEdit(3, "") }
                 return true
+            }
+
+            override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence {
+                val value = BubbleNative.focusedText()
+                val (start, _) = selection()
+                val from = (start - n).coerceAtLeast(0).coerceAtMost(value.length)
+                return value.substring(from, start.coerceIn(0, value.length))
+            }
+
+            override fun getTextAfterCursor(n: Int, flags: Int): CharSequence {
+                val value = BubbleNative.focusedText()
+                val (_, end) = selection()
+                val from = end.coerceIn(0, value.length)
+                val to = (from + n).coerceAtMost(value.length)
+                return value.substring(from, to)
+            }
+
+            override fun getSelectedText(flags: Int): CharSequence? {
+                val value = BubbleNative.focusedText()
+                val (rawStart, rawEnd) = selection()
+                val start = minOf(rawStart, rawEnd).coerceIn(0, value.length)
+                val end = maxOf(rawStart, rawEnd).coerceIn(0, value.length)
+                if (start == end) return null
+                return value.substring(start, end)
+            }
+
+            override fun setSelection(start: Int, end: Int): Boolean {
+                sendEdit(4, "", start, end)
+                return true
+            }
+
+            override fun sendKeyEvent(event: android.view.KeyEvent): Boolean {
+                if (event.action == android.view.KeyEvent.ACTION_DOWN && event.keyCode == android.view.KeyEvent.KEYCODE_DEL) {
+                    sendEdit(2, "")
+                    return true
+                }
+                if (event.action == android.view.KeyEvent.ACTION_DOWN && event.keyCode == android.view.KeyEvent.KEYCODE_FORWARD_DEL) {
+                    sendEdit(3, "")
+                    return true
+                }
+                return super.sendKeyEvent(event)
+            }
+
+            private fun selection(): Pair<Int, Int> {
+                val raw = BubbleNative.selection()
+                if (raw.size < 2) return 0 to 0
+                return raw[0] to raw[1]
             }
         }
     }

@@ -1373,6 +1373,48 @@ mod android {
     }
 
     #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_focused<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+    ) -> jint {
+        super::bubble_focused() as jint
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_focusedText<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+    ) -> JString<'a> {
+        let mut buf = vec![0 as std::os::raw::c_char; 65536];
+        let handle = super::bubble_focused();
+        let text = if handle == 0 {
+            String::new()
+        } else {
+            let _ = super::bubble_node_text(handle, buf.as_mut_ptr(), buf.len() as u32);
+            unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        env.new_string(text).unwrap_or_else(|_| env.new_string("").unwrap())
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_selection<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+    ) -> jni::objects::JIntArray<'a> {
+        let (mut start, mut end, mut mark_start, mut mark_end) = (0u32, 0, 0, 0);
+        let _ = super::bubble_selection(&mut start, &mut end, &mut mark_start, &mut mark_end);
+        let array = env.new_int_array(4).expect("int array");
+        let _ = env.set_int_array_region(
+            &array,
+            0,
+            &[start as i32, end as i32, mark_start as i32, mark_end as i32],
+        );
+        array
+    }
+
+    #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_nodeBox<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,

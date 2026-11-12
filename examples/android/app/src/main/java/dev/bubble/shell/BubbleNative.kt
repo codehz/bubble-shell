@@ -16,6 +16,9 @@ object BubbleNative {
     external fun fieldAt(x: Float, y: Float): Int
     external fun focusAt(x: Float, y: Float): Int
     external fun fieldFlags(handle: Int): Int
+    external fun focused(): Int
+    external fun focusedText(): String
+    external fun selection(): IntArray
     external fun scrollXOf(handle: Int): Float
     external fun scrollYOf(handle: Int): Float
     external fun setVisible(visible: Int)

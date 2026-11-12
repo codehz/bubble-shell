@@ -327,6 +327,56 @@ pub extern "C" fn field_flags(handle: u32) -> u32 {
     with_shell(|shell| shell.field_flags(handle)).unwrap_or(0)
 }
 
+#[no_mangle]
+pub extern "C" fn focused() -> u32 {
+    drain_pending().ok();
+    with_shell(|shell| Ok(shell.focused())).unwrap_or(0)
+}
+
+/// Four little-endian UTF-16 offsets: selection start, end, mark start, mark end.
+/// Mark end is `u32::MAX` when no composition is open. Returns 16, or 0.
+#[no_mangle]
+pub extern "C" fn selection() -> u32 {
+    drain_pending().ok();
+    let Some((start, end, mark_start, mark_end)) = with_shell(|shell| {
+        let handle = shell.focused();
+        if handle == 0 {
+            return Ok(None);
+        }
+        let (_, state) = shell.field(handle)?;
+        let (mark_start, mark_end) = state.composition.unwrap_or((0, u32::MAX));
+        Ok(Some((state.sel_start, state.sel_end, mark_start, mark_end)))
+    })
+    .ok()
+    .flatten() else {
+        return store_scratch(Vec::new());
+    };
+    let mut bytes = Vec::with_capacity(16);
+    for value in [start, end, mark_start, mark_end] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    store_scratch(bytes)
+}
+
+/// UTF-8 value of the focused field. Returns 0 when nothing is focused.
+#[no_mangle]
+pub extern "C" fn focused_text() -> u32 {
+    drain_pending().ok();
+    let text = with_shell(|shell| {
+        let handle = shell.focused();
+        if handle == 0 {
+            return Ok(String::new());
+        }
+        shell.field(handle).map(|(value, _)| value)
+    });
+    match text {
+        Ok(value) if !value.is_empty() || with_shell(|shell| Ok(shell.focused())).unwrap_or(0) != 0 => {
+            store_scratch(value.into_bytes())
+        }
+        _ => store_scratch(Vec::new()),
+    }
+}
+
 /// Encoded `BSED` batch since the last drain; 0 bytes when empty.
 #[no_mangle]
 pub extern "C" fn take_edit_events() -> u32 {

@@ -1,4 +1,4 @@
-import { commandsForDom } from "./ime.js";
+import { commandsForDom, menuActions } from "./ime.js";
 import { dispatchEditEvents, dispatchGestureEvents, setApi } from "./runtime.js";
 
 const canvas = document.querySelector("canvas");
@@ -438,6 +438,7 @@ function sendPointer(action, event) {
 canvas.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   canvas.setPointerCapture(event.pointerId);
+  editMenu.hidden = true;
   activePointers.add(event.pointerId);
   sendPointer(0, event);
   startTicking();
@@ -476,7 +477,7 @@ function applyEditCommands(commands) {
   for (const command of commands) {
     const bytes = encoder.encode(command.text ?? "");
     const ptr = bytes.length ? copyBytes(bytes) : 0;
-    exports.edit(command.action, ptr, bytes.length, 0, 0);
+    exports.edit(command.action, ptr, bytes.length, command.a ?? 0, command.b ?? 0);
     if (bytes.length) exports.dealloc(ptr, bytes.length);
   }
   pumpGestures();
@@ -512,6 +513,63 @@ canvas.addEventListener("pointerup", (event) => {
     ime.style.height = `${Math.max(16, view.getFloat32(12, true))}px`;
   }
   ime.focus();
+});
+
+const editMenu = document.createElement("div");
+editMenu.hidden = true;
+Object.assign(editMenu.style, {
+  position: "fixed",
+  zIndex: "2",
+  display: "flex",
+  gap: "4px",
+  padding: "4px",
+  background: "#111",
+  color: "#fff",
+});
+for (const [name, label] of [["cut", "Cut"], ["copy", "Copy"], ["paste", "Paste"], ["selectAll", "Select all"]]) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.addEventListener("click", () => runEditMenu(name));
+  editMenu.append(button);
+}
+document.body.append(editMenu);
+
+function focusedField() {
+  const handle = exports.focused();
+  if (!handle) return null;
+  if (exports.selection() < 16) return null;
+  const view = new DataView(memory().buffer, exports.scratch_ptr(), 16);
+  const selection = [view.getUint32(0, true), view.getUint32(4, true)];
+  const flags = exports.field_flags(handle);
+  const textLen = exports.focused_text();
+  const bytes = textLen ? new Uint8Array(memory().buffer, exports.scratch_ptr(), textLen) : new Uint8Array();
+  return { value: decoder.decode(bytes), selection, secure: (flags & 2) !== 0 };
+}
+
+async function runEditMenu(name) {
+  const field = focusedField();
+  editMenu.hidden = true;
+  if (!field) return;
+  let clip = "";
+  if (name === "paste") {
+    try { clip = await navigator.clipboard.readText(); } catch { clip = ""; }
+  }
+  const result = menuActions(field, name, clip);
+  if (!result) return;
+  if ((name === "copy" || name === "cut") && result.clipboard) {
+    try { await navigator.clipboard.writeText(result.clipboard); } catch { return; }
+  }
+  if (result.commands.length) applyEditCommands(result.commands);
+  ime.focus();
+}
+
+canvas.addEventListener("contextmenu", (event) => {
+  if (!exports.focused()) return;
+  event.preventDefault();
+  editMenu.hidden = false;
+  editMenu.style.left = `${event.clientX}px`;
+  editMenu.style.top = `${event.clientY}px`;
 });
 canvas.addEventListener("pointercancel", (event) => releasePointer(3, event));
 
