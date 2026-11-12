@@ -2,7 +2,7 @@
 
 状态：A-D 已实现；E 的文档切换已完成。模拟器 harness 保留为可选回归入口，不是 MVP 门槛。实体设备、任意双指轨迹、第三指、按住期间系统中断与厂商键盘差异进入 post-MVP backlog。本文记录已确认的行为契约；字段名以实现为准。
 
-实现落点：`crates/core/src/gesture.rs`（识别状态机）、`crates/core/src/shell.rs`（命中路径、逐轴滚动链、声明生命周期）、`crates/core/src/ops.rs`（BSOP v3 手势 op）、`crates/wasm` / `crates/native`（pointer/tick ABI）、`examples/web/runtime.js`（五种虚拟原语与事件分发）、三端宿主输入适配。Web 端由 `examples/web/m0-smoke.mjs` 覆盖按下-抬起、事件分发与滚动。
+实现落点：`crates/core/src/gesture.rs`（识别状态机）、`crates/core/src/shell.rs`（命中路径、逐轴滚动链、声明生命周期）、`crates/core/src/ops.rs`（BSOP v3 手势 op）、`crates/wasm` / `crates/native`（pointer/tick ABI）、`crates/native/js/runtime.js`（五种虚拟原语与事件分发；Web 构建复制到 `examples/web/runtime.js`）、三端宿主输入适配。Web 端由 `examples/web/m0-smoke.mjs` 覆盖按下-抬起、事件分发与滚动。
 
 ## 1. 目标与边界
 
@@ -25,7 +25,7 @@
 | `crates/core/src/shell.rs`：`tap` | 命中节点或最近祖先的单个 handler，没有触点生命周期 | 建立命中路径、候选与识别状态，不能沿用按下即点击 |
 | 同文件：`scroll_wheel` / `scroll_target` | 选一个有滚动范围的最深容器后 clamp；不检查请求方向上的剩余范围，也不传递剩余增量 | 改为实际命中路径上的逐轴消费链；文档中的方向剩余范围描述目前超前于代码 |
 | `crates/core/src/turn.rs` | signal 与依赖图在脚本侧 `Turn`；`Shell` 持有 UI 树 | 条件经绑定求值和 op 提交，UI 不跨线程读取脚本 signal |
-| `examples/web/runtime.js` | 原语注册、动态属性绑定、If/Each 的创建／移动／销毁已有；fragment 使用绝对定位零尺寸 View anchor | 复用生命周期与绑定；手势实体不创建 Taffy 节点，也不能成为可命中的 anchor |
+| `crates/native/js/runtime.js` | 原语注册、动态属性绑定、If/Each 的创建／移动／销毁已有；fragment 使用绝对定位零尺寸 View anchor | 复用生命周期与绑定；手势实体不创建 Taffy 节点，也不能成为可命中的 anchor |
 | `crates/compiler/src/lib.rs` | JSX 属性可识别 signal 读取并降为动态绑定；没有对象表达式支持 | 使用虚拟 JSX 节点和标量属性，不为本方案额外引入对象声明语法 |
 | `crates/native/src/lib.rs` / `script.rs` | 原 `bubble_pointer_down` 立即发送 Press，脚本回调仅收到 tap | 替换内部输入与事件路径；公开点击统一使用显式 TapGesture |
 | iOS / Android / Web 示例宿主 | iOS 使用 UIKit pan，Android move 直接滚动，Web pointerdown 直接 tap，wheel 单独传入 | 三端接完整触点生命周期，由 Rust 统一识别，移除重复平台识别 |
@@ -212,7 +212,7 @@
 
 ### B. 虚拟节点与 JSX 运行时
 
-涉及 `examples/web/runtime.js`（native 也使用的 runtime）、编译器及绑定桥。
+涉及 `crates/native/js/runtime.js`（native 与 Web 共用的 runtime）、编译器及绑定桥。
 
 1. 注册五种手势虚拟原语，复用 JSX 属性动态绑定。
 2. 区分 UI 节点索引与虚拟声明顺序；If/Each 创建、移动、销毁都能正确维护目标与声明生命周期。

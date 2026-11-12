@@ -25,13 +25,15 @@ mount(() => <Counter />);
 
 - 组件函数只执行一次，不在状态变化时重建树。
 - `signal` 的值留在脚本侧（JS 引用），Rust 图只调度。比较用 `===`（`equals: false` 每次写入都通知，`equals(a, b)` 返回真表示相同）。数组和对象按引用持有，不复制进 Rust；原地修改不会通知，要 `set` 一个新值。`computed` 是图上的 memo，一次变化只跑一遍，并且先于 effect。渲染绑定是 render effect，`effect` 是 user effect，排在渲染绑定之后。`cleanup` 挂在当前 owner 上，owner 重跑或销毁时先执行。不引入 `solid-js`。
-- 一次 Oxc pass 去掉 TypeScript，把 JSX 降成原生渲染模块的调用：静态属性和子节点设一次；会读信号的表达式登记为绑定。
+- 作者写多模块 TSX/TS/JS。每个模块一次 Oxc pass 去掉 TypeScript，把 JSX 降成原生渲染模块的调用；任意其他语句、表达式和 import 原样保留。
+- rolldown 把模块图链接成单个 ES module；`bubble-shell` / `bubble:rt` 保持导入，由宿主提供，运行时本身不进 bundle。发布态不做代码分割、minify 或 QuickJS 字节码；开发态 Web 使用多模块 HMR，见 [07-js-bundling-plan.md](07-js-bundling-plan.md)。
+- 静态属性和子节点设一次；会读本地 `signal()` / `computed()` 的表达式登记为绑定。
 - 绑定重跑时，原生渲染器直接产出对应 op（`SetText` / `SetProp` / 插入 / 移动 / 销毁）。没有 VDOM diff，也没有「模板 IR + 按绑定生成的 JS 更新函数」。
 - `<Show>` / `<For>` / `<Index>` / `<Switch>` / `<Match>` 是运行时控制流：`when` / `each` 是每次重跑都调用的 accessor，不走 `dynamic()`。三元、`&&` 和 `when()` / `each()` 不再是控制流。
 
 ### 运行时
 
-1. 脚本线程执行应用模块。`mount` 调用组件一次，渲染器按调用创建节点并登记绑定，产出首批 op。
+1. 脚本线程执行入口 bundle。`mount` 调用组件一次，渲染器按调用创建节点并登记绑定，产出首批 op。
 2. 事件到达已登记的 handler；handler 写信号。
 3. 图只重跑读过该信号的绑定，把变更写入 op 批次。
 4. 批次在帧边界合并、压缩，提交给 UI 线程。
@@ -47,8 +49,10 @@ mount(() => <Counter />);
 manifest.json
 main.js
 assets/
-  <sha256>...
+  logo.1a2b3c4d.png
 ```
+
+发布态 `main.js` 是单个入口 ES module；fixture 构建沿用 `<name>.js`，manifest 的 `entry` 指向实际文件名。开发态由 `bubble dev` 输出多模块与 source map，不进入发布包。运行时模块不在此目录中。
 
 ### manifest.json
 
@@ -63,6 +67,9 @@ assets/
   "files": [
     { "path": "main.js", "sha256": "...", "size": 6789 }
   ],
+  "assets": [
+    { "path": "assets/logo.1a2b3c4d.png", "sha256": "...", "size": 1024 }
+  ],
   "keyId": "release-2026",
   "signature": "base64..."
 }
@@ -70,12 +77,14 @@ assets/
 
 ### 规则
 
-- 签名对象是去掉 `signature` 字段后的 manifest，按 RFC 8785 JCS 规范化，Ed25519 签名。
+- 签名对象是去掉 `signature` 字段后的 manifest，按 RFC 8785 JCS 规范化，Ed25519 签名。`files` 与 `assets` 都在签名范围内。
 - 公钥内置在宿主/运行时；`keyId` 支持轮换与吊销。
-- 验签通过后再逐文件校验 SHA-256 与大小；任何不一致都拒绝激活。
+- `files` 只列出运行时实际加载并在激活时校验的文件；当前就是入口 bundle。`bubble_load` 只接收 manifest 与入口字节，不因资源增加而改变 ABI。
+- `assets` 是宿主按需解析的资源，路径相对 bundle 根，命名为 `<name>.<hash8>.<ext>`；同一内容只存一份。宿主读取时可用条目里的 SHA-256 与大小校验。
+- 验签通过后逐 `files` 校验 SHA-256 与大小；任何不一致都拒绝激活。
 - 版本单调递增；拒绝回放与降级，除非宿主显式允许。
 - 检查 `schema`、`minRuntime`、`platforms`；不兼容直接拒绝并上报。
-- 资源按内容寻址；同一 hash 只存一份。
+- bundle 是单个 ES module；`bubble-shell` / `bubble:rt` 保持裸导入，由宿主提供。native 用 QuickJS loader 解析，Web 用 import map 解析。发布态不含 source map。
 - 激活采用目录指针原子切换；保留当前版本 + LKG + 暂存区。
 - 新包挂载失败或启动 N 秒内崩溃，自动切回 LKG。
 
@@ -212,7 +221,7 @@ C ABI/JNI/WASM 的编辑事务入口按活动会话校验身份；iOS 与 Web �
 1. 宿主创建 surface，传入尺寸、insets、scale、能力实现。
 2. runtime 加载并验签 bundle，或使用 LKG。
 3. 初始化引擎（native：QuickJS context；Web：主线程 WASM）。
-4. 执行 `main.js`：`mount` 跑根组件一次，渲染器建树并登记绑定。
+4. 执行入口 bundle（`main.js` 或 fixture 的 `<name>.js`）：`mount` 跑根组件一次，渲染器建树并登记绑定。
 5. 首批 op 提交；UI 线程布局、绘制首帧。
 
 ### 帧循环

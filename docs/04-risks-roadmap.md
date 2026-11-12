@@ -5,6 +5,7 @@
 | 风险 | 级别 | 影响 | 缓解 |
 |---|---|---|---|
 | QuickJS 事件循环、async、调试器需自建 | 高 | 开发效率与线上排障 | 基于 quickjs-ng/libc；先做最小事件循环；调试协议与 conformance 延后 |
+| Oxc `0.61 → 0.158` 与 rolldown 迁移 | 中 | 编译器重写、构建变慢 | 按 [07](07-js-bundling-plan.md) 分步；rolldown 只作构建依赖；测试用最小 fixture |
 | 主线程脚本卡住绘制 | 中 | Web 长任务掉帧，且无法强杀 | 接受。软预算只埋点；不做 Worker、不做切片 |
 | a11y/IME 是最大平台差异面 | 高 | 产品可用性与合规 | MVP 只交付语义树与平台桥；VoiceOver/TalkBack/NVDA 验收延后 |
 | Android IME 与自绘编辑状态语义不一致 | 高 | CJK 组合、选区、删除与光标位置失败 | 按 [自绘输入模型重设计计划](06-input-model-plan.md) 锁步迁移编辑事务；模拟器验证；真机与厂商键盘延后 |
@@ -20,6 +21,8 @@
 
 - 多实例、差量更新、grid/完整 CSS、高级视觉效果。
 - 宿主原生组件嵌入、能力授权 UI、统一调试器、桌面端。
+- minify、代码分割、QuickJS 字节码、发布 source map。
+- native 状态保留 HMR 与 WebSocket dev host；native 开发仍重新打包并重启。
 - 跨端像素级一致；字体内置；运行时自带字体。
 
 ## 3. 交付策略：先做出 MVP
@@ -30,7 +33,8 @@ MVP 是一个可运行、可交互的演示，不是验收程序。MVP 完成前
 ### MVP 范围
 
 - bundle/manifest 加载与验签占位。
-- 编译器 MVP：TSX 函数组件 → 原生渲染调用（Oxc）。信号图在 Rust；不做 VDOM、模板 IR 或预编译子树。
+- 编译器 MVP：TSX/TS/JS 函数组件 → 原生渲染调用；Oxc 去类型并降 JSX，rolldown 链接成单 ESM。信号图在 Rust；不做 VDOM、模板 IR 或预编译子树。
+- 打包：`bubble bundle` / `bubble dev`；`bubble-shell` / `bubble:rt` 由宿主提供；资源按 `assets/<name>.<hash8>.<ext>` 落盘；Web 开发态 HMR。详见 [07-js-bundling-plan.md](07-js-bundling-plan.md)。
 - Rust 保留树 + Taffy 布局；op 协议 + 双缓冲提交。
 - Web：主线程一份 WASM + JS 回放 `PaintCmd`；无 Worker。
 - Native：QuickJS、C ABI、事件循环、超时/内存限制；iOS CoreGraphics、Android Canvas painter；宿主能力桥与生命周期。
@@ -43,6 +47,7 @@ MVP 是一个可运行、可交互的演示，不是验收程序。MVP 完成前
 - `cargo check --workspace` 通过。
 - `node --test examples/web/*.test.mjs` 通过。
 - Web 页面手动 smoke：渲染、点击、滚动、文本框输入、焦点移动各一次。
+- `bubble dev` 下修改组件文本，页面更新且计数状态保留（Web）。
 - iOS/Android 模拟器启动同一 fixture，完成点击、滚动、一次文本输入。
 - 现有模拟器 harness 可以作为可选回归入口运行，但不是 MVP 发布门槛：
   `cargo run -q -p bubble-eval -- gestures-ios|gestures-android|editing-ios|editing-android`。
@@ -62,7 +67,7 @@ MVP 是一个可运行、可交互的演示，不是验收程序。MVP 完成前
 范围：
 
 - bundle/manifest 加载与验签占位。
-- 编译器 MVP：TSX 函数组件 → 原生渲染调用（Oxc）。信号图在 Rust。不做 VDOM、模板 IR 或预编译子树。
+- 编译器 MVP：TSX 函数组件 → 原生渲染调用。M0 的历史实现是单文件直译；打包重设计按 [07-js-bundling-plan.md](07-js-bundling-plan.md) 迁移到 Oxc + rolldown 单 ESM。信号图在 Rust。不做 VDOM、模板 IR 或预编译子树。
 - Rust 保留树 + Taffy 布局。
 - op 协议 + 双缓冲提交。
 - Web：主线程一份 WASM + JS 回放 `PaintCmd`。无 Worker。
@@ -111,6 +116,7 @@ MVP 内：
 - 灰度、kill switch、兼容性拒绝。
 - 结构化埋点、帧统计、错误上报。
 - 性能加固与包体优化。
+- 打包优化：QuickJS 字节码、minify、代码分割、发布 source map、native 状态保留 HMR 与 WebSocket dev host。
 
 M3 在 MVP 之后启动；其故障演练、性能门槛和更新回滚验证同样按第 5 节延后执行。
 

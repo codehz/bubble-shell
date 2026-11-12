@@ -21,6 +21,13 @@ runtime 负责：
 - 语义树、输入代理、编辑状态。
 - 更新缓存、配额、错误上报。
 
+### Bundle 与运行时模块
+
+- 发布 bundle 是 manifest + 单个入口 ES module + `assets/`。应用代码可以来自多个模块，但发布态已链接成一个 ESM；fixture 构建沿用 `<name>.js` / `<name>.json`。
+- `bubble-shell` 与 `bubble:rt` 是宿主提供的原生模块，不打进 bundle。native 由 QuickJS loader 解析；Web 由页面的 import map 解析，两者指向同一份 `runtime.js`。
+- 资源以 `assets/<name>.<hash8>.<ext>` 落盘，manifest 的 `assets` 列出哈希与大小；bundle 内用相对路径引用。Web 以 bundle URL 为 base 解析，native 以 bundle 根目录解析。
+- 开发态 Web 使用 `bubble dev` 的多模块 HMR；native 开发仍重新打包并重启宿主，native 状态保留 HMR 属于 post-MVP。
+
 ### 宿主 API 草图
 
 平台中立的伪代码，最终以各端 SDK 为准：
@@ -156,11 +163,11 @@ EditSession {
 
 覆盖能力：键盘类型、autofill、密码、多行、maxlength、输入过滤、撤销/重做。三端行为差异记录在测试矩阵中。
 
-测试入口按职责拆分：`examples/build-fixtures.sh` 编译 `examples/app/fixtures/*.tsx` 并生成 `examples/web/fixtures/<name>.{js,json}`；Web 用 `?fixture=counter|editing|gestures` 选择，Android 用 `bubble_fixture` intent extra，iOS 用 `BUBBLE_FIXTURE` 环境变量。原生桥只实现一次，设备测试只选择对应 bundle，不复制入口。
+测试入口按职责拆分：`examples/build-fixtures.sh` 调用 `bubble bundle` 编译 `examples/app/fixtures/*.tsx`，生成 `examples/web/fixtures/<name>.{js,json}` 与按需的 `assets/`；Web 用 `?fixture=counter|editing|gestures` 选择，Android 用 `bubble_fixture` intent extra，iOS 用 `BUBBLE_FIXTURE` 环境变量。原生桥只实现一次，设备测试只选择对应 bundle，不复制入口。
 
 当前接入：Web 隐藏 `textarea` 把 `beforeinput` / composition 映射为事务命令（commit/compose/delete/replace/select/undo/redo，`examples/web/ime.js`），宿主按快照的 session 提交并回读选区同步代理，含 `historyUndo` / `historyRedo`。在字段上按下并拖动会改选区，不再交给手势；抬起不把插入符折回落点。选区手柄由核心给出几何并由宿主绘制；拖动手柄保持另一端锚点。右键菜单调用核心 `edit_menu` 执行剪切、复制、粘贴和全选，密码字段不复制。iOS `UITextInput` 的 `insertText` / `deleteBackward` / `replace` / `setMarkedText` / `unmarkText` 通过 `bubble_edit_snapshot` 读取 session，再走 commit/compose/replace/select/batch，标记文本内部选区不再固定到末尾。Android `InputConnection` 绑定创建时的 `EditSession`，每次读写校验 session；`commitText` / `setComposingText` 走范围事务并应用 `newCursorPosition`，支持内部组合选区、`setComposingRegion`、UTF-16 与代码点两种 `deleteSurroundingText`、嵌套 batch edit、`getTextBefore/After`、`getSelectedText`、`getExtractedText` 和 `CursorAnchorInfo`。连接关闭或字段切换后旧 session 写入被拒绝，Kotlin 不再维护第二份 composition 状态。iOS `UITextInput` 覆盖插入、退格、UTF-16 选区、标记文本（`setMarkedText` / `unmarkText`）和选区矩形；⌘Z / ⇧⌘Z 走同一撤销栈。标记文本内部的选中范围仍固定在组合末尾。点按 `focus_at` 聚焦并把插入符落到最近的 UTF-16 边界。聚焦字段在 layout 后绘制选区与 1px 光标。撤销按字段保留最近 100 步；脚本 `SetEditingValue` 成功后清空该字段的撤销栈。`field_flags` 的 bit0 多行、bit1 密码，bits 8..15 为键盘种类：1 number、2 email、3 url、4 phone。bits 16..23 为 `autofill`：1 username、2 password、3 newPassword、4 email、5 phone、6 oneTimeCode。
 
-Web 宿主从 `runtime.js` 具名导入 `setApi`、`dispatchGestureEvents` 和 `dispatchEditEvents`；编辑事件由 `dispatchEditEvents` 解码并调用字段的 `onChange`。隐藏 `textarea` 通过 `inputMode` 与 `autocomplete` 配置键盘和自动填充，不写入只读的 `type` 属性；密码遮罩由核心绘制。
+Web 宿主从 `runtime.js`（即 `bubble-shell` 模块）具名导入 `setApi`、`dispatchGestureEvents` 和 `dispatchEditEvents`；应用 bundle 通过 import map 把 `bubble-shell` / `bubble:rt` 解析到同一文件。编辑事件由 `dispatchEditEvents` 解码并调用字段的 `onChange`。隐藏 `textarea` 通过 `inputMode` 与 `autocomplete` 配置键盘和自动填充，不写入只读的 `type` 属性；密码遮罩由核心绘制。
 
 点击 Web 文本框时，`placeCaret` 在布局成功后立即重绘 Canvas，再定位并聚焦隐藏输入代理；首次点击和切换字段都立即显示光标，无需等待输入或手势动画触发重绘。
 
@@ -190,9 +197,9 @@ node --test examples/web/*.test.mjs
 
 流程：
 
-1. 下载 manifest 与文件（可后台）。
+1. 下载 manifest、入口 bundle 与 `assets`（可后台）。
 2. 验 Ed25519 签名（`keyId` 对应公钥）。
-3. 校验每个文件 SHA-256 与大小。
+3. 校验 `files` 与 `assets` 中每个条目的 SHA-256 与大小；资源可在首次读取时再校验。
 4. 检查 `schema`、`minRuntime`、`platforms`、版本单调性。
 5. 写入暂存区。
 6. 宿主决定 `activate` 或 `defer`；默认下次挂载激活。

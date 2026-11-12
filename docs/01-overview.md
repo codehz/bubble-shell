@@ -100,7 +100,8 @@ sequenceDiagram
 | 维度 | v1 定稿 |
 |---|---|
 | 信任边界 | 第一方内容；Ed25519 签名包；能力权限 v1 先 ambient，桥接点保留 |
-| 作者模型 | TSX 函数组件；Oxc 把 JSX 降成原生渲染调用；信号图在 Rust；组件只跑一次；细粒度绑定；无 VDOM、无模板 IR、无预编译子树 |
+| 作者模型 | TSX 函数组件；Oxc 去类型并降 JSX，rolldown 链接成单 ESM；信号图在 Rust；组件只跑一次；细粒度绑定；无 VDOM、无模板 IR、无预编译子树 |
+| 打包 | Rust-only Oxc + rolldown；应用代码单 ESM；`bubble-shell` / `bubble:rt` 由宿主提供，运行时不进 bundle；资源命名 `<name>.<hash8>.<ext>`；Web 开发态 HMR |
 | 脚本运行时 | native：QuickJS/PrimJS。Web：主线程浏览器 JS 调 Rust 信号图（WASM）。不在 JS 里实现信号 |
 | 线程 | native：脚本线程产 op，UI 线程持有树并布局。Web：单线程；无 Worker、无跨线程 op |
 | 核心 | Rust 保留树 + Taffy flex；平台文本/绘制；无高级合成 |
@@ -137,7 +138,7 @@ sequenceDiagram
 
 | 术语 | 含义 |
 |---|---|
-| Bundle | 远程内容包：manifest + 应用 ES 模块 + 资源。运行时（信号图、渲染器）不打进包 |
+| Bundle | 远程内容包：manifest + 应用 ESM + 资源。发布态应用代码为单个入口模块；运行时（信号图、渲染器、`bubble-shell` / `bubble:rt`）不打进包 |
 | Manifest | 版本、兼容性、文件哈希、签名等元数据 |
 | 渲染调用 | 编译器产出的 `rt` 调用：建节点、设静态属性、登记绑定。动态值不是 IR 槽 |
 | Op | 脚本线程发往 UI 线程的细粒度变更指令 |
