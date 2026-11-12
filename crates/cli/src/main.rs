@@ -12,8 +12,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("bundle") => bundle_command(&args[1..]),
+        Some("dev") => dev_command(&args[1..]),
         Some(other) => Err(format!(
-            "unknown command {other}; expected `bubble bundle <entries...> --out <dir>`"
+            "unknown command {other}; expected `bubble bundle` or `bubble dev`"
         )),
         None => Err(usage()),
     };
@@ -27,7 +28,40 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> String {
-    "usage: bubble bundle <entries...> --out <dir> [--id <id>] [--dev]".into()
+    "usage: bubble bundle <entries...> --out <dir> [--id <id>] [--dev]\n       bubble dev <entry> [--port <port>] [--root <dir>]".into()
+}
+
+fn dev_command(args: &[String]) -> Result<(), String> {
+    let mut entry = None;
+    let mut port = 4173u16;
+    let mut root = PathBuf::from("examples/web");
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--port" => {
+                index += 1;
+                let value = args.get(index).ok_or("--port needs a number")?;
+                port = value.parse().map_err(|_| format!("invalid port {value}"))?;
+            }
+            "--root" => {
+                index += 1;
+                let value = args.get(index).ok_or("--root needs a directory")?;
+                root = PathBuf::from(value);
+            }
+            other if other.starts_with("--") => {
+                return Err(format!("unknown option {other}"));
+            }
+            path => {
+                if entry.is_some() {
+                    return Err("bubble dev takes one entry".into());
+                }
+                entry = Some(PathBuf::from(path));
+            }
+        }
+        index += 1;
+    }
+    let entry = entry.ok_or_else(usage)?;
+    bubble_cli::dev::run(bubble_cli::dev::DevOptions { entry, root, port })
 }
 
 #[derive(Default)]

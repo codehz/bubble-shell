@@ -5,6 +5,10 @@ edition = "2021"
 description = "Build and serve Bubble fixture bundles"
 license = "MIT"
 
+[lib]
+name = "bubble_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "bubble"
 path = "src/main.rs"
@@ -12,3 +16,4 @@ path = "src/main.rs"
 [dependencies]
 bubble-bundler = { path = "../bundler" }
 serde_json = "1"
+sha1 = "0.10"

@@ -97,10 +97,45 @@ function writeSignal(id, value, equals) {
   if (code !== 0) throw new Error(api.error() || "signal write failed");
 }
 
+// `bubble dev` seeds these values so a remount keeps signal state. Signals
+// are re-allocated in the same order, so ids line up with the snapshot.
+let pendingSignalValues = null;
+
+export function snapshotSignals() {
+  return signalValues.slice();
+}
+
+function resetRenderState() {
+  parents.length = 1;
+  parents[0] = 1;
+  handlers.clear();
+  handlersOfNode.clear();
+  bindingHandles.clear();
+  childrenOf.clear();
+  childrenOf.set(1, []);
+  parentOf.clear();
+  cursors.length = 0;
+  collectors.length = 0;
+  nextHandler = 1;
+  gestureHandlers.clear();
+  fieldHandlers.clear();
+  gesturesOfTarget.clear();
+  gestureOrderOfTarget.clear();
+  gestureParentOf.clear();
+  gestureBindings.clear();
+  gestureHandlerIds.clear();
+  retiredGestureHandlers.clear();
+  gestureOwners.clear();
+  bodyError = null;
+}
+
 export function signal(initial, options) {
   const id = api.signal_alloc();
   if (!id) throw new Error(api.error() || "signal alloc failed");
-  signalValues[id] = initial;
+  signalValues[id] =
+    pendingSignalValues && id < pendingSignalValues.length
+      ? pendingSignalValues[id]
+      : initial;
   const equals = options && options.equals;
   const read = () => {
     const code = api.signal_read(id);
@@ -1058,10 +1093,12 @@ export function flush() {
   if (typeof api.layout === "function" && api.layout() !== 0) throw new Error(api.error() || "layout failed");
 }
 
-export function mount(component) {
+export function mount(component, retained) {
+  resetRenderState();
   computations.clear();
   cleanups.length = 0;
   if (api.boot() !== 0) throw new Error(api.error() || "boot failed");
+  pendingSignalValues = retained ? retained.slice() : null;
   api.prepare?.();
   bodyFn = () => {
     parents.length = 0;
@@ -1069,6 +1106,7 @@ export function mount(component) {
     component();
   };
   if (api.run_init() !== 0) throw new Error(api.error() || "run_init failed");
+  pendingSignalValues = null;
   flush();
 }
 

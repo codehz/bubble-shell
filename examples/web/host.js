@@ -3,6 +3,7 @@ import { commandsForDom, dragSelection } from "./ime.js";
 import { dispatchEditEvents, dispatchGestureEvents, setApi } from "./runtime.js";
 import { layoutSnapshot, wrapLines } from "./textlayout.js";
 
+const dev = window.__bubbleDev ?? null;
 const canvas = document.querySelector("canvas");
 const ctx = canvas.getContext("2d");
 const decoder = new TextDecoder();
@@ -236,7 +237,7 @@ document.addEventListener(
   true,
 );
 
-const bundleBase = new URL("./fixtures/", import.meta.url);
+const bundleBase = new URL(dev?.base ?? "./fixtures/", import.meta.url);
 
 function resolveSource(src) {
   if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith("//")) return src;
@@ -468,6 +469,9 @@ function resize() {
   exports.set_viewport(width, height);
   if (exports.layout() === 0) paint();
 }
+
+// `bubble dev` remounts the tree outside this page's event loop.
+globalThis.__bubbleRepaint = () => paint();
 
 function paint() {
   const len = exports.paint();
@@ -979,8 +983,12 @@ canvas.addEventListener(
 window.addEventListener("resize", resize);
 
 const started = performance.now();
-await checkBundle();
-await import(`./fixtures/${fixture}.js`);
+if (dev) {
+  await import(`${dev.bundle}?v=${Date.now()}`);
+} else {
+  await checkBundle();
+  await import(`./fixtures/${fixture}.js`);
+}
 paint();
 const firstFrameMs = performance.now() - started;
 console.info(`first frame ${firstFrameMs.toFixed(1)} ms`);

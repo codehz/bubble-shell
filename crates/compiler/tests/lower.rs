@@ -148,7 +148,10 @@ fn emits_a_source_map_on_request() {
     let compiled = compile_module(
         "mapped.tsx",
         "import { Text } from \"bubble-shell\";\nfunction App() { return <Text>hi</Text>; }\n",
-        &CompileOptions { source_map: true },
+        &CompileOptions {
+            source_map: true,
+            ..CompileOptions::default()
+        },
     )
     .unwrap();
     let map = compiled.map.expect("source map requested");
@@ -163,4 +166,57 @@ fn compiles_the_counter_fixture() {
     assert!(code.contains("mount(Counter)"), "{code}");
     assert!(code.contains("__bubble_rt_primitive(\"View\""), "{code}");
     assert!(code.contains("__bubble_rt_component(Row"), "{code}");
+}
+
+#[test]
+fn hot_mode_wraps_components_signals_and_mount() {
+    let source = r#"
+import { mount, signal, Text, View } from "bubble-shell";
+const shared = signal(2);
+const Card = (props) => <Text>{props.label}</Text>;
+function App() {
+  return (
+    <View>
+      <Card label="one" />
+      <Text>{shared()}</Text>
+    </View>
+  );
+}
+mount(App);
+"#;
+    let compiled = compile_module(
+        "app.tsx",
+        source,
+        &CompileOptions {
+            source_map: false,
+            hot: Some("/repo/app.tsx".to_string()),
+        },
+    )
+    .unwrap();
+    let code = compiled.code;
+    assert!(code.contains("from \"bubble:hot\""), "{code}");
+    assert!(
+        code.contains("App = __bubble_hot_component(\"/repo/app.tsx:App\", App)"),
+        "{code}"
+    );
+    assert!(
+        code.contains("__bubble_hot_keep(\"/repo/app.tsx:shared\""),
+        "top-level signals are kept:\n{code}"
+    );
+    assert!(
+        code.contains("__bubble_hot_component(\"/repo/app.tsx:Card\""),
+        "arrow components are wrapped:\n{code}"
+    );
+    assert!(
+        code.contains("__bubble_hot_mount(\"/repo/app.tsx\", App)"),
+        "mount is intercepted:\n{code}"
+    );
+}
+
+#[test]
+fn release_mode_has_no_hot_runtime() {
+    let source = "import { mount, Text } from \"bubble-shell\";\nfunction App() { return <Text>hi</Text>; }\nmount(App);\n";
+    let code = compile("app.tsx", source);
+    assert!(!code.contains("bubble:hot"), "{code}");
+    assert!(!code.contains("__bubble_hot"), "{code}");
 }

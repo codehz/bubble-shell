@@ -26,6 +26,7 @@ const SCRIPT_EXTENSIONS: &[&str] = &["tsx", "ts", "jsx", "js"];
 pub struct BubbleState {
     pub assets: Mutex<AssetRegistry>,
     pub error: Mutex<Option<String>>,
+    pub sources: Mutex<Vec<PathBuf>>,
 }
 
 impl BubbleState {
@@ -44,12 +45,23 @@ impl BubbleState {
 #[derive(Debug)]
 pub struct BubblePlugin {
     source_map: bool,
+    hot: bool,
     state: Arc<BubbleState>,
 }
 
 impl BubblePlugin {
     pub fn new(source_map: bool, state: Arc<BubbleState>) -> Self {
-        Self { source_map, state }
+        Self {
+            source_map,
+            hot: false,
+            state,
+        }
+    }
+
+    /// Enable the `bubble dev` hot transform.
+    pub fn with_hot(mut self, hot: bool) -> Self {
+        self.hot = hot;
+        self
     }
 
     fn resolve(
@@ -118,11 +130,13 @@ impl BubblePlugin {
         }
         let source = std::fs::read_to_string(path)
             .map_err(|error| format!("{}: {error}", path.display()))?;
+        self.state.sources.lock().unwrap().push(path.to_path_buf());
         let compiled = compile_module(
             id,
             &source,
             &CompileOptions {
                 source_map: self.source_map,
+                hot: self.hot.then(|| id.to_string()),
             },
         )?;
         let map = compiled.map.and_then(|json| {

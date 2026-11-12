@@ -28,6 +28,8 @@ use oxc::transformer::{JsxOptions, TransformOptions, Transformer};
 const RT_MODULE: &str = "bubble:rt";
 /// The author-facing module. Imports from it are pruned once JSX is lowered.
 const SHELL_MODULE: &str = "bubble-shell";
+/// The development-only hot runtime.
+const HOT_MODULE: &str = "bubble:hot";
 
 const RT_PRIMITIVE: &str = "__bubble_rt_primitive";
 const RT_COMPONENT: &str = "__bubble_rt_component";
@@ -36,6 +38,10 @@ const RT_SHOW: &str = "__bubble_rt_show";
 const RT_FOR_EACH: &str = "__bubble_rt_forEach";
 const RT_INDEX_EACH: &str = "__bubble_rt_indexEach";
 const RT_SWITCH: &str = "__bubble_rt_switchFlow";
+
+const HOT_COMPONENT: &str = "__bubble_hot_component";
+const HOT_KEEP: &str = "__bubble_hot_keep";
+const HOT_MOUNT: &str = "__bubble_hot_mount";
 
 const PRIMITIVES: &[&str] = &[
     "View",
@@ -50,10 +56,14 @@ const PRIMITIVES: &[&str] = &[
 ];
 
 /// Options for [`compile_module`].
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
     /// Emit a module-level source map. Release builds leave this off.
     pub source_map: bool,
+    /// Hot-module key for this module. Set only by `bubble dev`, which wraps
+    /// components, top-level signals, and the mount call for state-preserving
+    /// updates.
+    pub hot: Option<String>,
 }
 
 /// Output of [`compile_module`].
@@ -107,10 +117,13 @@ pub fn compile_module(
         errors: Vec::new(),
     };
     lower.visit_program(&mut program);
-    if let Some(error) = lower.errors.into_iter().next() {
-        return Err(error);
+    if let Some(error) = lower.errors.first() {
+        return Err(error.clone());
     }
 
+    if let Some(key) = &options.hot {
+        lower.hot_transform(&mut program, key);
+    }
     prune_shell_imports(&mut program);
 
     let codegen = Codegen::new().with_options(CodegenOptions {
@@ -1031,6 +1044,166 @@ impl<'a> VisitMut<'a> for Lower<'a> {
         }
         oxc::ast_visit::walk_mut::walk_expression(self, expression);
     }
+}
+
+impl<'a> Lower<'a> {
+    /// Wrap top-level components, signals, and the mount call for `bubble dev`.
+    fn hot_transform(&mut self, program: &mut Program<'a>, module_key: &str) {
+        program.body.insert(0, hot_import(&self.builder));
+
+        // Function declarations get a stable proxy registered right after them.
+        let mut registrations = Vec::new();
+        for (index, statement) in program.body.iter().enumerate() {
+            let Statement::FunctionDeclaration(function) = statement else {
+                continue;
+            };
+            let Some(id) = &function.id else {
+                continue;
+            };
+            if is_component_name(id.name.as_str()) {
+                let key = format!("{module_key}:{}", id.name.as_str());
+                registrations.push((
+                    index,
+                    self.hot_register_function(id.span, id.name.as_str(), &key),
+                ));
+            }
+        }
+
+        for statement in &mut program.body {
+            match statement {
+                Statement::VariableDeclaration(declaration)
+                    if declaration.kind == VariableDeclarationKind::Const =>
+                {
+                    self.hot_bindings(declaration, module_key);
+                }
+                Statement::ExpressionStatement(statement) => {
+                    self.hot_mount(&mut statement.expression, module_key);
+                }
+                _ => {}
+            }
+        }
+
+        for (index, registration) in registrations.into_iter().rev() {
+            program.body.insert(index + 1, registration);
+        }
+    }
+
+    fn hot_bindings(&self, declaration: &mut VariableDeclaration<'a>, module_key: &str) {
+        for declarator in &mut declaration.declarations {
+            let BindingPattern::BindingIdentifier(id) = &declarator.id else {
+                continue;
+            };
+            let Some(init) = declarator.init.as_mut() else {
+                continue;
+            };
+            let name = id.name.as_str().to_string();
+            let key = format!("{module_key}:{name}");
+            if is_signal_call(init) {
+                let inner = std::mem::replace(init, self.null(SPAN));
+                let span = inner.span();
+                *init = self.call(
+                    HOT_KEEP,
+                    vec![self.string_of(&key), self.arrow_expr(span, inner)],
+                    span,
+                );
+            } else if is_component_name(&name)
+                && matches!(
+                    init,
+                    Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)
+                )
+            {
+                let inner = std::mem::replace(init, self.null(SPAN));
+                let span = inner.span();
+                *init = self.call(HOT_COMPONENT, vec![self.string_of(&key), inner], span);
+            }
+        }
+    }
+
+    fn hot_mount(&self, expression: &mut Expression<'a>, module_key: &str) {
+        let Expression::CallExpression(call) = expression else {
+            return;
+        };
+        let Expression::Identifier(callee) = &call.callee else {
+            return;
+        };
+        if callee.name.as_str() != "mount" {
+            return;
+        }
+        let span = call.span;
+        let taken = std::mem::replace(expression, self.null(span));
+        let Expression::CallExpression(mut call) = taken else {
+            return;
+        };
+        let mut arguments = call.arguments.take_in(&self.builder);
+        if arguments.len() != 1 {
+            return;
+        }
+        let argument = arguments.remove(0);
+        let Ok(component) = Expression::try_from(argument) else {
+            return;
+        };
+        *expression = self.call(HOT_MOUNT, vec![self.string_of(module_key), component], span);
+    }
+
+    fn hot_register_function(&self, span: Span, name: &'a str, key: &str) -> Statement<'a> {
+        let target = AssignmentTarget::AssignmentTargetIdentifier(ArenaBox::new_in(
+            IdentifierReference::new(span, Ident::from(name), &self.builder),
+            &self.builder,
+        ));
+        let call = self.call(
+            HOT_COMPONENT,
+            vec![self.string_of(key), self.ident(name)],
+            span,
+        );
+        let assignment = Expression::new_assignment_expression(
+            span,
+            AssignmentOperator::Assign,
+            target,
+            call,
+            &self.builder,
+        );
+        self.statement(span, assignment)
+    }
+}
+
+fn hot_import<'a>(builder: &AstBuilder<'a>) -> Statement<'a> {
+    const BINDINGS: &[(&str, &str)] = &[
+        ("component", HOT_COMPONENT),
+        ("keep", HOT_KEEP),
+        ("mount", HOT_MOUNT),
+    ];
+    let mut specifiers = ArenaVec::new_in(builder);
+    for &(imported, local) in BINDINGS {
+        let specifier = ImportSpecifier::new(
+            SPAN,
+            ModuleExportName::IdentifierName(IdentifierName::new(
+                SPAN,
+                Ident::from(imported),
+                builder,
+            )),
+            BindingIdentifier::new(SPAN, Ident::from(local), builder),
+            ImportOrExportKind::Value,
+            builder,
+        );
+        specifiers.push(ImportDeclarationSpecifier::ImportSpecifier(
+            ArenaBox::new_in(specifier, builder),
+        ));
+    }
+    Statement::new_import_declaration(
+        SPAN,
+        Some(specifiers),
+        StringLiteral::new(SPAN, Str::from(HOT_MODULE), None, builder),
+        None,
+        None,
+        ImportOrExportKind::Value,
+        builder,
+    )
+}
+
+fn is_component_name(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_uppercase())
 }
 
 // ---------------------------------------------------------------------------

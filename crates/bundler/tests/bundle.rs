@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use bubble_bundler::{bundle_entry, BundleOptions};
+use bubble_bundler::{build_dev, bundle_entry, render_dev_bundle, BundleOptions};
 
 struct TempDir(PathBuf);
 
@@ -167,4 +167,54 @@ fn emits_source_maps_only_when_requested() {
     let map = mapped.source_map.expect("map");
     assert!(map.contains("app.tsx"), "{map}");
     assert!(mapped.code.contains("sourceMappingURL"), "{}", mapped.code);
+}
+
+#[test]
+fn dev_build_keeps_one_factory_per_module() {
+    let dir = TempDir::new("dev");
+    dir.write("helper.ts", "export const label = \"hi\";\n");
+    let entry = dir.write(
+        "app.tsx",
+        r#"import { mount, signal, Text, View } from "bubble-shell";
+import { label } from "./helper";
+const count = signal(1);
+function App() {
+  return (
+    <View>
+      <Text>{label}</Text>
+      <Text>{count()}</Text>
+    </View>
+  );
+}
+mount(App);
+"#,
+    );
+    let build = build_dev(&entry).expect("dev build");
+    assert_eq!(build.entry_id, "app.js");
+    let ids: Vec<_> = build.chunks.iter().map(|chunk| chunk.id.as_str()).collect();
+    assert!(ids.contains(&"app.js"), "{ids:?}");
+    assert!(ids.contains(&"helper.js"), "{ids:?}");
+
+    let bundle = render_dev_bundle(&build);
+    assert!(bundle.contains("from \"bubble:hot\""), "{bundle}");
+    assert!(
+        bundle.contains("__bubble_hot.define(\"app.js\""),
+        "{bundle}"
+    );
+    assert!(
+        bundle.contains("__bubble_hot.define(\"helper.js\""),
+        "{bundle}"
+    );
+    assert!(bundle.contains("__bubble_hot.run(\"app.js\")"), "{bundle}");
+    assert!(
+        bundle.contains("require(\"bubble:rt\")"),
+        "host modules stay requires:\n{bundle}"
+    );
+    assert!(bundle.contains("bubble_hot.keep"), "{bundle}");
+    assert!(bundle.contains("bubble_hot.component"), "{bundle}");
+    assert!(bundle.contains("bubble_hot.mount"), "{bundle}");
+    assert!(
+        !bundle.contains("registerPrimitive"),
+        "runtime source stays out of the dev bundle"
+    );
 }
