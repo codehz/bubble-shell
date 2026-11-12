@@ -12,7 +12,8 @@ import { mount, signal, Text, View } from "bubble";
 function Counter() {
   const count = signal(0);
   return (
-    <View onPress={() => count.update((c) => c + 1)}>
+    <View>
+      <TapGesture onTap={() => count.update((c) => c + 1)} />
       <Text>Count: {count()}</Text>
     </View>
   );
@@ -26,7 +27,7 @@ mount(() => <Counter />);
 - `signal` 的值留在脚本侧（JS 引用），Rust 图只调度。比较用 `===`（`equals: false` 每次写入都通知，`equals(a, b)` 返回真表示相同）。数组和对象按引用持有，不复制进 Rust；原地修改不会通知，要 `set` 一个新值。`computed` 是图上的 memo，一次变化只跑一遍，并且先于 effect。渲染绑定是 render effect，`effect` 是 user effect，排在渲染绑定之后。`cleanup` 挂在当前 owner 上，owner 重跑或销毁时先执行。不引入 `solid-js`。
 - 一次 Oxc pass 去掉 TypeScript，把 JSX 降成原生渲染模块的调用：静态属性和子节点设一次；会读信号的表达式登记为绑定。
 - 绑定重跑时，原生渲染器直接产出对应 op（`SetText` / `SetProp` / 插入 / 移动 / 销毁）。没有 VDOM diff，也没有「模板 IR + 按绑定生成的 JS 更新函数」。
-- `<If>` / `<Each>` 是运行时原语：按真值和 key 创建、移动、销毁，不在编译期把列表展开成静态节点。
+- `<Show>` / `<For>` / `<Index>` / `<Switch>` / `<Match>` 是运行时控制流：`when` / `each` 是每次重跑都调用的 accessor，不走 `dynamic()`。三元、`&&` 和 `when()` / `each()` 不再是控制流。
 
 ### 运行时
 
@@ -93,7 +94,7 @@ assets/
 
 - handle 是 u32，0 保留；脚本线程在实例作用域内单调分配。
 - 动态节点由脚本分配 handle 后发送 `Spawn`，载荷带完整 `BNOD` 描述符；Rust 校验后插入树。
-- 节点只由函数组件首次执行时的 `Spawn` / `SpawnAt` 创建；`when` / `each` 只移动、插入或销毁。函数组件没有复用的模板注册表，也不预编译子树。
+- 节点只由函数组件首次执行时的 `Spawn` / `SpawnAt` 创建；`Show` / `For` / `Index` / `Switch` 只移动、插入或销毁。函数组件没有复用的模板注册表，也不预编译子树。
 
 ### Op 列表
 
@@ -117,20 +118,19 @@ assets/
 
 当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`；其余 op（含 `InsertNode`、动画、语义）随组件/输入/更新里程碑补齐。脚本线程只产 op，UI/帧线程在 drain 时应用。
 
-节点描述为 `BNOD` v2：固定字段后跟 `u32` 长度的 TLV 扩展块，新增字段不移动既有偏移。`Spawn` 载荷复用同一 v2 body；`BSOP` 也是 v2。滚动描述符的单个标志字节是位掩码：bit 0 为 `scrollY`，bit 1 为 `scrollX`，其余位保留且解码时拒绝。
+节点描述为 `BNOD` v2：固定字段后跟 `u32` 长度的 TLV 扩展块，新增字段不移动既有偏移。`Spawn` 载荷复用同一 v2 body；`BSOP` 也是 v2。滚动描述符的单个标志字节是位掩码：bit 0 为纵向 `overflow="scroll"`，bit 1 为横向，其余位保留且解码时拒绝。
 
 属性分两类：
 
-- 手势是虚拟子节点：`TapGesture`、`DoubleTapGesture`、`LongPressGesture`、`PanGesture`、`TransformGesture`。它们不创建布局盒，绑定最近的实际 UI 祖先；配置与事件通过 BSOP v3 的 `SpawnGesture`／`SetGestureProp`／`BindGestureEvent` 传递。识别与滚动消费都在 UI 线程完成，脚本只收到有序事件。
-- `onPress` 是 `TapGesture onTap` 的语法糖，成功抬起才触发；与同目标显式 `TapGesture` 同时出现会报配置冲突。
-- `SPAWN_PROPS`：直接编码进 `BNOD`，当前为 `scrollX`、`scrollY`、`background`、`color`、`fontSize`、`radius`、`opacity`、`width`、`height`、`flexGrow`、`flexShrink`、`row`、`padding`、`onPress`。
-- `DEFERRED_PROPS`：JSX 接受但由 `Spawn` 后立即发送 `SetProp`，当前为 `lineHeight`、`textAlign`、`fontWeight`、`margin`、`gap`、`alignItems`、`justifyContent`、`position`、`inset`、`src`、`fit`。这样样式面扩展不需要每次改描述符版本。
+- 手势是虚拟子节点：`TapGesture`、`DoubleTapGesture`、`LongPressGesture`、`PanGesture`、`TransformGesture`。没有 `View onPress`。事件名为 `onTap` / `onTapStart` / `onTapEnd` / `onTapCancel`、`onDoubleTap*`、`onLongPress` / `onLongPressEnd` / `onLongPressCancel`、`onPanStart` / `onPanUpdate` / `onPanEnd` / `onPanCancel`、`onTransformStart` / `onTransformUpdate` / `onTransformEnd` / `onTransformCancel`。Transform 用 `mode`（字符串或字符串数组：`pan` / `pinch` / `rotate`）。`direction` 是方向字符串数组。`captureAxis="none"|"x"|"y"|"both"` 把该轴滚动让给这条手势。
+- `SPAWN_PROPS`：`overflow`、`overflowX`、`overflowY`、`backgroundColor`、`color`、`fontSize`、`radius`、`opacity`、`width`、`height`、`flexGrow`、`flexShrink`、`flexDirection`、`padding`。
+- `DEFERRED_PROPS`：`lineHeight`、`textAlign`、`fontWeight`、`margin`、`gap`、`alignItems`、`justifyContent`、`position`、`inset`、`src`、`fit`、`overscrollX`、`overscrollY`。
 
-`padding`、`margin`、`inset` 数组在 JS runtime 中拆成四边属性；未知创建属性会直接报错。宿主通过 `spawn_props()` / `deferred_props()` 暴露规范列表，runtime 还会校验 JS 编码器与宿主列表一致。
+`overflow` 取值 `"visible"` 或 `"scroll"`。`"hidden"` 预定为裁切且不滚动，当前拒绝。`flexDirection` 为 `"row"` 或 `"column"`。`overscrollX` / `overscrollY` 为布尔：`true`（默认）把剩余增量交给外层，`false` 在当前容器截断。`padding` / `margin` / `inset` 按 CSS 简写（1、2 或 4 个数，4 个数为上右下左）。
 
 基础原语为 `View`、`Text`、`Image`。`Image` 的 `src` 是宿主可解析的路径/URL，`fit` 为 `contain`、`cover` 或 `fill`；解析失败时该帧跳过图片，不阻断其他绘制。
 
-`when` / `each` 采用透明 fragment：在父节点下创建一个零尺寸、无背景、无 handler 的 anchor，分支/列表节点通过 `SpawnAt` 插到 anchor 之前。`when` 重跑时销毁旧分支并按条件重建；`each` 对消失的 key 销毁，对已有 key 按新顺序 `MoveNode`，对新 key 在目标位置 `SpawnAt`。组件树不额外增加布局包装节点。
+`Show` / `For` / `Index` / `Switch` 是透明 fragment。`Show` 在条件保持为真时不重建，并把真值 accessor 交给子函数；`For` 的 `by` 必填；`Index` 按下标复用；`Switch` 取第一个为真的 `Match`。
 
 ### 事件协议
 
@@ -222,11 +222,11 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 | 尺寸 | width/height/min/max、padding、margin |
 | flex | direction、wrap、grow/shrink/basis、align/justify、gap |
 | 定位 | relative、absolute、z-index |
-| 溢出 | visible、hidden、scroll 容器（`scrollX`/`scrollY` 独立启用） |
-| 视觉 | background、border、radius、opacity、2D transform |
+| 溢出 | `overflow` / `overflowX` / `overflowY` 为 `visible` 或 `scroll`。`hidden` 预定为裁切且不滚动，当前拒绝 |
+| 视觉 | `backgroundColor`、border、radius、opacity、2D transform |
 | 文本 | font-family/size/weight/style、line-height、letter-spacing、text-align、color |
 
-不支持：grid、选择器、级联、伪类、隐式继承。样式是显式 props/tokens，不解析 CSS 文本。当前已实现 flex 方向、grow/shrink、尺寸、padding、margin、gap、align/justify、relative/absolute 定位与 inset；border、transform、min/max、overflow hidden 仍在路线图。
+不支持：grid、选择器、级联、伪类、隐式继承。样式是显式 props/tokens，不解析 CSS 文本。当前已实现 flex 方向、grow/shrink、尺寸、padding、margin、gap、align/justify、relative/absolute 定位与 inset。border、transform、min/max 仍在路线图。`overflow="hidden"` 的预定行为是裁切且不滚动，当前拒绝。
 
 ### 布局
 
@@ -257,7 +257,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 
 - 命中按绘制逆序，考虑 transform、clip、z-index。
 - 指针捕获、手势识别在 UI 线程。
-- 滚动由 UI 线程本地执行，不依赖脚本线程。横纵两轴各自维护偏移与范围；`scrollX`/`scrollY` 分别启用，未启用的轴不产生滚动且 `ScrollTo` 将其归零。
+- 滚动由 UI 线程本地执行，不依赖脚本线程。横纵两轴各自维护偏移与范围；`overflowX` / `overflowY` 为 `"scroll"` 时启用，`"visible"` 的轴不产生滚动且 `ScrollTo` 将其归零。
 - 滚轮/拖拽把 `(dx, dy)` 一并交给命中路径上最深、且在请求方向上仍有剩余范围的容器；两轴范围分别 clamp。
 - `Shell::scroll_of` 返回 `(left, top)`；宿主分别通过 `bubble_scroll_x_of` / `bubble_scroll_y_of` 读取。
 - 虚拟化列表协议：UI 线程计算可见区间并发送 `VisibleRangeChanged`；脚本创建/销毁 item 节点；未测量项用估算高度占位。滚动位置归 UI 线程，脚本只能 `ScrollTo`。

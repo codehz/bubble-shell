@@ -17,7 +17,6 @@ const gestureBindings = new Map();
 const gestureHandlerIds = new Map();
 const retiredGestureHandlers = new Map();
 const gestureOwners = new Map();
-const sugarTargets = new Set();
 const encoder = typeof TextEncoder === "function" ? new TextEncoder() : null;
 
 export function setApi(next) {
@@ -221,9 +220,10 @@ function utf8(value) {
 // BNOD version 2: header (magic + u16 version) + the `NodeDesc` body + TLV.
 // `id`, `parent`, and `handler` are zero; Rust assigns the handle and parent.
 const SPEC_PROPS = new Set([
-  "scrollX",
-  "scrollY",
-  "background",
+  "overflow",
+  "overflowX",
+  "overflowY",
+  "backgroundColor",
   "color",
   "fontSize",
   "radius",
@@ -232,9 +232,8 @@ const SPEC_PROPS = new Set([
   "height",
   "flexGrow",
   "flexShrink",
-  "row",
+  "flexDirection",
   "padding",
-  "onPress",
 ]);
 
 function specBytes(kind, props, text) {
@@ -253,9 +252,9 @@ function specBytes(kind, props, text) {
   offset += 4;
   view.setUint8(offset, kind);
   offset += 1;
-  view.setUint8(offset, (props.scrollY ? 1 : 0) | (props.scrollX ? 2 : 0));
+  view.setUint8(offset, scrollFlags(props));
   offset += 1;
-  view.setUint32(offset, (props.background ?? 0) >>> 0, true);
+  view.setUint32(offset, (props.backgroundColor ?? 0) >>> 0, true);
   offset += 4;
   view.setUint32(offset, (props.color ?? 0xffffffff) >>> 0, true);
   offset += 4;
@@ -275,9 +274,9 @@ function specBytes(kind, props, text) {
   offset += 4;
   view.setFloat32(offset, props.flexShrink ?? 1, true);
   offset += 4;
-  view.setUint8(offset, props.row ? 1 : 0);
+  view.setUint8(offset, rowFlag(props.flexDirection));
   offset += 1;
-  const pad = props.padding ?? [0, 0, 0, 0];
+  const pad = props.padding == null ? [0, 0, 0, 0] : cssBox(props.padding, "padding");
   for (let index = 0; index < 4; index += 1) {
     view.setFloat32(offset, pad[index] ?? 0, true);
     offset += 4;
@@ -293,6 +292,47 @@ function specBytes(kind, props, text) {
 function finite(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : NaN;
 }
+function scrollFlags(props) {
+  let x = "visible";
+  let y = "visible";
+  if (props.overflow != null) {
+    x = props.overflow;
+    y = props.overflow;
+  }
+  if (props.overflowX != null) x = props.overflowX;
+  if (props.overflowY != null) y = props.overflowY;
+  return (overflowBit(y) ? 1 : 0) | (overflowBit(x) ? 2 : 0);
+}
+
+function overflowBit(value) {
+  if (value === "visible") return false;
+  if (value === "scroll") return true;
+  if (value === "hidden") throw new Error("overflow hidden is not implemented");
+  throw new Error(`unsupported overflow ${value}`);
+}
+
+function rowFlag(value) {
+  if (value == null || value === "column") return 0;
+  if (value === "row") return 1;
+  throw new Error(`unsupported flexDirection ${value}`);
+}
+
+function cssSides(value, key) {
+  if (!Array.isArray(value) || (value.length !== 1 && value.length !== 2 && value.length !== 4)) {
+    throw new Error(`${key} must be an array of 1, 2, or 4 numbers`);
+  }
+  const top = value[0] ?? 0;
+  const right = value.length === 1 ? top : (value[1] ?? 0);
+  const bottom = value.length === 4 ? (value[2] ?? 0) : top;
+  const left = value.length === 4 ? (value[3] ?? 0) : right;
+  return { top, right, bottom, left };
+}
+
+function cssBox(value, key) {
+  const sides = cssSides(value, key);
+  return [sides.left, sides.right, sides.top, sides.bottom];
+}
+
 
 function registerChild(parentHandle, handle, index) {
   let list = childrenOf.get(parentHandle);
@@ -333,10 +373,6 @@ function pack(kind, props, text) {
     handle = api.spawn(parentHandle, spec);
     if (!handle) throw new Error(api.error() || "spawn failed");
     registerChild(parentHandle, handle);
-  }
-  if (props.onPress) {
-    if (typeof props.onPress !== "function") throw new Error("onPress must be a function");
-    createSugarTap(handle, props.onPress);
   }
   for (const [key, value] of deferredValues) setProp(handle, key, value);
   for (const [key, run] of dynamics) bindProp(handle, key, run);
@@ -391,31 +427,29 @@ const GESTURE_KINDS = {
 };
 
 const GESTURE_EVENTS = {
-  1: { onPressStart: 1, onPressEnd: 2, onPressCancel: 3, onTap: 4, enabled: 0 },
-  2: { onPressStart: 1, onPressEnd: 2, onPressCancel: 3, onDoubleTap: 5, enabled: 0 },
-  3: { onStart: 6, onEnd: 8, onCancel: 9, duration: 0, maxDistance: 0, reserveScroll: 0, enabled: 0 },
+  1: { onTapStart: 1, onTapEnd: 2, onTapCancel: 3, onTap: 4, enabled: 0 },
+  2: { onDoubleTapStart: 1, onDoubleTapEnd: 2, onDoubleTapCancel: 3, onDoubleTap: 5, enabled: 0 },
+  3: { onLongPress: 6, onLongPressEnd: 8, onLongPressCancel: 9, duration: 0, maxDistance: 0, captureAxis: 0, enabled: 0 },
   4: {
-    onStart: 6,
-    onUpdate: 7,
-    onEnd: 8,
-    onCancel: 9,
+    onPanStart: 6,
+    onPanUpdate: 7,
+    onPanEnd: 8,
+    onPanCancel: 9,
     axis: 0,
     direction: 0,
     minDistance: 0,
     failCrossDistance: 0,
-    reserveScroll: 0,
+    captureAxis: 0,
     enabled: 0,
   },
   5: {
-    onStart: 6,
-    onUpdate: 7,
-    onEnd: 8,
-    onCancel: 9,
-    pan: 0,
-    pinch: 0,
-    rotate: 0,
+    onTransformStart: 6,
+    onTransformUpdate: 7,
+    onTransformEnd: 8,
+    onTransformCancel: 9,
+    mode: 0,
     minDistance: 0,
-    reserveScroll: 0,
+    captureAxis: 0,
     enabled: 0,
   },
 };
@@ -429,6 +463,12 @@ function gesturePropValue(value) {
 }
 
 function setGestureProp(handle, key, value) {
+  if (key === "mode") {
+    const parts = Array.isArray(value) ? value : String(value).split(",");
+    value = parts.map((part) => String(part).trim()).filter(Boolean).join(",");
+  } else if (key === "direction" && Array.isArray(value)) {
+    value = value.join(",");
+  }
   const [tag, number, text] = gesturePropValue(value);
   if (api.set_gesture_prop(handle, key, tag, number, text) !== 0) {
     throw new Error(api.error() || "set_gesture_prop failed");
@@ -506,12 +546,6 @@ function packGesture(type, props) {
   const allowed = GESTURE_EVENTS[kind];
   for (const key of Object.keys(props)) {
     if (!(key in allowed)) throw new Error(`${type} has no property ${key}`);
-    if (key === "onPressStart" && sugarTargets.has(parent())) {
-      throw new Error("View onPress conflicts with TapGesture on the same target");
-    }
-  }
-  if (kind === 1 && sugarTargets.has(parent())) {
-    throw new Error("View onPress conflicts with TapGesture on the same target");
   }
   const target = parent();
   const { id } = registerGesture(target, kind);
@@ -525,17 +559,6 @@ function packGesture(type, props) {
   return id;
 }
 
-function createSugarTap(target, handler) {
-  sugarTargets.add(target);
-  const { id } = registerGesture(target, 1);
-  const handlerId = nextHandler++;
-  gestureHandlers.set(handlerId, handler);
-  rememberGestureHandler(id, handlerId);
-  if (api.bind_gesture_event(id, 4, handlerId) !== 0) {
-    throw new Error(api.error() || "bind_gesture_event failed");
-  }
-  return id;
-}
 
 export function tapGesture(props) {
   return packGesture("TapGesture", props);
@@ -570,18 +593,20 @@ function propParts(value) {
   throw new Error(`unsupported property value ${typeof value}`);
 }
 
-const BOX_PROPS = {
-  padding: ["paddingLeft", "paddingRight", "paddingTop", "paddingBottom"],
-  margin: ["marginLeft", "marginRight", "marginTop", "marginBottom"],
-  inset: ["top", "right", "bottom", "left"],
-};
-
 export function setProp(handle, key, value) {
-  const edges = BOX_PROPS[key];
-  if (edges) {
-    if (!Array.isArray(value)) throw new Error(`${key} must be an array`);
-    for (let index = 0; index < edges.length; index += 1) {
-      setProp(handle, edges[index], value[index] ?? (key === "inset" ? null : 0));
+  if (key === "padding" || key === "margin" || key === "inset") {
+    const sides = cssSides(value, key);
+    if (key === "inset") {
+      setProp(handle, "top", sides.top);
+      setProp(handle, "right", sides.right);
+      setProp(handle, "bottom", sides.bottom);
+      setProp(handle, "left", sides.left);
+    } else {
+      const prefix = key === "padding" ? "padding" : "margin";
+      setProp(handle, `${prefix}Left`, sides.left);
+      setProp(handle, `${prefix}Right`, sides.right);
+      setProp(handle, `${prefix}Top`, sides.top);
+      setProp(handle, `${prefix}Bottom`, sides.bottom);
     }
     return;
   }
@@ -674,7 +699,6 @@ function disposeTargetGestures(handle) {
   for (const id of [...list]) disposeGesture(id);
   gesturesOfTarget.delete(handle);
   gestureOrderOfTarget.delete(handle);
-  sugarTargets.delete(handle);
 }
 
 function disposeHandle(handle) {
@@ -739,67 +763,129 @@ function renderAt(parentHandle, index, build) {
     cursors.pop();
     collectors.pop();
   }
-  return collector.handles;
+  return collector;
 }
 
 function createAnchor() {
   return pack(1, { width: 0, height: 0, flexGrow: 0, flexShrink: 0, position: "absolute" }, "");
 }
 
-export function when(cond, thenBranch, elseBranch) {
-  const condFn = typeof cond === "function" ? cond : () => cond;
+function replaceBranch(parentHandle, anchor, branch, build) {
+  const anchors = new Map();
+  for (const gesture of branch.gestures) {
+    const target = gestureParentOf.get(gesture);
+    const list = gestureOrderOfTarget.get(target);
+    const index = list ? list.indexOf(gesture) : -1;
+    if (index >= 0) anchors.set(target, Math.min(anchors.get(target) ?? index, index));
+  }
+  for (const handle of branch.handles) disposeHandle(handle);
+  for (const gesture of branch.gestures) disposeGesture(gesture);
+  const next = { parent: parentHandle, handles: [], gestures: [] };
+  if (typeof build === "function") {
+    const created = renderAt(parentHandle, anchorIndex(parentHandle, anchor), build);
+    next.handles = created.handles;
+    next.gestures = created.gestures;
+  }
+  for (const [target, at] of anchors) {
+    const list = gestureOrderOfTarget.get(target);
+    if (!list) continue;
+    const created = [...new Set(next.gestures)].filter(
+      (gesture) => gestureParentOf.get(gesture) === target,
+    );
+    for (let offset = 0; offset < created.length; offset += 1) {
+      const gesture = created[offset];
+      const from = list.indexOf(gesture);
+      if (from < 0) continue;
+      const to = Math.min(at + offset, list.length - 1);
+      if (from === to) continue;
+      list.splice(from, 1);
+      list.splice(to, 0, gesture);
+      if (api.move_gesture(gesture, target, to) !== 0) {
+        throw new Error(api.error() || "move gesture failed");
+      }
+    }
+  }
+  return next;
+}
+
+export function show(whenFn, fallback, render) {
+  if (typeof whenFn !== "function") throw new Error("Show requires a when accessor");
+  if (typeof render !== "function") throw new Error("Show requires a render function");
   const parentHandle = parent();
   const anchor = createAnchor();
   let branch = { parent: parentHandle, handles: [], gestures: [] };
-  const disposeBranch = () => {
-    for (const handle of branch.handles) disposeHandle(handle);
-    for (const gesture of branch.gestures) disposeGesture(gesture);
-    branch = { parent: parentHandle, handles: [], gestures: [] };
-  };
-  const render = () => {
-    const anchors = new Map();
-    for (const gesture of branch.gestures) {
-      const target = gestureParentOf.get(gesture);
-      const list = gestureOrderOfTarget.get(target);
-      const index = list ? list.indexOf(gesture) : -1;
-      if (index >= 0) anchors.set(target, Math.min(anchors.get(target) ?? index, index));
-    }
-    disposeBranch();
-    const next = condFn() ? thenBranch : elseBranch;
-    if (typeof next !== "function") return;
-    branch = renderAt(parentHandle, anchorIndex(parentHandle, anchor), next);
-    for (const [target, at] of anchors) {
-      const list = gestureOrderOfTarget.get(target);
-      if (!list) continue;
-      const created = [...new Set(branch.gestures)].filter(
-        (gesture) => gestureParentOf.get(gesture) === target,
-      );
-      for (let offset = 0; offset < created.length; offset += 1) {
-        const gesture = created[offset];
-        const from = list.indexOf(gesture);
-        if (from < 0) continue;
-        const to = Math.min(at + offset, list.length - 1);
-        if (from === to) continue;
-        list.splice(from, 1);
-        list.splice(to, 0, gesture);
-        if (api.move_gesture(gesture, target, to) !== 0) {
-          throw new Error(api.error() || "move gesture failed");
-        }
-      }
-    }
-  };
-  addBinding(render, anchor);
+  let open = false;
+  const read = () => whenFn();
+  addBinding(() => {
+    const now = !!whenFn();
+    if (now && open) return;
+    open = now;
+    branch = replaceBranch(
+      parentHandle,
+      anchor,
+      branch,
+      now ? () => render(read) : (typeof fallback === "function" ? fallback : null),
+    );
+  }, anchor);
   return anchor;
 }
 
-export function each(items, key, render) {
-  if (typeof render !== "function") throw new Error("each requires a render function");
+export function forEach(items, by, render) {
+  if (typeof by !== "function") throw new Error("For requires a by function");
+  if (typeof render !== "function") throw new Error("For requires a render function");
   const itemsFn = typeof items === "function" ? items : () => items;
-  const keyFn = typeof key === "function"
-    ? key
-    : typeof key === "string"
-      ? (item) => item[key]
-      : (_item, index) => index;
+  const parentHandle = parent();
+  const anchor = createAnchor();
+  const groups = new Map();
+  const live = new Map();
+  const disposeGroup = (entry) => {
+    for (const handle of entry.handles) disposeHandle(handle);
+    for (const gesture of entry.gestures) disposeGesture(gesture);
+  };
+  addBinding(() => {
+    const list = itemsFn() ?? [];
+    const next = [];
+    for (let index = 0; index < list.length; index += 1) {
+      next.push({ item: list[index], key: by(list[index], index), index });
+    }
+    const seen = new Set(next.map((entry) => entry.key));
+    for (const [groupKey, entry] of groups) {
+      if (!seen.has(groupKey)) {
+        disposeGroup(entry);
+        groups.delete(groupKey);
+        live.delete(groupKey);
+      }
+    }
+    let cursor = anchorIndex(parentHandle, anchor);
+    const rank = new Map();
+    for (const entry of next) {
+      live.set(entry.key, entry.item);
+      let group = groups.get(entry.key);
+      if (group === undefined) {
+        const key = entry.key;
+        const read = () => {
+          itemsFn();
+          return live.get(key);
+        };
+        group = renderAt(parentHandle, cursor, () => render(read, entry.index));
+        groups.set(key, group);
+        cursor += group.handles.length;
+      } else {
+        for (const handle of group.handles) {
+          moveHandle(handle, parentHandle, cursor);
+          cursor += 1;
+        }
+      }
+      rank.set(group, rank.size);
+    }
+    reorderScopedGestures(rank);
+  }, anchor);
+  return anchor;
+}
+
+export function indexEach(items, render) {
+  if (typeof render !== "function") throw new Error("Index requires a render function");
+  const itemsFn = typeof items === "function" ? items : () => items;
   const parentHandle = parent();
   const anchor = createAnchor();
   const groups = new Map();
@@ -807,39 +893,63 @@ export function each(items, key, render) {
     for (const handle of entry.handles) disposeHandle(handle);
     for (const gesture of entry.gestures) disposeGesture(gesture);
   };
-  const renderList = () => {
+  addBinding(() => {
     const list = itemsFn() ?? [];
-    const next = [];
-    for (let index = 0; index < list.length; index += 1) {
-      const item = list[index];
-      next.push({ item, key: keyFn(item, index) });
-    }
-    const seen = new Set(next.map((entry) => entry.key));
-    for (const [groupKey, entry] of groups) {
-      if (!seen.has(groupKey)) {
+    for (const [index, entry] of groups) {
+      if (index >= list.length) {
         disposeGroup(entry);
-        groups.delete(groupKey);
+        groups.delete(index);
       }
     }
-    let index = anchorIndex(parentHandle, anchor);
+    let cursor = anchorIndex(parentHandle, anchor);
     const rank = new Map();
-    for (const entry of next) {
-      let group = groups.get(entry.key);
+    for (let index = 0; index < list.length; index += 1) {
+      let group = groups.get(index);
       if (group === undefined) {
-        group = renderAt(parentHandle, index, () => render(entry.item, entry.key));
-        groups.set(entry.key, group);
-        index += group.handles.length;
+        const at = index;
+        const read = () => (itemsFn() ?? [])[at];
+        group = renderAt(parentHandle, cursor, () => render(read, at));
+        groups.set(index, group);
+        cursor += group.handles.length;
       } else {
         for (const handle of group.handles) {
-          moveHandle(handle, parentHandle, index);
-          index += 1;
+          moveHandle(handle, parentHandle, cursor);
+          cursor += 1;
         }
       }
       rank.set(group, rank.size);
     }
     reorderScopedGestures(rank);
-  };
-  addBinding(renderList, anchor);
+  }, anchor);
+  return anchor;
+}
+
+export function switchFlow(fallback, arms) {
+  if (!Array.isArray(arms)) throw new Error("Switch requires matches");
+  const parentHandle = parent();
+  const anchor = createAnchor();
+  let branch = { parent: parentHandle, handles: [], gestures: [] };
+  let active = -2;
+  addBinding(() => {
+    let chosen = -1;
+    for (let index = 0; index < arms.length; index += 1) {
+      if (arms[index][0]()) {
+        chosen = index;
+        break;
+      }
+    }
+    if (chosen === active) return;
+    active = chosen;
+    const selected = chosen;
+    branch = replaceBranch(
+      parentHandle,
+      anchor,
+      branch,
+      chosen < 0
+        ? (typeof fallback === "function" ? fallback : null)
+        : () => arms[selected][1](() => arms[selected][0]()),
+    );
+  }, anchor);
   return anchor;
 }
 

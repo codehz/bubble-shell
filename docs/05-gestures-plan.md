@@ -38,24 +38,24 @@
 ### 3.1 手势是虚拟子节点
 
 ```tsx
-<View scrollY scrollChainY={locked() ? "contain" : "auto"}>
+<View overflowY="scroll" overscrollY={locked() ? false : true}>
   <View>
     <PanGesture
       axis="x"
-      direction="left"
+      direction={["left"]}
       minDistance={12}
       failCrossDistance={8}
       enabled={editing()}
-      reserveScroll="x"
-      onStart={startDrag}
-      onUpdate={updateDrag}
-      onEnd={finishDrag}
-      onCancel={cancelDrag}
+      captureAxis="x"
+      onPanStart={startDrag}
+      onPanUpdate={updateDrag}
+      onPanEnd={finishDrag}
+      onPanCancel={cancelDrag}
     />
-    <TransformGesture pan pinch rotate onUpdate={updateTransform} />
+    <TransformGesture mode={["pan", "pinch", "rotate"]} onTransformUpdate={updateTransform} />
     <TapGesture onTap={activate} />
     <DoubleTapGesture onDoubleTap={zoom} />
-    <LongPressGesture duration={500} maxDistance={8} onStart={beginSelection} />
+    <LongPressGesture duration={500} maxDistance={8} onLongPress={beginSelection} />
     <Text>内容</Text>
   </View>
 </View>

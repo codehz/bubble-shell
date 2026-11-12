@@ -4,17 +4,17 @@ function Counter() {
   const count = signal(0);
   const gesture = signal("idle");
   return (
-    <View background={0xff111111} flexGrow={1} flexShrink={1} padding={[12, 12, 12, 12]} gap={8}>
+    <View backgroundColor={0xff111111} flexGrow={1} flexShrink={1} padding={[12, 12, 12, 12]} gap={8}>
       <Text color={0xffffffff} fontSize={24} lineHeight={30} textAlign="center" fontWeight={700}>Count: {count()}</Text>
       <View
-        background={0xff3b82f6}
+        backgroundColor={0xff3b82f6}
         radius={8}
-        padding={[12, 8, 12, 8]}
-        onPress={() => count.update((c) => c + 1)}
+        padding={[12, 8, 8, 12]}
       >
+        <TapGesture onTap={() => count.update((c) => c + 1)} />
         <Text color={0xffffffff} fontSize={16}>Increment</Text>
       </View>
-      <View scrollY flexGrow={1} flexShrink={1}>
+      <View overflowY="scroll" flexGrow={1} flexShrink={1}>
         <Text color={0xffdddddd} fontSize={18}>Alpha</Text>
         <Text color={0xffdddddd} fontSize={18}>Bravo</Text>
         <Text color={0xffdddddd} fontSize={18}>Charlie</Text>
@@ -64,16 +64,16 @@ function Counter() {
         <Text color={0xffdddddd} fontSize={18}>Item 47</Text>
         <Text color={0xffdddddd} fontSize={18}>Item 48</Text>
       </View>
-      <View height={24} flexShrink={0} background={0xff222222} radius={6}>
+      <View height={24} flexShrink={0} backgroundColor={0xff222222} radius={6}>
         <PanGesture
           axis="x"
           minDistance={8}
-          onStart={() => gesture.update(() => "pan")}
-          onUpdate={(event) => gesture.update(() => "pan " + Math.round(event.translationX))}
-          onEnd={() => gesture.update(() => "pan end")}
+          onPanStart={() => gesture.update(() => "pan")}
+          onPanUpdate={(event) => gesture.update(() => "pan " + Math.round(event.translationX))}
+          onPanEnd={() => gesture.update(() => "pan end")}
         />
         <TapGesture onTap={() => gesture.update(() => "tap")} />
-        <LongPressGesture duration={400} onStart={() => gesture.update(() => "long")} />
+        <LongPressGesture duration={400} onLongPress={() => gesture.update(() => "long")} />
         <Text fontSize={14} color={0xffffffff}>{gesture()}</Text>
       </View>
     </View>

@@ -8,12 +8,11 @@ fn lowers_a_signal_text_binding() {
         function Counter() {
           const count = signal(0);
           return (
-            <View background={0xff111111} flexGrow={1}>
+            <View backgroundColor={0xff111111} flexGrow={1}>
               <Text fontSize={24}>Count: {count()}</Text>
-              <View onPress={() => count.update((c) => c + 1)}>
+              <TapGesture onTap={() => count.update((c) => c + 1)} />
                 <Text>Increment</Text>
               </View>
-            </View>
           );
         }
         mount(Counter);
@@ -22,7 +21,7 @@ fn lowers_a_signal_text_binding() {
     .unwrap();
     assert!(js.contains("const count = signal(0);"));
     assert!(js.contains("() => \"Count: \" + count()"));
-    assert!(js.contains("onPress: () => count.update((c) => c + 1)"));
+    assert!(js.contains("onTap: () => count.update((c) => c + 1)"));
     assert!(js.contains("mount(Counter);"));
     assert!(!js.contains("from \"bubble\""));
 }
@@ -37,8 +36,8 @@ fn lowers_gesture_virtual_nodes_and_dynamic_config() {
           const update = () => {};
           return (
             <View>
-              <PanGesture axis="x" minDistance={12} enabled={editing()} onUpdate={update} />
-              <TransformGesture pan pinch rotate onUpdate={update} />
+              <PanGesture axis="x" minDistance={12} enabled={editing()} onPanUpdate={update} direction={["left"]} />
+              <TransformGesture mode={["pan", "pinch"]} onTransformUpdate={update} />
               <Text>Body</Text>
             </View>
           );
@@ -47,8 +46,8 @@ fn lowers_gesture_virtual_nodes_and_dynamic_config() {
         "#,
     )
     .unwrap();
-    assert!(js.contains("primitive(\"PanGesture\", {axis: \"x\", minDistance: 12, enabled: dynamic(() => editing()), onUpdate: update}, () => {"));
-    assert!(js.contains("primitive(\"TransformGesture\", {pan: true, pinch: true, rotate: true, onUpdate: update}, () => {"));
+    assert!(js.contains("primitive(\"PanGesture\", {axis: \"x\", minDistance: 12, enabled: dynamic(() => editing()), onPanUpdate: update, direction: [\"left\"]}, () => {"));
+    assert!(js.contains("primitive(\"TransformGesture\", {mode: [\"pan\", \"pinch\"], onTransformUpdate: update}, () => {"));
 }
 
 #[test]
@@ -58,7 +57,7 @@ fn lowers_component_props_children_and_conditionals() {
         import { mount, Text, View } from "bubble";
         function Card(props) {
           return (
-            <View background={props.background ?? 0xff000000}>
+            <View backgroundColor={props.background ?? 0xff000000}>
               <Text>{props.title}</Text>
               {props.children()}
             </View>
@@ -92,9 +91,9 @@ fn lowers_signal_reading_attributes_to_dynamic_bindings() {
           const color = signal(0xff000000);
           const pad = signal(4);
           return (
-            <View background={color()} padding={[pad(), pad(), pad(), pad()]}>
-              <Text color={color()}>Body</Text>
-              <View onPress={() => color.update((c) => c + 1)} background={0xff000000} />
+            <View backgroundColor={color()} padding={[pad(), pad(), pad(), pad()]}>
+              <Text color={color()} backgroundColor={0xff000000}>Body</Text>
+              <TapGesture onTap={() => color.update((c) => c + 1)} />
             </View>
           );
         }
@@ -102,11 +101,11 @@ fn lowers_signal_reading_attributes_to_dynamic_bindings() {
         "#,
     )
     .unwrap();
-    assert!(js.contains("import { signal, computed, effect, primitive, mount, component, when, each, dynamic }"));
+    assert!(js.contains("import { signal, computed, effect, primitive, mount, component, show, forEach, indexEach, switchFlow, dynamic }"));
     assert!(js.contains("dynamic(() => color())"));
     assert!(js.contains("dynamic(() => [pad(), pad(), pad(), pad()])"));
-    assert!(js.contains("onPress: () => color.update((c) => c + 1)"));
-    assert!(js.contains("background: 4278190080"));
+    assert!(js.contains("onTap: () => color.update((c) => c + 1)"));
+    assert!(js.contains("backgroundColor: 4278190080"));
     assert!(!js.contains("dynamic(() => 4278190080)"));
 }
 
@@ -153,17 +152,29 @@ fn lowers_computed_values_as_signal_sources() {
 }
 
 #[test]
-fn lowers_conditional_children_and_each() {
+fn lowers_show_for_and_switch() {
     let js = compile(
         r#"
         import { mount, Text, View } from "bubble";
         function App() {
           const show = true;
+          const items = [];
           return (
             <View>
-              {show && <Text>On</Text>}
-              {show ? <Text>Yes</Text> : null}
-              {each(() => items(), (item) => item.id, (item) => <Text>{item.name}</Text>)}
+              <Show when={show} fallback={<Text>Off</Text>}>
+                {(value) => <Text>{value}</Text>}
+              </Show>
+              <For each={items} by={(item) => item.id}>
+                {(item) => <Text>{item().name}</Text>}
+              </For>
+              <Index each={items}>
+                {(item) => <Text>{item()}</Text>}
+              </Index>
+              <Switch fallback={null}>
+                <Match when={show}>
+                  {(value) => <Text>{value}</Text>}
+                </Match>
+              </Switch>
             </View>
           );
         }
@@ -171,7 +182,9 @@ fn lowers_conditional_children_and_each() {
         "#,
     )
     .unwrap();
-    assert!(js.contains("when(() => (show), () => {"));
-    assert!(js.contains("when(() => (show), () => {"));
-    assert!(js.contains("each(() => items(), (item) => item.id, (item) => primitive(\"Text\", {}, () => item.name));"));
+    assert!(js.contains("show(() => (show), () => {"));
+    assert!(js.contains("forEach(() => (items), (item) => item.id, (item) => primitive(\"Text\", {}, () => item().name))"));
+    assert!(js.contains("indexEach(() => (items), (item) => primitive(\"Text\", {}, () => item()))"));
+    assert!(js.contains("switchFlow(null, ["));
+    assert!(compile("<View>{show ? <Text>Yes</Text> : null}</View>").is_err());
 }

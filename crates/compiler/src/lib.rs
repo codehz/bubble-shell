@@ -31,7 +31,7 @@ pub fn compile(source: &str) -> Result<String, String> {
 
 fn emit_program(program: &Program<'_>) -> Result<String, String> {
     let mut out = String::from(
-        "import { signal, computed, effect, primitive, mount, component, when, each, dynamic } from \"../runtime.js\";\n\n",
+        "import { signal, computed, effect, primitive, mount, component, show, forEach, indexEach, switchFlow, dynamic } from \"../runtime.js\";\n\n",
     );
     for stmt in &program.body {
         match stmt {
@@ -285,6 +285,16 @@ fn emit_jsx(
     signals: &HashSet<String>,
 ) -> Result<(), String> {
     let name = jsx_name(&element.opening_element.name)?;
+    if let Some(flow) = name.strip_prefix("flow:") {
+        return match flow {
+            "show" => emit_show(out, element, signals),
+            "for" => emit_for(out, element, signals),
+            "index" => emit_index(out, element, signals),
+            "switch" => emit_switch(out, element, signals),
+            "match" => Err("Match must be a child of Switch".into()),
+            _ => Err(format!("unknown control flow <{flow}>")),
+        };
+    }
     if let Some(component) = name.strip_prefix("component:") {
         out.push_str("component(");
         out.push_str(component);
@@ -446,29 +456,13 @@ fn emit_children(
                 let Some(expr) = container.expression.as_expression() else {
                     return Err("empty JSX expression".into());
                 };
-                if let Expression::LogicalExpression(logical) = expr {
-                    if logical.operator.as_str() == "&&" && is_renderable(&logical.right) {
-                        out.push_str("  when(() => (");
-                        emit_expr(out, &logical.left, signals)?;
-                        out.push_str("), ");
-                        emit_branch(out, &logical.right, signals)?;
-                        out.push_str(", null);\n");
-                        continue;
-                    }
+                if contains_jsx(expr) && !matches!(expr, Expression::JSXElement(_)) {
+                    return Err(
+                        "JSX control flow must use Show, For, Index, or Switch".into(),
+                    );
                 }
-                if let Expression::ConditionalExpression(conditional) = expr {
-                    if is_renderable(&conditional.consequent)
-                        || is_renderable(&conditional.alternate)
-                    {
-                        out.push_str("  when(() => (");
-                        emit_expr(out, &conditional.test, signals)?;
-                        out.push_str("), ");
-                        emit_branch(out, &conditional.consequent, signals)?;
-                        out.push_str(", ");
-                        emit_branch(out, &conditional.alternate, signals)?;
-                        out.push_str(");\n");
-                        continue;
-                    }
+                if is_removed_helper(expr) {
+                    return Err("when() and each() were removed; use Show or For".into());
                 }
                 if matches!(expr, Expression::JSXElement(_)) || is_render_call(expr) {
                     out.push_str("  ");
@@ -485,30 +479,6 @@ fn emit_children(
         }
     }
     Ok(())
-}
-
-fn is_renderable(expr: &Expression<'_>) -> bool {
-    matches!(expr, Expression::JSXElement(_) | Expression::NullLiteral(_))
-}
-
-fn emit_branch(
-    out: &mut String,
-    expr: &Expression<'_>,
-    signals: &HashSet<String>,
-) -> Result<(), String> {
-    match expr {
-        Expression::JSXElement(element) => {
-            out.push_str("() => {\n  ");
-            emit_jsx(out, element, signals)?;
-            out.push_str(";\n}");
-            Ok(())
-        }
-        Expression::NullLiteral(_) => {
-            out.push_str("null");
-            Ok(())
-        }
-        _ => Err("conditional JSX branch must be an element or null".into()),
-    }
 }
 
 fn emit_text_content(
@@ -561,6 +531,209 @@ fn emit_text_content(
     Ok(())
 }
 
+fn emit_show(
+    out: &mut String,
+    element: &JSXElement<'_>,
+    signals: &HashSet<String>,
+) -> Result<(), String> {
+    let when_expr = element_attr(element, "when")?.ok_or("Show requires when")?;
+    let fallback = element_attr(element, "fallback")?;
+    let callback = sole_callback(&element.children)?;
+    out.push_str("show(");
+    emit_accessor(out, when_expr, signals)?;
+    out.push_str(", ");
+    emit_fallback(out, fallback, signals)?;
+    out.push_str(", ");
+    emit_expr(out, callback, signals)?;
+    out.push(')');
+    Ok(())
+}
+
+fn emit_for(
+    out: &mut String,
+    element: &JSXElement<'_>,
+    signals: &HashSet<String>,
+) -> Result<(), String> {
+    let each = element_attr(element, "each")?.ok_or("For requires each")?;
+    let by = element_attr(element, "by")?.ok_or("For requires by")?;
+    if !matches!(by, Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)) {
+        return Err("For by must be a function".into());
+    }
+    let callback = sole_callback(&element.children)?;
+    out.push_str("forEach(");
+    emit_accessor(out, each, signals)?;
+    out.push_str(", ");
+    emit_expr(out, by, signals)?;
+    out.push_str(", ");
+    emit_expr(out, callback, signals)?;
+    out.push(')');
+    Ok(())
+}
+
+fn emit_index(
+    out: &mut String,
+    element: &JSXElement<'_>,
+    signals: &HashSet<String>,
+) -> Result<(), String> {
+    let each = element_attr(element, "each")?.ok_or("Index requires each")?;
+    if element_attr(element, "by")?.is_some() {
+        return Err("Index does not take by".into());
+    }
+    let callback = sole_callback(&element.children)?;
+    out.push_str("indexEach(");
+    emit_accessor(out, each, signals)?;
+    out.push_str(", ");
+    emit_expr(out, callback, signals)?;
+    out.push(')');
+    Ok(())
+}
+
+fn emit_switch(
+    out: &mut String,
+    element: &JSXElement<'_>,
+    signals: &HashSet<String>,
+) -> Result<(), String> {
+    let fallback = element_attr(element, "fallback")?;
+    out.push_str("switchFlow(");
+    emit_fallback(out, fallback, signals)?;
+    out.push_str(", [");
+    let mut wrote = false;
+    for child in &element.children {
+        match child {
+            JSXChild::Text(text) if text.value.trim().is_empty() => {}
+            JSXChild::Element(child) => {
+                let name = jsx_name(&child.opening_element.name)?;
+                if name != "flow:match" {
+                    return Err("Switch children must be Match".into());
+                }
+                let when_expr = element_attr(child, "when")?.ok_or("Match requires when")?;
+                let callback = sole_callback(&child.children)?;
+                if wrote {
+                    out.push_str(", ");
+                }
+                wrote = true;
+                out.push('[');
+                emit_accessor(out, when_expr, signals)?;
+                out.push_str(", ");
+                emit_expr(out, callback, signals)?;
+                out.push(']');
+            }
+            _ => return Err("Switch children must be Match".into()),
+        }
+    }
+    out.push_str("])");
+    Ok(())
+}
+
+fn emit_accessor(
+    out: &mut String,
+    expr: &Expression<'_>,
+    signals: &HashSet<String>,
+) -> Result<(), String> {
+    out.push_str("() => (");
+    emit_expr(out, expr, signals)?;
+    out.push(')');
+    Ok(())
+}
+
+fn emit_fallback(
+    out: &mut String,
+    expr: Option<&Expression<'_>>,
+    signals: &HashSet<String>,
+) -> Result<(), String> {
+    match expr {
+        None | Some(Expression::NullLiteral(_)) => out.push_str("null"),
+        Some(Expression::JSXElement(element)) => {
+            out.push_str("() => {\n  ");
+            emit_jsx(out, element, signals)?;
+            out.push_str(";\n}");
+        }
+        Some(_) => return Err("fallback must be JSX or null".into()),
+    }
+    Ok(())
+}
+
+fn element_attr<'a>(
+    element: &'a JSXElement<'a>,
+    name: &str,
+) -> Result<Option<&'a Expression<'a>>, String> {
+    let mut found = None;
+    for attr in &element.opening_element.attributes {
+        let JSXAttributeItem::Attribute(attr) = attr else {
+            return Err("JSX spread is not supported".into());
+        };
+        let key = attr
+            .name
+            .as_identifier()
+            .ok_or("JSX names must be identifiers")?;
+        if key.name != name {
+            continue;
+        }
+        let Some(JSXAttributeValue::ExpressionContainer(container)) = &attr.value else {
+            return Err(format!("{name} must be an expression"));
+        };
+        let Some(expr) = container.expression.as_expression() else {
+            return Err("empty JSX expression".into());
+        };
+        if found.is_some() {
+            return Err(format!("duplicate {name}"));
+        }
+        found = Some(expr);
+    }
+    Ok(found)
+}
+
+fn sole_callback<'a>(children: &'a [JSXChild<'a>]) -> Result<&'a Expression<'a>, String> {
+    let mut found = None;
+    for child in children {
+        match child {
+            JSXChild::Text(text) if text.value.trim().is_empty() => {}
+            JSXChild::ExpressionContainer(container) => {
+                let Some(expr) = container.expression.as_expression() else {
+                    return Err("empty JSX expression".into());
+                };
+                if !matches!(expr, Expression::ArrowFunctionExpression(_)) {
+                    return Err("control flow child must be an arrow function".into());
+                }
+                if found.is_some() {
+                    return Err("control flow takes one render function".into());
+                }
+                found = Some(expr);
+            }
+            _ => return Err("control flow child must be an arrow function".into()),
+        }
+    }
+    found.ok_or_else(|| "control flow child must be an arrow function".into())
+}
+
+fn contains_jsx(expr: &Expression<'_>) -> bool {
+    match expr {
+        Expression::JSXElement(_) => true,
+        Expression::ConditionalExpression(conditional) => {
+            contains_jsx(&conditional.test)
+                || contains_jsx(&conditional.consequent)
+                || contains_jsx(&conditional.alternate)
+        }
+        Expression::LogicalExpression(logical) => {
+            contains_jsx(&logical.left) || contains_jsx(&logical.right)
+        }
+        Expression::ParenthesizedExpression(paren) => contains_jsx(&paren.expression),
+        Expression::ArrayExpression(array) => array
+            .elements
+            .iter()
+            .filter_map(|item| item.as_expression())
+            .any(contains_jsx),
+        _ => false,
+    }
+}
+
+fn is_removed_helper(expr: &Expression<'_>) -> bool {
+    let Expression::CallExpression(call) = expr else {
+        return false;
+    };
+    matches!(&call.callee, Expression::Identifier(name) if name.name == "when" || name.name == "each")
+}
+
 fn jsx_name(name: &JSXElementName<'_>) -> Result<String, String> {
     let raw = match name {
         JSXElementName::Identifier(id) => id.name.as_str(),
@@ -576,6 +749,11 @@ fn jsx_name(name: &JSXElementName<'_>) -> Result<String, String> {
         "LongPressGesture" => Ok("LongPressGesture".into()),
         "PanGesture" => Ok("PanGesture".into()),
         "TransformGesture" => Ok("TransformGesture".into()),
+        "Show" => Ok("flow:show".into()),
+        "For" => Ok("flow:for".into()),
+        "Index" => Ok("flow:index".into()),
+        "Switch" => Ok("flow:switch".into()),
+        "Match" => Ok("flow:match".into()),
         other if other.chars().next().is_some_and(char::is_uppercase) => {
             Ok(format!("component:{other}"))
         }
