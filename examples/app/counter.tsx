@@ -14,7 +14,7 @@ function Counter() {
         height={40}
         fontSize={18}
         color="#ffffff"
-        backgroundColor={0xff111827}
+        backgroundColor={0xff4b5563}
         radius={6}
         padding={[8, 10, 10, 8]}
         autofill="username"
@@ -27,7 +27,7 @@ function Counter() {
         height={40}
         fontSize={18}
         color="#ffffff"
-        backgroundColor={0xff111827}
+        backgroundColor={0xff4b5563}
         radius={6}
         padding={[8, 10, 10, 8]}
         secure
@@ -41,7 +41,7 @@ function Counter() {
         height={72}
         fontSize={18}
         color="#ffffff"
-        backgroundColor={0xff111827}
+        backgroundColor={0xff4b5563}
         radius={6}
         padding={[8, 10, 10, 8]}
         multiline
