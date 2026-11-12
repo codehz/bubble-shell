@@ -1414,6 +1414,22 @@ mod android {
         array
     }
 
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_caret<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+    ) -> jni::objects::JFloatArray<'a> {
+        let (mut x, mut y, mut w, mut h) = (0.0f32, 0.0, 0.0, 0.0);
+        let array = if super::bubble_caret(&mut x, &mut y, &mut w, &mut h) == 0 {
+            let array = env.new_float_array(4).expect("float array");
+            let _ = env.set_float_array_region(&array, 0, &[x, y, w, h]);
+            array
+        } else {
+            env.new_float_array(0).expect("float array")
+        };
+        array
+    }
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_nodeBox<'a>(
         mut env: JNIEnv<'a>,

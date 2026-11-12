@@ -19,6 +19,7 @@ object BubbleNative {
     external fun focused(): Int
     external fun focusedText(): String
     external fun selection(): IntArray
+    external fun caret(): FloatArray
     external fun scrollXOf(handle: Int): Float
     external fun scrollYOf(handle: Int): Float
     external fun setVisible(visible: Int)

@@ -16,6 +16,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
 import android.view.inputmethod.BaseInputConnection
+import android.view.inputmethod.CursorAnchorInfo
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
@@ -223,12 +224,30 @@ class BubbleView(context: Context) : View(context) {
     private fun sendEdit(action: Int, text: String, a: Int = 0, b: Int = 0) {
         BubbleNative.edit(action, text.toByteArray(Charsets.UTF_8), a, b)
         refresh()
+        publishCursor()
     }
 
     private fun selection(): Pair<Int, Int> {
         val raw = BubbleNative.selection()
         if (raw.size < 2) return 0 to 0
         return raw[0] to raw[1]
+    }
+
+    private fun publishCursor() {
+        val caret = BubbleNative.caret()
+        if (caret.size < 4) return
+        val density = resources.displayMetrics.density
+        val x = paddingLeft + caret[0] * density
+        val top = paddingTop + caret[1] * density
+        val bottom = top + caret[3] * density
+        val (start, end) = selection()
+        val info = CursorAnchorInfo.Builder()
+            .setMatrix(android.graphics.Matrix())
+            .setSelectionRange(start, end)
+            .setInsertionMarkerLocation(x, top, bottom, bottom, CursorAnchorInfo.FLAG_HAS_VISIBLE_REGION)
+            .build()
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.updateCursorAnchorInfo(this, info)
     }
 
     override fun onCheckIsTextEditor(): Boolean = true
@@ -318,6 +337,11 @@ class BubbleView(context: Context) : View(context) {
                     return true
                 }
                 return super.sendKeyEvent(event)
+            }
+
+            override fun requestCursorUpdates(cursorUpdateMode: Int): Boolean {
+                publishCursor()
+                return true
             }
 
             private fun selection(): Pair<Int, Int> {
