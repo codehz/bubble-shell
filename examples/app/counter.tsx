@@ -1,10 +1,52 @@
-import { mount, signal, Text, View, TapGesture, LongPressGesture, PanGesture } from "bubble";
+import { mount, signal, Text, View, TextField, TapGesture, LongPressGesture, PanGesture } from "bubble";
 
 function Counter() {
   const count = signal(0);
   const gesture = signal("idle");
+  const name = signal("");
+  const secret = signal("");
+  const note = signal("");
   return (
     <View backgroundColor="oklch(0.2 0.01 264)" flexGrow={1} flexShrink={1} padding={[12, 12, 12, 12]} gap={8}>
+      <Text color="#ffffff" fontSize={16}>Name</Text>
+      <TextField
+        value=""
+        height={40}
+        fontSize={18}
+        color="#ffffff"
+        backgroundColor={0xff111827}
+        radius={6}
+        padding={[8, 10, 10, 8]}
+        autofill="username"
+        onChange={(event) => name.update(() => event.value)}
+      />
+      <Text color="#9ca3af" fontSize={14}>{name()}</Text>
+      <Text color="#ffffff" fontSize={16}>Password</Text>
+      <TextField
+        value=""
+        height={40}
+        fontSize={18}
+        color="#ffffff"
+        backgroundColor={0xff111827}
+        radius={6}
+        padding={[8, 10, 10, 8]}
+        secure
+        autofill="password"
+        onChange={(event) => secret.update(() => secret().length === event.value.length ? secret() : "*".repeat(event.value.length))}
+      />
+      <Text color="#9ca3af" fontSize={14}>{secret()}</Text>
+      <Text color="#ffffff" fontSize={16}>Note</Text>
+      <TextField
+        value=""
+        height={72}
+        fontSize={18}
+        color="#ffffff"
+        backgroundColor={0xff111827}
+        radius={6}
+        padding={[8, 10, 10, 8]}
+        multiline
+        onChange={(event) => note.update(() => event.value)}
+      />
       <Text color="#ffffff" fontSize={24} lineHeight={30} textAlign="center" fontWeight={700}>Count: {count()}</Text>
       <View
         backgroundColor={0xff3b82f6}
