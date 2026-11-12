@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::report::{Check, ScenarioReport, SuiteReport};
 
@@ -42,7 +43,35 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
         .map_err(|err| format!("copy {from:?}: {err}"))
 }
 
+fn install_bundle(root: &Path, destination: &Path, gestures: bool) -> Result<(), String> {
+    std::fs::create_dir_all(destination).map_err(|err| err.to_string())?;
+    if gestures {
+        let entry = std::fs::read(root.join("examples/app/gestures.js")).map_err(|err| err.to_string())?;
+        let manifest = serde_json::json!({
+            "schema": 1, "id": "com.bubble.gestures", "version": 1,
+            "minRuntime": "0.1.0", "platforms": ["ios", "android"], "entry": "main.js",
+            "files": [{ "path": "main.js", "sha256": format!("{:x}", Sha256::digest(&entry)), "size": entry.len() }],
+            "keyId": "m0-placeholder", "signature": "m0-placeholder"
+        });
+        std::fs::write(destination.join("main.js"), entry).map_err(|err| err.to_string())?;
+        std::fs::write(destination.join("manifest.json"), serde_json::to_vec(&manifest).map_err(|err| err.to_string())?)
+            .map_err(|err| err.to_string())?;
+    } else {
+        copy(&root.join("examples/web/bundle/manifest.json"), &destination.join("manifest.json"))?;
+        copy(&root.join("examples/web/bundle/main.js"), &destination.join("main.js"))?;
+    }
+    Ok(())
+}
+
 pub fn ios() -> Result<SuiteReport, String> {
+    ios_device(false)
+}
+
+pub fn gestures_ios() -> Result<SuiteReport, String> {
+    ios_device(true)
+}
+
+fn ios_device(gestures: bool) -> Result<SuiteReport, String> {
     let root = workspace();
     run(Command::new("cargo")
         .args([
@@ -63,14 +92,7 @@ pub fn ios() -> Result<SuiteReport, String> {
         &root.join("examples/ios/Info.plist"),
         &app.join("Info.plist"),
     )?;
-    copy(
-        &root.join("examples/web/bundle/manifest.json"),
-        &app.join("manifest.json"),
-    )?;
-    copy(
-        &root.join("examples/web/bundle/main.js"),
-        &app.join("main.js"),
-    )?;
+    install_bundle(&root, &app, gestures)?;
     let font = Path::new("/System/Library/Fonts/Supplemental/Arial.ttf");
     if font.exists() {
         copy(font, &app.join("HostFont.ttf"))?;
@@ -104,23 +126,59 @@ pub fn ios() -> Result<SuiteReport, String> {
         "dev.bubble.shell",
         "data",
     ]))?;
-    let result = PathBuf::from(container.trim()).join("Documents/m1-result.json");
+    let result = PathBuf::from(container.trim()).join(if gestures {
+        "Documents/gestures-result.json"
+    } else {
+        "Documents/m1-result.json"
+    });
     // The install keeps the data container, so a previous run's report would
     // otherwise be read before the new process writes its own.
     let _ = std::fs::remove_file(&result);
     let udid = booted_simulator()?;
-    run(Command::new("xcodebuild")
+    let mut test = Command::new("xcodebuild");
+    if let Ok(only) = std::env::var("BUBBLE_GESTURE_ONLY") {
+        test.env("TEST_RUNNER_BUBBLE_GESTURE_ONLY", only);
+    }
+    let tested = run(test
         .args(["test", "-quiet", "-project"])
         .arg(root.join("examples/ios/BubbleShellUITests.xcodeproj"))
         .args(["-scheme", "BubbleShellUITests", "-destination"])
         .arg(format!("platform=iOS Simulator,id={udid}"))
         .args(["-derivedDataPath"])
-        .arg(root.join("target/ios-uitest")))?;
+        .arg(root.join("target/ios-uitest"))
+        .arg("-parallel-testing-enabled").arg("NO")
+        .arg(if gestures {
+            "-only-testing:BubbleShellUITests/BubbleShellUITests/testGestureAcceptance"
+        } else {
+            "-only-testing:BubbleShellUITests/BubbleShellUITests/testSwipeScrollsTheList"
+        }));
+    if let Err(err) = tested {
+        if gestures {
+            if let Ok(body) = std::fs::read_to_string(&result) {
+                let mut report = decode("gestures.ios", &body);
+                report.ok = false;
+                if let Some(scenario) = report.scenarios.first_mut() {
+                    scenario.ok = false;
+                    scenario.checks.push(Check { name: "XCTest execution".into(), ok: false, detail: err });
+                }
+                return Ok(report);
+            }
+        }
+        return Err(err);
+    }
     let body = wait_file(&result, Duration::from_secs(40))?;
-    Ok(decode("m1.ios", &body))
+    Ok(decode(if gestures { "gestures.ios" } else { "m1.ios" }, &body))
 }
 
 pub fn android() -> Result<SuiteReport, String> {
+    android_device(false)
+}
+
+pub fn gestures_android() -> Result<SuiteReport, String> {
+    android_device(true)
+}
+
+fn android_device(gestures: bool) -> Result<SuiteReport, String> {
     let root = workspace();
     let sdk = std::env::var("ANDROID_HOME").map_err(|_| "ANDROID_HOME is unset".to_string())?;
     let ndk = PathBuf::from(&sdk).join("ndk/27.2.12479018");
@@ -160,21 +218,7 @@ pub fn android() -> Result<SuiteReport, String> {
     let out = root.join("examples/android/build");
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(out.join("apk/lib/arm64-v8a")).map_err(|err| err.to_string())?;
-    copy(
-        &root.join("examples/web/bundle/manifest.json"),
-        &out.join("apk/assets/manifest.json"),
-    )
-    .or_else(|_| {
-        std::fs::create_dir_all(out.join("apk/assets")).map_err(|err| err.to_string())?;
-        copy(
-            &root.join("examples/web/bundle/manifest.json"),
-            &out.join("apk/assets/manifest.json"),
-        )
-    })?;
-    copy(
-        &root.join("examples/web/bundle/main.js"),
-        &out.join("apk/assets/main.js"),
-    )?;
+    install_bundle(&root, &out.join("apk/assets"), gestures)?;
     let font = Path::new("/System/Library/Fonts/Supplemental/Arial.ttf");
     if font.exists() {
         copy(font, &out.join("apk/assets/HostFont.ttf"))?;
@@ -263,6 +307,22 @@ pub fn android() -> Result<SuiteReport, String> {
     run(Command::new("adb").args(["install", "-r"]).arg(&apk))?;
     let _ = run(Command::new("adb").args(["shell", "am", "force-stop", "dev.bubble.shell"]));
     let _ = run(Command::new("adb").args(["logcat", "-c"]));
+    if gestures {
+        run(Command::new("sh")
+            .arg(root.join("examples/android/build-tests.sh"))
+            .current_dir(&root))?;
+        run(Command::new("adb").args(["install", "-r"]).arg(out.join("BubbleShellTests.apk")))?;
+        run(Command::new("adb").args([
+            "shell", "run-as", "dev.bubble.shell", "rm", "-f", "files/gestures-result.json",
+        ]))?;
+        let output = run(Command::new("adb").args([
+            "shell", "am", "instrument", "-w", "dev.bubble.shell.test/.ShellInstrumentation",
+        ]))?;
+        let body = run(Command::new("adb").args([
+            "shell", "run-as", "dev.bubble.shell", "cat", "files/gestures-result.json",
+        ])).map_err(|err| format!("{err}\n{output}"))?;
+        return Ok(decode("gestures.android", &body));
+    }
     run(Command::new("adb").args([
         "shell",
         "am",

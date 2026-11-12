@@ -11,7 +11,7 @@ mod driver;
 mod report;
 mod suite;
 
-pub use device::{android, ios};
+pub use device::{android, gestures_android, gestures_ios, ios};
 pub use report::{Check, Probe, ScenarioReport, SuiteReport};
 pub use suite::m1;
 

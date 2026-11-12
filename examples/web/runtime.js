@@ -710,8 +710,8 @@ function disposeGesture(id) {
   deactivateGestureBindings(id);
   const handlers = gestureHandlerIds.get(id);
   if (handlers) {
-    // Keep the handlers alive until the cancel batch from the shell has been
-    // dispatched; otherwise a terminal notification would be dropped.
+    // The shell acknowledges disposal after queued terminal events. Keeping
+    // handlers until that barrier also covers disposal from an event callback.
     retiredGestureHandlers.set(id, handlers);
     gestureHandlerIds.delete(id);
   }
@@ -1056,6 +1056,7 @@ export function press(handler, x, y) {
 }
 
 const GESTURE_SLOTS = {
+  0: "disposed",
   1: "pressStart",
   2: "pressEnd",
   3: "pressCancel",
@@ -1115,8 +1116,18 @@ function decodeGestureEvents(bytes) {
 export function dispatchGestureEvents(bytes) {
   const events = bytes instanceof Uint8Array ? decodeGestureEvents(bytes) : bytes;
   let ran = false;
+  let dispatched = 0;
   batch(() => {
     for (const event of events) {
+      if (event.type === "disposed") {
+        const ids = retiredGestureHandlers.get(event.gesture);
+        if (ids) {
+          for (const handler of ids) gestureHandlers.delete(handler);
+          retiredGestureHandlers.delete(event.gesture);
+        }
+        continue;
+      }
+      dispatched += 1;
       const fn = gestureHandlers.get(event.handler);
       if (!fn) continue;
       ran = true;
@@ -1124,13 +1135,7 @@ export function dispatchGestureEvents(bytes) {
     }
   });
   if (ran) flush();
-  if (retiredGestureHandlers.size > 0) {
-    for (const ids of retiredGestureHandlers.values()) {
-      for (const handler of ids) gestureHandlers.delete(handler);
-    }
-    retiredGestureHandlers.clear();
-  }
-  return events.length;
+  return dispatched;
 }
 
 globalThis.__bubbleSetApi = setApi;

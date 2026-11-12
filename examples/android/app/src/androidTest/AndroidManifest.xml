@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.bubble.shell.test">
+    <instrumentation
+        android:name="dev.bubble.shell.test.ShellInstrumentation"
+        android:targetPackage="dev.bubble.shell"
+        android:label="Bubble gestures" />
+    <application />
+</manifest>

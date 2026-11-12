@@ -1,6 +1,6 @@
 # 05 · M2 前置：手势与滚动协商计划
 
-状态：A-D 已实现。E 的可选协商 trace 已落地；模拟器已验收真实纵滑滚动与脚本挂起期间出帧，长按、双击、双指等设备交互未覆盖。本文记录 2026-11-11 确认的行为契约与实施顺序；字段名已落到实现。
+状态：A-D 已实现。E 的自动化验收已在 iOS 与 Android 模拟器跑通支持范围：点击族、长按、双击、pan、pinch/rotate、横纵并行、captureAxis 回放、overscroll 截断、声明销毁和生命周期取消。iOS 公共 XCUITest 无法表达任意双指同向拖、第三指加入和按住期间系统中断，列为明确未覆盖；阶段 E 因此仍不宣布完成。本文记录 2026-11-11 确认的行为契约与 2026-11-12 的验收结果；字段名以实现为准。
 
 实现落点：`crates/core/src/gesture.rs`（识别状态机）、`crates/core/src/shell.rs`（命中路径、逐轴滚动链、声明生命周期）、`crates/core/src/ops.rs`（BSOP v3 手势 op）、`crates/wasm` / `crates/native`（pointer/tick ABI）、`examples/web/runtime.js`（五种虚拟原语与事件分发）、三端宿主输入适配。Web 端已由 `examples/web/m0-smoke.mjs` 覆盖按下-抬起、事件分发与滚动。iOS/Android 模拟器记录见第 9.1 节。
 
@@ -27,7 +27,7 @@
 | `crates/core/src/turn.rs` | signal 与依赖图在脚本侧 `Turn`；`Shell` 持有 UI 树 | 条件经绑定求值和 op 提交，UI 不跨线程读取脚本 signal |
 | `examples/web/runtime.js` | 原语注册、动态属性绑定、If/Each 的创建／移动／销毁已有；fragment 使用绝对定位零尺寸 View anchor | 复用生命周期与绑定；手势实体不创建 Taffy 节点，也不能成为可命中的 anchor |
 | `crates/compiler/src/lib.rs` | JSX 属性可识别 signal 读取并降为动态绑定；没有对象表达式支持 | 使用虚拟 JSX 节点和标量属性，不为本方案额外引入对象声明语法 |
-| `crates/native/src/lib.rs` / `script.rs` | `bubble_pointer_down` 立即发送 Press，脚本回调仅收到 tap | 替换内部输入与事件路径；`onPress` 仅保留公开语法糖 |
+| `crates/native/src/lib.rs` / `script.rs` | 原 `bubble_pointer_down` 立即发送 Press，脚本回调仅收到 tap | 替换内部输入与事件路径；公开点击统一使用显式 TapGesture |
 | iOS / Android / Web 示例宿主 | iOS 使用 UIKit pan，Android move 直接滚动，Web pointerdown 直接 tap，wheel 单独传入 | 三端接完整触点生命周期，由 Rust 统一识别，移除重复平台识别 |
 | `docs/04-risks-roadmap.md` | M2 目前从编辑状态、输入代理、焦点与无障碍开始 | 增加本前置阶段作为输入控件实施门槛 |
 
@@ -78,8 +78,8 @@
 |---|---|
 | 已有候选的 enabled、方向、距离等识别条件 | 未胜出前读取最新已提交 UI 配置；在同一输入样本内使用同一配置快照 |
 | 胜出手势的归属和配置 | 胜出后固定，直到 end 或 cancel；signal 更新不触发中途抢占 |
-| 触摸滚动的 scrollChainX/Y | 该轴滚动识别时冻结；不因同次手势中的 signal 更新改变边界策略 |
-| wheel 的 scrollChainX/Y | 每次输入读取最新已提交配置 |
+| 触摸滚动的 overscrollX / overscrollY | 该轴滚动识别时冻结；不因同次手势中的 signal 更新改变边界策略 |
+| wheel 的 overscrollX / overscrollY | 每次输入读取最新已提交配置 |
 | 当前触摸中新建的手势节点 | 下一次触摸序列起参与 |
 | 当前触摸中销毁或改挂目标的手势节点 | 立即取消；规则见生命周期章节 |
 
@@ -87,13 +87,13 @@
 
 ### 3.3 按压与点击
 
-- `TapGesture` 提供 `onPressStart`、`onPressEnd`、`onPressCancel` 表达按压反馈；`onTap` 只在成功抬起后触发。
+- `TapGesture` 提供 `onTapStart`、`onTapEnd`、`onTapCancel` 表达按压反馈；`onTap` 只在成功抬起后触发。
 - 同目标可有 longPress / doubleTap；它们与 tap 使用专门组合规则，不作为互不相干的回调同时成功。
 - 长按达到 duration 且未超过 maxDistance 才胜出；胜出后不再产生 tap 或 doubleTap。
 - 只在最近点击目标上存在有效 `DoubleTapGesture` 时，单击等待双击窗口；没有则成功抬起立即触发。
 - 成功双击只发送 doubleTap；窗口超时发送一次单击。第二次点击必须满足同目标、时间和空间条件；不匹配则按各自序列处理，不把不同目标的点击合并。
 - 点击族只由最近的有效目标处理，不自动冒泡；祖先的 doubleTap 不延迟子按钮的 tap。
-- `View onPress` 保留为隐式 `TapGesture onTap`；必须修正当前按下即触发的行为。与同目标显式 `TapGesture` 并存时报告配置冲突。
+- 点击使用显式 `TapGesture onTap`；`View onPress` 已移除，不保留隐式手势声明。
 - 按压反馈不声明占轴，也不隐式冻结滚动；滚动或其他手势使点击失败时发送按压取消。
 - 第二指加入时，相关 tap / longPress 失败，清理对应按压与计时状态。
 
@@ -113,7 +113,7 @@
 
 ### 4.2 显式保留滚动轴
 
-`reserveScroll="x" | "y" | "both"` 是局部关系：让命中路径上的祖先滚动等待指定轴上的当前候选，不让任意其他手势等待，也不提高该候选对自定义手势的优先级。
+`captureAxis="none" | "x" | "y" | "both"` 是局部关系，默认 `"none"`：让命中路径上的祖先滚动等待指定轴上的当前候选，不让任意其他手势等待，也不提高该候选对自定义手势的优先级。
 
 - 默认不保留。祖先先达到滚动阈值就能胜出，使冲突候选失败。
 - pending 期间保存尚未消费的滚动增量；方向失败／位移超限／候选销毁／条件失效时解除等待。
@@ -144,14 +144,14 @@
 
 | 属性 | 值 | 含义 |
 |---|---|---|
-| scrollChainX / scrollChainY | `auto`，默认 | 该轴剩余增量交给下一个祖先滚动容器 |
-| 同上 | `contain` | 在当前滚动容器截断该轴，丢弃剩余量，不继续传给祖先 |
+| overscrollX / overscrollY | `true`，默认 | 该轴剩余增量交给下一个祖先滚动容器 |
+| 同上 | `false` | 在当前滚动容器截断该轴，丢弃剩余量，不继续传给祖先（contain） |
 
 - 触摸滚动和 wheel 共用逐轴消费函数，分别传入归一化增量及当前策略快照。
 - 每次输入先由最深容器消费可用范围，实际消费量为 clamp 后 offset 的变化，剩余量同次继续向上；x/y 独立。
 - 反向移动每次重新从最深容器开始，不永久转交祖先。
 - 已在边界的 contain 容器仍截断；不能以“本次没有改变 offset”为由绕过。
-- contain 是滚动边界策略，不代替 pan 的占轴；reserveScroll 是识别等待，不代替 contain。
+- `overscrollX/Y={false}` 是滚动边界策略，不代替 pan 的占轴；`captureAxis` 是识别等待，不代替滚动边界策略。
 - 未启用轴不能消费滚动，也不凭空成为该轴的滚动边界；滚动 offset 仍由 Shell 持有并 clamp，ScrollTo 继续遵守轴限制。
 - 滚动链候选限于实际命中路径；拖动开始后固定路径，不随手指经过其他节点重新命中滚动目标。
 - 返回实际消费、剩余和被边界截断的信息，不能仅以“是否移动”判断是否处理输入。
@@ -185,19 +185,19 @@
 - 新声明下一触摸序列参与；既有声明的 signal 配置可以更新 pending 条件。
 - 目标被销毁、宿主失焦／暂停、系统取消、runtime 重建都清理触点、计时器、保留缓存和归属。
 - 可用 handler 的活动序列必须在释放 handler 前交付终结通知；运行时已销毁时清理本地状态并丢弃旧 generation 事件，不向新脚本实例投递旧回调。
-- 移除、取消与异步事件排队必须有统一的 handler 释放顺序，不能仅沿用当前立即删 handler 表项的方式。
+- 移除、取消与异步事件排队必须有统一的 handler 释放顺序。核心在 cancel 之后发送内部 slot 0 销毁确认；JS 收到确认才释放声明 handler，不向应用投递确认。
 
 ## 8. 实施顺序
 
-各阶段均属于后续实现，本次不执行。当前状态见下表。
+当前实现与验收状态见下表；阶段 E 完整通过后再切换为实际行为说明。
 
 | 阶段 | 状态 |
 |---|---|
 | A 输入和协议契约 | 已实现：BSOP v3、手势声明／配置／移动／销毁 op、`bubble_pointer`／`bubble_tick`、`pointer`／`tick` wasm 导出 |
-| B 虚拟节点与 JSX 运行时 | 已实现：五种原语、If/Each 归属与清理、onPress 语法糖与冲突校验 |
-| C Rust 识别和协商 | 已实现：单指、点击族、reserveScroll、双指 transform、结构事件与取消清理 |
-| D 滚动消费与三端接入 | 已实现：逐轴链、auto/contain、三端触点生命周期。模拟器已证明真实滑动进入 `bubble_pointer` 并滚动；长按、双击、双指未在设备上覆盖 |
-| E 验证与文档切换 | 进行中：核心、wasm smoke、可选协商 trace 与下方模拟器记录已覆盖；设备侧手势矩阵其余项未跑 |
+| B 虚拟节点与 JSX 运行时 | 已实现：五种原语、If/Each 归属与清理；点击统一使用显式 TapGesture |
+| C Rust 识别和协商 | 已实现：单指、点击族、captureAxis、双指 transform、结构事件与取消清理 |
+| D 滚动消费与三端接入 | 已实现：逐轴链、overscrollX/Y、三端触点生命周期；模拟器已用真实输入覆盖滚动、长按、双击与双指 |
+| E 验证与文档切换 | 部分通过：两端模拟器自动化验收覆盖支持范围；iOS 任意双指轨迹、第三指与按住中断无公共 API，列为明确限制 |
 
 ### A. 输入和协议契约
 
@@ -216,7 +216,7 @@
 
 1. 注册五种手势虚拟原语，复用 JSX 属性动态绑定。
 2. 区分 UI 节点索引与虚拟声明顺序；If/Each 创建、移动、销毁都能正确维护目标与声明生命周期。
-3. 实现 onPress 语法糖与冲突校验；更新示例和调用方，以成功抬起后的点击语义驱动。
+3. 点击统一使用显式 `TapGesture onTap`；移除 `View onPress` 及其调用方，以成功抬起后的点击语义驱动。
 4. 取消通知、待投递事件与 handler 清理按统一顺序执行。
 
 交付：不影响布局／命中，条件挂载可用，不要求应用引入 JS gesture 对象或 UI 线程 JS 谓词。
@@ -224,7 +224,7 @@
 ### C. Rust 识别和协商
 
 1. 建立可注入单调时钟的识别状态机；先统一命中路径和候选，再评估与提交归属。
-2. 完成单指按轴竞争、reserveScroll、失败回放、点击族计时与按压生命周期。
+2. 完成单指按轴竞争、captureAxis、失败回放、点击族计时与按压生命周期。
 3. 完成双指 transform 和单指升级，覆盖触点对变化及角度／距离退化。
 4. 完成结构事件顺序、update 合并与取消清理。
 
@@ -232,7 +232,7 @@
 
 ### D. 滚动消费与三端接入
 
-1. 将 Shell 的单目标 clamp 改为按真实命中路径逐轴消费，返回消费和剩余信息；接入 auto/contain、ScrollTo 与布局范围变化。
+1. 将 Shell 的单目标 clamp 改为按真实命中路径逐轴消费，返回消费和剩余信息；接入 overscrollX/Y、ScrollTo 与布局范围变化。
 2. iOS 改送原始触点，移除 UIPanGestureRecognizer 的重复滚动路径；稳定映射 UITouch 到 pointer ID。
 3. Android 处理 ACTION_POINTER_DOWN/UP、各 pointer ID、cancel 和密度换算，不再从单个 event.x/y 直接滚动。
 4. Web 接 pointerdown/move/up/cancel、capture、touch-action 与 wheel 单位，移除 pointerdown 直接 tap。
@@ -245,13 +245,13 @@
 1. 完成下表的行为用例和平台实际交互；记录当前设备与环境限制。
 2. 增加可选、默认关闭的本地协商 trace：候选 ID、目标、配置版本、pending/accept/fail 原因、占轴、回放与滚动消费；不在热路径默认生成字符串或原始轨迹日志。
 3. 更新运行时事件契约、宿主输入契约、路线图和 API 示例；实现完成后再将本文从计划切换为实际行为说明。
-4. 一次迁移内部所有调用方与旧事件协议；保留的 onPress 是正式语法糖，不保留旧按下触发路径。
+4. 一次迁移内部所有调用方与旧事件协议；点击仅使用显式 TapGesture，不保留 View onPress 或旧按下触发路径。
 
 ## 9. 验证矩阵
 
 | 层面 | 必须证明的行为 |
 |---|---|
-| 点击族 | 按下不触发 onPress；成功抬起触发；滚动／长按／第二指／取消不误触；双击存在才延迟；不同目标不合并；祖先双击不拖延子按钮 |
+| 点击族 | 按下不触发 onTap；成功抬起触发；滚动／长按／第二指／取消不误触；双击存在才延迟；不同目标不合并；祖先双击不拖延子按钮 |
 | 协商 | 先满足者胜出；同样本深层优先／同目标顺序；横 pan 与纵滚动并行；不重复消费同轴；明确失败后不可复活 |
 | 保留 | 默认不保留；显式保留仅阻塞指定轴；长按可保留；失败追补且只追补一次；多候选释放不重复回放 |
 | 滚动 | 内层部分消费＋祖先同次消费残余；反向回内层；x/y 分别路由；边界 contain 不泄漏；遮挡兄弟不被滚动；ScrollTo clamp 与布局缩小仍正确 |
@@ -260,33 +260,39 @@
 | 生命周期 | 系统 cancel、失焦、暂停、目标销毁、声明移动、runtime 重建均清理；没有双终结、悬挂保留、失效 handler 或跨 generation 事件 |
 | 事件传输 | start/update/end 顺序；合并 delta 和最终值正确；脚本忙时滚动继续、结构事件不丢；自定义视觉延迟符合已声明限制 |
 | 平台 | 坐标单位与按钮一致；真实 down/up、拖动、长按、双击和双指操作；iOS 无重复识别，Android 多 pointer 正确，Web capture/cancel 与 wheel 单位正确 |
-| 虚拟树 | 手势不影响布局与命中；If/Each 透明归属、顺序与销毁正确；onPress 语法糖冲突可诊断 |
+| 虚拟树 | 手势不影响布局与命中；If/Each 透明归属、顺序与销毁正确；View onPress 被拒绝 |
 
 Rust 使用确定性输入轨迹和假时钟覆盖状态机；跨线程／runtime 集成用例覆盖已提交 signal、事件合并及清理。三端需要实际交互证明，不能仅以 headless 接口调用代替平台适配验收。新增永久测试只断言消费者可见行为和状态不变量，不锁定源代码文本或私有实现细节。
 
-### 9.1 模拟器记录（2026-11-11）
+### 9.1 模拟器自动化验收（2026-11-12）
 
-命令：`cargo run -q -p bubble-eval -- ios` 与 `cargo run -q -p bubble-eval -- android`。两份报告 `ok: true`。
+命令：`cargo run -q -p bubble-eval -- gestures-ios` 与 `cargo run -q -p bubble-eval -- gestures-android`，两份报告 `ok: true`。两端使用同一份 `examples/app/gestures.js` 夹具；节点 handle 由渲染器返回，不依赖示例中的偶然编号。iOS 另支持 `BUBBLE_GESTURE_ONLY=tap,double` 过滤场景。
 
-| 设备 | 交互 | 结果 |
+| 设备 | 输入方式 | 结果 |
 |---|---|---|
-| iOS 27.2 Simulator，iPhone 18 Pro（`85111F63-1CD1-4C6F-8333-6039F90CD1A5`） | XCUITest `press` 0.05s 后从 (0.5, 0.75) 拖到 (0.5, 0.35)，经 `touchesBegan/Moved/Ended` → `bubble_pointer` | `scroll offset` 45.3（≥40）；`frames during hang` 60；帧均 16.87 ms；paint 2267 B；elapsed 4512 ms |
-| Android 16 模拟器 `emulator-5554`（`sdk_phone64_arm64`，arm64-v8a） | `adb shell input swipe` 纵滑 300 ms，经 `onTouchEvent` → `BubbleNative.pointer` | `scroll offset` 55.6（≥40）；`frames during hang` 61；帧均 16.83 ms；paint 2267 B；elapsed 1510 ms |
+| iOS 27.2 Simulator，iPhone 18 Pro（`85111F63-1CD1-4C6F-8333-6039F90CD1A5`） | XCUITest 真实触摸：`tap`、`press`、`doubleTap`、拖动、`pinch`、`rotate`、Home/activate | 全部支持项通过；点击 `pressStart → pressEnd → tap`；长按与滚动使点击取消；pinch/rotate 各一次 start/end 且几何有限；并行 pan + scrollY 84.7；captureAxis 回放 120；contain 内层 60、外层 0；声明销毁 cancel 一次且无 later pan |
+| Android 16 模拟器 `emulator-5554`（`sdk_phone64_arm64`） | Instrumentation `UiAutomation.injectInputEvent` 真实 `MotionEvent`，含多 pointer、CANCEL、HOME/恢复 | 全部检查通过；双指 transform、第三指忽略、交错抬指只发一次终结；captureAxis pending=0 / replay 90 / total 110；contain 60/0；销毁 cancel 后无 end；HOME 期间 pan cancel reason 7 且无 end |
 
-两端共同通过、但不是手势矩阵：脚本死循环期间宿主继续出帧并在故障后重挂载（`remount text` = `Count: 0`，`faults` = 1，`font epoch` = 1）。按钮点击由宿主在第 20 帧直接调用 `bubble_pointer` down/up，不是平台注入的触点。
+真实平台输入还暴露并修复了三个缺陷：
 
-本次没有在设备上覆盖：长按、双击、双指 transform、横纵并行、`reserveScroll` 回放、`scrollChain` contain、声明销毁取消、失焦/暂停清理。这些仍只由 Rust 轨迹测试和 Web smoke 证明。
+- `Recognizer::advance` 每帧无条件取消点击，导致正常抬手前点击已失败；改为仅长按实际胜出时取消。
+- 双指终止路径可能重复 END，且双指下已接受 pan 在取消后仍可能再发 END；首个配对触点离开即冻结序列，剩余触点不恢复单指。
+- 事件回调中销毁声明时，runtime 过早释放 handler，terminal cancel 丢失；核心在终结事件后追加内部 slot 0 销毁确认，runtime 收到确认才释放。slot 0 不投递应用回调，`BSGE` 版本不变。
+
+同时把 iOS 宿主接入 `sceneWillResignActive` / `sceneDidBecomeActive` → `bubble_set_visible`，并让 JNI `nodeText` 使用 64 KiB 缓冲以读取事件快照。
+
+仍未在 iOS 设备上覆盖、且公共 XCUITest 无法表达：任意双指同向拖轨迹、第三指加入、按住期间的系统中断。前两项由 Android 真实多 pointer 与 Rust 轨迹测试覆盖；“系统中断”在 Android 由 HOME 生命周期 cancel 覆盖，iOS 只验证前后台可见性切换，不冒充按住取消。方向、距离、同轴竞争、signal 冻结等状态机边界继续由 `crates/core/tests/gestures.rs` 的确定性轨迹覆盖。
 
 ## 10. 风险、调参与发布
 
 已接受的权衡：
 
-- reserveScroll 失败回放会在释放时造成可见位移跳变；这是保留完整移动距离的选择，需要交互验收。
-- first-ready 意味着更高 minDistance 的子手势可能输给滚动；组件必须显式 reserveScroll 才能要求祖先等待。
+- captureAxis 失败回放会在释放时造成可见位移跳变；这是保留完整移动距离的选择，需要交互验收。
+- first-ready 意味着更高 minDistance 的子手势可能输给滚动；组件必须显式 captureAxis 才能要求祖先等待。
 - 双指升级不撤销先前滚动，阈值前的列表位移可能可见。
 - signal 在提交之前不可见，胜出后冻结；不能把实时 JS 条件误当 UI 同步条件。
 - 自定义视觉依赖 JS；本轮只保证 Native 本地识别与内建滚动，不承诺自定义变换在脚本卡顿时仍跟手。
-- onPress 从按下改为成功抬起，是有意的行为修正；所有示例、驱动和契约测试必须随之迁移。
+- 点击统一使用显式 TapGesture，并在成功抬起后触发 onTap；所有示例、驱动和契约测试必须随之迁移。
 
 已确定的默认值：点击 slop 10，双击窗口 300 ms／空间容差 24，长按 500 ms／最大位移 10，pan 最小距离 10，触摸滚动起始阈值 8，pinch 阈值 0.05，rotate 阈值 5°。点击族与长按的计时由宿主每帧调用 `bubble_tick`／`tick` 推进。
 

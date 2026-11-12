@@ -19,7 +19,14 @@ void bubble_destroy(void);
 int bubble_load(const char *manifest_json, const uint8_t *entry, uint32_t entry_len);
 
 int bubble_frame(float width, float height, const uint8_t **paint, uint32_t *paint_len);
-void bubble_pointer_down(float x, float y);
+/* action: 0 down, 1 move, 2 up, 3 cancel; coordinates are logical units,
+ * time_ms uses the same monotonic clock as bubble_tick. */
+int bubble_pointer(uint32_t action, uint32_t id, float x, float y, double time_ms,
+                   uint32_t pointer_kind, uint32_t buttons);
+int bubble_tick(double time_ms);
+/* Optional negotiation diagnostics; disabled by default. */
+void bubble_set_gesture_trace(int enabled);
+int bubble_take_gesture_trace(char *buf, uint32_t cap);
 void bubble_scroll(float x, float y, float dx, float dy);
 void bubble_set_visible(int visible);
 

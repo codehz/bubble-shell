@@ -26,6 +26,15 @@ pub const SCROLL_MIN_DISTANCE: f32 = 8.0;
 pub const PINCH_MIN: f64 = 0.05;
 pub const ROTATE_MIN: f64 = std::f64::consts::PI / 36.0;
 
+/// Internal disposal acknowledgement (`gesture` = id, `handler` = 0).
+///
+/// Not a script callback and not bindable. [`Recognizer::dispose`] appends
+/// one record after any terminal cancel, whether or not the gesture was
+/// active or waiting on a double tap. The runtime releases handlers only
+/// when it observes this record, so an earlier flush cannot drop the cancel
+/// callback. Slot 0 was unused; the BSGE version stays 1.
+pub const SLOT_DISPOSED: u8 = 0;
+
 pub const SLOT_PRESS_START: u8 = 1;
 pub const SLOT_PRESS_END: u8 = 2;
 pub const SLOT_PRESS_CANCEL: u8 = 3;
@@ -498,6 +507,19 @@ impl Recognizer {
             self.decls[id as usize] = None;
         }
         self.retired.insert(id);
+        // `push_event` drops handler 0, so the acknowledgement is queued
+        // directly and stays behind any cancel from `cancel_decl`.
+        let time_ms = self
+            .sequence
+            .as_ref()
+            .map(|seq| seq.last_t)
+            .unwrap_or(0.0);
+        let mut ack = GestureEvent::new(time_ms);
+        ack.slot = SLOT_DISPOSED;
+        ack.gesture = id;
+        ack.handler = 0;
+        ack.target = target;
+        self.events.push(ack);
         Ok(())
     }
 
@@ -605,7 +627,9 @@ impl Recognizer {
                 accepts.push(index);
             }
         }
+        let mut won = false;
         for index in accepts.into_iter().take(1) {
+            won = true;
             if let Some(cand) = seq.cands.get_mut(index) {
                 if cand.state == CandState::Pending {
                     cand.state = CandState::Accepted;
@@ -638,7 +662,9 @@ impl Recognizer {
         }
         let (x, y) = (seq.last_x, seq.last_y);
         self.update_reservation();
-        self.fail_tap(REASON_UPGRADE, now_ms, x, y);
+        if won {
+            self.fail_tap(REASON_UPGRADE, now_ms, x, y);
+        }
     }
 
     fn down(&mut self, input: PointerInput) {
@@ -1156,7 +1182,9 @@ impl Recognizer {
             });
         }
         for cand in &mut seq.cands {
-            if cand.decl != id && cand.state == CandState::Pending {
+            if cand.decl == id {
+                cand.state = CandState::Accepted;
+            } else if cand.state != CandState::Failed {
                 cand.state = CandState::Failed;
             }
         }
@@ -1361,23 +1389,27 @@ impl Recognizer {
         seq.last_y = input.y;
         seq.last_t = input.time_ms;
         let in_pair = seq.pair.iter().any(|pointer| pointer.id == input.id);
+        // The first lift of a two-pointer sequence is the only terminal.
+        // `dead` blocks a second END/CANCEL and any single-pointer recovery
+        // until every related pointer has gone up.
         if seq.transform_decl.is_some() {
-            if in_pair {
+            if in_pair && !seq.dead {
                 self.end_transform(input.time_ms);
                 if let Some(seq) = &mut self.sequence {
                     seq.dead = true;
                 }
             }
-        } else if seq.pair.len() == 2 {
+        } else if seq.pair.len() == 2 && !seq.dead {
             if in_pair {
                 seq.pair.retain(|pointer| pointer.id != input.id);
                 seq.dead = true;
-                let accepted: Vec<u32> = seq
-                    .cands
-                    .iter()
-                    .filter(|cand| cand.state == CandState::Accepted)
-                    .map(|cand| cand.decl)
-                    .collect();
+                let mut accepted = Vec::new();
+                for cand in &mut seq.cands {
+                    if cand.state == CandState::Accepted {
+                        cand.state = CandState::Failed;
+                        accepted.push(cand.decl);
+                    }
+                }
                 for id in accepted {
                     let target = decls
                         .get(id as usize)
@@ -1392,7 +1424,7 @@ impl Recognizer {
                     });
                 }
             }
-        } else if seq.pair.first().is_some_and(|pointer| pointer.id == input.id) {
+        } else if !seq.dead && seq.pair.first().is_some_and(|pointer| pointer.id == input.id) {
             self.finish_single(input.time_ms, input.x, input.y);
             if let Some(seq) = &mut self.sequence {
                 seq.dead = true;
@@ -1434,6 +1466,12 @@ impl Recognizer {
                 )
             })
             .collect();
+        let had_accepted = !accepted.is_empty();
+        for cand in &mut seq.cands {
+            if cand.state == CandState::Accepted {
+                cand.state = CandState::Failed;
+            }
+        }
         for (id, last_x, last_y, vx, vy, start_x, start_y) in accepted {
             let target = decls
                 .get(id as usize)
@@ -1455,10 +1493,7 @@ impl Recognizer {
         let tap_ok = !seq.tap_failed
             && !seq.scroll_used
             && (x - seq.start_x).hypot(y - seq.start_y) <= TAP_SLOP
-            && !seq
-                .cands
-                .iter()
-                .any(|cand| cand.state == CandState::Accepted);
+            && !had_accepted;
         if !tap_ok {
             return;
         }
@@ -1523,26 +1558,32 @@ impl Recognizer {
         let Some(seq) = sequence.as_mut() else {
             return;
         };
-        let Some(id) = seq.transform_decl else {
-            return;
+        let (id, sequence, x, y, tx, ty, scale, rotation, vx, vy) = {
+            let Some(id) = seq.transform_decl else {
+                return;
+            };
+            let Some(state) = seq.transform.as_ref() else {
+                return;
+            };
+            (
+                id,
+                seq.id,
+                state.last_x,
+                state.last_y,
+                state.translation_x,
+                state.translation_y,
+                state.scale,
+                state.rotation,
+                state.velocity_x,
+                state.velocity_y,
+            )
         };
-        let Some(state) = seq.transform.as_ref() else {
-            return;
-        };
-        let (x, y) = (state.last_x, state.last_y);
-        let (tx, ty, scale, rotation) = (
-            state.translation_x,
-            state.translation_y,
-            state.scale,
-            state.rotation,
-        );
-        let (vx, vy) = (state.velocity_x, state.velocity_y);
         let target = decls
             .get(id as usize)
             .and_then(Option::as_ref)
             .map(|decl| decl.target)
             .unwrap_or(0);
-        push_event(events, decls, id, SLOT_END, seq.id, time_ms, |event| {
+        push_event(events, decls, id, SLOT_END, sequence, time_ms, |event| {
             event.target = target;
             event.x = x;
             event.y = y;
@@ -1553,6 +1594,11 @@ impl Recognizer {
             event.velocity_x = vx;
             event.velocity_y = vy;
         });
+        if let Some(cand) = seq.cands.iter_mut().find(|cand| cand.decl == id) {
+            cand.state = CandState::Failed;
+        }
+        seq.transform_decl = None;
+        seq.dead = true;
     }
 
     fn fail_tap(&mut self, reason: u8, time_ms: f64, x: f32, y: f32) {
@@ -2306,5 +2352,209 @@ mod tests {
         let bytes = encode_events(&[event]);
         assert_eq!(&bytes[..4], b"BSGE");
         assert_eq!(u32::from_le_bytes(bytes[6..10].try_into().unwrap()), 1);
+    }
+
+    fn sample(action: PointerAction, id: u32, x: f32, y: f32, time_ms: f64) -> PointerInput {
+        PointerInput {
+            action,
+            id,
+            x,
+            y,
+            time_ms,
+            buttons: if matches!(action, PointerAction::Up | PointerAction::Cancel) {
+                0
+            } else {
+                1
+            },
+            pointer_kind: 0,
+            path: if action == PointerAction::Down {
+                vec![10, 1]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    fn bind_terminals(rec: &mut Recognizer, id: u32) {
+        rec.bind(id, SLOT_UPDATE, 20 + id).unwrap();
+        rec.bind(id, SLOT_END, 30 + id).unwrap();
+        rec.bind(id, SLOT_CANCEL, 40 + id).unwrap();
+    }
+
+    fn terminals(events: &[GestureEvent], gesture: u32) -> Vec<u8> {
+        events
+            .iter()
+            .filter(|event| {
+                event.gesture == gesture && (event.slot == SLOT_END || event.slot == SLOT_CANCEL)
+            })
+            .map(|event| event.slot)
+            .collect()
+    }
+
+    /// Pan, then a second finger far enough that the transform wins.
+    fn begin_transform() -> (Recognizer, Vec<GestureEvent>) {
+        let mut rec = Recognizer::new();
+        decl(&mut rec, 2, 10, GestureKind::Pan, 7);
+        bind_terminals(&mut rec, 2);
+        decl(&mut rec, 3, 10, GestureKind::Transform, 8);
+        bind_terminals(&mut rec, 3);
+        rec.pointer(sample(PointerAction::Down, 1, 0.0, 0.0, 0.0));
+        rec.pointer(sample(PointerAction::Move, 1, 20.0, 0.0, 10.0));
+        rec.pointer(sample(PointerAction::Down, 2, 40.0, 0.0, 20.0));
+        rec.pointer(sample(PointerAction::Move, 2, 80.0, 0.0, 30.0));
+        let events = rec.drain_events();
+        (rec, events)
+    }
+
+    #[test]
+    fn transform_lift_orders_end_once() {
+        for (first, second) in [(1u32, 2u32), (2, 1)] {
+            let (mut rec, started) = begin_transform();
+            assert_eq!(terminals(&started, 2), vec![SLOT_CANCEL]);
+            assert!(terminals(&started, 3).is_empty());
+            assert!(started
+                .iter()
+                .any(|event| event.slot == SLOT_START && event.gesture == 3));
+            rec.pointer(sample(PointerAction::Up, first, 20.0, 0.0, 40.0));
+            rec.pointer(sample(PointerAction::Move, second, 96.0, 12.0, 50.0));
+            let ended = rec.drain_events();
+            assert_eq!(terminals(&ended, 3), vec![SLOT_END]);
+            assert!(terminals(&ended, 2).is_empty());
+            assert!(ended
+                .iter()
+                .all(|event| event.slot != SLOT_UPDATE && event.slot != SLOT_START));
+            rec.pointer(sample(PointerAction::Up, second, 96.0, 12.0, 60.0));
+            assert!(rec.drain_events().is_empty());
+            assert!(!rec.active());
+        }
+    }
+
+    #[test]
+    fn transform_cancel_is_the_only_terminal() {
+        let (mut rec, started) = begin_transform();
+        assert_eq!(terminals(&started, 2), vec![SLOT_CANCEL]);
+        rec.pointer(sample(PointerAction::Cancel, 1, 80.0, 0.0, 40.0));
+        let canceled = rec.drain_events();
+        assert_eq!(terminals(&canceled, 3), vec![SLOT_CANCEL]);
+        assert!(terminals(&canceled, 2).is_empty());
+        assert!(canceled.iter().all(|event| event.slot != SLOT_END));
+        assert!(canceled.iter().any(|event| {
+            event.gesture == 3 && event.slot == SLOT_CANCEL && event.reason == REASON_HOST_CANCEL
+        }));
+        rec.pointer(sample(PointerAction::Move, 2, 90.0, 0.0, 50.0));
+        rec.pointer(sample(PointerAction::Up, 1, 20.0, 0.0, 60.0));
+        rec.pointer(sample(PointerAction::Up, 2, 90.0, 0.0, 70.0));
+        assert!(rec.drain_events().is_empty());
+        assert!(!rec.active());
+    }
+
+    #[test]
+    fn transform_end_then_host_cancel_adds_no_terminal() {
+        let (mut rec, _) = begin_transform();
+        rec.pointer(sample(PointerAction::Up, 1, 20.0, 0.0, 40.0));
+        let ended = rec.drain_events();
+        assert_eq!(terminals(&ended, 3), vec![SLOT_END]);
+        assert!(terminals(&ended, 2).is_empty());
+        rec.pointer(sample(PointerAction::Cancel, 2, 80.0, 0.0, 50.0));
+        assert!(rec.drain_events().is_empty());
+        rec.pointer(sample(PointerAction::Move, 2, 100.0, 8.0, 60.0));
+        rec.pointer(sample(PointerAction::Up, 2, 100.0, 8.0, 70.0));
+        assert!(rec.drain_events().is_empty());
+        assert!(!rec.active());
+    }
+
+    #[test]
+    fn pan_cancel_then_remaining_up_does_not_end() {
+        for (first, second) in [(1u32, 2u32), (2, 1)] {
+            let mut rec = Recognizer::new();
+            decl(&mut rec, 2, 10, GestureKind::Pan, 7);
+            bind_terminals(&mut rec, 2);
+            rec.pointer(sample(PointerAction::Down, 1, 0.0, 0.0, 0.0));
+            rec.pointer(sample(PointerAction::Move, 1, 24.0, 0.0, 10.0));
+            rec.pointer(sample(PointerAction::Down, 2, 40.0, 12.0, 20.0));
+            let started = rec.drain_events();
+            assert!(started
+                .iter()
+                .any(|event| event.slot == SLOT_START && event.gesture == 2));
+            assert!(terminals(&started, 2).is_empty());
+            rec.pointer(sample(PointerAction::Up, first, 24.0, 0.0, 30.0));
+            rec.pointer(sample(PointerAction::Move, second, 70.0, 20.0, 40.0));
+            let canceled = rec.drain_events();
+            assert_eq!(terminals(&canceled, 2), vec![SLOT_CANCEL]);
+            assert!(canceled.iter().any(|event| {
+                event.gesture == 2 && event.slot == SLOT_CANCEL && event.reason == REASON_SECOND_POINTER
+            }));
+            assert!(canceled
+                .iter()
+                .all(|event| event.slot != SLOT_END && event.slot != SLOT_START));
+            rec.pointer(sample(PointerAction::Up, second, 70.0, 20.0, 50.0));
+            assert!(rec.drain_events().is_empty());
+            assert!(!rec.active());
+            rec.pointer(sample(PointerAction::Down, 1, 0.0, 0.0, 80.0));
+            rec.pointer(sample(PointerAction::Move, 1, 30.0, 0.0, 90.0));
+            let again = rec.drain_events();
+            assert!(again
+                .iter()
+                .any(|event| event.slot == SLOT_START && event.gesture == 2));
+            assert!(terminals(&again, 2).is_empty());
+        }
+    }
+
+    #[test]
+    fn dispose_acks_after_cancel_and_for_an_idle_gesture() {
+        let mut rec = Recognizer::new();
+        decl(&mut rec, 2, 10, GestureKind::Pan, 7);
+        rec.bind(2, SLOT_CANCEL, 9).unwrap();
+        rec.pointer(down(0.0, 0.0, &[10, 1]));
+        rec.pointer(mv(20.0, 0.0, 10.0));
+        rec.drain_events();
+        rec.dispose(2).unwrap();
+        let events = rec.drain_events();
+        let cancel = events
+            .iter()
+            .position(|event| event.slot == SLOT_CANCEL && event.gesture == 2)
+            .unwrap();
+        let ack = events
+            .iter()
+            .position(|event| event.slot == SLOT_DISPOSED && event.gesture == 2)
+            .unwrap();
+        assert!(cancel < ack);
+        assert_eq!(events[ack].handler, 0);
+        assert_eq!(events[ack].target, 10);
+        assert_eq!(events.last().unwrap().slot, SLOT_DISPOSED);
+
+        let mut idle = Recognizer::new();
+        decl(&mut idle, 4, 10, GestureKind::Tap, 7);
+        idle.dispose(4).unwrap();
+        let events = idle.drain_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].slot, SLOT_DISPOSED);
+        assert_eq!(events[0].gesture, 4);
+        assert_eq!(events[0].handler, 0);
+        assert_eq!(events[0].target, 10);
+        let bytes = encode_events(&events);
+        assert_eq!(&bytes[..4], b"BSGE");
+        assert_eq!(u16::from_le_bytes(bytes[4..6].try_into().unwrap()), 1);
+        assert_eq!(bytes[10], SLOT_DISPOSED);
+        assert_eq!(u32::from_le_bytes(bytes[11..15].try_into().unwrap()), 4);
+        assert_eq!(u32::from_le_bytes(bytes[19..23].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn dispose_of_a_pending_tap_acks_without_firing_it() {
+        let mut rec = Recognizer::new();
+        decl(&mut rec, 2, 10, GestureKind::Tap, 7);
+        decl(&mut rec, 3, 10, GestureKind::DoubleTap, 8);
+        rec.pointer(down(5.0, 5.0, &[10, 1]));
+        rec.pointer(up(5.0, 5.0, 10.0));
+        assert!(rec.drain_events().is_empty());
+        rec.dispose(2).unwrap();
+        let events = rec.drain_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].slot, SLOT_DISPOSED);
+        assert_eq!(events[0].gesture, 2);
+        assert_eq!(events[0].handler, 0);
+        rec.advance(400.0);
+        assert!(rec.drain_events().is_empty());
     }
 }

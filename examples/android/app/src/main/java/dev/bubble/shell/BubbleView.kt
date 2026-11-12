@@ -1,6 +1,7 @@
 package dev.bubble.shell
 
 import android.content.Context
+import android.os.SystemClock
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -49,7 +50,7 @@ class BubbleView(context: Context) : View(context) {
     fun paintSize(): Int = paintBytes.size
 
     fun refresh() {
-        BubbleNative.tick(System.nanoTime() / 1_000_000.0)
+        BubbleNative.tick(SystemClock.uptimeMillis().toDouble())
         val size = contentSize()
         paintBytes = BubbleNative.frame(size[0], size[1])
         invalidate()
@@ -352,6 +353,26 @@ class BubbleView(context: Context) : View(context) {
         }
     }
 
+    fun cancelActivePointers(timeMs: Double) {
+        if (activePointers.isEmpty()) return
+        val ids = activePointers.toList()
+        activePointers.clear()
+        for (id in ids) {
+            BubbleNative.pointer(3, id, 0f, 0f, timeMs, 0, 0)
+        }
+        refresh()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) cancelActivePointers(SystemClock.uptimeMillis().toDouble())
+    }
+
+    override fun onDetachedFromWindow() {
+        cancelActivePointers(SystemClock.uptimeMillis().toDouble())
+        super.onDetachedFromWindow()
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> sendPointer(0, event.actionIndex, event)
@@ -388,13 +409,7 @@ class BubbleView(context: Context) : View(context) {
                     imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
                 }
             }
-            MotionEvent.ACTION_CANCEL -> {
-                for (id in activePointers.toList()) {
-                    BubbleNative.pointer(3, id, 0f, 0f, event.eventTime.toDouble(), 0, 0)
-                }
-                activePointers.clear()
-                refresh()
-            }
+            MotionEvent.ACTION_CANCEL -> cancelActivePointers(event.eventTime.toDouble())
         }
         return true
     }

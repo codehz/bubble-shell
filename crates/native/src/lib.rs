@@ -1359,7 +1359,7 @@ mod android {
         _class: JClass<'a>,
         handle: jint,
     ) -> JString<'a> {
-        let mut buf = [0 as std::os::raw::c_char; 256];
+        let mut buf = [0 as std::os::raw::c_char; 65536];
         let code = super::bubble_node_text(handle as u32, buf.as_mut_ptr(), buf.len() as u32);
         let text = if code == 0 {
             unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }

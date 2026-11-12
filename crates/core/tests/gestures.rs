@@ -67,6 +67,72 @@ fn a_tap_fires_only_on_the_up_sample() {
 }
 
 #[test]
+fn ui_ticks_do_not_cancel_an_uncontested_tap() {
+    let mut shell = tap_shell();
+    shell.pointer(input(PointerAction::Down, 50.0, 50.0, 0.0));
+    for frame in 1..=10 {
+        shell.advance_gestures(f64::from(frame) * 16.0);
+    }
+    assert!(shell.take_gesture_events().is_empty());
+    shell.pointer(input(PointerAction::Up, 50.0, 50.0, 170.0));
+    let events = shell.take_gesture_events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].slot, 4);
+}
+
+#[test]
+fn a_long_press_timeout_cancels_the_tap_on_the_same_tick() {
+    let mut shell = tap_shell();
+    shell
+        .apply_ops(&encode(
+            2,
+            &[
+                Op::SpawnGesture {
+                    gesture: 11,
+                    target: 2,
+                    kind: 3,
+                    index: 0,
+                },
+                Op::SetGestureProp {
+                    gesture: 11,
+                    key: "duration".into(),
+                    value: Value::Int(100),
+                },
+                Op::BindGestureEvent {
+                    gesture: 11,
+                    slot: 6,
+                    handler: 21,
+                },
+                Op::BindGestureEvent {
+                    gesture: 11,
+                    slot: 8,
+                    handler: 24,
+                },
+                Op::BindGestureEvent {
+                    gesture: 10,
+                    slot: 1,
+                    handler: 23,
+                },
+                Op::BindGestureEvent {
+                    gesture: 10,
+                    slot: 3,
+                    handler: 22,
+                },
+            ],
+        ))
+        .unwrap();
+    shell.pointer(input(PointerAction::Down, 50.0, 50.0, 0.0));
+    shell.advance_gestures(120.0);
+    let events = shell.take_gesture_events();
+    assert!(events.iter().any(|event| event.slot == 6 && event.gesture == 11));
+    assert!(events.iter().any(|event| event.slot == 3));
+    shell.pointer(input(PointerAction::Up, 50.0, 50.0, 140.0));
+    let ended = shell.take_gesture_events();
+    assert!(ended.iter().any(|event| event.slot == 8 && event.gesture == 11));
+    assert!(!ended.iter().any(|event| event.slot == 4));
+}
+
+#[test]
 fn a_drag_cancels_the_press_and_reaches_the_script() {
     let mut shell = tap_shell();
     shell
@@ -228,9 +294,22 @@ fn disposing_a_gesture_cancels_an_active_sequence() {
         .apply_ops(&encode(3, &[Op::DisposeGesture { gesture: 11 }]))
         .unwrap();
     let events: Vec<GestureEvent> = shell.take_gesture_events();
-    assert!(events
+    let cancel_at = events
         .iter()
-        .any(|event| event.slot == 9 && event.gesture == 11));
+        .position(|event| event.slot == 9 && event.gesture == 11)
+        .unwrap();
+    let ack_at = events
+        .iter()
+        .position(|event| event.slot == 0 && event.gesture == 11 && event.handler == 0)
+        .unwrap();
+    assert!(cancel_at < ack_at);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.slot == 0 && event.gesture == 11)
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -479,4 +558,174 @@ fn encoded_batch_carries_the_handler_and_slot() {
     let bytes = encode_events(&events);
     assert_eq!(&bytes[..4], b"BSGE");
     assert_eq!(bytes[10], 4);
+}
+
+fn finger(action: PointerAction, id: u32, x: f32, y: f32, time_ms: f64) -> PointerInput {
+    PointerInput {
+        action,
+        id,
+        x,
+        y,
+        time_ms,
+        buttons: if action == PointerAction::Up || action == PointerAction::Cancel {
+            0
+        } else {
+            1
+        },
+        pointer_kind: 0,
+        path: Vec::new(),
+    }
+}
+
+fn slot_count(events: &[GestureEvent], gesture: u32, slot: u8) -> usize {
+    events
+        .iter()
+        .filter(|event| event.gesture == gesture && event.slot == slot)
+        .count()
+}
+
+fn phase_pad() -> Shell {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 200.0);
+    let mut view = NodeDesc::view(2, 1);
+    view.width = Some(200.0);
+    view.height = Some(200.0);
+    shell
+        .apply_ops(&encode(1, &[Op::Spawn { desc: view }]))
+        .unwrap();
+    shell.layout(&mut measure).unwrap();
+    shell
+}
+
+fn track(gesture: u32, kind: u32) -> Vec<Op> {
+    vec![
+        Op::SpawnGesture {
+            gesture,
+            target: 2,
+            kind,
+            index: 0,
+        },
+        Op::BindGestureEvent {
+            gesture,
+            slot: 6,
+            handler: 1,
+        },
+        Op::BindGestureEvent {
+            gesture,
+            slot: 7,
+            handler: 2,
+        },
+        Op::BindGestureEvent {
+            gesture,
+            slot: 8,
+            handler: 3,
+        },
+        Op::BindGestureEvent {
+            gesture,
+            slot: 9,
+            handler: 4,
+        },
+    ]
+}
+
+fn arm_transform(shell: &mut Shell) {
+    let mut ops = track(15, 4);
+    ops.extend(track(16, 5));
+    ops.push(Op::SetGestureProp {
+        gesture: 16,
+        key: "mode".into(),
+        value: Value::String("pan".into()),
+    });
+    shell.apply_ops(&encode(2, &ops)).unwrap();
+    shell.pointer(finger(PointerAction::Down, 1, 30.0, 80.0, 0.0));
+    shell.pointer(finger(PointerAction::Move, 1, 50.0, 80.0, 10.0));
+    shell.pointer(finger(PointerAction::Down, 2, 70.0, 80.0, 20.0));
+    shell.pointer(finger(PointerAction::Move, 2, 130.0, 80.0, 30.0));
+}
+
+#[test]
+fn transform_lifts_end_once_for_either_finger() {
+    for (first, second) in [(1u32, 2u32), (2, 1)] {
+        let mut shell = phase_pad();
+        arm_transform(&mut shell);
+        let started = shell.take_gesture_events();
+        assert_eq!(slot_count(&started, 15, 9), 1);
+        assert_eq!(slot_count(&started, 15, 8), 0);
+        assert_eq!(slot_count(&started, 16, 6), 1);
+        assert_eq!(slot_count(&started, 16, 8), 0);
+        assert_eq!(slot_count(&started, 16, 9), 0);
+        shell.pointer(finger(PointerAction::Up, first, 50.0, 80.0, 40.0));
+        shell.pointer(finger(PointerAction::Move, second, 150.0, 96.0, 50.0));
+        let ended = shell.take_gesture_events();
+        assert_eq!(slot_count(&ended, 16, 8), 1);
+        assert_eq!(slot_count(&ended, 16, 9), 0);
+        assert_eq!(slot_count(&ended, 15, 8), 0);
+        assert_eq!(slot_count(&ended, 15, 9), 0);
+        assert_eq!(slot_count(&ended, 16, 7), 0);
+        shell.pointer(finger(PointerAction::Up, second, 150.0, 96.0, 60.0));
+        assert!(shell.take_gesture_events().is_empty());
+    }
+}
+
+#[test]
+fn transform_host_cancel_suppresses_a_later_end() {
+    let mut shell = phase_pad();
+    arm_transform(&mut shell);
+    let started = shell.take_gesture_events();
+    assert_eq!(slot_count(&started, 16, 6), 1);
+    shell.pointer(finger(PointerAction::Cancel, 1, 50.0, 80.0, 40.0));
+    let canceled = shell.take_gesture_events();
+    assert_eq!(slot_count(&canceled, 16, 9), 1);
+    assert_eq!(slot_count(&canceled, 16, 8), 0);
+    assert_eq!(slot_count(&canceled, 15, 9), 0);
+    assert_eq!(slot_count(&canceled, 15, 8), 0);
+    shell.pointer(finger(PointerAction::Move, 2, 140.0, 80.0, 50.0));
+    shell.pointer(finger(PointerAction::Up, 1, 50.0, 80.0, 60.0));
+    shell.pointer(finger(PointerAction::Up, 2, 140.0, 80.0, 70.0));
+    assert!(shell.take_gesture_events().is_empty());
+}
+
+#[test]
+fn transform_end_then_cancel_does_not_emit_again() {
+    let mut shell = phase_pad();
+    arm_transform(&mut shell);
+    assert_eq!(slot_count(&shell.take_gesture_events(), 16, 6), 1);
+    shell.pointer(finger(PointerAction::Up, 2, 130.0, 80.0, 40.0));
+    let ended = shell.take_gesture_events();
+    assert_eq!(slot_count(&ended, 16, 8), 1);
+    assert_eq!(slot_count(&ended, 15, 8), 0);
+    assert_eq!(slot_count(&ended, 15, 9), 0);
+    shell.pointer(finger(PointerAction::Cancel, 1, 50.0, 80.0, 50.0));
+    assert!(shell.take_gesture_events().is_empty());
+    shell.pointer(finger(PointerAction::Move, 1, 80.0, 90.0, 60.0));
+    shell.pointer(finger(PointerAction::Up, 1, 80.0, 90.0, 70.0));
+    assert!(shell.take_gesture_events().is_empty());
+}
+
+#[test]
+fn pan_second_finger_cancel_has_no_end_on_the_other_lift() {
+    for (first, second) in [(1u32, 2u32), (2, 1)] {
+        let mut shell = phase_pad();
+        shell.apply_ops(&encode(2, &track(15, 4))).unwrap();
+        shell.pointer(finger(PointerAction::Down, 1, 30.0, 80.0, 0.0));
+        shell.pointer(finger(PointerAction::Move, 1, 60.0, 80.0, 10.0));
+        shell.pointer(finger(PointerAction::Down, 2, 90.0, 90.0, 20.0));
+        let started = shell.take_gesture_events();
+        assert_eq!(slot_count(&started, 15, 6), 1);
+        assert_eq!(slot_count(&started, 15, 8), 0);
+        assert_eq!(slot_count(&started, 15, 9), 0);
+        shell.pointer(finger(PointerAction::Up, first, 60.0, 80.0, 30.0));
+        shell.pointer(finger(PointerAction::Move, second, 120.0, 100.0, 40.0));
+        let canceled = shell.take_gesture_events();
+        assert_eq!(slot_count(&canceled, 15, 9), 1);
+        assert_eq!(slot_count(&canceled, 15, 8), 0);
+        assert_eq!(slot_count(&canceled, 15, 6), 0);
+        shell.pointer(finger(PointerAction::Up, second, 120.0, 100.0, 50.0));
+        assert!(shell.take_gesture_events().is_empty());
+        shell.pointer(finger(PointerAction::Down, 1, 30.0, 80.0, 80.0));
+        shell.pointer(finger(PointerAction::Move, 1, 70.0, 80.0, 90.0));
+        let again = shell.take_gesture_events();
+        assert_eq!(slot_count(&again, 15, 6), 1);
+        assert_eq!(slot_count(&again, 15, 8), 0);
+    }
 }

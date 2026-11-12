@@ -4,7 +4,9 @@ fn main() {
         None => bubble_eval::run_m1(),
         Some("ios") => bubble_eval::ios().unwrap_or_else(failed),
         Some("android") => bubble_eval::android().unwrap_or_else(failed),
-        Some(other) => failed(format!("unknown target {other}; use ios or android")),
+        Some("gestures-ios") => bubble_eval::gestures_ios().unwrap_or_else(failed),
+        Some("gestures-android") => bubble_eval::gestures_android().unwrap_or_else(failed),
+        Some(other) => failed(format!("unknown target {other}; use ios, android, gestures-ios or gestures-android")),
     };
     println!(
         "{}",

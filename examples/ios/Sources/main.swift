@@ -50,6 +50,8 @@ func bubble_node_text(_ handle: UInt32, _ buf: UnsafeMutablePointer<CChar>?, _ c
 func bubble_node_box(_ handle: UInt32, _ x: UnsafeMutablePointer<Float>?, _ y: UnsafeMutablePointer<Float>?, _ w: UnsafeMutablePointer<Float>?, _ h: UnsafeMutablePointer<Float>?) -> Int32
 @_silgen_name("bubble_post_eval")
 func bubble_post_eval(_ source: UnsafePointer<CChar>?)
+@_silgen_name("bubble_set_visible")
+func bubble_set_visible(_ visible: Int32)
 @_silgen_name("bubble_faults")
 func bubble_faults() -> UInt32
 @_silgen_name("bubble_generation")
@@ -124,6 +126,10 @@ final class BubbleView: UIView {
     var keyboardKind: UIKeyboardType = .default
     var secureEntry = false
     var contentKind: UITextContentType? = nil
+    var tracePointers = false
+    private var traceOrigin: [UInt32: CGPoint] = [:]
+    private var traceLast: [UInt32: CGPoint] = [:]
+    private var traceMoves: [UInt32: Int] = [:]
 
     private func pointerId(_ touch: UITouch) -> UInt32 {
         let key = ObjectIdentifier(touch)
@@ -136,17 +142,93 @@ final class BubbleView: UIView {
         return id
     }
 
-    private func sendPointer(_ action: UInt32, _ touch: UITouch) {
+    private func sendPointer(_ action: UInt32, _ touch: UITouch, id known: UInt32? = nil) {
+        let id = known ?? pointerId(touch)
         let point = touch.location(in: self)
+        let logicalX = Float(point.x - safeAreaInsets.left)
+        let logicalY = Float(point.y - safeAreaInsets.top)
+        if tracePointers {
+            logPointerSample(action, id, logicalX, logicalY)
+        }
         _ = bubble_pointer(
             action,
-            pointerId(touch),
-            Float(point.x - safeAreaInsets.left),
-            Float(point.y - safeAreaInsets.top),
+            id,
+            logicalX,
+            logicalY,
             CACurrentMediaTime() * 1000,
             0,
             action == 2 || action == 3 ? 0 : 1
         )
+    }
+
+    private func logPointerSample(_ action: UInt32, _ id: UInt32, _ x: Float, _ y: Float) {
+        let logical = CGPoint(x: CGFloat(x), y: CGFloat(y))
+        let origin = traceOrigin[id] ?? logical
+        let previous = traceLast[id] ?? logical
+        let dx = logical.x - origin.x
+        let dy = logical.y - origin.y
+        let name: String
+        var emit = false
+        switch action {
+        case 0:
+            name = "DOWN"
+            traceOrigin[id] = logical
+            traceLast[id] = logical
+            traceMoves[id] = 0
+            emit = true
+        case 1:
+            name = "MOVE"
+            let seen = traceMoves[id] ?? 0
+            traceLast[id] = logical
+            if seen < 3 {
+                traceMoves[id] = seen + 1
+                emit = true
+            }
+        case 2:
+            name = "UP"
+            traceLast[id] = logical
+            emit = true
+            traceOrigin.removeValue(forKey: id)
+            traceLast.removeValue(forKey: id)
+        default:
+            name = "CANCEL"
+            emit = true
+            traceOrigin.removeValue(forKey: id)
+            traceLast.removeValue(forKey: id)
+        }
+        guard emit else { return }
+        NSLog(
+            "BUBBLE_GESTURE_POINTER %@ id=%u logical=(%.2f,%.2f) dDown=(%.2f,%.2f) dist=%.2f step=%.2f",
+            name,
+            id,
+            x,
+            y,
+            Float(dx),
+            Float(dy),
+            Float(hypot(dx, dy)),
+            Float(hypot(logical.x - previous.x, logical.y - previous.y))
+        )
+    }
+
+    func dropTrackedTouches() {
+        pointerIds.removeAll()
+        traceOrigin.removeAll()
+        traceLast.removeAll()
+        traceMoves.removeAll()
+    }
+
+    func configureGestureSurface(_ enabled: Bool) {
+        isAccessibilityElement = enabled
+        accessibilityIdentifier = enabled ? "bubble-gesture-surface" : nil
+        if !enabled {
+            accessibilityLabel = nil
+            accessibilityValue = nil
+        }
+    }
+
+    func publishGestureSnapshot(_ json: String) {
+        accessibilityLabel = json
+        accessibilityValue = json
     }
 
     func refresh() {
@@ -274,7 +356,11 @@ final class BubbleView: UIView {
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        var delivered = false
         for touch in touches {
+            let key = ObjectIdentifier(touch)
+            guard pointerIds[key] != nil else { continue }
+            delivered = true
             sendPointer(2, touch)
             let point = touch.location(in: self)
             let handle = bubble_focus_at(
@@ -303,15 +389,16 @@ final class BubbleView: UIView {
                 _ = becomeFirstResponder()
                 reloadInputViews()
             }
-            pointerIds.removeValue(forKey: ObjectIdentifier(touch))
+            pointerIds.removeValue(forKey: key)
         }
-        refresh()
+        if delivered { refresh() }
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
-            sendPointer(3, touch)
-            pointerIds.removeValue(forKey: ObjectIdentifier(touch))
+            let key = ObjectIdentifier(touch)
+            guard let id = pointerIds.removeValue(forKey: key) else { continue }
+            sendPointer(3, touch, id: id)
         }
     }
 }
@@ -643,6 +730,86 @@ func nodeText(_ handle: UInt32) -> String {
     return String(cString: buf)
 }
 
+func nodeTextLarge(_ handle: UInt32) -> String {
+    var cap = 64 * 1024
+    let limit = 1024 * 1024
+    while cap <= limit {
+        var buf = [CChar](repeating: 0, count: cap)
+        if bubble_node_text(handle, &buf, UInt32(cap)) != 0 { return "" }
+        let end = buf.firstIndex(of: 0) ?? buf.count
+        if end < cap - 1 || cap == limit {
+            let bytes = buf[..<end].map { UInt8(bitPattern: $0) }
+            return String(decoding: bytes, as: UTF8.self)
+        }
+        cap *= 2
+    }
+    return ""
+}
+
+func jsonDouble(_ value: Any?) -> Double {
+    (value as? NSNumber)?.doubleValue ?? .nan
+}
+
+func gestureReasonName(_ value: Any?) -> String {
+    let number = jsonDouble(value)
+    guard number.isFinite else { return "?" }
+    switch Int(number) {
+    case 0: return "NONE"
+    case 1: return "MOVED"
+    case 2: return "SCROLLED"
+    case 3: return "SECOND_POINTER"
+    case 4: return "UPGRADE"
+    case 5: return "DISPOSED"
+    case 6: return "TARGET_DISPOSED"
+    case 7: return "HOST_CANCEL"
+    default: return "\(Int(number))"
+    }
+}
+
+func finiteFloat(_ value: Float) -> Double {
+    let number = Double(value)
+    return number.isFinite ? number : 0
+}
+
+struct GestureStatus {
+    var scene = ""
+    var ready = false
+    var events: [[String: Any]] = []
+    var nodes: [String: UInt32] = [:]
+}
+
+func parseGestureStatus(_ text: String) -> GestureStatus? {
+    guard let data = text.data(using: .utf8),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+    var nodes: [String: UInt32] = [:]
+    if let raw = obj["nodes"] as? [String: Any] {
+        for (name, value) in raw {
+            if let number = value as? NSNumber {
+                nodes[name] = number.uint32Value
+            }
+        }
+    }
+    let events = (obj["events"] as? [Any])?.compactMap { $0 as? [String: Any] } ?? []
+    return GestureStatus(
+        scene: obj["scene"] as? String ?? "",
+        ready: obj["ready"] as? Bool ?? false,
+        events: events,
+        nodes: nodes
+    )
+}
+
+func gestureEventList(_ snap: [String: Any]) -> [[String: Any]] {
+    (snap["events"] as? [Any])?.compactMap { $0 as? [String: Any] } ?? []
+}
+
+func gestureNodes(_ snap: [String: Any]) -> [String: Any] {
+    snap["nodes"] as? [String: Any] ?? [:]
+}
+
+func gestureNode(_ snap: [String: Any], _ name: String) -> [String: Any]? {
+    gestureNodes(snap)[name] as? [String: Any]
+}
+
 final class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         true
@@ -666,9 +833,24 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         self.window = window
         driver.start()
     }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        driver.setVisible(true)
+    }
+
+    func sceneWillResignActive(_ scene: UIScene) {
+        driver.setVisible(false)
+    }
 }
 
 final class AppDriver {
+    static let scenes = ["tap", "long", "double", "pan", "transform", "parallel", "reserve", "contain", "dispose", "lifecycle"]
+    static let unsupported: [[String: Any]] = [
+        ["name": "transform.arbitraryDualPan", "detail": "public XCTest exposes pinch and rotate, not independent dual-pan trajectories"],
+        ["name": "transform.thirdFinger", "detail": "public XCTest pinch and rotate use two pointers; a third finger is not expressed"],
+        ["name": "lifecycle.heldTouch", "detail": "system interrupt during an active touch is uncovered; lifecycle.visibility is foreground/background wiring only and is not a held-touch cancel"],
+    ]
+
     let view = BubbleView()
     var frames = 0
     var frameMs = 0.0
@@ -677,10 +859,43 @@ final class AppDriver {
     var hangFrames = 0
     let started = CACurrentMediaTime()
     var link: CADisplayLink?
+    var engineReady = false
+    var appVisible = true
+    var hides = 0
+    var selectState = 0
+    var padBeforeSelect: UInt32 = 0
+    var sawSelectGap = false
+    var priorChecks: [[String: Any]] = []
+    var priorElapsed = 0
+    var lastSignature = ""
+
+    var gestureMode: Bool { ProcessInfo.processInfo.environment["BUBBLE_GESTURES"] == "1" }
+    var gestureReset: Bool { ProcessInfo.processInfo.environment["BUBBLE_GESTURE_RESET"] == "1" }
+    var gestureScene: String {
+        let requested = ProcessInfo.processInfo.environment["BUBBLE_GESTURE_SCENE"] ?? "tap"
+        return Self.scenes.contains(requested) ? requested : ""
+    }
+    var resultURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("gestures-result.json")
+    }
+
+    func setVisible(_ next: Bool) {
+        guard next != appVisible else { return }
+        appVisible = next
+        if !next {
+            hides += 1
+            view.dropTrackedTouches()
+        }
+        guard engineReady else { return }
+        bubble_set_visible(next ? 1 : 0)
+    }
 
     func start() {
         var host = BubbleHost(measure: measure, ctx: nil)
         guard bubble_create(&host) == 0 else { return }
+        engineReady = true
+        bubble_set_visible(appVisible ? 1 : 0)
         if let fontURL = Bundle.main.url(forResource: "HostFont", withExtension: "ttf"),
            let data = try? Data(contentsOf: fontURL) {
             data.withUnsafeBytes { raw in
@@ -707,6 +922,11 @@ final class AppDriver {
         }
         if loaded != 0 { NSLog("bubble load failed") }
         NSLog("bubble bounds %@", NSCoder.string(for: view.bounds))
+        if gestureMode {
+            view.configureGestureSurface(true)
+            view.tracePointers = true
+            loadPriorReport()
+        }
         let link = CADisplayLink(target: self, selector: #selector(tick))
         link.add(to: .main, forMode: .common)
         self.link = link
@@ -718,6 +938,10 @@ final class AppDriver {
         last = now
         view.refresh()
         frames += 1
+        if gestureMode {
+            advanceGestures()
+            return
+        }
         if frames > 5 { frameMs += dt }
         if phase == 0 && frames == 20 {
             var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
@@ -740,6 +964,212 @@ final class AppDriver {
         if phase != 3 && CACurrentMediaTime() - started > 12 {
             finish()
             phase = 3
+        }
+    }
+
+    func advanceGestures() {
+        let parsed = parseGestureStatus(nodeTextLarge(3))
+        armSelection(parsed)
+        let snap = gestureSnapshot(parsed)
+        writeGestureReport(gestureChecks(snap))
+        if let data = try? JSONSerialization.data(withJSONObject: snap, options: [.sortedKeys]),
+           let json = String(data: data, encoding: .utf8) {
+            view.publishGestureSnapshot(json)
+        }
+    }
+
+    func armSelection(_ parsed: GestureStatus?) {
+        guard selectState < 2, let parsed else { return }
+        let pad = parsed.nodes["pad"] ?? 0
+        if selectState == 0 {
+            guard parsed.ready, parsed.scene == "tap", pad != 0 else { return }
+            padBeforeSelect = pad
+            sawSelectGap = false
+            guard !gestureScene.isEmpty else {
+                selectState = 2
+                return
+            }
+            postGestureSelect(gestureScene)
+            selectState = 1
+            return
+        }
+        if !parsed.ready || pad == 0 || !parsed.events.isEmpty {
+            sawSelectGap = true
+        }
+        if parsed.ready && parsed.scene == gestureScene && parsed.events.isEmpty && pad != 0
+            && (pad != padBeforeSelect || sawSelectGap) {
+            selectState = 2
+        }
+    }
+
+    func postGestureSelect(_ scene: String) {
+        let source = "globalThis.__gestureSelect(\"\(scene)\")"
+        source.withCString { bubble_post_eval($0) }
+    }
+
+    func gestureSnapshot(_ parsed: GestureStatus?) -> [String: Any] {
+        var nodes: [String: Any] = [:]
+        if let parsed {
+            for (name, handle) in parsed.nodes {
+                nodes[name] = nodeObservation(handle)
+            }
+        }
+        return [
+            "scene": parsed?.scene ?? "",
+            "ready": parsed?.ready ?? false,
+            "armed": selectState == 2,
+            "requested": gestureScene,
+            "visible": appVisible,
+            "hides": hides,
+            "faults": Int(bubble_faults()),
+            "events": parsed?.events ?? [],
+            "nodes": nodes,
+        ]
+    }
+
+    func nodeObservation(_ handle: UInt32) -> [String: Any] {
+        var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
+        let code = bubble_node_box(handle, &x, &y, &w, &h)
+        let inset = view.safeAreaInsets
+        return [
+            "handle": Int(handle),
+            "x": code == 0 ? Double(x) + Double(inset.left) : 0,
+            "y": code == 0 ? Double(y) + Double(inset.top) : 0,
+            "w": code == 0 ? Double(w) : 0,
+            "h": code == 0 ? Double(h) : 0,
+            "scrollX": finiteFloat(bubble_scroll_x_of(handle)),
+            "scrollY": finiteFloat(bubble_scroll_y_of(handle)),
+        ]
+    }
+
+    func gestureChecks(_ snap: [String: Any]) -> [[String: Any]] {
+        let scene = gestureScene.isEmpty ? "gesture" : gestureScene
+        let armed = snap["armed"] as? Bool == true
+        let events = gestureEventList(snap)
+        let sceneReady = armed && (snap["ready"] as? Bool == true) && (snap["scene"] as? String) == gestureScene && !gestureScene.isEmpty
+        func sized(_ name: String) -> Bool {
+            guard let node = gestureNode(snap, name) else { return false }
+            return jsonDouble(node["w"]) > 1 && jsonDouble(node["h"]) > 1
+        }
+        let needsOuter = scene == "parallel" || scene == "reserve" || scene == "contain"
+        let primary = scene == "contain" ? "inner" : "pad"
+        let boxes = sceneReady && sized(primary) && (!needsOuter || sized("outer"))
+        var out: [[String: Any]] = []
+        func add(_ suffix: String, _ ok: Bool, _ detail: String, gated: Bool = true) {
+            out.append(["name": "\(scene).\(suffix)", "ok": gated ? (boxes && ok) : ok, "detail": detail])
+        }
+        func count(_ name: String, _ type: String) -> Int {
+            events.filter { ($0["name"] as? String) == name && ($0["type"] as? String) == type }.count
+        }
+        func countType(_ type: String) -> Int {
+            events.filter { ($0["type"] as? String) == type }.count
+        }
+        let summary = events.map { event in
+            "\(event["name"] as? String ?? "?"):\(event["type"] as? String ?? "?"):\(gestureReasonName(event["reason"]))"
+        }.joined(separator: ",")
+        add("ready", boxes, "armed=\(armed) scene=\(snap["scene"] as? String ?? "") ready=\(snap["ready"] as? Bool ?? false)", gated: false)
+        switch scene {
+        case "tap":
+            add("tap", count("tap", "tap") == 1, summary)
+            add("press", count("tap", "pressStart") == 1 && count("tap", "pressEnd") == 1 && count("tap", "pressCancel") == 0, summary)
+        case "long":
+            add("hold", count("long", "start") == 1 && count("long", "end") == 1 && count("long", "cancel") == 0, summary)
+            add("notap", countType("tap") == 0, summary)
+        case "double":
+            let doubles = events.filter { ($0["name"] as? String) == "double" && ($0["type"] as? String) == "doubleTap" }
+            let taps = events.filter { ($0["name"] as? String) == "tap" && ($0["type"] as? String) == "tap" }
+            let gap = doubles.count == 1 && taps.count == 1 && jsonDouble(taps[0]["time"]) >= jsonDouble(doubles[0]["time"]) + 300
+            add("double", doubles.count == 1, summary)
+            add("single", gap, summary)
+        case "pan":
+            let tx = events.filter { ($0["name"] as? String) == "pan" }.map { jsonDouble($0["translationX"]) }.max() ?? -.infinity
+            let ordered = count("pan", "start") == 1 && count("pan", "update") >= 1 && count("pan", "end") == 1 && count("pan", "cancel") == 0
+            add("sequence", ordered && tx > 10, summary)
+            add("notap", countType("tap") == 0, summary)
+        case "transform":
+            let transforms = events.filter { ($0["name"] as? String) == "transform" }
+            let finite = !transforms.isEmpty && transforms.allSatisfy { event in
+                jsonDouble(event["translationX"]).isFinite && jsonDouble(event["translationY"]).isFinite
+                    && jsonDouble(event["scale"]).isFinite && jsonDouble(event["rotation"]).isFinite
+            }
+            let closed = count("transform", "start") == 2 && count("transform", "end") == 2 && count("transform", "cancel") == 0
+            let pinched = transforms.contains { abs(jsonDouble($0["scale"]) - 1) > 0.2 }
+            let rotated = transforms.contains { abs(jsonDouble($0["rotation"])) > 0.25 }
+            add("pinch", closed && pinched, summary)
+            add("rotate", closed && rotated, summary)
+            add("finite", finite, summary)
+            add("notap", countType("tap") == 0, summary)
+            add("pan", count("pan", "end") == 0 && count("pan", "cancel") == count("pan", "start"), summary)
+        case "parallel":
+            let tx = events.filter { ($0["name"] as? String) == "pan" }.map { jsonDouble($0["translationX"]) }.max() ?? -.infinity
+            let ordered = count("pan", "start") == 1 && count("pan", "end") == 1 && count("pan", "cancel") == 0
+            add("pan", ordered && tx > 10, summary)
+            let scroll = jsonDouble(gestureNode(snap, "outer")?["scrollY"])
+            add("scroll", scroll > 10, "scrollY=\(scroll)")
+        case "reserve":
+            let scroll = jsonDouble(gestureNode(snap, "outer")?["scrollY"])
+            add("once", scroll > 100 && scroll < 180, "scrollY=\(scroll)")
+            add("nolong", count("long", "start") == 0 && count("long", "end") == 0, summary)
+            add("notap", countType("tap") == 0, summary)
+        case "contain":
+            let inner = jsonDouble(gestureNode(snap, "inner")?["scrollY"])
+            let outer = jsonDouble(gestureNode(snap, "outer")?["scrollY"])
+            add("inner", inner >= 58 && inner <= 60.5, "scrollY=\(inner)")
+            add("outer", abs(outer) < 1, "scrollY=\(outer)")
+        case "dispose":
+            let types = events.filter { ($0["name"] as? String) == "pan" }.map { $0["type"] as? String ?? "" }
+            let cancelAt = types.lastIndex(of: "cancel") ?? -1
+            let trailing = types.enumerated().contains { index, type in
+                cancelAt >= 0 && index > cancelAt && (type == "start" || type == "update" || type == "end")
+            }
+            let closed = count("pan", "start") == 1 && count("pan", "update") >= 1 && count("pan", "cancel") == 1 && count("pan", "end") == 0 && !trailing
+            add("cancel", closed, summary)
+        case "lifecycle":
+            let visible = snap["visible"] as? Bool == true
+            let hidden = jsonDouble(snap["hides"]) >= 1
+            add("visibility", visible && hidden, "foreground/background only; hides=\(snap["hides"] ?? 0) visible=\(visible); not a held-touch cancel")
+            add("idle", count("pan", "start") == 0 && count("pan", "cancel") == 0 && count("pan", "end") == 0 && countType("tap") == 0, "no gesture events; held-touch cancel was not run")
+        default:
+            add("scene", false, "missing or unknown BUBBLE_GESTURE_SCENE", gated: false)
+        }
+        return out
+    }
+
+    func loadPriorReport() {
+        if gestureReset {
+            try? FileManager.default.removeItem(at: resultURL)
+            return
+        }
+        guard let data = try? Data(contentsOf: resultURL),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        priorElapsed = (obj["elapsed_ms"] as? NSNumber)?.intValue ?? 0
+        let prefix = (gestureScene.isEmpty ? "gesture" : gestureScene) + "."
+        if let checks = obj["checks"] as? [Any] {
+            priorChecks = checks.compactMap { $0 as? [String: Any] }.filter { check in
+                let name = check["name"] as? String ?? ""
+                return !name.hasPrefix(prefix)
+            }
+        }
+    }
+
+    func writeGestureReport(_ checks: [[String: Any]]) {
+        let elapsed = priorElapsed + Int((CACurrentMediaTime() - started) * 1000)
+        let all = priorChecks + checks
+        let ok = !all.isEmpty && all.allSatisfy { ($0["ok"] as? Bool) == true }
+        let doc: [String: Any] = [
+            "suite": "gestures.ios",
+            "ok": ok,
+            "elapsed_ms": elapsed,
+            "checks": all,
+            "unsupported": Self.unsupported,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: doc, options: [.sortedKeys]) else { return }
+        try? FileManager.default.createDirectory(at: resultURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: resultURL, options: .atomic)
+        let signature = all.map { "\($0["name"] as? String ?? "")=\(($0["ok"] as? Bool) == true)" }.joined(separator: ";")
+        if signature != lastSignature, let text = String(data: data, encoding: .utf8) {
+            lastSignature = signature
+            NSLog("BUBBLE_GESTURES %@", text)
         }
     }
 

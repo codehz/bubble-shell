@@ -3,6 +3,7 @@ package dev.bubble.shell
 import android.app.Activity
 import android.graphics.Typeface
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.view.Choreographer
 import org.json.JSONArray
@@ -18,9 +19,11 @@ class MainActivity : Activity() {
     private var hangFrames = 0
     private var scrollLogged = false
     private val started = System.nanoTime()
+    private var gestures = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        gestures = intent?.getBooleanExtra("bubble_gestures", false) == true
         check(BubbleNative.create() == 0)
         assets.open("HostFont.ttf").use { input ->
             val bytes = input.readBytes()
@@ -47,6 +50,10 @@ class MainActivity : Activity() {
             shell.refresh()
             frames += 1
             if (frames > 5) frameMs += dt
+            if (gestures) {
+                if (!isDestroyed) Choreographer.getInstance().postFrameCallback(this)
+                return
+            }
             when (phase) {
                 0 -> if (frames == 20) {
                     val box = BubbleNative.nodeBox(4)
@@ -128,6 +135,7 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        if (::shell.isInitialized) shell.cancelActivePointers(SystemClock.uptimeMillis().toDouble())
         BubbleNative.setVisible(0)
         super.onPause()
     }
