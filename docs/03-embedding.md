@@ -110,6 +110,7 @@ Web 覆盖层要求：
 - 每个语义节点一个绝对定位元素，bounds 与绘制同步；ARIA 角色由语义 `role` 映射。
 - 使用 `aria-label`、`aria-checked`、`aria-selected`、`aria-expanded`、`aria-disabled`、`aria-hidden`、`tabindex`。
 - 焦点环由核心绘制；键盘 Tab 顺序由 Rust 焦点树决定，不依赖 DOM 原生 Tab。
+- 覆盖层聚焦节点支持 PageDown/PageUp 和方向键滚动：沿语义 `parent` 链检查对应 `actions` 位，再从当前节点调用核心 scroll action；步长与边界由核心处理，滚动后保留 DOM 焦点。文本框、组合输入与带修饰键的快捷键不走此滚动入口。静态节点聚焦时清除旧的核心键盘焦点；Tab/Shift-Tab 继续使用 Rust 焦点顺序，文本框激活后转入 IME。
 - `aria-live` 用于 Toast/状态更新；原生端用 announcement API。
 
 焦点与键盘：

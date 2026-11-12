@@ -494,6 +494,7 @@ pub fn web() -> Result<SuiteReport, String> {
     let output = Command::new("node")
         .arg("--test")
         .arg(root.join("examples/web/ime.test.mjs"))
+        .arg(root.join("examples/web/a11y.test.mjs"))
         .output()
         .map_err(|err| format!("node --test: {err}"))?;
     let text = format!(
@@ -516,7 +517,7 @@ pub fn web() -> Result<SuiteReport, String> {
         ok,
         elapsed_ms: 0,
         checks: vec![Check {
-            name: "web ime mapping".into(),
+            name: "web ime and accessibility key mapping".into(),
             ok,
             detail,
         }],

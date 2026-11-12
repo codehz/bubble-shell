@@ -1,3 +1,4 @@
+import { scrollActionForKey } from "./a11y.js";
 import { commandsForDom, dragSelection } from "./ime.js";
 import { dispatchEditEvents, dispatchGestureEvents, setApi } from "./runtime.js";
 import { layoutSnapshot, wrapLines } from "./textlayout.js";
@@ -25,6 +26,7 @@ Object.assign(a11yRoot.style, {
 });
 document.body.append(a11yRoot);
 const a11yElements = new Map();
+const a11yNodes = new Map();
 
 const A11Y_ROLES = {
   generic: "group",
@@ -51,10 +53,11 @@ const A11Y_ROLES = {
 function a11yAction(handle, action, text = "") {
   const bytes = encoder.encode(text);
   const ptr = bytes.length ? copyBytes(bytes) : 0;
-  exports.a11y_action(handle, action, ptr, bytes.length);
+  const result = exports.a11y_action(handle, action, ptr, bytes.length);
   if (bytes.length) exports.dealloc(ptr, bytes.length);
   pumpGestures();
   if (exports.layout() === 0) paint();
+  return result === 0;
 }
 
 function syncA11y() {
@@ -69,6 +72,8 @@ function syncA11y() {
     return;
   }
   const rect = canvas.getBoundingClientRect();
+  a11yNodes.clear();
+  for (const node of data.nodes) a11yNodes.set(node.handle, node);
   const seen = new Set();
   for (const node of data.nodes) {
     seen.add(node.handle);
@@ -76,8 +81,21 @@ function syncA11y() {
     if (!element) {
       element = document.createElement("div");
       element.dataset.handle = String(node.handle);
-      element.addEventListener("focus", () => a11yAction(node.handle, 0));
-      element.addEventListener("click", () => a11yAction(node.handle, 1));
+      element.addEventListener("focus", () => {
+        const current = a11yNodes.get(node.handle);
+        if (current && !current.hidden && !current.disabled) {
+          if (current.focusable) a11yAction(node.handle, 0);
+          else {
+            exports.key(4, performance.now());
+            if (exports.layout() === 0) paint();
+          }
+        }
+      });
+      element.addEventListener("click", () => {
+        const current = a11yNodes.get(node.handle);
+        if (!current || current.hidden || current.disabled) return;
+        if (a11yAction(node.handle, 1) && current.editable) placeCaret(node.handle);
+      });
       a11yRoot.append(element);
       a11yElements.set(node.handle, element);
     }
@@ -162,7 +180,20 @@ const KEY_ACTIONS = {
 document.addEventListener(
   "keydown",
   (event) => {
-    if (event.target !== canvas && event.target !== ime) return;
+    const element = event.target;
+    const node = a11yRoot.contains(element)
+      ? a11yNodes.get(Number(element.dataset.handle))
+      : null;
+    if (element !== canvas && element !== ime && !node) return;
+    if (event.isComposing) return;
+    if (node) {
+      if (node.hidden || node.disabled) return;
+      const scroll = scrollActionForKey(event, node, a11yNodes);
+      if (scroll !== undefined) {
+        if (a11yAction(node.handle, scroll)) event.preventDefault();
+        return;
+      }
+    }
     let action;
     if (event.key === "Tab") action = event.shiftKey ? 1 : 0;
     else if (event.key === "Enter") action = 2;
@@ -178,8 +209,9 @@ document.addEventListener(
     if (handled > 0) {
       event.preventDefault();
       const handle = exports.focused();
-      const flags = handle ? exports.field_flags(handle) : 0;
-      if (handle && (flags & 3) !== 3) placeCaret(handle);
+      const focused = a11yNodes.get(handle);
+      if (focused?.editable) placeCaret(handle);
+      else if (handle && node) a11yElements.get(handle)?.focus({ preventScroll: true });
       else if (!handle) {
         ime.blur();
         canvas.focus({ preventScroll: true });
