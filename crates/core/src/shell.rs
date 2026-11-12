@@ -14,7 +14,9 @@ use crate::layout::{snap_unit, wrapping_layout, LayoutKey, LayoutRequest, Layout
 use crate::ops::{decode_ops, Op, Value};
 use crate::props::Prop;
 use crate::semantics::{
-    Role, SemanticsNode, SemanticsSnapshot, ACTION_ACTIVATE, ACTION_FOCUS, ACTION_SET_VALUE,
+    Role, SemanticsNode, SemanticsSnapshot, ACTION_ACTIVATE, ACTION_FOCUS, ACTION_SCROLL_BACKWARD,
+    ACTION_SCROLL_DOWN, ACTION_SCROLL_FORWARD, ACTION_SCROLL_LEFT, ACTION_SCROLL_RIGHT,
+    ACTION_SCROLL_UP, ACTION_SET_VALUE,
 };
 use taffy::prelude::*;
 use taffy::style::Overflow;
@@ -206,12 +208,19 @@ impl Key {
     }
 }
 
-/// Screen-reader action routed to one semantic node.
+/// Screen-reader action routed to one semantic node. Scroll actions resolve
+/// the nearest scrollable ancestor that accepts the requested axis.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum A11yAction {
     Focus,
     Activate,
     SetValue(String),
+    ScrollForward,
+    ScrollBackward,
+    ScrollLeft,
+    ScrollRight,
+    ScrollUp,
+    ScrollDown,
 }
 
 impl A11yAction {
@@ -220,9 +229,27 @@ impl A11yAction {
             0 => Self::Focus,
             1 => Self::Activate,
             2 => Self::SetValue(String::new()),
+            3 => Self::ScrollForward,
+            4 => Self::ScrollBackward,
+            5 => Self::ScrollLeft,
+            6 => Self::ScrollRight,
+            7 => Self::ScrollUp,
+            8 => Self::ScrollDown,
             _ => return None,
         })
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScrollAxis {
+    X,
+    Y,
+    Primary,
+}
+
+/// Screen-reader scroll distance: most of the visible page, but never zero.
+fn page_step(extent: f32) -> f32 {
+    (extent * 0.8).max(1.0)
 }
 
 /// Native or custom edit menu command. The host owns the clipboard.
@@ -849,6 +876,8 @@ impl Shell {
         let semantic = node.kind != Kind::View
             || node.role.is_some()
             || !node.label.is_empty()
+            || node.scroll_x
+            || node.scroll_y
             || self.is_focusable(id)
             || node.modal
             || node.disabled;
@@ -864,6 +893,18 @@ impl Shell {
             }
             if node.kind == Kind::Field {
                 actions |= ACTION_SET_VALUE;
+            }
+            if node.scroll_x {
+                actions |= ACTION_SCROLL_FORWARD
+                    | ACTION_SCROLL_BACKWARD
+                    | ACTION_SCROLL_LEFT
+                    | ACTION_SCROLL_RIGHT;
+            }
+            if node.scroll_y {
+                actions |= ACTION_SCROLL_FORWARD
+                    | ACTION_SCROLL_BACKWARD
+                    | ACTION_SCROLL_UP
+                    | ACTION_SCROLL_DOWN;
             }
             let editable = node.kind == Kind::Field;
             let secure = editable && node.secure;
@@ -1033,7 +1074,86 @@ impl Shell {
                 }
             }
             A11yAction::SetValue(text) => self.set_field_text(handle, &text),
+            action @ (A11yAction::ScrollForward
+            | A11yAction::ScrollBackward
+            | A11yAction::ScrollLeft
+            | A11yAction::ScrollRight
+            | A11yAction::ScrollUp
+            | A11yAction::ScrollDown) => self.a11y_scroll(handle, action),
         }
+    }
+
+    /// Scroll the nearest ancestor that accepts the requested axis. The step
+    /// is a page of the visible extent, so platform bridges never invent their
+    /// own pixel deltas.
+    fn a11y_scroll(&mut self, handle: u32, action: A11yAction) -> Result<(), String> {
+        let (target, axis) = match action {
+            A11yAction::ScrollForward | A11yAction::ScrollBackward => {
+                let target = self.scroll_target(handle, ScrollAxis::Primary)?;
+                let node = self.node(target)?;
+                (
+                    target,
+                    if node.scroll_y {
+                        ScrollAxis::Y
+                    } else {
+                        ScrollAxis::X
+                    },
+                )
+            }
+            A11yAction::ScrollLeft | A11yAction::ScrollRight => {
+                (self.scroll_target(handle, ScrollAxis::X)?, ScrollAxis::X)
+            }
+            A11yAction::ScrollUp | A11yAction::ScrollDown => {
+                (self.scroll_target(handle, ScrollAxis::Y)?, ScrollAxis::Y)
+            }
+            _ => unreachable!("a11y_scroll only handles scroll actions"),
+        };
+        let (w, h) = {
+            let node = self.node(target)?;
+            (node.w, node.h)
+        };
+        let step_x = page_step(w);
+        let step_y = page_step(h);
+        let (dx, dy) = match action {
+            A11yAction::ScrollForward => {
+                if axis == ScrollAxis::Y {
+                    (0.0, step_y)
+                } else {
+                    (step_x, 0.0)
+                }
+            }
+            A11yAction::ScrollBackward => {
+                if axis == ScrollAxis::Y {
+                    (0.0, -step_y)
+                } else {
+                    (-step_x, 0.0)
+                }
+            }
+            A11yAction::ScrollLeft => (-step_x, 0.0),
+            A11yAction::ScrollRight => (step_x, 0.0),
+            A11yAction::ScrollUp => (0.0, -step_y),
+            A11yAction::ScrollDown => (0.0, step_y),
+            _ => unreachable!("a11y_scroll only handles scroll actions"),
+        };
+        self.scroll_path(&[target], dx, dy);
+        Ok(())
+    }
+
+    fn scroll_target(&self, handle: u32, axis: ScrollAxis) -> Result<u32, String> {
+        let mut id = handle;
+        while id != 0 {
+            let node = self.node(id)?;
+            let accepts = match axis {
+                ScrollAxis::X => node.scroll_x,
+                ScrollAxis::Y => node.scroll_y,
+                ScrollAxis::Primary => node.scroll_x || node.scroll_y,
+            };
+            if accepts {
+                return Ok(id);
+            }
+            id = node.parent;
+        }
+        Err(format!("handle {handle} has no scrollable ancestor"))
     }
 
     fn set_field_text(&mut self, handle: u32, text: &str) -> Result<(), String> {

@@ -1,6 +1,7 @@
 use bubble_core::{
     encode, A11yAction, EditCommand, EditMenuAction, Key, Kind, NodeDesc, Op, Role, Shell, Value,
-    ACTION_ACTIVATE, ACTION_SET_VALUE,
+    ACTION_ACTIVATE, ACTION_SCROLL_BACKWARD, ACTION_SCROLL_DOWN, ACTION_SCROLL_FORWARD,
+    ACTION_SCROLL_LEFT, ACTION_SCROLL_RIGHT, ACTION_SCROLL_UP, ACTION_SET_VALUE,
 };
 
 fn field(shell: &mut Shell, text: &str) -> u32 {
@@ -314,4 +315,112 @@ fn selection_handles_and_edit_menu_use_the_same_document() {
         .unwrap();
     let copied = shell.edit_menu(EditMenuAction::Copy, "").unwrap();
     assert_eq!(copied.clipboard, None, "secure fields never copy");
+}
+
+fn scroll_view(shell: &mut Shell, axis_x: bool, axis_y: bool, content: [f32; 2]) -> (u32, u32) {
+    let mut scroller = NodeDesc::view(2, 1);
+    scroller.scroll_x = axis_x;
+    scroller.scroll_y = axis_y;
+    scroller.width = Some(100.0);
+    scroller.height = Some(100.0);
+    let mut inner = NodeDesc::view(3, 2);
+    inner.width = Some(content[0]);
+    inner.height = Some(content[1]);
+    inner.flex_shrink = 0.0;
+    let child = 4;
+    let mut leaf = NodeDesc::view(child, 3);
+    leaf.width = Some(20.0);
+    leaf.height = Some(20.0);
+    leaf.flex_shrink = 0.0;
+    shell
+        .apply_ops(&encode(
+            1,
+            &[
+                Op::Spawn { desc: scroller },
+                Op::Spawn { desc: inner },
+                Op::Spawn { desc: leaf },
+            ],
+        ))
+        .unwrap();
+    layout(shell);
+    (2, child)
+}
+
+#[test]
+fn a11y_scroll_actions_move_the_nearest_vertical_container() {
+    let mut shell = Shell::blank().unwrap();
+    let (scroller, leaf) = scroll_view(&mut shell, false, true, [100.0, 300.0]);
+    let snapshot = shell.semantics();
+    let node = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.handle == scroller)
+        .unwrap();
+    assert!(node.scrollable);
+    assert_eq!(
+        node.actions
+            & (ACTION_SCROLL_FORWARD
+                | ACTION_SCROLL_BACKWARD
+                | ACTION_SCROLL_UP
+                | ACTION_SCROLL_DOWN),
+        ACTION_SCROLL_FORWARD | ACTION_SCROLL_BACKWARD | ACTION_SCROLL_UP | ACTION_SCROLL_DOWN
+    );
+    assert_eq!(
+        node.actions & (ACTION_SCROLL_LEFT | ACTION_SCROLL_RIGHT),
+        0,
+        "vertical containers expose no horizontal actions"
+    );
+
+    shell.a11y_action(leaf, A11yAction::ScrollForward).unwrap();
+    assert_eq!(shell.scroll_of(scroller).unwrap().1, 80.0);
+    shell.a11y_action(leaf, A11yAction::ScrollDown).unwrap();
+    assert_eq!(shell.scroll_of(scroller).unwrap().1, 160.0);
+    shell.a11y_action(leaf, A11yAction::ScrollDown).unwrap();
+    assert_eq!(shell.scroll_of(scroller).unwrap().1, 200.0, "clamped");
+    shell.a11y_action(leaf, A11yAction::ScrollUp).unwrap();
+    assert_eq!(shell.scroll_of(scroller).unwrap().1, 120.0);
+    shell.a11y_action(leaf, A11yAction::ScrollBackward).unwrap();
+    assert_eq!(shell.scroll_of(scroller).unwrap().1, 40.0);
+    assert!(
+        shell.a11y_action(leaf, A11yAction::ScrollLeft).is_err(),
+        "horizontal action needs a horizontal axis"
+    );
+    assert_eq!(
+        shell.scroll_of(scroller).unwrap(),
+        (0.0, 40.0),
+        "failed action does not move the container"
+    );
+}
+
+#[test]
+fn a11y_scroll_primary_axis_follows_vertical_then_horizontal() {
+    let mut shell = Shell::blank().unwrap();
+    let (horizontal, leaf) = scroll_view(&mut shell, true, false, [300.0, 100.0]);
+    shell.a11y_action(leaf, A11yAction::ScrollForward).unwrap();
+    assert_eq!(shell.scroll_of(horizontal).unwrap(), (80.0, 0.0));
+    shell.a11y_action(leaf, A11yAction::ScrollRight).unwrap();
+    assert_eq!(shell.scroll_of(horizontal).unwrap(), (160.0, 0.0));
+    shell.a11y_action(leaf, A11yAction::ScrollBackward).unwrap();
+    assert_eq!(shell.scroll_of(horizontal).unwrap(), (80.0, 0.0));
+    assert!(shell.a11y_action(leaf, A11yAction::ScrollUp).is_err());
+
+    let mut shell = Shell::blank().unwrap();
+    let (both, leaf) = scroll_view(&mut shell, true, true, [300.0, 300.0]);
+    shell.a11y_action(leaf, A11yAction::ScrollForward).unwrap();
+    assert_eq!(
+        shell.scroll_of(both).unwrap(),
+        (0.0, 80.0),
+        "primary axis is vertical when both axes scroll"
+    );
+    shell.a11y_action(leaf, A11yAction::ScrollRight).unwrap();
+    assert_eq!(shell.scroll_of(both).unwrap(), (80.0, 80.0));
+    shell.a11y_action(leaf, A11yAction::ScrollDown).unwrap();
+    assert_eq!(shell.scroll_of(both).unwrap(), (80.0, 160.0));
+}
+
+#[test]
+fn a11y_scroll_requires_a_scrollable_ancestor() {
+    let mut shell = Shell::blank().unwrap();
+    let field = field(&mut shell, "plain");
+    assert!(shell.a11y_action(field, A11yAction::ScrollForward).is_err());
 }

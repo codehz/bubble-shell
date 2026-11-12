@@ -11,6 +11,13 @@ use serde::{Deserialize, Serialize};
 pub const ACTION_FOCUS: u32 = 1;
 pub const ACTION_ACTIVATE: u32 = 2;
 pub const ACTION_SET_VALUE: u32 = 4;
+/// Primary-axis page scroll: vertical when the node scrolls vertically.
+pub const ACTION_SCROLL_FORWARD: u32 = 8;
+pub const ACTION_SCROLL_BACKWARD: u32 = 16;
+pub const ACTION_SCROLL_LEFT: u32 = 32;
+pub const ACTION_SCROLL_RIGHT: u32 = 64;
+pub const ACTION_SCROLL_UP: u32 = 128;
+pub const ACTION_SCROLL_DOWN: u32 = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

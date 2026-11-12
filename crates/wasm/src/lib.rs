@@ -306,7 +306,8 @@ pub extern "C" fn semantics() -> u32 {
     store_scratch(json.into_bytes())
 }
 
-/// Screen-reader action: 0 focus, 1 activate, 2 set value.
+/// Screen-reader action: 0 focus, 1 activate, 2 set value, 3/4 forward/
+/// backward, 5/6 left/right, 7/8 up/down.
 #[no_mangle]
 pub extern "C" fn a11y_action(handle: u32, action: u32, ptr: *const u8, len: u32) -> i32 {
     let Some(action) = A11yAction::parse(action) else {

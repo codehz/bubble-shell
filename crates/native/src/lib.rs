@@ -890,7 +890,8 @@ pub extern "C" fn bubble_semantics(buf: *mut c_char, cap: u32) -> i32 {
     })
 }
 
-/// Route a screen-reader action. `action` 0 focus, 1 activate, 2 set value.
+/// Route a screen-reader action. `action` 0 focus, 1 activate, 2 set value,
+/// 3/4 forward/backward, 5/6 left/right, 7/8 up/down.
 #[no_mangle]
 pub extern "C" fn bubble_a11y_action(
     handle: u32,

@@ -41,7 +41,9 @@ pub use paint::encode_paint;
 pub use props::{Prop, DEFERRED_PROPS, SET_PROPS, SPAWN_PROPS};
 pub use reactive::{Kind as ComputationKind, Sched};
 pub use semantics::{
-    Role, SemanticsNode, SemanticsSnapshot, ACTION_ACTIVATE, ACTION_FOCUS, ACTION_SET_VALUE,
+    Role, SemanticsNode, SemanticsSnapshot, ACTION_ACTIVATE, ACTION_FOCUS, ACTION_SCROLL_BACKWARD,
+    ACTION_SCROLL_DOWN, ACTION_SCROLL_FORWARD, ACTION_SCROLL_LEFT, ACTION_SCROLL_RIGHT,
+    ACTION_SCROLL_UP, ACTION_SET_VALUE,
 };
 pub use shell::{A11yAction, EditMenuAction, Key, MenuResult, PaintCmd, ScrollOutcome, Shell};
 pub use turn::Turn;
