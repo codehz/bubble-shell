@@ -8,7 +8,27 @@
 
 本计划接在 [手势与滚动协商计划](05-gestures-plan.md) 之后，是下一个开发计划；完成后继续 M2 的焦点、无障碍和输入控件收尾工作。
 
-**状态（2026-11-12）**：阶段 A–E 已实现。`EditSession` 仍是字段权威文档。编辑几何改为 `LayoutSnapshot`（`crates/core/src/layout.rs`）：失效键是 revision、可用宽度、字号、字重、行高、对齐和密度；旧 revision 不能驱动光标、命中或选区。Android `StaticLayout`、iOS Core Text 与 Web canvas/DOM 测量各自生成同一 BLS1 快照，绘制与 IME 查询共用该结果。前缀测宽 `text_metrics` / `hit_unit` 已从编辑路径删除；没有平台快照时核心只保留测试用的 LTR 换行回退。阶段 F（模拟器矩阵与文档切换）仍未完成。
+**状态（2026-11-12）**：阶段 A–F 已完成。`EditSession` 仍是字段权威文档。编辑几何改为 `LayoutSnapshot`（`crates/core/src/layout.rs`）：失效键是 revision、可用宽度、字号、字重、行高、对齐和密度；旧 revision 不能驱动光标、命中或选区。Android `StaticLayout`、iOS Core Text 与 Web canvas/DOM 测量各自生成同一 BLS1 快照，绘制与 IME 查询共用该结果。前缀测宽 `text_metrics` / `hit_unit` 已从编辑路径删除；没有平台快照时核心只保留测试用的 LTR 换行回退。阶段 F 已完成输入合同、模拟器矩阵与文档切换；视觉选区手柄拖动属于 M2 输入控件收尾，不在本计划自动化内。
+
+验收入口：
+
+```sh
+cargo test --workspace
+cargo run -q -p bubble-eval -- editing-web
+cargo run -q -p bubble-eval -- editing-android
+cargo run -q -p bubble-eval -- editing-ios
+```
+
+2026-11-12 本机结果：
+
+| 目标 | 环境 | 结果 |
+|---|---|---|
+| Rust 核心/协议 | `cargo test --workspace` | 通过 |
+| Web | Node `examples/web/ime.test.mjs` | 4/4 通过 |
+| Android | `sdk_phone64_arm64`，Android 16（SDK 36），Fcitx5 `0.1.3-0-g048f581c` | 74 项检查通过 |
+| iOS | iPhone 18 Pro 模拟器，iOS 27.2 | 27 项检查通过 |
+
+Android 自动化覆盖焦点、IME `commit`/`setComposingText`/`setComposingRegion`/`finishComposingText`、组合内选区与删除、`newCursorPosition` 正负与零、嵌套 batch 单 revision、`getTextBefore/After/Selected/Extracted`、代码点删除、`CursorAnchorInfo`、关闭连接与切换字段后的旧连接拒绝。iOS 覆盖 `setMarkedText` 内部选区、`caretRect`/`firstRect`/`selectionRects` 几何、`unmarkText`、删除、非 BMP 字符与字段切换。实体设备与厂商键盘差异仍按第 6 节留待后续。
 
 ## 2. 源码现状与问题
 
@@ -76,11 +96,11 @@ IME 命令是当前活动组合的唯一编辑者。普通应用 `SetEditingValu
 | C. Android InputConnection | 面向活动会话实现读写；支持 batch edit、newCursorPosition、组合区域/内部选区、周边文本/选择、代码点删除、连接关闭与失效 | 去除 Kotlin 重复 composition 状态和重复退格实现；保留键盘配置、autofill、CursorAnchorInfo、原生手柄/菜单 |
 | D. 平台适配迁移 | iOS `UITextInput`、Web textarea 事件映射和 host 同步迁移 | 三端遵循相同事务、冲突、组合与 revision 规则；移除旧行为 |
 | E. 几何快照 | 三端平台布局快照、版本失效、光标/选区/命中/绘制共用 | 自动换行、组合文本和 bidi 的内部几何一致；淘汰旧前缀测宽的编辑几何路径 |
-| F. 集成验收和文档切换 | 跨端契约、模拟器矩阵、文档/示例、故障定位 | 输入文档描述实际新行为；旧协议和旧桥接说明删除 |
+| F. 集成验收和文档切换 | 跨端契约、模拟器矩阵、文档/示例、故障定位 | 已完成：`editing-web`/`editing-android`/`editing-ios` 入口、输入文档切换和过期说明删除 |
 
 可并行实现的阶段内平台工作应共享 A/B 固定的 ABI 与 `LayoutSnapshot` 契约；不能各自发明平台私有编辑语义。
 
-阶段 A–E 已完成；剩余 F（集成验收和文档切换）。
+阶段 A–F 已完成。
 
 ## 5. 验收矩阵
 
@@ -98,7 +118,7 @@ IME 命令是当前活动组合的唯一编辑者。普通应用 `SetEditingValu
 
 ### 发布门槛
 
-通过 Rust 核心/协议测试、Android 模拟器输入自动化，以及 iOS/Web 对应的目标平台检查。Android 模拟器测试至少覆盖 CJK IME 组合中移动、删除、确认与选区手柄；记录模拟器 API、系统镜像和键盘版本。实体 Android 设备验收留待后续，发布记录注明真实设备/键盘差异。
+通过 Rust 核心/协议测试、Android 模拟器输入自动化，以及 iOS/Web 对应的目标平台检查。Android 模拟器测试至少覆盖 CJK IME 组合中移动、删除、确认与程序化选区查询；记录模拟器 API、系统镜像和键盘版本。视觉选区手柄拖动、实体 Android 设备与厂商键盘差异归入 M2 输入控件收尾和后续发布记录。
 
 ## 6. 非目标与风险
 

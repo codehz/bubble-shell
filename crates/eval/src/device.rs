@@ -71,8 +71,7 @@ pub fn gestures_ios() -> Result<SuiteReport, String> {
     ios_device(true)
 }
 
-fn ios_device(gestures: bool) -> Result<SuiteReport, String> {
-    let root = workspace();
+fn build_ios(root: &Path) -> Result<PathBuf, String> {
     run(Command::new("cargo")
         .args([
             "build",
@@ -82,7 +81,7 @@ fn ios_device(gestures: bool) -> Result<SuiteReport, String> {
             "--target",
             "aarch64-apple-ios-sim",
         ])
-        .current_dir(&root))?;
+        .current_dir(root))?;
     let sdk = run(Command::new("xcrun").args(["--sdk", "iphonesimulator", "--show-sdk-path"]))?;
     let sdk = sdk.trim();
     let app = root.join("examples/ios/BubbleShell.app");
@@ -92,7 +91,7 @@ fn ios_device(gestures: bool) -> Result<SuiteReport, String> {
         &root.join("examples/ios/Info.plist"),
         &app.join("Info.plist"),
     )?;
-    install_fixtures(&root, &app)?;
+    install_fixtures(root, &app)?;
     let font = Path::new("/System/Library/Fonts/Supplemental/Arial.ttf");
     if font.exists() {
         copy(font, &app.join("HostFont.ttf"))?;
@@ -119,6 +118,10 @@ fn ios_device(gestures: bool) -> Result<SuiteReport, String> {
     run(Command::new("xcrun")
         .args(["simctl", "install", "booted"])
         .arg(&app))?;
+    Ok(app)
+}
+
+fn ios_container() -> Result<PathBuf, String> {
     let container = run(Command::new("xcrun").args([
         "simctl",
         "get_app_container",
@@ -126,7 +129,32 @@ fn ios_device(gestures: bool) -> Result<SuiteReport, String> {
         "dev.bubble.shell",
         "data",
     ]))?;
-    let result = PathBuf::from(container.trim()).join(if gestures {
+    Ok(PathBuf::from(container.trim()))
+}
+
+pub fn editing_ios() -> Result<SuiteReport, String> {
+    let root = workspace();
+    build_ios(&root)?;
+    let result = ios_container()?.join("Documents/edit-result.json");
+    let _ = std::fs::remove_file(&result);
+    run(Command::new("xcrun")
+        .args([
+            "simctl",
+            "launch",
+            "--terminate-running-process",
+            "booted",
+            "dev.bubble.shell",
+        ])
+        .env("SIMCTL_CHILD_BUBBLE_EDIT", "1")
+        .env("SIMCTL_CHILD_BUBBLE_FIXTURE", "editing"))?;
+    let body = wait_file(&result, Duration::from_secs(40))?;
+    Ok(decode("edit.ios", &body))
+}
+
+fn ios_device(gestures: bool) -> Result<SuiteReport, String> {
+    let root = workspace();
+    build_ios(&root)?;
+    let result = ios_container()?.join(if gestures {
         "Documents/gestures-result.json"
     } else {
         "Documents/m1-result.json"
@@ -146,7 +174,8 @@ fn ios_device(gestures: bool) -> Result<SuiteReport, String> {
         .arg(format!("platform=iOS Simulator,id={udid}"))
         .args(["-derivedDataPath"])
         .arg(root.join("target/ios-uitest"))
-        .arg("-parallel-testing-enabled").arg("NO")
+        .arg("-parallel-testing-enabled")
+        .arg("NO")
         .arg(if gestures {
             "-only-testing:BubbleShellUITests/BubbleShellUITests/testGestureAcceptance"
         } else {
@@ -159,7 +188,11 @@ fn ios_device(gestures: bool) -> Result<SuiteReport, String> {
                 report.ok = false;
                 if let Some(scenario) = report.scenarios.first_mut() {
                     scenario.ok = false;
-                    scenario.checks.push(Check { name: "XCTest execution".into(), ok: false, detail: err });
+                    scenario.checks.push(Check {
+                        name: "XCTest execution".into(),
+                        ok: false,
+                        detail: err,
+                    });
                 }
                 return Ok(report);
             }
@@ -167,7 +200,10 @@ fn ios_device(gestures: bool) -> Result<SuiteReport, String> {
         return Err(err);
     }
     let body = wait_file(&result, Duration::from_secs(40))?;
-    Ok(decode(if gestures { "gestures.ios" } else { "m1.ios" }, &body))
+    Ok(decode(
+        if gestures { "gestures.ios" } else { "m1.ios" },
+        &body,
+    ))
 }
 
 pub fn android() -> Result<SuiteReport, String> {
@@ -178,8 +214,7 @@ pub fn gestures_android() -> Result<SuiteReport, String> {
     android_device(true)
 }
 
-fn android_device(gestures: bool) -> Result<SuiteReport, String> {
-    let root = workspace();
+fn build_android(root: &Path) -> Result<PathBuf, String> {
     let sdk = std::env::var("ANDROID_HOME").map_err(|_| "ANDROID_HOME is unset".to_string())?;
     let ndk = PathBuf::from(&sdk).join("ndk/27.2.12479018");
     let pre = ndk.join("toolchains/llvm/prebuilt/darwin-arm64");
@@ -235,6 +270,7 @@ fn android_device(gestures: bool) -> Result<SuiteReport, String> {
         .arg(out.join("classes.jar"))
         .arg(java.join("BubbleView.kt"))
         .arg(java.join("BubbleNative.kt"))
+        .arg(java.join("FieldLayout.kt"))
         .arg(java.join("MainActivity.kt")))?;
     run(Command::new(bt.join("d8"))
         .args(["--min-api", "24", "--lib"])
@@ -307,20 +343,132 @@ fn android_device(gestures: bool) -> Result<SuiteReport, String> {
     run(Command::new("adb").args(["install", "-r"]).arg(&apk))?;
     let _ = run(Command::new("adb").args(["shell", "am", "force-stop", "dev.bubble.shell"]));
     let _ = run(Command::new("adb").args(["logcat", "-c"]));
+    Ok(out)
+}
+
+fn install_android_tests(root: &Path, out: &Path) -> Result<(), String> {
+    run(Command::new("sh")
+        .arg(root.join("examples/android/build-tests.sh"))
+        .current_dir(root))?;
+    run(Command::new("adb")
+        .args(["install", "-r"])
+        .arg(out.join("BubbleShellTests.apk")))?;
+    Ok(())
+}
+
+fn android_device_info() -> Result<Vec<Check>, String> {
+    let sdk = run(Command::new("adb").args(["shell", "getprop", "ro.build.version.sdk"]))?;
+    let image = run(Command::new("adb").args(["shell", "getprop", "ro.build.fingerprint"]))?;
+    let keyboard = run(Command::new("adb").args(["shell", "dumpsys", "input_method"]))?;
+    let keyboard = keyboard
+        .lines()
+        .find(|line| {
+            let line = line.trim_start();
+            line.starts_with("mCurMethodId=") || line.starts_with("mCurId=")
+        })
+        .map(|line| line.trim().to_string())
+        .unwrap_or_else(|| "mCurId=unknown".into());
+    let ime_id = keyboard
+        .split_once('=')
+        .map(|(_, value)| value.trim())
+        .unwrap_or("unknown");
+    let package = ime_id.split('/').next().unwrap_or(ime_id);
+    let version = run(Command::new("adb").args(["shell", "dumpsys", "package", package]))
+        .ok()
+        .and_then(|body| {
+            body.lines()
+                .find_map(|line| line.trim().strip_prefix("versionName=").map(str::to_owned))
+        })
+        .unwrap_or_else(|| "unknown".into());
+    let keyboard = format!("{keyboard} versionName={version}");
+    Ok(vec![
+        Check {
+            name: "emulator sdk".into(),
+            ok: true,
+            detail: sdk.trim().to_string(),
+        },
+        Check {
+            name: "emulator image".into(),
+            ok: true,
+            detail: image.trim().to_string(),
+        },
+        Check {
+            name: "ime".into(),
+            ok: true,
+            detail: keyboard,
+        },
+    ])
+}
+
+pub fn editing_android() -> Result<SuiteReport, String> {
+    let root = workspace();
+    let out = build_android(&root)?;
+    install_android_tests(&root, &out)?;
+    let _ = run(Command::new("adb").args([
+        "shell",
+        "run-as",
+        "dev.bubble.shell",
+        "rm",
+        "-f",
+        "files/edit-result.json",
+    ]));
+    let output = run(Command::new("adb").args([
+        "shell",
+        "am",
+        "instrument",
+        "-w",
+        "dev.bubble.shell.test/.EditInstrumentation",
+    ]))?;
+    let body = run(Command::new("adb").args([
+        "shell",
+        "run-as",
+        "dev.bubble.shell",
+        "cat",
+        "files/edit-result.json",
+    ]))
+    .map_err(|err| format!("{err}\n{output}"))?;
+    let mut report = decode("edit.android", &body);
+    if let Some(scenario) = report.scenarios.first_mut() {
+        match android_device_info() {
+            Ok(checks) => scenario.checks.extend(checks),
+            Err(err) => scenario.checks.push(Check {
+                name: "device info".into(),
+                ok: false,
+                detail: err,
+            }),
+        }
+    }
+    Ok(report)
+}
+
+fn android_device(gestures: bool) -> Result<SuiteReport, String> {
+    let root = workspace();
+    let out = build_android(&root)?;
     if gestures {
-        run(Command::new("sh")
-            .arg(root.join("examples/android/build-tests.sh"))
-            .current_dir(&root))?;
-        run(Command::new("adb").args(["install", "-r"]).arg(out.join("BubbleShellTests.apk")))?;
+        install_android_tests(&root, &out)?;
         run(Command::new("adb").args([
-            "shell", "run-as", "dev.bubble.shell", "rm", "-f", "files/gestures-result.json",
+            "shell",
+            "run-as",
+            "dev.bubble.shell",
+            "rm",
+            "-f",
+            "files/gestures-result.json",
         ]))?;
         let output = run(Command::new("adb").args([
-            "shell", "am", "instrument", "-w", "dev.bubble.shell.test/.ShellInstrumentation",
+            "shell",
+            "am",
+            "instrument",
+            "-w",
+            "dev.bubble.shell.test/.ShellInstrumentation",
         ]))?;
         let body = run(Command::new("adb").args([
-            "shell", "run-as", "dev.bubble.shell", "cat", "files/gestures-result.json",
-        ])).map_err(|err| format!("{err}\n{output}"))?;
+            "shell",
+            "run-as",
+            "dev.bubble.shell",
+            "cat",
+            "files/gestures-result.json",
+        ]))
+        .map_err(|err| format!("{err}\n{output}"))?;
         return Ok(decode("gestures.android", &body));
     }
     run(Command::new("adb").args([
@@ -339,6 +487,45 @@ fn android_device(gestures: bool) -> Result<SuiteReport, String> {
         .arg(format!("input swipe {x} {start} {x} {end} 300")))?;
     let body = wait_logcat(Duration::from_secs(20))?;
     Ok(decode("m1.android", &body))
+}
+
+pub fn web() -> Result<SuiteReport, String> {
+    let root = workspace();
+    let output = Command::new("node")
+        .arg("--test")
+        .arg(root.join("examples/web/ime.test.mjs"))
+        .output()
+        .map_err(|err| format!("node --test: {err}"))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let ok = output.status.success();
+    let detail = text
+        .lines()
+        .rev()
+        .take(12)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let scenario = ScenarioReport {
+        name: "edit.web".into(),
+        ok,
+        elapsed_ms: 0,
+        checks: vec![Check {
+            name: "web ime mapping".into(),
+            ok,
+            detail,
+        }],
+    };
+    Ok(SuiteReport {
+        suite: "edit.web".into(),
+        ok,
+        scenarios: vec![scenario],
+    })
 }
 
 fn decode(name: &str, body: &str) -> SuiteReport {

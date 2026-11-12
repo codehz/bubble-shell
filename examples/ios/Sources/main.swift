@@ -1112,11 +1112,18 @@ final class AppDriver {
     var priorChecks: [[String: Any]] = []
     var priorElapsed = 0
     var lastSignature = ""
+    var editRan = false
+
+    var editResultURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("edit-result.json")
+    }
 
     var gestureMode: Bool { ProcessInfo.processInfo.environment["BUBBLE_GESTURES"] == "1" }
+    var editMode: Bool { ProcessInfo.processInfo.environment["BUBBLE_EDIT"] == "1" }
     var fixtureName: String {
         let requested = ProcessInfo.processInfo.environment["BUBBLE_FIXTURE"]
-            ?? (gestureMode ? "gestures" : "counter")
+            ?? (editMode ? "editing" : (gestureMode ? "gestures" : "counter"))
         return requested.range(of: "^[a-z0-9-]+$", options: .regularExpression) == nil
             ? "counter"
             : requested
@@ -1197,6 +1204,13 @@ final class AppDriver {
         last = now
         view.refresh()
         frames += 1
+        if editMode {
+            if !editRan && frames >= 8 {
+                editRan = true
+                runEditAcceptance()
+            }
+            return
+        }
         if gestureMode {
             advanceGestures()
             return
@@ -1430,6 +1444,153 @@ final class AppDriver {
             lastSignature = signature
             NSLog("BUBBLE_GESTURES %@", text)
         }
+    }
+
+    func runEditAcceptance() {
+        var checks: [[String: Any]] = []
+        func add(_ name: String, _ ok: Bool, _ detail: String) {
+            checks.append(["name": name, "ok": ok, "detail": detail])
+        }
+        func write() {
+            let ok = !checks.isEmpty && checks.allSatisfy { ($0["ok"] as? Bool) == true }
+            let doc: [String: Any] = [
+                "suite": "edit.ios",
+                "ok": ok,
+                "elapsed_ms": Int((CACurrentMediaTime() - started) * 1000),
+                "checks": checks,
+            ]
+            guard let data = try? JSONSerialization.data(withJSONObject: doc, options: [.sortedKeys]) else { return }
+            try? FileManager.default.createDirectory(
+                at: editResultURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try? data.write(to: editResultURL, options: .atomic)
+            if let text = String(data: data, encoding: .utf8) {
+                NSLog("BUBBLE_EDIT %@", text)
+            }
+        }
+        func snapshot() -> (session: UInt64, revision: UInt64, anchor: Int, active: Int, compStart: Int, compEnd: Int, composing: Bool)? {
+            var session: UInt64 = 0
+            var revision: UInt64 = 0
+            var anchor: UInt32 = 0
+            var active: UInt32 = 0
+            var compStart: UInt32 = 0
+            var compEnd: UInt32 = 0
+            var composing: UInt32 = 0
+            guard bubble_edit_snapshot(
+                &session, &revision, &anchor, &active, &compStart, &compEnd, &composing
+            ) == 0 else { return nil }
+            return (
+                session,
+                revision,
+                Int(anchor),
+                Int(active),
+                Int(compStart),
+                Int(compEnd),
+                composing != 0
+            )
+        }
+        func marked(_ range: UITextRange?) -> (Int, Int)? {
+            guard let range = range as? IndexedRange else { return nil }
+            return (range.startIndex, range.endIndex)
+        }
+        func selected() -> (Int, Int)? {
+            marked(view.selectedTextRange)
+        }
+        func isRange(_ value: (Int, Int)?, _ expected: (Int, Int)) -> Bool {
+            value?.0 == expected.0 && value?.1 == expected.1
+        }
+
+        var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
+        guard bubble_node_box(4, &x, &y, &w, &h) == 0 else {
+            add("field box", false, "bubble_node_box failed")
+            write()
+            return
+        }
+        let first = bubble_focus_at(x + w / 2, y + h / 2)
+        add("focus", first == 4, "handle=\(first)")
+        guard first == 4 else {
+            write()
+            return
+        }
+
+        view.insertText("a")
+        view.insertText("b")
+        add("value ab", nodeText(4) == "ab", nodeText(4))
+
+        view.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0))
+        add("marked に", isRange(marked(view.markedTextRange), (2, 3)), String(describing: marked(view.markedTextRange)))
+        add("caret in composition", isRange(selected(), (3, 3)), String(describing: selected()))
+        add("composed に", nodeText(4) == "abに", nodeText(4))
+
+        view.setMarkedText("日本", selectedRange: NSRange(location: 2, length: 0))
+        add("marked 日本", isRange(marked(view.markedTextRange), (2, 4)), String(describing: marked(view.markedTextRange)))
+        add("caret after compose", isRange(selected(), (4, 4)), String(describing: selected()))
+        add("composed 日本", nodeText(4) == "ab日本", nodeText(4))
+
+        view.selectedTextRange = IndexedRange(3, 4)
+        add("inner composition selection", isRange(selected(), (3, 4)), String(describing: selected()))
+        let inner = IndexedRange(3, 4)
+        add("inner composition text", view.text(in: inner) == "本", String(describing: view.text(in: inner)))
+        add("marked stays", isRange(marked(view.markedTextRange), (2, 4)), String(describing: marked(view.markedTextRange)))
+        let caret = view.caretRect(for: IndexedPosition(3))
+        add(
+            "caret geometry",
+            caret.height > 0 && caret.minX.isFinite && caret.minY.isFinite,
+            "\(caret)"
+        )
+        let firstRect = view.firstRect(for: inner)
+        add(
+            "first rect geometry",
+            firstRect.height > 0 && firstRect.minX.isFinite && firstRect.minY.isFinite,
+            "\(firstRect)"
+        )
+        let rects = view.selectionRects(for: inner)
+        add(
+            "selection geometry",
+            !rects.isEmpty && rects.contains { $0.rect.width > 0 && $0.rect.height > 0 },
+            "\(rects.map(\.rect))"
+        )
+
+        view.unmarkText()
+        add("unmark clears", view.markedTextRange == nil, String(describing: view.markedTextRange))
+        add("unmark value", nodeText(4) == "ab日本", nodeText(4))
+        add("unmark keeps selection", isRange(selected(), (3, 4)), String(describing: selected()))
+
+        view.deleteBackward()
+        add("delete selection", nodeText(4) == "ab日", nodeText(4))
+        add("delete selection caret", isRange(selected(), (3, 3)), String(describing: selected()))
+        view.insertText("😀")
+        add("insert emoji", nodeText(4) == "ab日😀", nodeText(4))
+        add("emoji caret", isRange(selected(), (5, 5)), String(describing: selected()))
+        view.deleteBackward()
+        add("delete emoji", nodeText(4) == "ab日", nodeText(4))
+        add("emoji deleted caret", isRange(selected(), (3, 3)), String(describing: selected()))
+
+        guard bubble_node_box(7, &x, &y, &w, &h) == 0 else {
+            add("second field box", false, "bubble_node_box failed")
+            write()
+            return
+        }
+        let second = bubble_focus_at(x + w / 2, y + h / 2)
+        add("focus second", second == 7, "handle=\(second)")
+        add("second empty", nodeText(7) == "", nodeText(7))
+        let emptyCaret = view.caretRect(for: IndexedPosition(0))
+        add(
+            "second caret geometry",
+            emptyCaret.height > 0 && emptyCaret.minX.isFinite && emptyCaret.minY.isFinite,
+            "\(emptyCaret)"
+        )
+        if let state = snapshot() {
+            add(
+                "second session",
+                state.anchor == 0 && state.active == 0 && !state.composing,
+                "anchor=\(state.anchor) active=\(state.active) composing=\(state.composing)"
+            )
+        } else {
+            add("second session", false, "snapshot failed")
+        }
+        write()
     }
 
     func finish() {

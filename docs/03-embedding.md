@@ -132,10 +132,10 @@ EditSession {
 
 平台输入代理：
 
-| 平台 | 代理 | 原生交互 |
+| 平台 | 代理 | 当前接入 |
 |---|---|---|
-| iOS | `UIView` 实现 `UITextInput` / `UIKeyInput` | 原生光标、选区手柄、上下文菜单 |
-| Android | `InputConnection`（自定义 View 或隐藏 EditText） | 原生手柄与菜单 |
+| iOS | `UIView` 实现 `UITextInput` / `UIKeyInput` | 光标、选区矩形、标记文本；`UITextInteraction` 手柄与系统编辑菜单未接 |
+| Android | `InputConnection`（自定义 View） | `CursorAnchorInfo`、IME 组合与程序化选区；自绘手柄/菜单未接 |
 | Web | 隐藏 `textarea`，定位到光标 | 自绘选区与菜单；composition 事件 |
 
 数据流：
@@ -164,15 +164,21 @@ Web 宿主从 `runtime.js` 具名导入 `setApi`、`dispatchGestureEvents` 和 `
 | 多行回车 | 去掉 `\r`，保留 `\n` | 同核心 | 同核心 | 同核心 |
 | composition | 独立组合区；未 `cancel` 时忽略脚本写入 | `composition*` 事件；`insertCompositionText` 丢弃 | session 内组合区；`setComposingText` / `setComposingRegion` / 内部选区 | `setMarkedText` / `unmarkText`；标记文本内部选区可独立设置 |
 | 撤销 | 每字段 100 步；脚本值清空 | `historyUndo` / `historyRedo` | 未接按键 | ⌘Z / ⇧⌘Z |
-| 拖动选区 | `SetSelection` | 字段上的拖动不交给手势 | IME `setSelection` | 系统选区手柄 |
-| 菜单 | 无 | 自绘剪切/复制/粘贴/全选；密码不复制 | 系统菜单，依赖 IME | 系统菜单 |
+| 拖动选区 | `SetSelection` | 字段上的拖动不交给手势 | `InputConnection.setSelection`；触摸拖动未接 | `UITextInput` 选区矩形；未接 `UITextInteraction` 手柄 |
+| 菜单 | 无 | 自绘剪切/复制/粘贴/全选；密码不复制 | 系统菜单，依赖 IME | 系统编辑菜单未接 |
 | 光标位置 | layout 后的 `caret_box` | 隐藏 `textarea` 贴到光标 | `CursorAnchorInfo` | `caretRect(for:)` |
 | autofill | `field_flags` bits 16..23 | `autocomplete` | autofill hints | `textContentType` |
 
-设备上的 CJK 标记文本、系统手柄和 Web 菜单待点击验收。
+输入模型验收入口：
 
-剩余 iOS/Web 事务迁移与平台排版快照按 [自绘输入模型重设计计划](06-input-model-plan.md) 后续阶段实施。
+```sh
+cargo test --workspace
+cargo run -q -p bubble-eval -- editing-web
+cargo run -q -p bubble-eval -- editing-android
+cargo run -q -p bubble-eval -- editing-ios
+```
 
+2026-11-12 本机结果：Rust 核心/协议通过；Web 4/4；Android（Android 16 / SDK 36，Fcitx5 `0.1.3-0-g048f581c`）74 项；iOS 27.2 模拟器 27 项。Android 覆盖 CJK 组合更新、组合内移动/删除/确认、`newCursorPosition`、嵌套 batch、周边文本、代码点删除、`CursorAnchorInfo` 和旧连接拒绝；iOS 覆盖标记文本内部选区与光标/选区几何。视觉选区手柄拖动、系统编辑菜单和实体设备差异仍属 M2 输入控件收尾。
 
 ## 6. 更新平面
 

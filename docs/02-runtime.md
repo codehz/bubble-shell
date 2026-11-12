@@ -182,7 +182,7 @@ SetEditingValue {
 - 被拒绝的脚本写入进入 `Shell::take_edit_conflicts`，不静默丢弃，也不记录用户文本。
 - 版本 2 与生产端、Web 解码端锁步切换；旧 BSED v1 路径已删除。
 
-C ABI/JNI/WASM 的编辑事务入口按活动会话校验身份；iOS 与 Web 已迁移到相同的事务、组合区与 revision 规则。平台几何快照仍按 [自绘输入模型重设计计划](06-input-model-plan.md) 的阶段 E 实施。
+C ABI/JNI/WASM 的编辑事务入口按活动会话校验身份；iOS 与 Web 已迁移到相同的事务、组合区与 revision 规则。阶段 E 已把三端编辑几何统一到平台 `LayoutSnapshot`：同一平台结果驱动绘制、命中和 IME 坐标。
 
 ## 4. 线程模型
 

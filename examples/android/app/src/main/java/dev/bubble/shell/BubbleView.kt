@@ -222,6 +222,10 @@ class BubbleView(context: Context) : View(context) {
     private var editorType = InputType.TYPE_CLASS_TEXT
     private var autofillHints = emptyArray<String>()
 
+    /** Last anchor published to the IME; read by the editing acceptance test. */
+    var lastCursorAnchorInfo: CursorAnchorInfo? = null
+        private set
+
     private fun editSnapshot(): EditSnapshot? {
         val raw = BubbleNative.editSnapshot()
         if (raw.size < 7) return null
@@ -251,6 +255,7 @@ class BubbleView(context: Context) : View(context) {
             .build()
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.updateCursorAnchorInfo(this, info)
+        lastCursorAnchorInfo = info
     }
 
     override fun onCheckIsTextEditor(): Boolean = true
@@ -265,8 +270,10 @@ class BubbleView(context: Context) : View(context) {
         return object : BaseInputConnection(this, true) {
             private val expectedSession = initial?.session ?: 0L
             private var batchDepth = 0
+            private var closed = false
 
             private fun current(): EditSnapshot? {
+                if (closed) return null
                 val snapshot = editSnapshot() ?: return null
                 return if (snapshot.session == expectedSession) snapshot else null
             }
@@ -396,6 +403,7 @@ class BubbleView(context: Context) : View(context) {
             }
 
             override fun closeConnection() {
+                closed = true
                 if (batchDepth > 0) {
                     BubbleNative.editBatchAbort(expectedSession)
                     batchDepth = 0
