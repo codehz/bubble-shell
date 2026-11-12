@@ -1564,11 +1564,21 @@ impl Shell {
             text
         };
         if matches!(kind, Kind::Text | Kind::Field) && !shown.is_empty() {
+            let (text_x, text_y, text_w, text_h) = if kind == Kind::Field {
+                (
+                    x + pads[0],
+                    y + pads[2],
+                    (w - pads[0] - pads[1]).max(0.0),
+                    (h - pads[2] - pads[3]).max(0.0),
+                )
+            } else {
+                (x, y, w, h)
+            };
             out.push(PaintCmd::Text {
-                x,
-                y,
-                w,
-                h,
+                x: text_x,
+                y: text_y,
+                w: text_w,
+                h: text_h,
                 font_size,
                 color,
                 line_height: node.line_height,

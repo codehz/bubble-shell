@@ -284,6 +284,16 @@ fn focused_field_paints_a_caret_and_reports_keyboard_flags() {
             &[
                 Op::SetProp {
                     handle,
+                    key: "paddingLeft".into(),
+                    value: Value::Float(8.0),
+                },
+                Op::SetProp {
+                    handle,
+                    key: "paddingTop".into(),
+                    value: Value::Float(6.0),
+                },
+                Op::SetProp {
+                    handle,
                     key: "secure".into(),
                     value: Value::Bool(true),
                 },
@@ -305,13 +315,21 @@ fn focused_field_paints_a_caret_and_reports_keyboard_flags() {
         .layout(&mut |text, font, _, _, _| (text.chars().count() as f32 * font, font))
         .unwrap();
     assert_eq!(shell.field_flags(handle).unwrap(), 2 | (2 << 8) | (4 << 16));
-    let (x, _, w, h) = shell.caret_box().unwrap();
+    let (x, y, w, h) = shell.caret_box().unwrap();
     assert!(w > 0.0 && h > 0.0);
+    let (nx, ny, _, _) = shell.node_box(handle).unwrap();
     let paint = shell.paint();
-    let text_at = paint.iter().position(|cmd| matches!(cmd, bubble_core::PaintCmd::Text { .. }));
+    let text_at = paint.iter().position(|cmd| {
+        matches!(
+            cmd,
+            bubble_core::PaintCmd::Text { x: tx, y: ty, .. }
+                if (*tx - (nx + 8.0)).abs() < 0.01 && (*ty - (ny + 6.0)).abs() < 0.01
+        )
+    });
     let caret_at = paint.iter().position(|cmd| matches!(
         cmd,
         bubble_core::PaintCmd::Fill { x: cx, w: cw, .. } if *cw == 1.0 && (*cx - x).abs() < 0.01
     ));
     assert!(text_at.is_some() && caret_at.is_some() && caret_at > text_at);
+    let _ = y;
 }

@@ -79,7 +79,7 @@ class MainActivity : Activity() {
                 report()
                 phase = 3
             }
-            if (phase != 3) Choreographer.getInstance().postFrameCallback(this)
+            if (!isDestroyed) Choreographer.getInstance().postFrameCallback(this)
         }
     }
 
