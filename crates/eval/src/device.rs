@@ -151,6 +151,42 @@ pub fn editing_ios() -> Result<SuiteReport, String> {
     Ok(decode("edit.ios", &body))
 }
 
+pub fn focus_ios() -> Result<SuiteReport, String> {
+    let started = Instant::now();
+    let root = workspace();
+    build_ios(&root)?;
+    let udid = booted_simulator()?;
+    let tested = run(Command::new("xcodebuild")
+        .args(["test", "-quiet", "-project"])
+        .arg(root.join("examples/ios/BubbleShellUITests.xcodeproj"))
+        .args(["-scheme", "BubbleShellUITests", "-destination"])
+        .arg(format!("platform=iOS Simulator,id={udid}"))
+        .arg("-derivedDataPath")
+        .arg(root.join("target/ios-uitest"))
+        .args([
+            "-parallel-testing-enabled",
+            "NO",
+            "-only-testing:BubbleShellUITests/BubbleShellUITests/testModalFocusAcceptance",
+        ]));
+    let ok = tested.is_ok();
+    Ok(SuiteReport {
+        suite: "focus.ios".into(),
+        ok,
+        scenarios: vec![ScenarioReport {
+            name: "focus.ios".into(),
+            ok,
+            elapsed_ms: started.elapsed().as_millis(),
+            checks: vec![Check {
+                name: "XCTest modal keyboard and accessibility flow".into(),
+                ok,
+                detail: tested
+                    .err()
+                    .unwrap_or_else(|| "XCTest passed on booted simulator".into()),
+            }],
+        }],
+    })
+}
+
 fn ios_device(gestures: bool) -> Result<SuiteReport, String> {
     let root = workspace();
     build_ios(&root)?;

@@ -103,7 +103,11 @@ M2 弹层焦点隔离（2026-11-12）：核心统一限制直接 focus、指针�
 
 M2 Android 设备级弹层验收（2026-11-12）：新增 `cargo run -q -p bubble-eval -- focus-android`，用 `UiAutomation` 服务端无障碍树、虚拟节点 action 与真实窗口键盘事件覆盖外层/嵌套弹层、背景隔离、Tab/Shift-Tab 循环、Enter/Space 激活、Esc 清焦点、IME 切换、旧连接/旧节点拒绝及关闭后背景恢复。验收暴露并修复了非字段焦点仍提供输入连接导致 Enter 被 IME 截走的问题；Android 编辑器声明及连接现在跟随字段会话。语义变化统一发送 subtree 通知，焦点事件指向虚拟节点，provider 实现 input/accessibility `findFocus`。Android 16 / SDK 36 模拟器上述 43 项通过。
 
-M2 尚未完成的部分是设备级读屏验收与平台差异收尾：VoiceOver / TalkBack / NVDA 的核心路径尚未自动化回归，实体设备与厂商键盘差异未测；iOS 弹层焦点陷阱的设备级交互测试待补。Web 浏览器验收与 Android `UiAutomation` 验收覆盖平台树、焦点、事件与 action，尚不等于真实读屏软件验收。
+M2 iOS 设备级弹层验收（2026-11-12）：新增 `cargo run -q -p bubble-eval -- focus-ios`，通过 XCUITest 系统无障碍树与键盘事件覆盖背景隔离、嵌套弹层、Tab/Shift-Tab 环绕、回车/空格激活、字段输入、Esc 清焦点与关闭后恢复。修复 `UITextInput` 宿主默认作为单一无障碍元素而遮蔽语义子节点的问题；可见元素按 handle 复用，modal 切换发布 screenChanged，其他语义变化发布 layoutChanged。非字段焦点的系统文本回车/空格进入核心激活，字段会话变化统一同步键盘类型、secure/autofill 与输入视图。iPhone 18 Pro / iOS 27.2 模拟器完整 XCTest 路径通过，嵌套弹层截图保留在 xcresult。XCTest 的 Return/Enter 常量在此环境没有生成正确回车事件，验收通过 `typeText("\n")` 覆盖系统输入分派。
+
+iOS 编辑回归 `cargo run -q -p bubble-eval -- editing-ios` 同轮 27 项通过，覆盖 CJK composition、组合内选区、emoji 删除与光标/选区几何。
+
+M2 尚未完成的部分是读屏器验收与平台差异收尾：VoiceOver / TalkBack / NVDA 核心路径仍待实测，实体设备与厂商键盘差异未测；iOS 外接键盘物理 Return/Enter 待真机补测。Web 浏览器、Android `UiAutomation` 与 iOS XCUITest 验收覆盖平台树和交互路径，尚不等于真实读屏软件验收。
 
 M2 范围：
 

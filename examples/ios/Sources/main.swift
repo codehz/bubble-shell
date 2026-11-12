@@ -260,6 +260,7 @@ final class BubbleView: UIView {
         isMultipleTouchEnabled = true
         contentMode = .redraw
         backgroundColor = .black
+        isAccessibilityElement = false
     }
 
     required init?(coder: NSCoder) { nil }
@@ -279,6 +280,38 @@ final class BubbleView: UIView {
     private var traceMoves: [UInt32: Int] = [:]
     private var selectionDrag: (touch: ObjectIdentifier, anchor: Int)?
     private var semanticElements: [UIAccessibilityElement] = []
+    private var semanticSnapshot = Data()
+    private var modalHandle: UInt32 = 0
+    private var inputSession: UInt64 = 0
+    private let inactiveInputView = UIView(frame: .zero)
+    private var exposesGestureSurface = false
+    override var isAccessibilityElement: Bool {
+        get { exposesGestureSurface }
+        set { exposesGestureSurface = newValue }
+    }
+
+    fileprivate func handleNavigationPress(_ key: UIKey) -> Bool {
+        guard key.modifierFlags.intersection([.command, .control, .alternate]).isEmpty else { return false }
+        let action: UInt32
+        switch key.keyCode {
+        case .keyboardTab: action = key.modifierFlags.contains(.shift) ? 1 : 0
+        case .keyboardEscape: action = 4
+        case .keyboardReturnOrEnter where editSnapshot() == nil: action = 2
+        case .keyboardSpacebar where editSnapshot() == nil: action = 3
+        default: return false
+        }
+        guard bubble_key(action, CACurrentMediaTime() * 1000) > 0 else { return false }
+        afterNavigationKey()
+        return true
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let remaining = presses.filter { press in
+            guard let key = press.key else { return true }
+            return !handleNavigationPress(key)
+        }
+        if !remaining.isEmpty { super.pressesBegan(Set(remaining), with: event) }
+    }
     override var accessibilityElements: [Any]? {
         get { semanticElements.isEmpty ? nil : semanticElements }
         set { _ = newValue }
@@ -394,6 +427,7 @@ final class BubbleView: UIView {
             paint = Data(bytes: ptr, count: Int(len))
         }
         updateAccessibility()
+        updateInputSession()
         setNeedsDisplay()
     }
     override func draw(_ rect: CGRect) {
@@ -530,11 +564,22 @@ final class BubbleView: UIView {
         var buf = [CChar](repeating: 0, count: 262144)
         guard bubble_semantics(&buf, UInt32(buf.count)) == 0 else { return }
         let data = Data(buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) })
+        guard data != semanticSnapshot else { return }
+        semanticSnapshot = data
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let nodes = object["nodes"] as? [[String: Any]] else { return }
+        let previous = Dictionary(uniqueKeysWithValues: semanticElements.compactMap { element in
+            (element as? BubbleA11yElement).map { ($0.handle, $0) }
+        })
+        let modal = (object["modal"] as? NSNumber)?.uint32Value ?? 0
+        let modalChanged = modal != modalHandle
+        modalHandle = modal
+        accessibilityViewIsModal = modal != 0
         semanticElements = nodes.compactMap { node in
-            guard let raw = node["handle"] as? NSNumber else { return nil }
-            let element = BubbleA11yElement(accessibilityContainer: self, handle: raw.uint32Value, view: self)
+            guard node["hidden"] as? Bool != true,
+                  let raw = node["handle"] as? NSNumber else { return nil }
+            let element = previous[raw.uint32Value]
+                ?? BubbleA11yElement(accessibilityContainer: self, handle: raw.uint32Value, view: self)
             let bounds = node["bounds"] as? [Double] ?? [0, 0, 0, 0]
             element.accessibilityFrameInContainerSpace = CGRect(
                 x: CGFloat(bounds[0]) + safeAreaInsets.left,
@@ -560,12 +605,12 @@ final class BubbleView: UIView {
             default: break
             }
             if node["selected"] as? Bool == true { traits.insert(.selected) }
-            if node["hidden"] as? Bool == true || node["disabled"] as? Bool == true {
-                element.accessibilityElementsHidden = true
-            }
+            if node["disabled"] as? Bool == true { traits.insert(.notEnabled) }
             element.accessibilityTraits = traits
             return element
         }
+        UIAccessibility.post(notification: modalChanged ? .screenChanged : .layoutChanged,
+                             argument: modalChanged ? semanticElements.first : nil)
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -625,26 +670,8 @@ final class BubbleView: UIView {
                 Float(point.y - safeAreaInsets.top)
             )
             if handle != 0 {
-                let flags = bubble_field_flags(handle)
-                secureEntry = flags & 2 != 0
-                switch (flags >> 8) & 0xff {
-                case 1: keyboardKind = .numberPad
-                case 2: keyboardKind = .emailAddress
-                case 3: keyboardKind = .URL
-                case 4: keyboardKind = .phonePad
-                default: keyboardKind = .default
-                }
-                switch (flags >> 16) & 0xff {
-                case 1: contentKind = .username
-                case 2: contentKind = .password
-                case 3: contentKind = .newPassword
-                case 4: contentKind = .emailAddress
-                case 5: contentKind = .telephoneNumber
-                case 6: contentKind = .oneTimeCode
-                default: contentKind = nil
-                }
+                updateInputSession()
                 _ = becomeFirstResponder()
-                reloadInputViews()
             }
             pointerIds.removeValue(forKey: key)
         }
@@ -715,29 +742,40 @@ final class BubbleView: UIView {
         return super.canPerformAction(action, withSender: sender)
     }
 
-    @objc func tabForward() {
-        let handled = bubble_key(0, CACurrentMediaTime() * 1000)
-        if handled > 0 { afterNavigationKey() }
-    }
-
-    @objc func tabBackward() {
-        let handled = bubble_key(1, CACurrentMediaTime() * 1000)
-        if handled > 0 { afterNavigationKey() }
-    }
-
-    @objc func escapeKey() {
-        let handled = bubble_key(4, CACurrentMediaTime() * 1000)
-        if handled > 0 { afterNavigationKey() }
-    }
-
-    private func afterNavigationKey() {
+    fileprivate func afterNavigationKey() {
         refresh()
-        if bubble_focused() != 0 {
-            _ = becomeFirstResponder()
-            reloadInputViews()
-        } else {
-            resignFirstResponder()
+        synchronizeResponder()
+    }
+
+    fileprivate func synchronizeResponder() {
+        if !isFirstResponder { _ = becomeFirstResponder() }
+    }
+
+    override var inputView: UIView? { editSnapshot() == nil ? inactiveInputView : nil }
+
+    private func updateInputSession() {
+        let session = editSnapshot()?.session ?? 0
+        guard session != inputSession else { return }
+        inputSession = session
+        let flags = bubble_field_flags(bubble_focused())
+        secureEntry = flags & 2 != 0
+        switch (flags >> 8) & 0xff {
+        case 1: keyboardKind = .numberPad
+        case 2: keyboardKind = .emailAddress
+        case 3: keyboardKind = .URL
+        case 4: keyboardKind = .phonePad
+        default: keyboardKind = .default
         }
+        switch (flags >> 16) & 0xff {
+        case 1: contentKind = .username
+        case 2: contentKind = .password
+        case 3: contentKind = .newPassword
+        case 4: contentKind = .emailAddress
+        case 5: contentKind = .telephoneNumber
+        case 6: contentKind = .oneTimeCode
+        default: contentKind = nil
+        }
+        if isFirstResponder { reloadInputViews() }
     }
 }
 
@@ -752,7 +790,9 @@ final class BubbleA11yElement: UIAccessibilityElement {
     }
 
     override func accessibilityActivate() -> Bool {
-        bubble_a11y_action(handle, 1, nil, 0) == 0
+        guard bubble_a11y_action(handle, 1, nil, 0) == 0 else { return false }
+        view?.afterNavigationKey()
+        return true
     }
 
     override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
@@ -772,7 +812,7 @@ final class BubbleA11yElement: UIAccessibilityElement {
     }
 
     override func accessibilityElementDidBecomeFocused() {
-        _ = bubble_a11y_action(handle, 0, nil, 0)
+        if bubble_a11y_action(handle, 0, nil, 0) == 0 { view?.afterNavigationKey() }
     }
 }
 
@@ -831,13 +871,12 @@ struct EditSnapshot {
 extension BubbleView: UITextInput {
     override var canBecomeFirstResponder: Bool { true }
     override var keyCommands: [UIKeyCommand]? {
-        [
+        let commands = [
             UIKeyCommand(input: "z", modifierFlags: .command, action: #selector(undoEditing)),
             UIKeyCommand(input: "z", modifierFlags: [.command, .shift], action: #selector(redoEditing)),
-            UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(tabForward)),
-            UIKeyCommand(input: "\t", modifierFlags: .shift, action: #selector(tabBackward)),
-            UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeKey)),
         ]
+        for command in commands { command.wantsPriorityOverSystemBehavior = true }
+        return commands
     }
 
     @objc func undoEditing() {
@@ -882,6 +921,16 @@ extension BubbleView: UITextInput {
     }
 
     func insertText(_ text: String) {
+        if editSnapshot() == nil {
+            let action: UInt32
+            switch text {
+            case "\n", "\r": action = 2
+            case " ": action = 3
+            default: return
+            }
+            if bubble_key(action, CACurrentMediaTime() * 1000) > 0 { afterNavigationKey() }
+            return
+        }
         changeText {
             guard let snapshot = editSnapshot() else { return }
             editCommit(snapshot.session, text: text)
@@ -1316,6 +1365,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 }
 
+
 final class AppDriver {
     static let scenes = ["tap", "long", "double", "pan", "transform", "parallel", "reserve", "contain", "dispose", "lifecycle"]
     static let unsupported: [[String: Any]] = [
@@ -1350,6 +1400,7 @@ final class AppDriver {
 
     var gestureMode: Bool { ProcessInfo.processInfo.environment["BUBBLE_GESTURES"] == "1" }
     var editMode: Bool { ProcessInfo.processInfo.environment["BUBBLE_EDIT"] == "1" }
+    var focusMode: Bool { ProcessInfo.processInfo.environment["BUBBLE_FOCUS"] == "1" }
     var fixtureName: String {
         let requested = ProcessInfo.processInfo.environment["BUBBLE_FIXTURE"]
             ?? (editMode ? "editing" : (gestureMode ? "gestures" : "counter"))
@@ -1433,6 +1484,10 @@ final class AppDriver {
         last = now
         view.refresh()
         frames += 1
+        if focusMode {
+            if frames == 8 { view.synchronizeResponder() }
+            return
+        }
         if editMode {
             if !editRan && frames >= 8 {
                 editRan = true
