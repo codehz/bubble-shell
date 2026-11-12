@@ -339,9 +339,7 @@ fn session_identity_is_unique_and_expect_checks_revision() {
 #[test]
 fn edit_events_encode_v2_deltas_and_final_snapshot() {
     let mut session = EditSession::new("a", EditConfig::default());
-    let outcome = session
-        .apply(EditOp::Insert("b".into()), None)
-        .unwrap();
+    let outcome = session.apply(EditOp::Insert("b".into()), None).unwrap();
     let event = EditEvent {
         handle: 7,
         handler: 9,
@@ -431,7 +429,11 @@ fn new_cursor_position_uses_the_fitted_insertion() {
         .replace_with_cursor(DocRange::new(1, 1), "XY", 2, false)
         .unwrap();
     assert_eq!(session.value(), "aXb");
-    assert_eq!(session.field_state().active(), 3, "fitted insert length is used");
+    assert_eq!(
+        session.field_state().active(),
+        3,
+        "fitted insert length is used"
+    );
 }
 
 #[test]

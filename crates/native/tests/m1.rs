@@ -6,12 +6,11 @@ use std::time::{Duration, Instant};
 use bubble_ffi::{
     bubble_create, bubble_destroy, bubble_edit, bubble_edit_batch_begin, bubble_edit_batch_end,
     bubble_edit_commit, bubble_edit_compose, bubble_edit_delete_surrounding,
-    bubble_edit_finish_composition, bubble_edit_replace,
-    bubble_edit_snapshot, bubble_eval, bubble_faults, bubble_finish_request,
-    bubble_font_count, bubble_font_epoch, bubble_frame, bubble_generation, bubble_last_error,
-    bubble_load, bubble_node_box, bubble_node_text, bubble_pointer, bubble_poll_request,
-    bubble_post_eval, bubble_register_font, bubble_scroll, bubble_scroll_y_of, bubble_set_visible,
-    bubble_status,
+    bubble_edit_finish_composition, bubble_edit_replace, bubble_edit_snapshot, bubble_eval,
+    bubble_faults, bubble_finish_request, bubble_font_count, bubble_font_epoch, bubble_frame,
+    bubble_generation, bubble_last_error, bubble_load, bubble_node_box, bubble_node_text,
+    bubble_pointer, bubble_poll_request, bubble_post_eval, bubble_register_font, bubble_scroll,
+    bubble_scroll_y_of, bubble_set_visible, bubble_status,
 };
 
 // The C ABI owns one process-global shell. Cargo runs tests in one process in
@@ -367,7 +366,9 @@ fn edit_snapshot() -> (u64, u64, u32, u32, u32, u32, u32) {
         "{}",
         error()
     );
-    (session, revision, anchor, active, comp_start, comp_end, composing)
+    (
+        session, revision, anchor, active, comp_start, comp_end, composing,
+    )
 }
 
 #[test]
@@ -390,15 +391,7 @@ fn ime_transactions_apply_new_cursor_and_composition() {
 
     let ab = CString::new("ab").unwrap();
     assert_eq!(
-        bubble_edit_replace(
-            session,
-            0,
-            0,
-            ab.as_ptr() as *const u8,
-            2,
-            1,
-            0,
-        ),
+        bubble_edit_replace(session, 0, 0, ab.as_ptr() as *const u8, 2, 1, 0,),
         0,
         "{}",
         error()
@@ -411,15 +404,7 @@ fn ime_transactions_apply_new_cursor_and_composition() {
 
     let mark = CString::new("X").unwrap();
     assert_eq!(
-        bubble_edit_replace(
-            session,
-            2,
-            2,
-            mark.as_ptr() as *const u8,
-            1,
-            1,
-            1,
-        ),
+        bubble_edit_replace(session, 2, 2, mark.as_ptr() as *const u8, 1, 1, 1,),
         0,
         "{}",
         error()
@@ -429,12 +414,7 @@ fn ime_transactions_apply_new_cursor_and_composition() {
     assert_eq!((comp_start, comp_end, composing), (2, 3, 1));
     assert_eq!(text(4), "abX");
 
-    assert_eq!(
-        bubble_edit_finish_composition(session),
-        0,
-        "{}",
-        error()
-    );
+    assert_eq!(bubble_edit_finish_composition(session), 0, "{}", error());
     let (_, _, _, _, _, comp_end, composing) = edit_snapshot();
     assert_eq!(comp_end, u32::MAX);
     assert_eq!(composing, 0);

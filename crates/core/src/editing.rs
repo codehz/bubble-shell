@@ -788,10 +788,7 @@ impl EditSession {
         let (start, end) = self.surrounding_range();
         let len = utf16_len(&self.value);
         let start = normalize_offset(&self.value, start.saturating_sub(before_units));
-        let end = normalize_offset(
-            &self.value,
-            end.saturating_add(after_units).min(len),
-        );
+        let end = normalize_offset(&self.value, end.saturating_add(after_units).min(len));
         self.delete_units(start, end)
     }
 
@@ -1324,7 +1321,6 @@ fn diff(old: &str, new: &str) -> EditDelta {
         insert: new[prefix_bytes..new_end].to_owned(),
     }
 }
-
 
 pub fn utf16_len(value: &str) -> u32 {
     value.chars().map(|ch| ch.len_utf16() as u32).sum()

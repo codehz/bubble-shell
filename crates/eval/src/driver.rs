@@ -67,7 +67,17 @@ impl Session {
     }
 
     pub fn pointer(&mut self, action: u32, id: u32, x: f32, y: f32, time_ms: f64) -> i32 {
-        unsafe { bubble_pointer(action, id, x, y, time_ms, 0, if action == 2 { 0 } else { 1 }) }
+        unsafe {
+            bubble_pointer(
+                action,
+                id,
+                x,
+                y,
+                time_ms,
+                0,
+                if action == 2 { 0 } else { 1 },
+            )
+        }
     }
 
     /// A complete tap: down then up one sample later.

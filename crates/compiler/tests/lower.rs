@@ -144,7 +144,9 @@ fn lowers_image_primitive() {
         "#,
     )
     .unwrap();
-    assert!(js.contains("primitive(\"Image\", {src: \"logo.png\", width: 40, height: 30, fit: \"cover\"}, "));
+    assert!(js.contains(
+        "primitive(\"Image\", {src: \"logo.png\", width: 40, height: 30, fit: \"cover\"}, "
+    ));
 }
 
 #[test]
@@ -203,7 +205,9 @@ fn lowers_show_for_and_switch() {
     .unwrap();
     assert!(js.contains("show(() => (show), () => {"));
     assert!(js.contains("forEach(() => (items), (item) => item.id, (item) => primitive(\"Text\", {}, () => item().name))"));
-    assert!(js.contains("indexEach(() => (items), (item) => primitive(\"Text\", {}, () => item()))"));
+    assert!(
+        js.contains("indexEach(() => (items), (item) => primitive(\"Text\", {}, () => item()))")
+    );
     assert!(js.contains("switchFlow(null, ["));
     assert!(compile("<View>{show ? <Text>Yes</Text> : null}</View>").is_err());
 }

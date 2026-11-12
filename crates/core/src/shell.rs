@@ -559,10 +559,7 @@ impl Shell {
         Ok(seq)
     }
 
-    pub fn layout(
-        &mut self,
-        measure: Measure<'_>,
-    ) -> Result<(), String> {
+    pub fn layout(&mut self, measure: Measure<'_>) -> Result<(), String> {
         self.compute_layout(measure)?;
         self.refresh_caret(&mut |req| {
             Ok(wrapping_layout(req, |line| {
@@ -589,10 +586,7 @@ impl Shell {
         self.refresh_caret(host)
     }
 
-    pub fn compute_layout(
-        &mut self,
-        measure: Measure<'_>,
-    ) -> Result<(), String> {
+    pub fn compute_layout(&mut self, measure: Measure<'_>) -> Result<(), String> {
         if self.viewport.width <= 0.0 || self.viewport.height <= 0.0 {
             return Err("viewport is empty".into());
         }
@@ -1334,12 +1328,7 @@ impl Shell {
     }
 
     /// UTF-16 offset in the focused field nearest the point. Does not move the caret.
-    pub fn unit_at(
-        &self,
-        x: f32,
-        y: f32,
-        measure: Measure<'_>,
-    ) -> Result<Option<u32>, String> {
+    pub fn unit_at(&self, x: f32, y: f32, measure: Measure<'_>) -> Result<Option<u32>, String> {
         self.unit_at_with(x, y, &mut |req| {
             Ok(wrapping_layout(req, |line| {
                 measure(
@@ -1417,12 +1406,7 @@ impl Shell {
 
     /// Focus the field under the point and collapse the caret to the nearest
     /// UTF-16 offset. Returns `0` when the point misses every field.
-    pub fn focus_point(
-        &mut self,
-        x: f32,
-        y: f32,
-        measure: Measure<'_>,
-    ) -> Result<u32, String> {
+    pub fn focus_point(&mut self, x: f32, y: f32, measure: Measure<'_>) -> Result<u32, String> {
         self.focus_point_with(x, y, &mut |req| {
             Ok(wrapping_layout(req, |line| {
                 measure(

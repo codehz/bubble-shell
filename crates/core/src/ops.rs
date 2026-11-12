@@ -45,7 +45,9 @@ impl Value {
             Value::Int(value) => u32::try_from(*value)
                 .map(Color::from_argb)
                 .map_err(|_| format!("invalid numeric color {value}")),
-            Value::Float(value) if value.is_finite() && *value >= 0.0 && *value <= u32::MAX as f64 => {
+            Value::Float(value)
+                if value.is_finite() && *value >= 0.0 && *value <= u32::MAX as f64 =>
+            {
                 Ok(Color::from_argb(*value as u32))
             }
             Value::String(text) => crate::color::parse(text),
@@ -478,7 +480,10 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
             12 => {
                 let gesture = read_u32(&mut payload_cur)?;
                 let key_id = read_u32(&mut payload_cur)? as usize;
-                let key = strings.get(key_id).ok_or("gesture key out of range")?.clone();
+                let key = strings
+                    .get(key_id)
+                    .ok_or("gesture key out of range")?
+                    .clone();
                 let value = match read_u8(&mut payload_cur)? {
                     0 => Value::Null,
                     1 => Value::Bool(read_u8(&mut payload_cur)? != 0),
@@ -586,7 +591,6 @@ fn read_u64(cur: &mut Cursor<&[u8]>) -> Result<u64, String> {
     cur.read_exact(&mut buf).map_err(|_| "truncated ops")?;
     Ok(u64::from_le_bytes(buf))
 }
-
 
 fn read_i64(cur: &mut Cursor<&[u8]>) -> Result<i64, String> {
     let mut buf = [0u8; 8];

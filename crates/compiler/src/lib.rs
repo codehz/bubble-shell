@@ -457,9 +457,7 @@ fn emit_children(
                     return Err("empty JSX expression".into());
                 };
                 if contains_jsx(expr) && !matches!(expr, Expression::JSXElement(_)) {
-                    return Err(
-                        "JSX control flow must use Show, For, Index, or Switch".into(),
-                    );
+                    return Err("JSX control flow must use Show, For, Index, or Switch".into());
                 }
                 if is_removed_helper(expr) {
                     return Err("when() and each() were removed; use Show or For".into());
@@ -556,7 +554,10 @@ fn emit_for(
 ) -> Result<(), String> {
     let each = element_attr(element, "each")?.ok_or("For requires each")?;
     let by = element_attr(element, "by")?.ok_or("For requires by")?;
-    if !matches!(by, Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)) {
+    if !matches!(
+        by,
+        Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)
+    ) {
         return Err("For by must be a function".into());
     }
     let callback = sole_callback(&element.children)?;

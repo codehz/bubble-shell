@@ -110,7 +110,11 @@ fn parse_hex(digits: &str) -> Result<Color, String> {
             let r = value(0)? * 17;
             let g = value(1)? * 17;
             let b = value(2)? * 17;
-            let a = if digits.len() == 4 { value(3)? * 17 } else { 255 };
+            let a = if digits.len() == 4 {
+                value(3)? * 17
+            } else {
+                255
+            };
             (r, g, b, a)
         }
         6 | 8 => {
@@ -203,7 +207,12 @@ fn angle(token: &str) -> Result<f64, String> {
     if token.eq_ignore_ascii_case("none") {
         return Ok(0.0);
     }
-    for (suffix, scale) in [("turn", 360.0), ("grad", 0.9), ("deg", 1.0), ("rad", 180.0 / PI)] {
+    for (suffix, scale) in [
+        ("turn", 360.0),
+        ("grad", 0.9),
+        ("deg", 1.0),
+        ("rad", 180.0 / PI),
+    ] {
         if let Some(value) = token.strip_suffix(suffix) {
             return Ok(number(value.trim())? * scale);
         }
@@ -341,11 +350,7 @@ fn parse_color_function(body: &str) -> Result<Color, String> {
     let c1 = value(components[1])?;
     let c2 = value(components[2])?;
     let linear = match space {
-        "srgb" => [
-            srgb_to_linear(c0),
-            srgb_to_linear(c1),
-            srgb_to_linear(c2),
-        ],
+        "srgb" => [srgb_to_linear(c0), srgb_to_linear(c1), srgb_to_linear(c2)],
         "srgb-linear" => [c0, c1, c2],
         "display-p3" => p3_to_linear_srgb([c0, c1, c2]),
         "a98-rgb" => a98_to_linear_srgb([c0, c1, c2]),
@@ -418,11 +423,7 @@ fn lab_to_xyz_d50(lightness: f64, a: f64, b: f64) -> [f64; 3] {
         lightness / kappa
     };
     let z = f(f2);
-    [
-        x * 0.9642956764295677,
-        y,
-        z * 0.8251046025104602,
-    ]
+    [x * 0.9642956764295677, y, z * 0.8251046025104602]
 }
 
 fn oklab_to_linear_srgb(lightness: f64, a: f64, b: f64) -> [f64; 3] {
@@ -566,7 +567,15 @@ mod tests {
 
     #[test]
     fn keywords_and_transparent() {
-        assert_close(parse("RebeccaPurple").unwrap(), [0x66 as f32 / 255.0, 0x33 as f32 / 255.0, 0x99 as f32 / 255.0, 1.0]);
+        assert_close(
+            parse("RebeccaPurple").unwrap(),
+            [
+                0x66 as f32 / 255.0,
+                0x33 as f32 / 255.0,
+                0x99 as f32 / 255.0,
+                1.0,
+            ],
+        );
         assert_close(parse("transparent").unwrap(), [0.0, 0.0, 0.0, 0.0]);
         assert!(parse("notacolor").is_err());
     }
@@ -575,7 +584,10 @@ mod tests {
     fn rgb_syntaxes() {
         assert_close(parse("rgb(255, 0, 0)").unwrap(), [1.0, 0.0, 0.0, 1.0]);
         assert_close(parse("rgba(0, 0, 255, 0.5)").unwrap(), [0.0, 0.0, 1.0, 0.5]);
-        assert_close(parse("rgb(100% 0% 0% / 25%)").unwrap(), [1.0, 0.0, 0.0, 0.25]);
+        assert_close(
+            parse("rgb(100% 0% 0% / 25%)").unwrap(),
+            [1.0, 0.0, 0.0, 0.25],
+        );
         assert_close(parse("rgb(300 -20 0)").unwrap(), [1.0, 0.0, 0.0, 1.0]);
         assert!(parse("rgb(1, 2)").is_err());
     }
@@ -583,7 +595,10 @@ mod tests {
     #[test]
     fn hsl_and_hwb() {
         assert_close(parse("hsl(120, 100%, 50%)").unwrap(), [0.0, 1.0, 0.0, 1.0]);
-        assert_close(parse("hsl(0.5turn 100% 50% / .5)").unwrap(), [0.0, 1.0, 1.0, 0.5]);
+        assert_close(
+            parse("hsl(0.5turn 100% 50% / .5)").unwrap(),
+            [0.0, 1.0, 1.0, 0.5],
+        );
         assert_close(parse("hwb(0 0% 0%)").unwrap(), [1.0, 0.0, 0.0, 1.0]);
         assert_close(parse("hwb(0 20% 20%)").unwrap(), [0.8, 0.2, 0.2, 1.0]);
     }
@@ -593,17 +608,33 @@ mod tests {
         assert_close(parse("lab(100% 0 0)").unwrap(), [1.0, 1.0, 1.0, 1.0]);
         assert_close(parse("lab(0% 0 0)").unwrap(), [0.0, 0.0, 0.0, 1.0]);
         assert_close(parse("oklab(100% 0 0)").unwrap(), [1.0, 1.0, 1.0, 1.0]);
-        assert_close(parse("oklch(0.627955 0.257683 29.2339)").unwrap(), [1.0, 0.0, 0.0, 1.0]);
+        assert_close(
+            parse("oklch(0.627955 0.257683 29.2339)").unwrap(),
+            [1.0, 0.0, 0.0, 1.0],
+        );
         assert_close(parse("lch(100% 0 0)").unwrap(), [1.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]
     fn color_function_spaces() {
         assert_close(parse("color(srgb 1 0 0)").unwrap(), [1.0, 0.0, 0.0, 1.0]);
-        assert_close(parse("color(srgb-linear 1 0 0)").unwrap(), [1.0, 0.0, 0.0, 1.0]);
-        assert_close(parse("color(display-p3 1 0 0)").unwrap(), [1.0930, -0.2267, -0.1501, 1.0]);
-        assert_close(parse("color(rec2020 1 0 0)").unwrap(), [1.2482, -0.3879, -0.1435, 1.0]);
-        assert_close(parse("color(xyz-d65 0.41239079926595934 0.21263900587151027 0.01933081871559182)").unwrap(), [1.0, 0.0, 0.0, 1.0]);
+        assert_close(
+            parse("color(srgb-linear 1 0 0)").unwrap(),
+            [1.0, 0.0, 0.0, 1.0],
+        );
+        assert_close(
+            parse("color(display-p3 1 0 0)").unwrap(),
+            [1.0930, -0.2267, -0.1501, 1.0],
+        );
+        assert_close(
+            parse("color(rec2020 1 0 0)").unwrap(),
+            [1.2482, -0.3879, -0.1435, 1.0],
+        );
+        assert_close(
+            parse("color(xyz-d65 0.41239079926595934 0.21263900587151027 0.01933081871559182)")
+                .unwrap(),
+            [1.0, 0.0, 0.0, 1.0],
+        );
         assert!(parse("color(cmyk 1 0 0)").is_err());
     }
 

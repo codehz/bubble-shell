@@ -4,10 +4,20 @@ use bubble_core::{
     encode, encode_events, GestureEvent, NodeDesc, Op, PointerAction, PointerInput, Shell, Value,
 };
 
-fn measure(text: &str, font_size: f32, line_height: f32, _weight: u16, _max: Option<f32>) -> (f32, f32) {
+fn measure(
+    text: &str,
+    font_size: f32,
+    line_height: f32,
+    _weight: u16,
+    _max: Option<f32>,
+) -> (f32, f32) {
     (
         text.chars().count() as f32 * font_size * 0.5,
-        if line_height > 0.0 { line_height } else { font_size * 1.2 },
+        if line_height > 0.0 {
+            line_height
+        } else {
+            font_size * 1.2
+        },
     )
 }
 
@@ -124,11 +134,15 @@ fn a_long_press_timeout_cancels_the_tap_on_the_same_tick() {
     shell.pointer(input(PointerAction::Down, 50.0, 50.0, 0.0));
     shell.advance_gestures(120.0);
     let events = shell.take_gesture_events();
-    assert!(events.iter().any(|event| event.slot == 6 && event.gesture == 11));
+    assert!(events
+        .iter()
+        .any(|event| event.slot == 6 && event.gesture == 11));
     assert!(events.iter().any(|event| event.slot == 3));
     shell.pointer(input(PointerAction::Up, 50.0, 50.0, 140.0));
     let ended = shell.take_gesture_events();
-    assert!(ended.iter().any(|event| event.slot == 8 && event.gesture == 11));
+    assert!(ended
+        .iter()
+        .any(|event| event.slot == 8 && event.gesture == 11));
     assert!(!ended.iter().any(|event| event.slot == 4));
 }
 
@@ -289,7 +303,9 @@ fn disposing_a_gesture_cancels_an_active_sequence() {
     shell.pointer(input(PointerAction::Down, 50.0, 50.0, 0.0));
     shell.pointer(input(PointerAction::Move, 80.0, 50.0, 10.0));
     let started = shell.take_gesture_events();
-    assert!(started.iter().any(|event| event.slot == 6 && event.gesture == 11));
+    assert!(started
+        .iter()
+        .any(|event| event.slot == 6 && event.gesture == 11));
     shell
         .apply_ops(&encode(3, &[Op::DisposeGesture { gesture: 11 }]))
         .unwrap();

@@ -65,7 +65,10 @@ impl LayoutSnapshot {
     }
 
     pub fn caret(&self, unit: u32) -> Option<CaretEdge> {
-        self.carets.get(unit as usize).copied().or_else(|| self.carets.last().copied())
+        self.carets
+            .get(unit as usize)
+            .copied()
+            .or_else(|| self.carets.last().copied())
     }
 
     /// Nearest UTF-16 boundary. The caller snaps surrogate interiors.
@@ -93,7 +96,11 @@ impl LayoutSnapshot {
     /// Selection rectangles in snapshot coordinates. One rect per overlapping run,
     /// so a bidi selection is not assumed to be one monotonic span.
     pub fn selection_rects(&self, start: u32, end: u32) -> Vec<[f32; 4]> {
-        let (lo, hi) = if start <= end { (start, end) } else { (end, start) };
+        let (lo, hi) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
         if lo == hi {
             return Vec::new();
         }
@@ -120,9 +127,16 @@ impl LayoutSnapshot {
     /// the authority for its own end.
     fn boundary_x(&self, run: &LayoutRun, unit: u32) -> f32 {
         if unit == run.end {
-            return if run.level % 2 == 1 { run.x } else { run.x + run.w };
+            return if run.level % 2 == 1 {
+                run.x
+            } else {
+                run.x + run.w
+            };
         }
-        self.carets.get(unit as usize).map(|caret| caret.x).unwrap_or(run.x)
+        self.carets
+            .get(unit as usize)
+            .map(|caret| caret.x)
+            .unwrap_or(run.x)
     }
 }
 
@@ -140,7 +154,11 @@ pub fn snap_unit(text: &str, unit: u32) -> u32 {
             return seen;
         }
         if unit < next {
-            return if unit - seen <= next - unit { seen } else { next };
+            return if unit - seen <= next - unit {
+                seen
+            } else {
+                next
+            };
         }
         seen = next;
     }
@@ -224,13 +242,33 @@ pub fn decode_layout(bytes: &[u8]) -> Result<LayoutSnapshot, String> {
         let w = f32::from_le_bytes(bytes[cursor + 16..cursor + 20].try_into().unwrap());
         let h = f32::from_le_bytes(bytes[cursor + 20..cursor + 24].try_into().unwrap());
         let level = bytes[cursor + 24];
-        if start > end || end > units || level > 1 || !x.is_finite() || !y.is_finite() || !w.is_finite() || !h.is_finite() {
+        if start > end
+            || end > units
+            || level > 1
+            || !x.is_finite()
+            || !y.is_finite()
+            || !w.is_finite()
+            || !h.is_finite()
+        {
             return Err("layout run is invalid".into());
         }
-        runs.push(LayoutRun { start, end, x, y, w, h, level });
+        runs.push(LayoutRun {
+            start,
+            end,
+            x,
+            y,
+            w,
+            h,
+            level,
+        });
         cursor += 28;
     }
-    Ok(LayoutSnapshot { key, units, carets, runs })
+    Ok(LayoutSnapshot {
+        key,
+        units,
+        carets,
+        runs,
+    })
 }
 
 fn push_f32(out: &mut Vec<u8>, value: f32) {
@@ -239,7 +277,10 @@ fn push_f32(out: &mut Vec<u8>, value: f32) {
 
 /// LTR wrap used when a host has no shaper (core tests, native fallback).
 /// Platform editors must not use this for IME geometry.
-pub fn wrapping_layout(req: &LayoutRequest<'_>, mut advance: impl FnMut(&str) -> f32) -> LayoutSnapshot {
+pub fn wrapping_layout(
+    req: &LayoutRequest<'_>,
+    mut advance: impl FnMut(&str) -> f32,
+) -> LayoutSnapshot {
     let lh = if req.key.line_height.is_finite() && req.key.line_height > 0.0 {
         req.key.line_height
     } else {
@@ -253,7 +294,11 @@ pub fn wrapping_layout(req: &LayoutRequest<'_>, mut advance: impl FnMut(&str) ->
     let mut lines: Vec<(u32, u32, String)> = Vec::new();
     let mut base = 0u32;
     let paragraphs: Vec<&str> = req.text.split('\n').collect();
-    let paragraphs = if paragraphs.is_empty() { vec![""] } else { paragraphs };
+    let paragraphs = if paragraphs.is_empty() {
+        vec![""]
+    } else {
+        paragraphs
+    };
     for (index, para) in paragraphs.iter().enumerate() {
         let wrapped = wrap_paragraph(para, limit, &mut advance);
         let mut local = 0u32;
@@ -272,7 +317,14 @@ pub fn wrapping_layout(req: &LayoutRequest<'_>, mut advance: impl FnMut(&str) ->
         lines.push((0, 0, String::new()));
     }
     let units = utf16_len(req.text);
-    let mut carets = vec![CaretEdge { x: 0.0, y: 0.0, h: lh }; units as usize + 1];
+    let mut carets = vec![
+        CaretEdge {
+            x: 0.0,
+            y: 0.0,
+            h: lh
+        };
+        units as usize + 1
+    ];
     let mut runs = Vec::new();
     for (index, (start, end, text)) in lines.iter().enumerate() {
         let y = index as f32 * lh;
@@ -324,7 +376,11 @@ fn align_shift(align: u8, width: f32, measured: f32) -> f32 {
     }
 }
 
-fn wrap_paragraph(para: &str, limit: f32, advance: &mut impl FnMut(&str) -> f32) -> Vec<(usize, usize)> {
+fn wrap_paragraph(
+    para: &str,
+    limit: f32,
+    advance: &mut impl FnMut(&str) -> f32,
+) -> Vec<(usize, usize)> {
     if para.is_empty() {
         return vec![(0, 0)];
     }
@@ -380,7 +436,10 @@ mod tests {
 
     #[test]
     fn wrap_moves_the_caret_to_the_next_line() {
-        let req = LayoutRequest { text: "abcd", key: key(25.0, 3) };
+        let req = LayoutRequest {
+            text: "abcd",
+            key: key(25.0, 3),
+        };
         let snapshot = wrapping_layout(&req, advance);
         assert!(snapshot.matches(&req.key));
         let third = snapshot.caret(2).unwrap();
@@ -393,12 +452,31 @@ mod tests {
     #[test]
     fn bidi_selection_is_not_one_logical_span() {
         let mut snapshot = wrapping_layout(
-            &LayoutRequest { text: "abCD", key: key(200.0, 1) },
+            &LayoutRequest {
+                text: "abCD",
+                key: key(200.0, 1),
+            },
             advance,
         );
         snapshot.runs.clear();
-        snapshot.runs.push(LayoutRun { start: 0, end: 2, x: 0.0, y: 0.0, w: 20.0, h: 12.0, level: 0 });
-        snapshot.runs.push(LayoutRun { start: 2, end: 4, x: 40.0, y: 0.0, w: 20.0, h: 12.0, level: 1 });
+        snapshot.runs.push(LayoutRun {
+            start: 0,
+            end: 2,
+            x: 0.0,
+            y: 0.0,
+            w: 20.0,
+            h: 12.0,
+            level: 0,
+        });
+        snapshot.runs.push(LayoutRun {
+            start: 2,
+            end: 4,
+            x: 40.0,
+            y: 0.0,
+            w: 20.0,
+            h: 12.0,
+            level: 1,
+        });
         snapshot.carets[2].x = 60.0;
         snapshot.carets[3].x = 60.0;
         snapshot.carets[4].x = 40.0;
@@ -410,7 +488,13 @@ mod tests {
 
     #[test]
     fn stale_revision_does_not_match() {
-        let snapshot = wrapping_layout(&LayoutRequest { text: "a", key: key(40.0, 2) }, advance);
+        let snapshot = wrapping_layout(
+            &LayoutRequest {
+                text: "a",
+                key: key(40.0, 2),
+            },
+            advance,
+        );
         let mut next = key(40.0, 3);
         assert!(!snapshot.matches(&next));
         next.revision = 2;
@@ -427,7 +511,13 @@ mod tests {
 
     #[test]
     fn round_trip_preserves_runs() {
-        let snapshot = wrapping_layout(&LayoutRequest { text: "hi\nthere", key: key(100.0, 9) }, advance);
+        let snapshot = wrapping_layout(
+            &LayoutRequest {
+                text: "hi\nthere",
+                key: key(100.0, 9),
+            },
+            advance,
+        );
         let decoded = decode_layout(&encode_layout(&snapshot)).unwrap();
         assert_eq!(decoded, snapshot);
     }

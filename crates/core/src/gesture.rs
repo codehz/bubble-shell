@@ -407,9 +407,8 @@ impl Recognizer {
     pub fn has_tap(&self, target: u32) -> bool {
         self.order.get(&target).is_some_and(|ids| {
             ids.iter().any(|id| {
-                self.decl(*id).is_some_and(|decl| {
-                    decl.kind == GestureKind::Tap && decl.has_handler(SLOT_TAP)
-                })
+                self.decl(*id)
+                    .is_some_and(|decl| decl.kind == GestureKind::Tap && decl.has_handler(SLOT_TAP))
             })
         })
     }
@@ -510,15 +509,15 @@ impl Recognizer {
             list.insert(index as usize, id);
         }
         if old_target != target {
-            if self.pending_tap.as_ref().is_some_and(|pending| pending.gesture == id) {
+            if self
+                .pending_tap
+                .as_ref()
+                .is_some_and(|pending| pending.gesture == id)
+            {
                 self.pending_tap = None;
             }
             self.cancel_decl(id, REASON_DISPOSED);
-            if let Some(decl) = self
-                .decls
-                .get_mut(id as usize)
-                .and_then(Option::as_mut)
-            {
+            if let Some(decl) = self.decls.get_mut(id as usize).and_then(Option::as_mut) {
                 decl.target = target;
             }
         }
@@ -550,11 +549,7 @@ impl Recognizer {
         self.retired.insert(id);
         // `push_event` drops handler 0, so the acknowledgement is queued
         // directly and stays behind any cancel from `cancel_decl`.
-        let time_ms = self
-            .sequence
-            .as_ref()
-            .map(|seq| seq.last_t)
-            .unwrap_or(0.0);
+        let time_ms = self.sequence.as_ref().map(|seq| seq.last_t).unwrap_or(0.0);
         let mut ack = GestureEvent::new(time_ms);
         ack.slot = SLOT_DISPOSED;
         ack.gesture = id;
@@ -570,9 +565,10 @@ impl Recognizer {
         for id in ids {
             let before = self.events.len();
             let _ = self.dispose(id);
-            if let Some(event) = self.events[before..].iter_mut().find(|event| {
-                event.slot == SLOT_CANCEL && event.reason == REASON_DISPOSED
-            }) {
+            if let Some(event) = self.events[before..]
+                .iter_mut()
+                .find(|event| event.slot == SLOT_CANCEL && event.reason == REASON_DISPOSED)
+            {
                 event.reason = REASON_TARGET_DISPOSED;
             }
         }
@@ -818,11 +814,19 @@ impl Recognizer {
                 {
                     seq.press_active = true;
                     let target = family.target;
-                    push_event(events, decls, id, SLOT_PRESS_START, sequence, input.time_ms, |event| {
-                        event.target = target;
-                        event.x = input.x;
-                        event.y = input.y;
-                    });
+                    push_event(
+                        events,
+                        decls,
+                        id,
+                        SLOT_PRESS_START,
+                        sequence,
+                        input.time_ms,
+                        |event| {
+                            event.target = target;
+                            event.x = input.x;
+                            event.y = input.y;
+                        },
+                    );
                 }
             }
         }
@@ -845,12 +849,20 @@ impl Recognizer {
         if seq.press_active {
             if let Some(id) = seq.tap.as_ref().and_then(|family| family.tap) {
                 let target = seq.tap.as_ref().map(|family| family.target).unwrap_or(0);
-                push_event(events, decls, id, SLOT_PRESS_CANCEL, seq.id, time, |event| {
-                    event.target = target;
-                    event.x = input.x;
-                    event.y = input.y;
-                    event.reason = REASON_SECOND_POINTER;
-                });
+                push_event(
+                    events,
+                    decls,
+                    id,
+                    SLOT_PRESS_CANCEL,
+                    seq.id,
+                    time,
+                    |event| {
+                        event.target = target;
+                        event.x = input.x;
+                        event.y = input.y;
+                        event.reason = REASON_SECOND_POINTER;
+                    },
+                );
             }
             seq.press_active = false;
         }
@@ -949,7 +961,11 @@ impl Recognizer {
             self.update_transform(input.time_ms);
             return;
         }
-        if self.sequence.as_ref().is_some_and(|seq| seq.pair.len() == 2) {
+        if self
+            .sequence
+            .as_ref()
+            .is_some_and(|seq| seq.pair.len() == 2)
+        {
             self.evaluate_transform(input.time_ms);
             if self
                 .sequence
@@ -1009,7 +1025,8 @@ impl Recognizer {
                         1 => (dy, dx, 2),
                         _ => (dx.hypot(dy), 0.0, 3),
                     };
-                    if config.direction != 0 && !direction_matches(config.direction, config.axis, dx, dy)
+                    if config.direction != 0
+                        && !direction_matches(config.direction, config.axis, dx, dy)
                     {
                         cand.state = CandState::Failed;
                         let id = cand.decl;
@@ -1033,10 +1050,8 @@ impl Recognizer {
                         cand.state = CandState::Failed;
                         let id = cand.decl;
                         if trace_on {
-                            trace_lines.push(format!(
-                                "seq {} gesture {id} fail cross-distance",
-                                seq.id
-                            ));
+                            trace_lines
+                                .push(format!("seq {} gesture {id} fail cross-distance", seq.id));
                         }
                         continue;
                     }
@@ -1047,7 +1062,8 @@ impl Recognizer {
                         cand.state = CandState::Failed;
                         let id = cand.decl;
                         if trace_on {
-                            trace_lines.push(format!("seq {} gesture {id} fail axis-taken", seq.id));
+                            trace_lines
+                                .push(format!("seq {} gesture {id} fail axis-taken", seq.id));
                         }
                         continue;
                     }
@@ -1119,7 +1135,15 @@ impl Recognizer {
             cand.last_t = time_ms;
             cand.velocity_x = vx;
             cand.velocity_y = vy;
-            updates.push((cand.decl, translation_x, translation_y, delta_x, delta_y, vx, vy));
+            updates.push((
+                cand.decl,
+                translation_x,
+                translation_y,
+                delta_x,
+                delta_y,
+                vx,
+                vy,
+            ));
         }
         for (id, tx, ty, dx, dy, vx, vy) in updates {
             let target = decls
@@ -1139,7 +1163,10 @@ impl Recognizer {
                 event.velocity_y = vy;
             });
         }
-        let won = seq.cands.iter().any(|cand| cand.state == CandState::Accepted);
+        let won = seq
+            .cands
+            .iter()
+            .any(|cand| cand.state == CandState::Accepted);
         self.update_reservation();
         // Any winner invalidates the click family.
         if won {
@@ -1206,9 +1233,7 @@ impl Recognizer {
         let panned: Vec<u32> = seq
             .cands
             .iter()
-            .filter(|cand| {
-                cand.state == CandState::Accepted && cand.kind != GestureKind::Transform
-            })
+            .filter(|cand| cand.state == CandState::Accepted && cand.kind != GestureKind::Transform)
             .map(|cand| cand.decl)
             .collect();
         for decl in panned {
@@ -1457,15 +1482,28 @@ impl Recognizer {
                         .and_then(Option::as_ref)
                         .map(|decl| decl.target)
                         .unwrap_or(0);
-                    push_event(events, decls, id, SLOT_CANCEL, seq.id, input.time_ms, |event| {
-                        event.target = target;
-                        event.x = input.x;
-                        event.y = input.y;
-                        event.reason = REASON_SECOND_POINTER;
-                    });
+                    push_event(
+                        events,
+                        decls,
+                        id,
+                        SLOT_CANCEL,
+                        seq.id,
+                        input.time_ms,
+                        |event| {
+                            event.target = target;
+                            event.x = input.x;
+                            event.y = input.y;
+                            event.reason = REASON_SECOND_POINTER;
+                        },
+                    );
                 }
             }
-        } else if !seq.dead && seq.pair.first().is_some_and(|pointer| pointer.id == input.id) {
+        } else if !seq.dead
+            && seq
+                .pair
+                .first()
+                .is_some_and(|pointer| pointer.id == input.id)
+        {
             self.finish_single(input.time_ms, input.x, input.y);
             if let Some(seq) = &mut self.sequence {
                 seq.dead = true;
@@ -1546,20 +1584,36 @@ impl Recognizer {
             if let Some(id) = family.tap {
                 seq.press_active = false;
                 let target = family.target;
-                push_event(events, decls, id, SLOT_PRESS_END, sequence, time_ms, |event| {
-                    event.target = target;
-                    event.x = x;
-                    event.y = y;
-                });
+                push_event(
+                    events,
+                    decls,
+                    id,
+                    SLOT_PRESS_END,
+                    sequence,
+                    time_ms,
+                    |event| {
+                        event.target = target;
+                        event.x = x;
+                        event.y = y;
+                    },
+                );
             }
         }
         if seq.second.take().is_some() {
             if let Some(id) = family.double {
-                push_event(events, decls, id, SLOT_DOUBLE_TAP, sequence, time_ms, |event| {
-                    event.target = family.target;
-                    event.x = x;
-                    event.y = y;
-                });
+                push_event(
+                    events,
+                    decls,
+                    id,
+                    SLOT_DOUBLE_TAP,
+                    sequence,
+                    time_ms,
+                    |event| {
+                        event.target = family.target;
+                        event.x = x;
+                        event.y = y;
+                    },
+                );
             }
             return;
         }
@@ -1663,12 +1717,20 @@ impl Recognizer {
         let pending = seq.second.take();
         if press {
             if let Some(id) = tap {
-                push_event(events, decls, id, SLOT_PRESS_CANCEL, seq.id, time_ms, |event| {
-                    event.target = target;
-                    event.x = x;
-                    event.y = y;
-                    event.reason = reason;
-                });
+                push_event(
+                    events,
+                    decls,
+                    id,
+                    SLOT_PRESS_CANCEL,
+                    seq.id,
+                    time_ms,
+                    |event| {
+                        event.target = target;
+                        event.x = x;
+                        event.y = y;
+                        event.reason = reason;
+                    },
+                );
             }
         }
         if let Some(pending) = pending {
@@ -1709,9 +1771,11 @@ impl Recognizer {
             });
         }
         let mut press_cancel = false;
-        if seq.tap.as_ref().is_some_and(|family| {
-            family.tap == Some(id) || family.double == Some(id)
-        }) {
+        if seq
+            .tap
+            .as_ref()
+            .is_some_and(|family| family.tap == Some(id) || family.double == Some(id))
+        {
             press_cancel = seq.press_active;
             seq.tap_failed = true;
         }
@@ -1734,12 +1798,20 @@ impl Recognizer {
             seq.press_active = false;
             if let Some(tap) = seq.tap.as_ref().and_then(|family| family.tap) {
                 let target = seq.tap.as_ref().map(|family| family.target).unwrap_or(0);
-                push_event(events, decls, tap, SLOT_PRESS_CANCEL, seq.id, time, |event| {
-                    event.target = target;
-                    event.x = x;
-                    event.y = y;
-                    event.reason = reason;
-                });
+                push_event(
+                    events,
+                    decls,
+                    tap,
+                    SLOT_PRESS_CANCEL,
+                    seq.id,
+                    time,
+                    |event| {
+                        event.target = target;
+                        event.x = x;
+                        event.y = y;
+                        event.reason = reason;
+                    },
+                );
             }
         }
         self.update_reservation();
@@ -2183,7 +2255,10 @@ mod tests {
         assert!(!scroll.is_empty());
         assert_eq!(scroll[0].dx, -25.0);
         rec.pointer(up(30.0, 5.0, 20.0));
-        assert!(rec.drain_events().iter().all(|event| event.slot != SLOT_TAP));
+        assert!(rec
+            .drain_events()
+            .iter()
+            .all(|event| event.slot != SLOT_TAP));
     }
 
     #[test]
@@ -2207,7 +2282,8 @@ mod tests {
         rec.set_prop(2, "minDistance", &Value::Int(100)).unwrap();
         rec.set_prop(2, "captureAxis", &Value::String("x".into()))
             .unwrap();
-        rec.set_prop(2, "failCrossDistance", &Value::Int(1)).unwrap();
+        rec.set_prop(2, "failCrossDistance", &Value::Int(1))
+            .unwrap();
         rec.pointer(down(0.0, 0.0, &[10, 1]));
         rec.pointer(mv(10.0, 0.0, 10.0));
         assert!(rec.drain_scroll().is_empty());
@@ -2229,7 +2305,10 @@ mod tests {
         let events = rec.drain_events();
         assert!(events.iter().any(|event| event.slot == SLOT_START));
         rec.pointer(up(5.0, 5.0, 700.0));
-        assert!(rec.drain_events().iter().all(|event| event.slot != SLOT_TAP));
+        assert!(rec
+            .drain_events()
+            .iter()
+            .all(|event| event.slot != SLOT_TAP));
     }
 
     #[test]
@@ -2523,7 +2602,9 @@ mod tests {
             let canceled = rec.drain_events();
             assert_eq!(terminals(&canceled, 2), vec![SLOT_CANCEL]);
             assert!(canceled.iter().any(|event| {
-                event.gesture == 2 && event.slot == SLOT_CANCEL && event.reason == REASON_SECOND_POINTER
+                event.gesture == 2
+                    && event.slot == SLOT_CANCEL
+                    && event.reason == REASON_SECOND_POINTER
             }));
             assert!(canceled
                 .iter()
