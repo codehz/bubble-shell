@@ -40,6 +40,10 @@ int bubble_frame(float width, float height, const uint8_t **paint, uint32_t *pai
  * time_ms uses the same monotonic clock as bubble_tick. */
 int bubble_pointer(uint32_t action, uint32_t id, float x, float y, double time_ms,
                    uint32_t pointer_kind, uint32_t buttons);
+/* Pressed feedback only: no recognition, no tap, no scroll. Hosts whose own
+ * pointer path owns a sample deliver it here instead of bubble_pointer. */
+int bubble_visual_pointer(uint32_t action, uint32_t id, float x, float y, double time_ms,
+                          uint32_t pointer_kind, uint32_t buttons);
 int bubble_tick(double time_ms);
 /* Optional negotiation diagnostics; disabled by default. */
 void bubble_set_gesture_trace(int enabled);

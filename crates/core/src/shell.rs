@@ -8,11 +8,14 @@ use crate::editing::{
     display_text, utf16_len, DocRange, EditCommand, EditConfig, EditError, EditEvent, EditOp,
     EditOutcome, EditSession, FieldState, Selection, SessionId,
 };
-use crate::gesture::{GestureEvent, GestureKind, PointerAction, PointerInput, Recognizer};
+use crate::gesture::{
+    GestureEvent, GestureKind, PointerAction, PointerInput, Recognizer, TAP_SLOP,
+};
 use crate::ir::{Kind, NodeDesc};
 use crate::layout::{snap_unit, wrapping_layout, LayoutKey, LayoutRequest, LayoutSnapshot};
 use crate::ops::{decode_ops, Op, Value};
-use crate::props::Prop;
+use crate::props::{image_fit, text_align, Prop};
+use crate::state_style::{StateStylePatch, StateStyles, WHEN_FOCUSED, WHEN_PRESSED};
 use crate::semantics::{
     Role, SemanticsNode, SemanticsSnapshot, ACTION_ACTIVATE, ACTION_FOCUS, ACTION_SCROLL_BACKWARD,
     ACTION_SCROLL_DOWN, ACTION_SCROLL_FORWARD, ACTION_SCROLL_LEFT, ACTION_SCROLL_RIGHT,
@@ -147,6 +150,35 @@ impl Default for NodeStyle {
     }
 }
 
+/// The six paint values a frame draws for one node: its base value with the
+/// matching state style patches applied. Layout never reads this.
+#[derive(Clone, Copy)]
+struct EffectivePaintStyle {
+    background: Color,
+    color: Color,
+    opacity: f32,
+    radius: f32,
+    text_align: u8,
+    fit: u8,
+}
+
+/// Pressed feedback for the current touch. The shell owns it because an edit
+/// bypass reaches paint without a recognizer sequence.
+#[derive(Default)]
+struct VisualPress {
+    /// Eligible pointer ids still down, first first.
+    pointers: Vec<u32>,
+    /// First eligible pointer of the current sequence; `0` when idle.
+    owner: u32,
+    /// Node drawing pressed feedback; `0` when idle or cancelled.
+    target: u32,
+    start_x: f32,
+    start_y: f32,
+    /// The sequence also runs through the recognizer, so recognizer
+    /// cancellation applies to it.
+    gesture: bool,
+}
+
 #[allow(dead_code)]
 struct Node {
     parent: u32,
@@ -248,6 +280,8 @@ pub struct Shell {
     paint_cache: RefCell<Vec<PaintCmd>>,
     paint_dirty: Cell<bool>,
     recognizer: Recognizer,
+    state_styles: StateStyles,
+    visual: VisualPress,
     fields: HashMap<u32, EditSession>,
     focused: u32,
     selection_handles: Option<[(f32, f32, f32, f32); 2]>,
@@ -532,6 +566,8 @@ impl Shell {
             paint_cache: RefCell::new(Vec::new()),
             paint_dirty: Cell::new(true),
             recognizer: Recognizer::new(),
+            state_styles: StateStyles::new(),
+            visual: VisualPress::default(),
             fields: HashMap::new(),
             focused: 0,
             selection_handles: None,
@@ -648,6 +684,26 @@ impl Shell {
                     sel_end,
                     cancel,
                 } => self.set_editing_value(handle, epoch, &value, sel_start, sel_end, cancel)?,
+                Op::SpawnStateStyle {
+                    style,
+                    target,
+                    index,
+                } => {
+                    self.node(target)?;
+                    self.state_styles.spawn(style, target, index)?;
+                }
+                Op::SetStateStyleProp { style, key, value } => {
+                    self.state_styles.set_prop(style, &key, &value)?
+                }
+                Op::MoveStateStyle {
+                    style,
+                    target,
+                    index,
+                } => {
+                    self.node(target)?;
+                    self.state_styles.move_decl(style, target, index)?;
+                }
+                Op::DisposeStateStyle { style } => self.state_styles.dispose(style)?,
             }
         }
         if self.focused != 0
@@ -656,6 +712,7 @@ impl Shell {
         {
             self.focus(0)?;
         }
+        self.sync_press_target();
         self.paint_dirty.set(true);
         Ok(seq)
     }
@@ -823,14 +880,43 @@ impl Shell {
             input.path.clear();
             self.hit_path(1, input.x, input.y, &mut input.path);
         }
+        let mut changed = self.track_press(&input, true);
         self.recognizer.pointer(input);
+        if self.visual.gesture && self.visual.target != 0 && self.recognizer.visual_press_cancelled()
+        {
+            changed |= self.clear_press();
+        }
         self.flush_gesture_scroll();
+        if changed {
+            self.paint_dirty.set(true);
+        }
+    }
+
+    /// Pressed feedback only: no recognition, no tap, no scroll. Hosts use it
+    /// when their own pointer path owns the sample, so the same physical touch
+    /// is never fed twice.
+    pub fn visual_pointer(&mut self, mut input: PointerInput) {
+        if input.action == PointerAction::Down {
+            input.path.clear();
+            self.hit_path(1, input.x, input.y, &mut input.path);
+        }
+        if self.track_press(&input, false) {
+            self.paint_dirty.set(true);
+        }
     }
 
     /// UI-thread timer tick for long press and the double-tap window.
     pub fn advance_gestures(&mut self, now_ms: f64) {
         self.recognizer.advance(now_ms);
+        let mut changed = false;
+        if self.visual.gesture && self.visual.target != 0 && self.recognizer.visual_press_cancelled()
+        {
+            changed = self.clear_press();
+        }
         self.flush_gesture_scroll();
+        if changed {
+            self.paint_dirty.set(true);
+        }
     }
 
     /// Drain recognition events in order. The host dispatches them to the
@@ -839,7 +925,171 @@ impl Shell {
     pub fn cancel_gestures(&mut self, reason: u8) -> Vec<GestureEvent> {
         self.recognizer.cancel(reason);
         self.flush_gesture_scroll();
+        if self.reset_press() {
+            self.paint_dirty.set(true);
+        }
         self.take_gesture_events()
+    }
+
+    /// Base paint values with the state style patches that match right now.
+    fn effective_paint_style(&self, id: u32, node: &Node) -> EffectivePaintStyle {
+        let mut style = EffectivePaintStyle {
+            background: node.background,
+            color: node.color,
+            opacity: node.opacity,
+            radius: node.radius,
+            text_align: node.text_align,
+            fit: node.fit,
+        };
+        let mut patch = StateStylePatch::default();
+        self.state_styles.overlay(id, self.state_bits(id), &mut patch);
+        if let Some(value) = patch.background {
+            style.background = value;
+        }
+        if let Some(value) = patch.color {
+            style.color = value;
+        }
+        if let Some(value) = patch.opacity {
+            style.opacity = value;
+        }
+        if let Some(value) = patch.radius {
+            style.radius = value;
+        }
+        if let Some(value) = patch.text_align {
+            style.text_align = value;
+        }
+        if let Some(value) = patch.fit {
+            style.fit = value;
+        }
+        style
+    }
+
+    /// Interaction state of one node. Focus is the node's own focus, not
+    /// focus-within; pressed is the pressed target only, not its subtree.
+    fn state_bits(&self, id: u32) -> u8 {
+        let mut bits = 0;
+        if self.focused == id {
+            bits |= WHEN_FOCUSED;
+        }
+        if self.visual.target == id {
+            bits |= WHEN_PRESSED;
+        }
+        bits
+    }
+
+    /// A matching `focused` declaration replaces the default focus ring, even
+    /// when it patches nothing. Disabled or not-yet-matching ones do not.
+    fn focus_style_taken(&self, id: u32) -> bool {
+        self.state_styles
+            .matching(id, WHEN_FOCUSED, self.state_bits(id))
+    }
+
+    /// Nearest node that owns pressed feedback for a fresh touch. A deeper
+    /// click target blocks its ancestors even without a state style.
+    fn press_target(&self, path: &[u32]) -> u32 {
+        let modal = self.active_modal();
+        for id in path {
+            if !self.interaction_available(*id, modal) {
+                continue;
+            }
+            let wants = self.state_styles.pressed_interest(*id);
+            if self.recognizer.click_target(std::slice::from_ref(id)).is_some() {
+                return if wants { *id } else { 0 };
+            }
+            if wants {
+                return *id;
+            }
+        }
+        0
+    }
+
+    fn clear_press(&mut self) -> bool {
+        let had = self.visual.target != 0;
+        self.visual.target = 0;
+        had
+    }
+
+    fn reset_press(&mut self) -> bool {
+        let had = self.visual.target != 0
+            || self.visual.owner != 0
+            || !self.visual.pointers.is_empty()
+            || self.visual.gesture;
+        self.visual = VisualPress::default();
+        had
+    }
+
+    /// Track one eligible pointer sample. Returns whether pressed feedback
+    /// changed. `gesture` marks a sample the recognizer also saw.
+    fn track_press(&mut self, input: &PointerInput, gesture: bool) -> bool {
+        if !input.eligible() {
+            return false;
+        }
+        match input.action {
+            PointerAction::Down => {
+                if self.visual.pointers.contains(&input.id) {
+                    return false;
+                }
+                let first = self.visual.pointers.is_empty();
+                self.visual.pointers.push(input.id);
+                if !first {
+                    return self.clear_press();
+                }
+                self.visual.owner = input.id;
+                self.visual.start_x = input.x;
+                self.visual.start_y = input.y;
+                self.visual.gesture = gesture;
+                let target = self.press_target(&input.path);
+                if target == 0 {
+                    return false;
+                }
+                self.visual.target = target;
+                true
+            }
+            PointerAction::Move => {
+                if input.id != self.visual.owner || self.visual.target == 0 {
+                    return false;
+                }
+                let distance =
+                    (input.x - self.visual.start_x).hypot(input.y - self.visual.start_y);
+                if distance > TAP_SLOP {
+                    return self.clear_press();
+                }
+                false
+            }
+            PointerAction::Up => {
+                if !self.visual.pointers.contains(&input.id) {
+                    return false;
+                }
+                self.visual.pointers.retain(|held| *held != input.id);
+                let changed = input.id == self.visual.owner && self.clear_press();
+                if self.visual.pointers.is_empty() {
+                    self.visual.owner = 0;
+                    self.visual.gesture = false;
+                }
+                changed
+            }
+            PointerAction::Cancel => self.reset_press(),
+        }
+    }
+
+    /// Re-check the pressed target after a configuration or visibility change.
+    /// A node that lost its click family, its pressed style, or its
+    /// availability drops the state instead of handing the touch elsewhere.
+    fn sync_press_target(&mut self) {
+        let target = self.visual.target;
+        if target == 0 {
+            return;
+        }
+        let alive = self.interaction_available(target, self.active_modal())
+            && (self.state_styles.pressed_interest(target)
+                || self
+                    .recognizer
+                    .click_target(std::slice::from_ref(&target))
+                    .is_some());
+        if !alive {
+            self.visual.target = 0;
+            self.paint_dirty.set(true);
+        }
     }
 
     pub fn set_gesture_trace(&mut self, enabled: bool) {
@@ -2568,6 +2818,9 @@ impl Shell {
     /// Cancel active and pending gestures in this subtree without disposing them.
     fn conceal_subtree(&mut self, id: u32) {
         self.recognizer.conceal_target(id);
+        if self.visual.target == id {
+            self.visual.target = 0;
+        }
         let count = self
             .nodes
             .get(id as usize)
@@ -2609,6 +2862,10 @@ impl Shell {
         }
         self.taffy.remove(taffy_id).map_err(|err| err.to_string())?;
         self.nodes[handle as usize] = None;
+        self.state_styles.target_disposed(handle);
+        if self.visual.target == handle {
+            self.visual.target = 0;
+        }
         if let Some(mut session) = self.fields.remove(&handle) {
             session.close();
         }
@@ -2783,7 +3040,7 @@ impl Shell {
                 font_size,
                 font_weight: node.font_weight,
                 line_height,
-                align: node.text_align,
+                align: self.effective_paint_style(handle, node).text_align,
                 density: 1.0,
             },
         })
@@ -2798,18 +3055,19 @@ impl Shell {
         let y = node.y;
         let w = node.w;
         let h = node.h;
-        let radius = node.radius;
-        let background = node.background;
+        let paint = self.effective_paint_style(id, node);
+        let radius = paint.radius;
+        let background = paint.background;
         let kind = node.kind;
         let text = node.text.clone();
         let secure = node.secure;
-        let color = node.color;
+        let color = paint.color;
         let font_size = node.font_size;
-        let opacity = node.opacity.clamp(0.0, 1.0);
+        let opacity = paint.opacity.clamp(0.0, 1.0);
         let line_height = node.line_height;
         let weight = node.font_weight;
-        let align = node.text_align;
-        let fit = node.fit;
+        let align = paint.text_align;
+        let fit = paint.fit;
         let src = node.src.clone();
         let overflow_x = node.overflow_x;
         let overflow_y = node.overflow_y;
@@ -2916,7 +3174,8 @@ impl Shell {
         if clip.is_some() {
             out.push(PaintCmd::PopClip);
         }
-        if id == self.focused && kind != Kind::Field && self.is_focusable(id) {
+        if id == self.focused && kind != Kind::Field && self.is_focusable(id) && !self.focus_style_taken(id)
+        {
             let color = Color::new(0.30, 0.64, 1.0, 0.95);
             let thickness = 2.0;
             out.push(PaintCmd::Fill {
@@ -3194,18 +3453,6 @@ fn lpa_of(value: Len) -> LengthPercentageAuto {
     }
 }
 
-fn text_align(value: &Value) -> Result<u8, String> {
-    let Value::String(text) = value else {
-        return Err("textAlign must be a string".into());
-    };
-    match text.as_str() {
-        "left" => Ok(0),
-        "center" => Ok(1),
-        "right" => Ok(2),
-        other => Err(format!("unsupported textAlign {other}")),
-    }
-}
-
 fn align_items(value: &Value) -> Result<u8, String> {
     let Value::String(text) = value else {
         return Err("alignItems must be a string".into());
@@ -3243,18 +3490,6 @@ fn position(value: &Value) -> Result<u8, String> {
         "relative" => Ok(0),
         "absolute" => Ok(1),
         other => Err(format!("unsupported position {other}")),
-    }
-}
-
-fn image_fit(value: &Value) -> Result<u8, String> {
-    let Value::String(text) = value else {
-        return Err("fit must be a string".into());
-    };
-    match text.as_str() {
-        "contain" => Ok(0),
-        "cover" => Ok(1),
-        "fill" => Ok(2),
-        other => Err(format!("unsupported fit {other}")),
     }
 }
 

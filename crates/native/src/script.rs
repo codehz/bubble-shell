@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use bubble_core::{
     validate_bundle_hashes, ComputationKind, GestureKind, NodeDesc, Op, Sched, Turn, Value,
-    DEFERRED_PROPS, SPAWN_PROPS,
+    DEFERRED_PROPS, SPAWN_PROPS, STATE_STYLE_PROPS,
 };
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{
@@ -705,6 +705,26 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
         "move_gesture",
         Function::new(ctx.clone(), api_move_gesture)?,
     )?;
+    api.set(
+        "spawn_state_style",
+        Function::new(ctx.clone(), api_spawn_state_style)?,
+    )?;
+    api.set(
+        "set_state_style_prop",
+        Function::new(ctx.clone(), api_set_state_style_prop)?,
+    )?;
+    api.set(
+        "move_state_style",
+        Function::new(ctx.clone(), api_move_state_style)?,
+    )?;
+    api.set(
+        "dispose_state_style",
+        Function::new(ctx.clone(), api_dispose_state_style)?,
+    )?;
+    api.set(
+        "state_style_props",
+        Function::new(ctx.clone(), api_state_style_props)?,
+    )?;
     api.set("commit", Function::new(ctx.clone(), api_commit)?)?;
     api.set("request", Function::new(ctx.clone(), api_request)?)?;
     api.set("storage_get", Function::new(ctx.clone(), api_storage_get)?)?;
@@ -776,6 +796,14 @@ fn api_spawn_props(ctx: Ctx) -> rquickjs::Result<Array> {
 fn api_deferred_props(ctx: Ctx) -> rquickjs::Result<Array> {
     let array = Array::new(ctx)?;
     for (index, name) in DEFERRED_PROPS.iter().enumerate() {
+        array.set(index, *name)?;
+    }
+    Ok(array)
+}
+
+fn api_state_style_props(ctx: Ctx) -> rquickjs::Result<Array> {
+    let array = Array::new(ctx)?;
+    for (index, name) in STATE_STYLE_PROPS.iter().enumerate() {
         array.set(index, *name)?;
     }
     Ok(array)
@@ -1129,6 +1157,66 @@ fn api_dispose_gesture(handle: f64) -> i32 {
 fn api_move_gesture(handle: f64, target: f64, index: f64) -> i32 {
     match with_turn(|turn| {
         turn.move_gesture(handle as u32, target as u32, index as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_spawn_state_style(target: f64, index: f64) -> u32 {
+    match with_turn(|turn| turn.spawn_state_style(target as u32, index as u32)) {
+        Ok(style) => style,
+        Err(err) => {
+            set_api_error(err);
+            0
+        }
+    }
+}
+
+fn api_set_state_style_prop(style: f64, key: String, tag: f64, number: f64, text: String) -> i32 {
+    let value = match tag as u32 {
+        0 => Value::Null,
+        1 => Value::Bool(number != 0.0),
+        2 => Value::Int(number as i64),
+        3 => Value::Float(number),
+        4 => Value::String(text),
+        other => {
+            set_api_error(format!("unsupported prop tag {other}"));
+            return 1;
+        }
+    };
+    match with_turn(|turn| {
+        turn.set_state_style_prop(style as u32, key, value.clone());
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_move_state_style(style: f64, target: f64, index: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.move_state_style(style as u32, target as u32, index as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_dispose_state_style(style: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.dispose_state_style(style as u32);
         Ok(())
     }) {
         Ok(()) => 0,

@@ -81,6 +81,8 @@ func bubble_caret_at(_ unit: UInt32, _ x: UnsafeMutablePointer<Float>?, _ y: Uns
 func bubble_selection_count() -> UInt32
 @_silgen_name("bubble_selection_rect")
 func bubble_selection_rect(_ index: UInt32, _ x: UnsafeMutablePointer<Float>?, _ y: UnsafeMutablePointer<Float>?, _ w: UnsafeMutablePointer<Float>?, _ h: UnsafeMutablePointer<Float>?) -> Int32
+@_silgen_name("bubble_visual_pointer")
+func bubble_visual_pointer(_ action: UInt32, _ id: UInt32, _ x: Float, _ y: Float, _ timeMs: Double, _ pointerKind: UInt32, _ buttons: UInt32) -> Int32
 @_silgen_name("bubble_tick")
 func bubble_tick(_ timeMs: Double) -> Int32
 @_silgen_name("bubble_scroll")
@@ -427,6 +429,20 @@ final class BubbleView: UIView {
         )
     }
 
+    private func sendVisualPointer(_ action: UInt32, _ touch: UITouch, id known: UInt32? = nil) {
+        let id = known ?? pointerId(touch)
+        let point = touch.location(in: self)
+        _ = bubble_visual_pointer(
+            action,
+            id,
+            Float(point.x - safeAreaInsets.left),
+            Float(point.y - safeAreaInsets.top),
+            CACurrentMediaTime() * 1000,
+            0,
+            action == 2 || action == 3 ? 0 : 1
+        )
+    }
+
     private func logPointerSample(_ action: UInt32, _ id: UInt32, _ x: Float, _ y: Float) {
         let logical = CGPoint(x: CGFloat(x), y: CGFloat(y))
         let origin = traceOrigin[id] ?? logical
@@ -695,7 +711,9 @@ final class BubbleView: UIView {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        var delivered = false
         for touch in touches {
+            delivered = true
             let local = contentPoint(touch.location(in: self))
             var sx: Float = 0, sy: Float = 0, sw: Float = 0, sh: Float = 0
             var ex: Float = 0, ey: Float = 0, ew: Float = 0, eh: Float = 0
@@ -710,27 +728,33 @@ final class BubbleView: UIView {
                 let endHit = hypot(local.x - CGFloat(ex + ew / 2), local.y - CGFloat(ey + eh / 2)) <= 16
                 if startHit || endHit {
                     selectionDrag = (ObjectIdentifier(touch), Int(startHit ? end : start))
-                    return
+                    sendVisualPointer(0, touch)
+                    continue
                 }
             }
             sendPointer(0, touch)
         }
+        if delivered { refresh() }
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        var delivered = false
         for touch in touches {
-            if let drag = selectionDrag, drag.touch == ObjectIdentifier(touch),
-               let snapshot = editSnapshot() {
-                let local = contentPoint(touch.location(in: self))
-                var unit: UInt32 = 0
-                if bubble_unit_at(Float(local.x), Float(local.y), &unit) == 0 {
-                    _ = bubble_edit_select(snapshot.session, UInt32(drag.anchor), unit)
-                    refresh()
+            delivered = true
+            if let drag = selectionDrag, drag.touch == ObjectIdentifier(touch) {
+                sendVisualPointer(1, touch)
+                if let snapshot = editSnapshot() {
+                    let local = contentPoint(touch.location(in: self))
+                    var unit: UInt32 = 0
+                    if bubble_unit_at(Float(local.x), Float(local.y), &unit) == 0 {
+                        _ = bubble_edit_select(snapshot.session, UInt32(drag.anchor), unit)
+                    }
                 }
-                return
+                continue
             }
             sendPointer(1, touch)
         }
+        if delivered { refresh() }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -739,6 +763,9 @@ final class BubbleView: UIView {
             let key = ObjectIdentifier(touch)
             if let drag = selectionDrag, drag.touch == key {
                 selectionDrag = nil
+                sendVisualPointer(2, touch)
+                pointerIds.removeValue(forKey: key)
+                delivered = true
                 showEditMenu()
                 continue
             }
@@ -760,12 +787,21 @@ final class BubbleView: UIView {
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        selectionDrag = nil
+        var delivered = false
         for touch in touches {
             let key = ObjectIdentifier(touch)
+            if let drag = selectionDrag, drag.touch == key {
+                selectionDrag = nil
+                sendVisualPointer(3, touch)
+                pointerIds.removeValue(forKey: key)
+                delivered = true
+                continue
+            }
             guard let id = pointerIds.removeValue(forKey: key) else { continue }
             sendPointer(3, touch, id: id)
+            delivered = true
         }
+        if delivered { refresh() }
     }
 
     private func showEditMenu() {

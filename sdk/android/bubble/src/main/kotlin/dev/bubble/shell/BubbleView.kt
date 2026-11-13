@@ -600,6 +600,21 @@ class BubbleView(context: Context) : View(context) {
         refresh()
     }
 
+    private fun sendVisualPointer(action: Int, index: Int, event: MotionEvent) {
+        val id = event.getPointerId(index)
+        if (action == 2 || action == 3) activePointers.remove(id) else activePointers.add(id)
+        BubbleNative.visualPointer(
+            action,
+            id,
+            localX(event.getX(index)),
+            localY(event.getY(index)),
+            event.eventTime.toDouble(),
+            0,
+            if (action == 2 || action == 3) 0 else 1,
+        )
+        refresh()
+    }
+
     private data class EditSnapshot(
         val session: Long,
         val revision: Long,
@@ -873,6 +888,7 @@ class BubbleView(context: Context) : View(context) {
     }
 
     fun cancelActivePointers(timeMs: Double) {
+        selectionDrag = null
         if (!engine || activePointers.isEmpty()) return
         val ids = activePointers.toList()
         activePointers.clear()
@@ -907,6 +923,7 @@ class BubbleView(context: Context) : View(context) {
                         if (selection.size >= 2) {
                             val anchor = if (startHit) selection[1] else selection[0]
                             selectionDrag = event.getPointerId(0) to anchor
+                            sendVisualPointer(0, event.actionIndex, event)
                             return true
                         }
                     }
@@ -916,17 +933,18 @@ class BubbleView(context: Context) : View(context) {
             MotionEvent.ACTION_POINTER_DOWN -> sendPointer(0, event.actionIndex, event)
             MotionEvent.ACTION_MOVE -> {
                 val drag = selectionDrag
-                if (drag != null && drag.first == event.getPointerId(0)) {
+                val dragId = if (drag != null && drag.first == event.getPointerId(0)) drag.first else -1
+                if (drag != null && dragId >= 0) {
+                    sendVisualPointer(1, event.actionIndex, event)
                     val unit = BubbleNative.unitAt(localX(event.x), localY(event.y))
                     val snapshot = editSnapshot()
                     if (unit >= 0 && snapshot != null) {
                         BubbleNative.editSelect(snapshot.session, drag.second, unit)
-                        refresh()
                     }
-                    return true
                 }
                 for (index in 0 until event.pointerCount) {
                     val id = event.getPointerId(index)
+                    if (id == dragId) continue
                     if (!activePointers.contains(id)) continue
                     BubbleNative.pointer(
                         1,
@@ -941,12 +959,17 @@ class BubbleView(context: Context) : View(context) {
                 refresh()
             }
             MotionEvent.ACTION_POINTER_UP -> {
-                if (selectionDrag?.first == event.getPointerId(event.actionIndex)) selectionDrag = null
-                sendPointer(2, event.actionIndex, event)
+                if (selectionDrag?.first == event.getPointerId(event.actionIndex)) {
+                    selectionDrag = null
+                    sendVisualPointer(2, event.actionIndex, event)
+                } else {
+                    sendPointer(2, event.actionIndex, event)
+                }
             }
             MotionEvent.ACTION_UP -> {
                 if (selectionDrag?.first == event.getPointerId(event.actionIndex)) {
                     selectionDrag = null
+                    sendVisualPointer(2, event.actionIndex, event)
                     return true
                 }
                 sendPointer(2, event.actionIndex, event)

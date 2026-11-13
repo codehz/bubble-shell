@@ -152,6 +152,28 @@ pub enum Op {
         sel_end: u32,
         cancel: bool,
     },
+    /// Virtual state style declaration attached to `target`; `index` is its
+    /// position among that target's declarations.
+    SpawnStateStyle {
+        style: u32,
+        target: u32,
+        index: u32,
+    },
+    /// One declaration property: `when`, `enabled`, or a paint override.
+    SetStateStyleProp {
+        style: u32,
+        key: String,
+        value: Value,
+    },
+    /// Final declaration index after it leaves its old slot.
+    MoveStateStyle {
+        style: u32,
+        target: u32,
+        index: u32,
+    },
+    DisposeStateStyle {
+        style: u32,
+    },
 }
 
 pub fn encode_set_text(seq: u32, handle: u32, text: &str) -> Vec<u8> {
@@ -173,6 +195,30 @@ pub fn encode_set_prop_color(seq: u32, handle: u32, key: &str, rgba: u32) -> Vec
             rgba,
         }],
     )
+}
+
+/// One value payload: tag then payload, with strings interned.
+fn write_value(payload: &mut Vec<u8>, value: &Value, intern: &mut impl FnMut(&str) -> u32) {
+    match value {
+        Value::Null => payload.push(0),
+        Value::Bool(value) => {
+            payload.push(1);
+            payload.push(u8::from(*value));
+        }
+        Value::Int(value) => {
+            payload.push(2);
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        Value::Float(value) => {
+            payload.push(3);
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        Value::String(value) => {
+            let value_id = intern(value);
+            payload.push(4);
+            payload.extend_from_slice(&value_id.to_le_bytes());
+        }
+    }
 }
 
 pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
@@ -201,26 +247,7 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.push(10);
                 payload.extend_from_slice(&handle.to_le_bytes());
                 payload.extend_from_slice(&key_id.to_le_bytes());
-                match value {
-                    Value::Null => payload.push(0),
-                    Value::Bool(value) => {
-                        payload.push(1);
-                        payload.push(u8::from(*value));
-                    }
-                    Value::Int(value) => {
-                        payload.push(2);
-                        payload.extend_from_slice(&value.to_le_bytes());
-                    }
-                    Value::Float(value) => {
-                        payload.push(3);
-                        payload.extend_from_slice(&value.to_le_bytes());
-                    }
-                    Value::String(value) => {
-                        let value_id = intern(value);
-                        payload.push(4);
-                        payload.extend_from_slice(&value_id.to_le_bytes());
-                    }
-                }
+                write_value(&mut payload, value, &mut intern);
             }
             Op::SetText { handle, text } => {
                 let text_id = intern(text);
@@ -283,26 +310,7 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.push(12);
                 payload.extend_from_slice(&gesture.to_le_bytes());
                 payload.extend_from_slice(&key_id.to_le_bytes());
-                match value {
-                    Value::Null => payload.push(0),
-                    Value::Bool(value) => {
-                        payload.push(1);
-                        payload.push(u8::from(*value));
-                    }
-                    Value::Int(value) => {
-                        payload.push(2);
-                        payload.extend_from_slice(&value.to_le_bytes());
-                    }
-                    Value::Float(value) => {
-                        payload.push(3);
-                        payload.extend_from_slice(&value.to_le_bytes());
-                    }
-                    Value::String(value) => {
-                        let value_id = intern(value);
-                        payload.push(4);
-                        payload.extend_from_slice(&value_id.to_le_bytes());
-                    }
-                }
+                write_value(&mut payload, value, &mut intern);
             }
             Op::MoveGesture {
                 gesture,
@@ -348,6 +356,37 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.extend_from_slice(&sel_start.to_le_bytes());
                 payload.extend_from_slice(&sel_end.to_le_bytes());
                 payload.push(u8::from(*cancel));
+            }
+            Op::SpawnStateStyle {
+                style,
+                target,
+                index,
+            } => {
+                payload.push(18);
+                payload.extend_from_slice(&style.to_le_bytes());
+                payload.extend_from_slice(&target.to_le_bytes());
+                payload.extend_from_slice(&index.to_le_bytes());
+            }
+            Op::SetStateStyleProp { style, key, value } => {
+                let key_id = intern(key);
+                payload.push(19);
+                payload.extend_from_slice(&style.to_le_bytes());
+                payload.extend_from_slice(&key_id.to_le_bytes());
+                write_value(&mut payload, value, &mut intern);
+            }
+            Op::MoveStateStyle {
+                style,
+                target,
+                index,
+            } => {
+                payload.push(20);
+                payload.extend_from_slice(&style.to_le_bytes());
+                payload.extend_from_slice(&target.to_le_bytes());
+                payload.extend_from_slice(&index.to_le_bytes());
+            }
+            Op::DisposeStateStyle { style } => {
+                payload.push(21);
+                payload.extend_from_slice(&style.to_le_bytes());
             }
         }
     }
@@ -417,22 +456,7 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                 let handle = read_u32(&mut payload_cur)?;
                 let key_id = read_u32(&mut payload_cur)? as usize;
                 let key = strings.get(key_id).ok_or("prop key out of range")?.clone();
-                let value = match read_u8(&mut payload_cur)? {
-                    0 => Value::Null,
-                    1 => Value::Bool(read_u8(&mut payload_cur)? != 0),
-                    2 => Value::Int(read_i64(&mut payload_cur)?),
-                    3 => Value::Float(read_f64(&mut payload_cur)?),
-                    4 => {
-                        let value_id = read_u32(&mut payload_cur)? as usize;
-                        Value::String(
-                            strings
-                                .get(value_id)
-                                .ok_or("prop string out of range")?
-                                .clone(),
-                        )
-                    }
-                    other => return Err(format!("unsupported prop value tag {other}")),
-                };
+                let value = read_value(&mut payload_cur, &strings)?;
                 ops.push(Op::SetProp { handle, key, value });
             }
             2 => {
@@ -484,22 +508,7 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                     .get(key_id)
                     .ok_or("gesture key out of range")?
                     .clone();
-                let value = match read_u8(&mut payload_cur)? {
-                    0 => Value::Null,
-                    1 => Value::Bool(read_u8(&mut payload_cur)? != 0),
-                    2 => Value::Int(read_i64(&mut payload_cur)?),
-                    3 => Value::Float(read_f64(&mut payload_cur)?),
-                    4 => {
-                        let value_id = read_u32(&mut payload_cur)? as usize;
-                        Value::String(
-                            strings
-                                .get(value_id)
-                                .ok_or("gesture value out of range")?
-                                .clone(),
-                        )
-                    }
-                    other => return Err(format!("unsupported prop value tag {other}")),
-                };
+                let value = read_value(&mut payload_cur, &strings)?;
                 ops.push(Op::SetGestureProp {
                     gesture,
                     key,
@@ -547,6 +556,29 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                     cancel,
                 });
             }
+            18 => ops.push(Op::SpawnStateStyle {
+                style: read_u32(&mut payload_cur)?,
+                target: read_u32(&mut payload_cur)?,
+                index: read_u32(&mut payload_cur)?,
+            }),
+            19 => {
+                let style = read_u32(&mut payload_cur)?;
+                let key_id = read_u32(&mut payload_cur)? as usize;
+                let key = strings
+                    .get(key_id)
+                    .ok_or("state style key out of range")?
+                    .clone();
+                let value = read_value(&mut payload_cur, &strings)?;
+                ops.push(Op::SetStateStyleProp { style, key, value });
+            }
+            20 => ops.push(Op::MoveStateStyle {
+                style: read_u32(&mut payload_cur)?,
+                target: read_u32(&mut payload_cur)?,
+                index: read_u32(&mut payload_cur)?,
+            }),
+            21 => ops.push(Op::DisposeStateStyle {
+                style: read_u32(&mut payload_cur)?,
+            }),
             other => return Err(format!("unknown op tag {other}")),
         }
     }
@@ -554,6 +586,20 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
         return Err("op payload length mismatch".into());
     }
     Ok((seq, ops))
+}
+
+fn read_value(cur: &mut Cursor<&[u8]>, strings: &[String]) -> Result<Value, String> {
+    Ok(match read_u8(cur)? {
+        0 => Value::Null,
+        1 => Value::Bool(read_u8(cur)? != 0),
+        2 => Value::Int(read_i64(cur)?),
+        3 => Value::Float(read_f64(cur)?),
+        4 => {
+            let value_id = read_u32(cur)? as usize;
+            Value::String(strings.get(value_id).ok_or("value string out of range")?.clone())
+        }
+        other => return Err(format!("unsupported prop value tag {other}")),
+    })
 }
 
 fn parse_strings(bytes: &[u8]) -> Result<Vec<String>, String> {

@@ -7,10 +7,14 @@ function Focus() {
     <View backgroundColor="#111827" flexGrow={1} flexShrink={1} padding={[16, 16, 16, 16]} gap={12}>
       <Text color="#ffffff" fontSize={22}>Modal focus</Text>
       <View role="button" label="Open dialog" backgroundColor="#2563eb" padding={[12, 12, 12, 12]}>
+        <StateStyle when="focused" backgroundColor="#1d4ed8" />
+        <StateStyle when="pressed" opacity={0.7} />
         <TapGesture onTap={() => opened.update(() => true)} />
         <Text color="#ffffff">Open dialog</Text>
       </View>
-      <TextField label="Background field" value="Background" height={40} color="#ffffff" />
+      <TextField label="Background field" value="Background" height={40} color="#ffffff">
+        <StateStyle when="focused" backgroundColor="#e0f2fe" color="#111827" textAlign="right" />
+      </TextField>
       <Show when={opened()}>
         {() => (
         <View modal role="dialog" label="Settings" backgroundColor="#374151" padding={[12, 12, 12, 12]} gap={12}>

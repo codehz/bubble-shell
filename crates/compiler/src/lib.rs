@@ -53,6 +53,7 @@ const PRIMITIVES: &[&str] = &[
     "LongPressGesture",
     "PanGesture",
     "TransformGesture",
+    "StateStyle",
 ];
 
 /// Options for [`compile_module`].
@@ -430,12 +431,31 @@ impl<'a> Lower<'a> {
                 let props = self.object(span, props);
                 if PRIMITIVES.contains(&other) {
                     if other == "Text" {
-                        let content = self.text_content(span, children);
-                        self.call(
-                            RT_PRIMITIVE,
-                            vec![self.string_of(other), props, content],
-                            span,
-                        )
+                        let (styles, rest) = self.split_style_children(children);
+                        let content = self.text_content(span, rest);
+                        let mut args = vec![self.string_of(other), props, content];
+                        if let Some(builder) = self.style_children_block(span, styles) {
+                            args.push(builder);
+                        }
+                        self.call(RT_PRIMITIVE, args, span)
+                    } else if other == "StateStyle" {
+                        if has_children(&children) {
+                            self.error(span, "StateStyle does not accept children");
+                        }
+                        self.call(RT_PRIMITIVE, vec![self.string_of(other), props], span)
+                    } else if other == "Image" || other == "TextField" {
+                        let (styles, rest) = self.split_style_children(children);
+                        if has_children(&rest) {
+                            self.error(
+                                span,
+                                format!("<{other}> children must be StateStyle"),
+                            );
+                        }
+                        let mut args = vec![self.string_of(other), props];
+                        if let Some(builder) = self.style_children_block(span, styles) {
+                            args.push(builder);
+                        }
+                        self.call(RT_PRIMITIVE, args, span)
                     } else {
                         let body = self.children_block(span, children);
                         self.call(RT_PRIMITIVE, vec![self.string_of(other), props, body], span)
@@ -805,6 +825,43 @@ impl<'a> Lower<'a> {
         self.arrow_block(span, statements)
     }
 
+    /// Split direct `<StateStyle>` children from the rest. Only direct
+    /// children are styles; anything else keeps its normal path.
+    fn split_style_children(
+        &self,
+        children: ArenaVec<'a, JSXChild<'a>>,
+    ) -> (Vec<JSXElement<'a>>, ArenaVec<'a, JSXChild<'a>>) {
+        let mut styles = Vec::new();
+        let mut rest = self.ast_vec::<JSXChild<'a>>();
+        for child in children {
+            match child {
+                JSXChild::Element(element) if is_state_style(&element) => {
+                    styles.push(self.take(element));
+                }
+                other => rest.push(other),
+            }
+        }
+        (styles, rest)
+    }
+
+    /// `() => { <state style declarations> }`, or `None` when there are none.
+    fn style_children_block(
+        &mut self,
+        span: Span,
+        styles: Vec<JSXElement<'a>>,
+    ) -> Option<Expression<'a>> {
+        if styles.is_empty() {
+            return None;
+        }
+        let mut statements = self.ast_vec();
+        for element in styles {
+            let element_span = element.span;
+            let expression = self.lower_element(element);
+            statements.push(self.statement(element_span, expression));
+        }
+        Some(self.arrow_block(span, statements))
+    }
+
     /// Text content: a string for static text, a thunk when any part is dynamic.
     fn text_content(&mut self, span: Span, children: ArenaVec<'a, JSXChild<'a>>) -> Expression<'a> {
         let mut parts: Vec<TextPart<'a>> = Vec::new();
@@ -889,6 +946,14 @@ fn control_names(tag: &str) -> &'static [&'static str] {
         "Index" => &["each"],
         "Switch" => &["fallback"],
         _ => &[],
+    }
+}
+
+fn is_state_style(element: &JSXElement<'_>) -> bool {
+    match &element.opening_element.name {
+        JSXElementName::Identifier(id) => id.name.as_str() == "StateStyle",
+        JSXElementName::IdentifierReference(id) => id.name.as_str() == "StateStyle",
+        _ => false,
     }
 }
 

@@ -11,6 +11,7 @@ object BubbleNative {
     external fun setStorageDir(path: String): Int
     external fun frame(width: Float, height: Float): ByteArray
     external fun pointer(action: Int, id: Int, x: Float, y: Float, timeMs: Double, pointerKind: Int, buttons: Int): Int
+    external fun visualPointer(action: Int, id: Int, x: Float, y: Float, timeMs: Double, pointerKind: Int, buttons: Int): Int
     external fun tick(timeMs: Double): Int
     external fun scroll(x: Float, y: Float, dx: Float, dy: Float)
     external fun edit(action: Int, text: ByteArray, a: Int, b: Int): Int

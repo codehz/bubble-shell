@@ -13,6 +13,48 @@
 //! callers.
 //!
 //! `SET_PROPS` is the set `Shell::set_prop` accepts at runtime.
+//!
+//! `STATE_STYLE_PROPS` is the paint-only subset a `StateStyle` declaration may
+//! override while a node is pressed or focused. Layout properties stay on the
+//! node.
+
+use crate::ops::Value;
+
+/// Paint properties a `StateStyle` declaration may override.
+pub const STATE_STYLE_PROPS: &[&str] = &[
+    "backgroundColor",
+    "color",
+    "opacity",
+    "radius",
+    "textAlign",
+    "fit",
+];
+
+/// `0` left, `1` center, `2` right.
+pub(crate) fn text_align(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("textAlign must be a string".into());
+    };
+    match text.as_str() {
+        "left" => Ok(0),
+        "center" => Ok(1),
+        "right" => Ok(2),
+        other => Err(format!("unsupported textAlign {other}")),
+    }
+}
+
+/// `0` contain, `1` cover, `2` fill.
+pub(crate) fn image_fit(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("fit must be a string".into());
+    };
+    match text.as_str() {
+        "contain" => Ok(0),
+        "cover" => Ok(1),
+        "fill" => Ok(2),
+        other => Err(format!("unsupported fit {other}")),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Prop {

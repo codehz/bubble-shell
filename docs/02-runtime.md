@@ -123,15 +123,20 @@ assets/
 | `ScrollTo` | handle, x, y | 滚动容器；按轴 clamp，未启用轴归零 |
 | `Focus` | handle | 焦点 |
 | `SetEditingValue` | handle, epoch, value, selection | 受控文本 |
+| `SpawnStateStyle` | style, target, index | 虚拟状态样式声明；`index` 是该目标内的声明序号 |
+| `SetStateStyleProp` | style, key, value | `when` / `enabled` / 六项绘制属性；先解析再写入 |
+| `MoveStateStyle` | style, target, index | `index` 是移除自身后的最终位置 |
+| `DisposeStateStyle` | style | 目标销毁时声明随之销毁 |
 | `SetAsset` | handle, contentHash | 预留；当前 `Image` 通过 `SetProp src` 交给宿主解析 |
 
-当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`、`Focus`、`SetEditingValue`，以及手势声明 op。`TextField`（kind 4）的编辑状态在 UI 线程，由 `EditSession` 持有 UTF-16 文档位置、方向性选区、独立组合区、`revision` 与撤销历史；`BSED` v2 每批向脚本投递有序 delta 和最终快照。iOS `UITextInput`、Android `InputConnection`、Web 隐藏 textarea 已接入文本编辑。语义树由节点属性派生并经 `bubble_semantics` / wasm `semantics` 输出 JSON；iOS `UIAccessibility`、Android `AccessibilityNodeProvider` 与 Web ARIA 覆盖层读取同一快照。其余 op（含 `InsertNode`、动画、显式 `SetSemantics`）随后续里程碑。
+当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`、`Focus`、`SetEditingValue`，以及手势声明 op 和状态样式 op。`TextField`（kind 4）的编辑状态在 UI 线程，由 `EditSession` 持有 UTF-16 文档位置、方向性选区、独立组合区、`revision` 与撤销历史；`BSED` v2 每批向脚本投递有序 delta 和最终快照。iOS `UITextInput`、Android `InputConnection`、Web 隐藏 textarea 已接入文本编辑。语义树由节点属性派生并经 `bubble_semantics` / wasm `semantics` 输出 JSON；iOS `UIAccessibility`、Android `AccessibilityNodeProvider` 与 Web ARIA 覆盖层读取同一快照。其余 op（含 `InsertNode`、动画、显式 `SetSemantics`）随后续里程碑。
 
 节点描述为 `BNOD` v3：固定字段后跟 `u32` 长度的 TLV 扩展块。`Spawn` 载荷复用同一 body。长度不在描述符里。滚动描述符的单个标志字节仍是位掩码：bit 0 为纵向滚动，bit 1 为横向，其余位保留且解码时拒绝。直接构造 `NodeDesc` 的 Rust 调用方继续使用该字节。`flexDirection` 在描述符里是一个字节：0 column、1 row、2 column-reverse、3 row-reverse。`flexShrink` 默认 0。
 
 属性分两类：
 
 - 手势是虚拟子节点：`TapGesture`、`DoubleTapGesture`、`LongPressGesture`、`PanGesture`、`TransformGesture`。没有 `View onPress`。事件名为 `onTap` / `onTapStart` / `onTapEnd` / `onTapCancel`、`onDoubleTap*`、`onLongPress` / `onLongPressEnd` / `onLongPressCancel`、`onPanStart` / `onPanUpdate` / `onPanEnd` / `onPanCancel`、`onTransformStart` / `onTransformUpdate` / `onTransformEnd` / `onTransformCancel`。Transform 用 `mode`（字符串或字符串数组：`pan` / `pinch` / `rotate`）。`direction` 是方向字符串数组。`captureAxis="none"|"x"|"y"|"both"` 把该轴滚动让给这条手势。
+- 状态样式也是虚拟子节点：`<StateStyle when="pressed" opacity={0.7} />`。`when` 必填，按空白切分后只接受 `pressed` 与 `focused`，多个 token 为 AND；`enabled` 默认 true；可覆盖的绘制属性只有 `backgroundColor`、`color`、`opacity`、`radius`、`textAlign`、`fit`，其他 key 一律报错。声明只作用于最近的实际父节点，不继承、不选中后代、不创建盒子、不命中、不进入语义树。同目标的多条匹配声明按虚拟源码顺序覆盖，后者胜出；`null` 移除该项 patch。匹配的 `focused` 声明接管默认焦点框（空 patch 也算），`pressed` 反馈由 UI 线程在首指按下、移出 `TAP_SLOP`、抬起、宿主取消、第二指按下或手势胜出时更新。`View`、`Text`、`TextField`、`Image` 都接受直接子 `StateStyle`；叶子节点不接受其他子内容，条件开关请用 `enabled`/`when` 的 Dynamic 值。
 - `SPAWN_PROPS`：`fontSize`、`radius`、`opacity`、`flexGrow`、`flexShrink`、`flexDirection`。
 - `DEFERRED_PROPS`：`backgroundColor`、`color`、`lineHeight`、`textAlign`、`fontWeight`、`width`、`height`、`minWidth`、`minHeight`、`maxWidth`、`maxHeight`、`flexBasis`、`padding`、`margin`、`gap`、`rowGap`、`columnGap`、`alignItems`、`alignSelf`、`alignContent`、`justifyContent`、`flexWrap`、`position`、`inset`、`aspectRatio`、`src`、`fit`、`overscrollX`、`overscrollY`、`multiline`、`secure`、`maxLength`、`keyboard`、`autofill`、`role`、`label`、`disabled`、`hidden`、`focusable`、`modal`、`checked`、`selected`、`expanded`、`overflow`、`overflowX`、`overflowY`、`display`、`visibility`。
 - 无障碍属性：`role`（`button`、`link`、`textbox`、`checkbox`、`heading`、`dialog` 等）、`label`、`disabled`、`hidden`（仅语义隐藏，不裁切，也不改变布局、绘制、命中或焦点）、`focusable`、`modal`（焦点陷阱）、`checked`、`selected`、`expanded`。`Text`、`Image`、`TextField` 分别派生 text/image/textbox 角色；`TextField` 的语义值在 `secure` 时为空。可滚动容器即使没有角色或标签也会进入语义树，并输出对应方向的滚动 action 位。绘制上的隐藏用 `visibility`、`display` 或 `overflow`。

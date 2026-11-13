@@ -18,6 +18,13 @@ const gestureBindings = new Map();
 const gestureHandlerIds = new Map();
 const retiredGestureHandlers = new Map();
 const gestureOwners = new Map();
+const stateStyleTargetOf = new Map();
+const stateStyleScopeOf = new Map();
+const stateStyleOrderOfTarget = new Map();
+const stateStyleBindings = new Map();
+const stateStyleRoots = new Map();
+let currentStyleScope = null;
+let leafStyles = false;
 const encoder = typeof TextEncoder === "function" ? new TextEncoder() : null;
 
 export function setApi(next) {
@@ -126,6 +133,14 @@ function resetRenderState() {
   gestureHandlerIds.clear();
   retiredGestureHandlers.clear();
   gestureOwners.clear();
+  stateStyleTargetOf.clear();
+  stateStyleScopeOf.clear();
+  stateStyleOrderOfTarget.clear();
+  stateStyleBindings.clear();
+  stateStyleRoots.clear();
+  leafStyles = false;
+  currentStyleScope = newStyleScope(1, null);
+  stateStyleRoots.set(1, currentStyleScope);
   bodyError = null;
 }
 
@@ -435,26 +450,37 @@ function pack(kind, props, text) {
 
 export function view(props, build) {
   const handle = pack(1, props, "");
+  const scope = currentStyleScope;
+  currentStyleScope = rootStyleScope(handle);
   parents.push(handle);
-  build();
-  parents.pop();
+  try {
+    build();
+  } finally {
+    parents.pop();
+    currentStyleScope = scope;
+  }
   return handle;
 }
 
-export function text(props, content) {
+export function text(props, content, buildStyles) {
+  let handle;
   if (typeof content === "function") {
-    const handle = pack(2, props, "");
+    handle = pack(2, props, "");
     bind(handle, content);
-    return handle;
+  } else {
+    handle = pack(2, props, content == null ? "" : String(content));
   }
-  return pack(2, props, content == null ? "" : String(content));
+  buildLeafStyles(handle, buildStyles);
+  return handle;
 }
 
-export function image(props) {
-  return pack(3, props, "");
+export function image(props, buildStyles) {
+  const handle = pack(3, props, "");
+  buildLeafStyles(handle, buildStyles);
+  return handle;
 }
 
-export function textField(props) {
+export function textField(props, buildStyles) {
   props = props ?? {};
   const onChange = props.onChange;
   const value = props.value;
@@ -474,6 +500,7 @@ export function textField(props) {
       throw new Error(api.error() || "bind_event failed");
     }
   }
+  buildLeafStyles(handle, buildStyles);
   return handle;
 }
 
@@ -499,10 +526,13 @@ export function registerPrimitive(name, factory) {
   primitives.set(name, factory);
 }
 
-export function primitive(name, props, children) {
+export function primitive(name, props, children, buildStyles) {
   const factory = primitives.get(name);
   if (!factory) throw new Error(`unknown primitive ${name}`);
-  return factory(props, children);
+  if (leafStyles && name !== "StateStyle") {
+    throw new Error(`${name} cannot be built inside state style children`);
+  }
+  return factory(props, children, buildStyles);
 }
 
 const GESTURE_KINDS = {
@@ -672,6 +702,7 @@ registerPrimitive("DoubleTapGesture", doubleTapGesture);
 registerPrimitive("LongPressGesture", longPressGesture);
 registerPrimitive("PanGesture", panGesture);
 registerPrimitive("TransformGesture", transformGesture);
+registerPrimitive("StateStyle", stateStyle);
 
 function propParts(value) {
   if (value == null) return [0, 0, ""];
@@ -789,8 +820,194 @@ function disposeTargetGestures(handle) {
   gestureOrderOfTarget.delete(handle);
 }
 
+let stateStyleProps;
+
+function allowedStateStyleProps() {
+  if (!stateStyleProps) {
+    if (typeof api.state_style_props !== "function") {
+      throw new Error("host does not expose state style properties");
+    }
+    stateStyleProps = new Set(api.state_style_props());
+  }
+  return stateStyleProps;
+}
+
+// One scope per real UI target: declarations created while building that
+// target land in its root scope, and every control-flow node keeps a stable
+// child scope so authored order survives an empty branch.
+function newStyleScope(target, parentScope) {
+  return { target, parent: parentScope, entries: [] };
+}
+
+function rootStyleScope(target) {
+  let scope = stateStyleRoots.get(target);
+  if (!scope) {
+    scope = newStyleScope(target, null);
+    stateStyleRoots.set(target, scope);
+  }
+  return scope;
+}
+
+function flattenStyleScope(scope, out) {
+  for (const entry of scope.entries) {
+    if (typeof entry === "number") {
+      if (stateStyleTargetOf.has(entry)) out.push(entry);
+    } else {
+      flattenStyleScope(entry, out);
+    }
+  }
+}
+
+function setStateStyleProp(id, key, value) {
+  const [tag, number, text] = propParts(value);
+  if (api.set_state_style_prop(id, key, tag, number, text) !== 0) {
+    throw new Error(api.error() || "set_state_style_prop failed");
+  }
+}
+
+function bindStateStyleProp(id, key, fn) {
+  let set = stateStyleBindings.get(id);
+  if (!set) {
+    set = new Set();
+    stateStyleBindings.set(id, set);
+  }
+  set.add(addBinding(() => setStateStyleProp(id, key, fn()), null));
+}
+
+function deactivateStateStyleBindings(id) {
+  const set = stateStyleBindings.get(id);
+  if (!set) return;
+  for (const binding of set) {
+    if (api.dispose_node(binding) !== 0) throw new Error(api.error() || "dispose_node failed");
+  }
+  stateStyleBindings.delete(id);
+}
+
+function disposeStateStyle(id) {
+  if (!stateStyleTargetOf.has(id)) return;
+  const target = stateStyleTargetOf.get(id);
+  stateStyleTargetOf.delete(id);
+  deactivateStateStyleBindings(id);
+  const scope = stateStyleScopeOf.get(id);
+  stateStyleScopeOf.delete(id);
+  if (scope) {
+    const index = scope.entries.indexOf(id);
+    if (index >= 0) scope.entries.splice(index, 1);
+  }
+  const order = stateStyleOrderOfTarget.get(target);
+  if (order) {
+    const index = order.indexOf(id);
+    if (index >= 0) order.splice(index, 1);
+  }
+  if (api.dispose_state_style(id) !== 0) {
+    throw new Error(api.error() || "dispose state style failed");
+  }
+}
+
+// Drop a scope's declarations but keep the scope, so a reopened branch lands
+// back in its authored slot.
+function resetStyleScope(scope) {
+  for (const entry of [...scope.entries]) {
+    if (typeof entry === "number") disposeStateStyle(entry);
+    else disposeStyleScope(entry);
+  }
+  scope.entries.length = 0;
+}
+
+function disposeStyleScope(scope) {
+  resetStyleScope(scope);
+  const parent = scope.parent;
+  scope.parent = null;
+  if (!parent) return;
+  const index = parent.entries.indexOf(scope);
+  if (index >= 0) parent.entries.splice(index, 1);
+}
+
+function disposeTargetStyles(handle) {
+  const order = stateStyleOrderOfTarget.get(handle);
+  if (order) for (const id of [...order]) disposeStateStyle(id);
+  stateStyleOrderOfTarget.delete(handle);
+  const root = stateStyleRoots.get(handle);
+  if (root) {
+    root.entries.length = 0;
+    stateStyleRoots.delete(handle);
+  }
+}
+
+// Flatten every target's virtual order and move only the declarations that
+// disagree with it. `index` is the final position after removal.
+function syncStyleOrders() {
+  for (const [target, root] of stateStyleRoots) {
+    const order = stateStyleOrderOfTarget.get(target);
+    if (!order || order.length === 0) continue;
+    const desired = [];
+    flattenStyleScope(root, desired);
+    for (let index = 0; index < desired.length; index += 1) {
+      if (order[index] === desired[index]) continue;
+      const from = order.indexOf(desired[index]);
+      if (from < 0) continue;
+      order.splice(from, 1);
+      order.splice(index, 0, desired[index]);
+      if (api.move_state_style(desired[index], target, index) !== 0) {
+        throw new Error(api.error() || "move state style failed");
+      }
+    }
+  }
+}
+
+function stateStyle(props) {
+  if (typeof api.spawn_state_style !== "function") {
+    throw new Error("host does not expose state style declarations");
+  }
+  props = props ?? {};
+  if (props.when == null) throw new Error("StateStyle requires when");
+  const allowed = allowedStateStyleProps();
+  for (const key of Object.keys(props)) {
+    if (key === "when" || key === "enabled") continue;
+    if (!allowed.has(key)) throw new Error(`StateStyle has no property ${key}`);
+  }
+  const target = parent();
+  let order = stateStyleOrderOfTarget.get(target);
+  if (!order) {
+    order = [];
+    stateStyleOrderOfTarget.set(target, order);
+  }
+  const id = api.spawn_state_style(target, order.length);
+  if (!id) throw new Error(api.error() || "spawn_state_style failed");
+  order.push(id);
+  stateStyleTargetOf.set(id, target);
+  const scope = currentStyleScope;
+  stateStyleScopeOf.set(id, scope);
+  scope.entries.push(id);
+  for (const key of Object.keys(props)) {
+    const value = props[key];
+    if (value instanceof Dynamic) bindStateStyleProp(id, key, value.run);
+    else setStateStyleProp(id, key, value);
+  }
+  return id;
+}
+
+// A leaf primitive's children are style declarations only, and they target
+// the leaf itself.
+function buildLeafStyles(handle, buildStyles) {
+  if (typeof buildStyles !== "function") return;
+  const scope = currentStyleScope;
+  const leaf = leafStyles;
+  currentStyleScope = rootStyleScope(handle);
+  leafStyles = true;
+  parents.push(handle);
+  try {
+    buildStyles();
+  } finally {
+    parents.pop();
+    leafStyles = leaf;
+    currentStyleScope = scope;
+  }
+}
+
 function disposeHandle(handle) {
   if (handle === 1) return;
+  disposeTargetStyles(handle);
   disposeTargetGestures(handle);
   deactivateHandleBindings(handle);
   const owned = handlersOfNode.get(handle);
@@ -839,17 +1056,20 @@ function anchorIndex(parentHandle, anchor) {
   return index;
 }
 
-function renderAt(parentHandle, index, build) {
+function renderAt(parentHandle, index, build, scope) {
   const collector = { parent: parentHandle, handles: [], gestures: [] };
+  const outer = currentStyleScope;
   collectors.push(collector);
   cursors.push({ parent: parentHandle, index });
   parents.push(parentHandle);
+  if (scope) currentStyleScope = scope;
   try {
     build();
   } finally {
     parents.pop();
     cursors.pop();
     collectors.pop();
+    currentStyleScope = outer;
   }
   return collector;
 }
@@ -858,7 +1078,7 @@ function createAnchor() {
   return pack(1, { width: 0, height: 0, flexGrow: 0, flexShrink: 0, position: "absolute" }, "");
 }
 
-function replaceBranch(parentHandle, anchor, branch, build) {
+function replaceBranch(parentHandle, anchor, branch, build, scope) {
   const anchors = new Map();
   for (const gesture of branch.gestures) {
     const target = gestureParentOf.get(gesture);
@@ -868,9 +1088,10 @@ function replaceBranch(parentHandle, anchor, branch, build) {
   }
   for (const handle of branch.handles) disposeHandle(handle);
   for (const gesture of branch.gestures) disposeGesture(gesture);
+  resetStyleScope(scope);
   const next = { parent: parentHandle, handles: [], gestures: [] };
   if (typeof build === "function") {
-    const created = renderAt(parentHandle, anchorIndex(parentHandle, anchor), build);
+    const created = renderAt(parentHandle, anchorIndex(parentHandle, anchor), build, scope);
     next.handles = created.handles;
     next.gestures = created.gestures;
   }
@@ -901,6 +1122,8 @@ export function show(whenFn, fallback, render) {
   if (typeof render !== "function") throw new Error("Show requires a render function");
   const parentHandle = parent();
   const anchor = createAnchor();
+  const scope = newStyleScope(parentHandle, currentStyleScope);
+  currentStyleScope.entries.push(scope);
   let branch = { parent: parentHandle, handles: [], gestures: [] };
   let open = false;
   const read = () => whenFn();
@@ -913,6 +1136,7 @@ export function show(whenFn, fallback, render) {
       anchor,
       branch,
       now ? () => render(read) : (typeof fallback === "function" ? fallback : null),
+      scope,
     );
   }, anchor);
   return anchor;
@@ -924,11 +1148,14 @@ export function forEach(items, by, render) {
   const itemsFn = typeof items === "function" ? items : () => items;
   const parentHandle = parent();
   const anchor = createAnchor();
+  const scope = newStyleScope(parentHandle, currentStyleScope);
+  currentStyleScope.entries.push(scope);
   const groups = new Map();
   const live = new Map();
   const disposeGroup = (entry) => {
     for (const handle of entry.handles) disposeHandle(handle);
     for (const gesture of entry.gestures) disposeGesture(gesture);
+    if (entry.scope) disposeStyleScope(entry.scope);
   };
   addBinding(() => {
     const list = itemsFn() ?? [];
@@ -955,7 +1182,10 @@ export function forEach(items, by, render) {
           itemsFn();
           return live.get(key);
         };
-        group = renderAt(parentHandle, cursor, () => render(read, entry.index));
+        const groupScope = newStyleScope(parentHandle, scope);
+        scope.entries.push(groupScope);
+        group = renderAt(parentHandle, cursor, () => render(read, entry.index), groupScope);
+        group.scope = groupScope;
         groups.set(key, group);
         cursor += group.handles.length;
       } else {
@@ -965,6 +1195,11 @@ export function forEach(items, by, render) {
         }
       }
       rank.set(group, rank.size);
+    }
+    scope.entries.length = 0;
+    for (const entry of next) {
+      const group = groups.get(entry.key);
+      if (group && group.scope) scope.entries.push(group.scope);
     }
     reorderScopedGestures(rank);
   }, anchor);
@@ -976,10 +1211,13 @@ export function indexEach(items, render) {
   const itemsFn = typeof items === "function" ? items : () => items;
   const parentHandle = parent();
   const anchor = createAnchor();
+  const scope = newStyleScope(parentHandle, currentStyleScope);
+  currentStyleScope.entries.push(scope);
   const groups = new Map();
   const disposeGroup = (entry) => {
     for (const handle of entry.handles) disposeHandle(handle);
     for (const gesture of entry.gestures) disposeGesture(gesture);
+    if (entry.scope) disposeStyleScope(entry.scope);
   };
   addBinding(() => {
     const list = itemsFn() ?? [];
@@ -996,7 +1234,10 @@ export function indexEach(items, render) {
       if (group === undefined) {
         const at = index;
         const read = () => (itemsFn() ?? [])[at];
-        group = renderAt(parentHandle, cursor, () => render(read, at));
+        const groupScope = newStyleScope(parentHandle, scope);
+        scope.entries.push(groupScope);
+        group = renderAt(parentHandle, cursor, () => render(read, at), groupScope);
+        group.scope = groupScope;
         groups.set(index, group);
         cursor += group.handles.length;
       } else {
@@ -1007,6 +1248,10 @@ export function indexEach(items, render) {
       }
       rank.set(group, rank.size);
     }
+    scope.entries.length = 0;
+    for (const group of groups.values()) {
+      if (group.scope) scope.entries.push(group.scope);
+    }
     reorderScopedGestures(rank);
   }, anchor);
   return anchor;
@@ -1016,6 +1261,8 @@ export function switchFlow(fallback, arms) {
   if (!Array.isArray(arms)) throw new Error("Switch requires matches");
   const parentHandle = parent();
   const anchor = createAnchor();
+  const scope = newStyleScope(parentHandle, currentStyleScope);
+  currentStyleScope.entries.push(scope);
   let branch = { parent: parentHandle, handles: [], gestures: [] };
   let active = -2;
   addBinding(() => {
@@ -1036,6 +1283,7 @@ export function switchFlow(fallback, arms) {
       chosen < 0
         ? (typeof fallback === "function" ? fallback : null)
         : () => arms[selected][1](() => arms[selected][0]()),
+      scope,
     );
   }, anchor);
   return anchor;
@@ -1079,6 +1327,7 @@ export function flush() {
     bodyError = null;
     throw error;
   }
+  syncStyleOrders();
   if (api.commit() === 0 && api.error()) throw new Error(api.error());
   if (typeof api.layout === "function" && api.layout() !== 0) throw new Error(api.error() || "layout failed");
 }

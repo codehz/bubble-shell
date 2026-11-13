@@ -593,6 +593,44 @@ pub extern "C" fn bubble_pointer(
     finish(result)
 }
 
+/// Pressed feedback only: no recognition, no tap, no scroll. Editing hosts use
+/// it when their own pointer path owns the sample, so one physical touch is
+/// never fed to both entry points.
+#[no_mangle]
+pub extern "C" fn bubble_visual_pointer(
+    action: u32,
+    id: u32,
+    x: f32,
+    y: f32,
+    time_ms: f64,
+    pointer_kind: u32,
+    buttons: u32,
+) -> i32 {
+    let result = catch(|| {
+        let action =
+            PointerAction::parse(action).ok_or_else(|| format!("bad pointer action {action}"))?;
+        let engine = engine()?;
+        drain_pending(&engine.shared)?;
+        let mut shell = engine
+            .shared
+            .shell
+            .lock()
+            .map_err(|_| "tree lock poisoned".to_string())?;
+        shell.visual_pointer(PointerInput {
+            action,
+            id,
+            x,
+            y,
+            time_ms,
+            buttons,
+            pointer_kind: pointer_kind.min(255) as u8,
+            path: Vec::new(),
+        });
+        Ok(())
+    });
+    finish(result)
+}
+
 /// UI-thread timer tick for long press and the double-tap window.
 #[no_mangle]
 pub extern "C" fn bubble_tick(time_ms: f64) -> i32 {
@@ -2105,6 +2143,29 @@ mod android {
         buttons: jint,
     ) -> jint {
         super::bubble_pointer(
+            action as u32,
+            id as u32,
+            x,
+            y,
+            time_ms,
+            pointer_kind as u32,
+            buttons as u32,
+        )
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_visualPointer(
+        _env: JNIEnv,
+        _class: JClass,
+        action: jint,
+        id: jint,
+        x: jfloat,
+        y: jfloat,
+        time_ms: jni::sys::jdouble,
+        pointer_kind: jint,
+        buttons: jint,
+    ) -> jint {
+        super::bubble_visual_pointer(
             action as u32,
             id as u32,
             x,

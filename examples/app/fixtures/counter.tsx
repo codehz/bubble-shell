@@ -8,8 +8,9 @@ function Counter() {
   const count = signal(0);
   return (
     <View backgroundColor="oklch(0.2 0.01 264)" flexGrow={1} flexShrink={1} padding={[12, 12, 12, 12]} gap={8}>
-      <Text color="#ffffff" fontSize={24} lineHeight={30} textAlign="center" fontWeight={700}>Count: {count()}</Text>
+      <Text color="#ffffff" fontSize={24} lineHeight={30} textAlign="center" fontWeight={700}><StateStyle when="pressed" color="#f87171" />Count: {count()}</Text>
       <View backgroundColor={0xff3b82f6} radius={8} padding={[12, 8, 8, 12]}>
+        <StateStyle when="pressed" opacity={0.7} />
         <TapGesture onTap={() => count.update((c) => c + 1)} />
         <Text color="#ffffff" fontSize={16}>Increment</Text>
       </View>

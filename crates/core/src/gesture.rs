@@ -224,7 +224,7 @@ pub struct PointerInput {
 
 impl PointerInput {
     /// Mouse input only starts a sequence with the primary button.
-    fn eligible(&self) -> bool {
+    pub(crate) fn eligible(&self) -> bool {
         self.pointer_kind != 1 || self.buttons & 1 != 0
     }
 }
@@ -411,6 +411,22 @@ impl Recognizer {
                     .is_some_and(|decl| decl.kind == GestureKind::Tap && decl.has_handler(SLOT_TAP))
             })
         })
+    }
+
+    /// Nearest node on `path` that carries an enabled tap family. The shell
+    /// uses it to decide which node owns pressed feedback; routing is
+    /// unchanged.
+    pub(crate) fn click_target(&self, path: &[u32]) -> Option<u32> {
+        tap_family(&self.order, &self.decls, path).map(|family| family.target)
+    }
+
+    /// Whether the live sequence already gave up on the tap: none is live, or
+    /// the tap failed, the sequence died, or a scroll won.
+    pub(crate) fn visual_press_cancelled(&self) -> bool {
+        match &self.sequence {
+            None => true,
+            Some(seq) => seq.tap_failed || seq.dead || seq.scroll_used,
+        }
     }
 
     /// Synthesize a successful tap for keyboard or screen-reader activation.

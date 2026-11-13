@@ -19,6 +19,7 @@ pub struct Turn {
     seq: u32,
     next_handle: u32,
     next_gesture: u32,
+    next_state_style: u32,
 }
 
 impl Default for Turn {
@@ -36,6 +37,7 @@ impl Turn {
             seq: 0,
             next_handle: 2,
             next_gesture: 1,
+            next_state_style: 1,
         }
     }
 
@@ -178,6 +180,41 @@ impl Turn {
         self.push(Op::DisposeGesture { gesture });
     }
 
+    /// Allocate a state style id and queue its declaration under `target`.
+    pub fn spawn_state_style(&mut self, target: u32, index: u32) -> Result<u32, String> {
+        let style = self.next_state_style;
+        self.next_state_style = self
+            .next_state_style
+            .checked_add(1)
+            .ok_or_else(|| "state style space exhausted".to_string())?;
+        self.push(Op::SpawnStateStyle {
+            style,
+            target,
+            index,
+        });
+        Ok(style)
+    }
+
+    pub fn set_state_style_prop(&mut self, style: u32, key: impl Into<String>, value: Value) {
+        self.push(Op::SetStateStyleProp {
+            style,
+            key: key.into(),
+            value,
+        });
+    }
+
+    pub fn move_state_style(&mut self, style: u32, target: u32, index: u32) {
+        self.push(Op::MoveStateStyle {
+            style,
+            target,
+            index,
+        });
+    }
+
+    pub fn dispose_state_style(&mut self, style: u32) {
+        self.push(Op::DisposeStateStyle { style });
+    }
+
     pub fn set_prop(&mut self, handle: u32, key: impl Into<String>, value: Value) {
         self.push(Op::SetProp {
             handle,
@@ -244,6 +281,22 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
                         key: existing_key,
                         value: slot,
                     } if existing == handle && existing_key == key => {
+                        *slot = value.clone();
+                        return;
+                    }
+                    Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } => {}
+                    _ => break,
+                }
+            }
+        }
+        Op::SetStateStyleProp { style, key, value } => {
+            for item in buf.iter_mut().rev() {
+                match item {
+                    Op::SetStateStyleProp {
+                        style: existing,
+                        key: existing_key,
+                        value: slot,
+                    } if existing == style && existing_key == key => {
                         *slot = value.clone();
                         return;
                     }

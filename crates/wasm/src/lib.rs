@@ -16,7 +16,7 @@ use bubble_core::{
     decode_layout, encode_edit_events, encode_events, encode_paint, encode_set_text,
     validate_bundle_hashes, A11yAction, ComputationKind, EditCommand, EditEvent, EditMenuAction,
     GestureEvent, GestureKind, Key, LayoutRequest, NodeDesc, Op, PointerAction, PointerInput,
-    Sched, Shell, Turn, Value, DEFERRED_PROPS, SPAWN_PROPS,
+    Sched, Shell, Turn, Value, DEFERRED_PROPS, SPAWN_PROPS, STATE_STYLE_PROPS,
 };
 
 thread_local! {
@@ -207,6 +207,46 @@ pub extern "C" fn pointer(
                 path: Vec::new(),
             });
             collect_events(shell);
+            Ok(())
+        })
+    });
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+/// Pressed feedback only: no recognition, no tap, no scroll. Editing hosts
+/// use it when their own pointer path owns the sample.
+#[no_mangle]
+pub extern "C" fn visual_pointer(
+    action: u32,
+    id: u32,
+    x: f32,
+    y: f32,
+    time_ms: f64,
+    pointer_kind: u32,
+    buttons: u32,
+) -> i32 {
+    let Some(action) = PointerAction::parse(action) else {
+        set_error(format!("bad pointer action {action}"));
+        return 1;
+    };
+    let result = drain_pending().and_then(|()| {
+        with_shell(|shell| {
+            shell.visual_pointer(PointerInput {
+                action,
+                id,
+                x,
+                y,
+                time_ms,
+                buttons,
+                pointer_kind: pointer_kind.min(255) as u8,
+                path: Vec::new(),
+            });
             Ok(())
         })
     });
@@ -1012,6 +1052,12 @@ pub extern "C" fn deferred_props() -> u32 {
     store_scratch(DEFERRED_PROPS.join("\n").into_bytes())
 }
 
+/// Newline-separated paint properties a state style declaration may override.
+#[no_mangle]
+pub extern "C" fn state_style_props() -> u32 {
+    store_scratch(STATE_STYLE_PROPS.join("\n").into_bytes())
+}
+
 #[no_mangle]
 pub extern "C" fn boot() -> i32 {
     match Shell::blank() {
@@ -1420,6 +1466,79 @@ pub extern "C" fn dispose_gesture(handle: u32) -> i32 {
 pub extern "C" fn move_gesture(handle: u32, target: u32, index: u32) -> i32 {
     match with_turn(|turn| {
         turn.move_gesture(handle, target, index);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn spawn_state_style(target: u32, index: u32) -> u32 {
+    match with_turn(|turn| turn.spawn_state_style(target, index)) {
+        Ok(style) => style,
+        Err(err) => {
+            set_error(err);
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn set_state_style_prop(
+    style: u32,
+    key_ptr: *const u8,
+    key_len: u32,
+    tag: u32,
+    number: f64,
+    text_ptr: *const u8,
+    text_len: u32,
+) -> i32 {
+    let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
+    let Ok(key) = std::str::from_utf8(key_bytes) else {
+        set_error("state style key is not utf-8".into());
+        return 1;
+    };
+    let value = match read_value(tag, number, text_ptr, text_len) {
+        Ok(value) => value,
+        Err(err) => {
+            set_error(err);
+            return 1;
+        }
+    };
+    match with_turn(|turn| {
+        turn.set_state_style_prop(style, key, value.clone());
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn move_state_style(style: u32, target: u32, index: u32) -> i32 {
+    match with_turn(|turn| {
+        turn.move_state_style(style, target, index);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dispose_state_style(style: u32) -> i32 {
+    match with_turn(|turn| {
+        turn.dispose_state_style(style);
         Ok(())
     }) {
         Ok(()) => 0,
