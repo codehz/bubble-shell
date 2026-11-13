@@ -2,7 +2,7 @@
 
 ## 1. 嵌入模型
 
-v1 为**单实例**：每个宿主进程一个 runtime、一个内容根、一个版本。
+- v1 每个视图一个 shell：`bubble_create` 在调用线程上绑定新实例，`bubble_bind` 切换，`bubble_destroy` 只销毁当前绑定。Web 是同一 WASM 模块里的多个 player。
 
 宿主负责：
 

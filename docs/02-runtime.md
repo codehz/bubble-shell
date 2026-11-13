@@ -203,7 +203,7 @@ C ABI/JNI/WASM 的编辑事务入口按活动会话校验身份；iOS 与 Web �
 
 ### Native
 
-- 双端统一 QuickJS/PrimJS；v1 单实例嵌入，进程内一个 context，跑在独立脚本线程。多实例仍是待定项。
+- 每个 shell 一个 QuickJS context，跑在自己的脚本线程。C ABI 用 `bubble_bind` 选择当前实例。
 - C ABI 暴露 Rust core；Swift/Kotlin 壳负责 surface、生命周期、原生输入与 a11y。
 - 脚本线程自建事件循环：timers、promises、microtasks、宿主回调。
 - `JS_SetInterruptHandler` 做硬超时；`JS_SetMemoryLimit` + 栈上限做资源配额。

@@ -4,7 +4,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use bubble_ffi::{
-    bubble_create, bubble_destroy, bubble_edit, bubble_edit_batch_begin, bubble_edit_batch_end,
+    bubble_bind, bubble_create, bubble_current, bubble_destroy, bubble_edit, bubble_edit_batch_begin, bubble_edit_batch_end,
     bubble_edit_commit, bubble_edit_compose, bubble_edit_delete_surrounding,
     bubble_edit_finish_composition, bubble_edit_replace, bubble_edit_snapshot, bubble_eval,
     bubble_faults, bubble_finish_request, bubble_font_count, bubble_font_epoch, bubble_frame,
@@ -155,11 +155,13 @@ fn dead_loop_is_interrupted_without_blocking_frames() {
     let _guard = exclusive();
     bubble_destroy();
     assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    let shell = bubble_current();
     load_counter();
     let frames = std::sync::atomic::AtomicU32::new(0);
     let stop = std::sync::atomic::AtomicBool::new(false);
     std::thread::scope(|scope| {
         scope.spawn(|| {
+            assert_eq!(bubble_bind(shell), 0);
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                 let mut paint = ptr::null();
                 let mut len = 0;
@@ -249,12 +251,15 @@ fn timers_pause_while_hidden_and_host_calls_roundtrip() {
 }
 
 #[test]
-fn a_second_shell_or_a_bad_manifest_is_rejected() {
+fn two_shells_stay_independent_and_a_bad_manifest_is_rejected() {
     let _guard = exclusive();
     bubble_destroy();
     assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
-    assert_eq!(bubble_create(ptr::null()), 1);
-    assert!(error().contains("already exists"), "{}", error());
+    let first = bubble_current();
+    assert!(first > 0);
+    assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    let second = bubble_current();
+    assert_ne!(first, second);
     let manifest = c(r#"{"entry":"main.js","files":[]}"#);
     let entry = b"x";
     assert_eq!(
@@ -272,6 +277,10 @@ fn a_second_shell_or_a_bad_manifest_is_rejected() {
         error()
     );
     assert_eq!(text(3), "Count: 0");
+    assert_eq!(bubble_bind(first), 0);
+    assert_eq!(bubble_current(), first);
+    bubble_destroy();
+    assert_eq!(bubble_bind(second), 0);
     bubble_destroy();
 }
 

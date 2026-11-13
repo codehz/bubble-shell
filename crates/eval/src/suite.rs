@@ -108,10 +108,11 @@ fn dead_loop(probe: &mut Probe) {
     }
     let frames = AtomicU32::new(0);
     let stop = AtomicBool::new(false);
+    let shell = session.id;
     std::thread::scope(|scope| {
         scope.spawn(|| {
             while !stop.load(Ordering::Relaxed) {
-                if frame_detached(200.0, 200.0).is_err() {
+                if frame_detached(shell, 200.0, 200.0).is_err() {
                     break;
                 }
                 frames.fetch_add(1, Ordering::Relaxed);

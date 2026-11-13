@@ -3,7 +3,7 @@
 //! cannot stall layout.
 
 use std::cell::{Cell, RefCell};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
@@ -29,9 +29,6 @@ const RUNTIME_JS: &str = include_str!("../js/runtime.js");
 /// so the runtime is evaluated exactly once per context.
 const RUNTIME_ID: &str = "bubble-shell";
 
-static INTERRUPT: AtomicBool = AtomicBool::new(false);
-static JS_SINCE_MS: AtomicU64 = AtomicU64::new(0);
-static STOP_WATCH: AtomicBool = AtomicBool::new(false);
 static MONO_BASE: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 thread_local! {
@@ -81,9 +78,10 @@ pub enum Cmd {
 }
 
 pub fn start(shared: Arc<Shared>) -> (Sender<Cmd>, thread::JoinHandle<()>) {
-    STOP_WATCH.store(false, Ordering::Relaxed);
-    INTERRUPT.store(false, Ordering::Relaxed);
-    thread::spawn(watchdog);
+    shared.stop_watch.store(false, Ordering::Relaxed);
+    shared.interrupt.store(false, Ordering::Relaxed);
+    let watch = Arc::clone(&shared);
+    thread::spawn(move || watchdog(watch));
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = thread::Builder::new()
         .name("bubble-script".into())
@@ -92,32 +90,40 @@ pub fn start(shared: Arc<Shared>) -> (Sender<Cmd>, thread::JoinHandle<()>) {
     (tx, handle)
 }
 
-pub fn stop_watchdog() {
-    STOP_WATCH.store(true, Ordering::Relaxed);
-    INTERRUPT.store(true, Ordering::Relaxed);
+pub fn stop(shared: &Shared) {
+    shared.stop_watch.store(true, Ordering::Relaxed);
+    shared.interrupt.store(true, Ordering::Relaxed);
 }
 
 fn mono_ms() -> u64 {
     MONO_BASE.elapsed().as_millis() as u64
 }
 
-fn watchdog() {
-    while !STOP_WATCH.load(Ordering::Relaxed) {
-        let started = JS_SINCE_MS.load(Ordering::Relaxed);
+fn flags() -> Option<Arc<Shared>> {
+    SHARED.with(|slot| slot.borrow().clone())
+}
+
+fn watchdog(shared: Arc<Shared>) {
+    while !shared.stop_watch.load(Ordering::Relaxed) {
+        let started = shared.js_since_ms.load(Ordering::Relaxed);
         if started != 0 && mono_ms().saturating_sub(started) > INTERRUPT_MS {
-            INTERRUPT.store(true, Ordering::Relaxed);
+            shared.interrupt.store(true, Ordering::Relaxed);
         }
         thread::sleep(Duration::from_millis(20));
     }
 }
 
 fn enter_js() {
-    INTERRUPT.store(false, Ordering::Relaxed);
-    JS_SINCE_MS.store(mono_ms(), Ordering::Relaxed);
+    if let Some(shared) = flags() {
+        shared.interrupt.store(false, Ordering::Relaxed);
+        shared.js_since_ms.store(mono_ms(), Ordering::Relaxed);
+    }
 }
 
 fn leave_js() {
-    JS_SINCE_MS.store(0, Ordering::Relaxed);
+    if let Some(shared) = flags() {
+        shared.js_since_ms.store(0, Ordering::Relaxed);
+    }
 }
 
 struct Vm {
@@ -245,7 +251,7 @@ impl Session {
                     .map(str::to_string)
             })
             .unwrap_or_else(|| "main.js".to_string());
-        self.vm = Some(make_vm()?);
+        self.vm = Some(make_vm(&self.shared)?);
         let vm = self.vm.as_ref().expect("vm");
         let loaded = guarded(|| install_and_run(vm, &source, &entry_name));
         match loaded {
@@ -266,7 +272,7 @@ impl Session {
             Err(err) => {
                 if fatal(&err) {
                     self.recover()?;
-                    Err(if INTERRUPT.load(Ordering::Relaxed) {
+                    Err(if self.shared.interrupt.load(Ordering::Relaxed) {
                         "interrupted".into()
                     } else {
                         err
@@ -387,7 +393,7 @@ impl Session {
 /// A fault that leaves the VM unsafe to reuse: an interrupt or a memory
 /// allocation failure. Both rebuild the context and remount the bundle.
 fn fatal(err: &str) -> bool {
-    INTERRUPT.load(Ordering::Relaxed)
+    flags().is_some_and(|shared| shared.interrupt.load(Ordering::Relaxed))
         || err.contains("interrupted")
         || err.to_ascii_lowercase().contains("out of memory")
 }
@@ -450,12 +456,15 @@ impl Loader for BubbleLoader {
     }
 }
 
-fn make_vm() -> Result<Vm, String> {
+fn make_vm(shared: &Arc<Shared>) -> Result<Vm, String> {
     let runtime = Runtime::new().map_err(|err| err.to_string())?;
     runtime.set_loader(BubbleResolver, BubbleLoader);
     runtime.set_memory_limit(MEMORY_LIMIT);
     runtime.set_max_stack_size(STACK_LIMIT);
-    runtime.set_interrupt_handler(Some(Box::new(|| INTERRUPT.load(Ordering::Relaxed))));
+    let interrupt = Arc::clone(shared);
+    runtime.set_interrupt_handler(Some(Box::new(move || {
+        interrupt.interrupt.load(Ordering::Relaxed)
+    })));
     let context = Context::full(&runtime).map_err(|err| err.to_string())?;
     Ok(Vm { context, runtime })
 }

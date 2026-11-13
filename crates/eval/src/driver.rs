@@ -1,12 +1,12 @@
-//! One native shell, driven through the C ABI. The process holds a single
-//! instance, so a [`Session`] destroys any previous shell on create and on drop.
+//! Native shells driven through the C ABI. Each [`Session`] owns one shell id.
+//! Another thread must [`frame_detached`] with that id; the binding is thread-local.
 
 use std::ffi::{CStr, CString};
 use std::ptr;
 use std::time::{Duration, Instant};
 
 use bubble_ffi::{
-    bubble_create, bubble_destroy, bubble_eval, bubble_faults, bubble_finish_request,
+    bubble_bind, bubble_create, bubble_current, bubble_destroy, bubble_eval, bubble_faults, bubble_finish_request,
     bubble_font_count, bubble_font_epoch, bubble_frame, bubble_generation, bubble_last_error,
     bubble_load, bubble_node_box, bubble_node_text, bubble_pointer, bubble_poll_request,
     bubble_post_eval, bubble_register_font, bubble_scroll, bubble_scroll_x_of, bubble_scroll_y_of,
@@ -31,6 +31,7 @@ fn last_error() -> String {
 /// the same tree and paint bytes the host would replay.
 pub struct Session {
     open: bool,
+    pub(crate) id: i32,
 }
 
 impl Session {
@@ -40,7 +41,10 @@ impl Session {
         if code != 0 {
             return Err(last_error());
         }
-        Ok(Self { open: true })
+        Ok(Self {
+            open: true,
+            id: unsafe { bubble_current() },
+        })
     }
 
     pub fn load(&mut self, manifest_json: &str, entry: &[u8]) -> Result<(), String> {
@@ -226,9 +230,11 @@ impl Session {
     }
 }
 
-/// Layout one frame without borrowing a [`Session`]. The UI thread and the
-/// script thread already share the process-global shell this way.
-pub fn frame_detached(width: f32, height: f32) -> Result<(), String> {
+/// Layout one frame of `shell` without borrowing a [`Session`].
+pub fn frame_detached(shell: i32, width: f32, height: f32) -> Result<(), String> {
+    if unsafe { bubble_bind(shell) } != 0 {
+        return Err("shell is not created".into());
+    }
     let mut paint = ptr::null();
     let mut len = 0u32;
     let code = unsafe { bubble_frame(width, height, &mut paint, &mut len) };
@@ -242,7 +248,10 @@ pub fn frame_detached(width: f32, height: f32) -> Result<(), String> {
 impl Drop for Session {
     fn drop(&mut self) {
         if self.open {
-            unsafe { bubble_destroy() };
+            unsafe {
+                bubble_bind(self.id);
+                bubble_destroy();
+            }
             self.open = false;
         }
     }

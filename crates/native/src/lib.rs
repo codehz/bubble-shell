@@ -1,9 +1,11 @@
-//! C ABI around one QuickJS script thread and one retained tree.
+//! C ABI around one QuickJS script thread and one retained tree per shell.
 //!
-//! `bubble_frame`, hit testing, and scrolling run on the caller thread.
+//! Several shells may exist. `bubble_create` binds the new shell on this
+//! thread; `bubble_bind` selects another. `bubble_frame`, hit testing, and
+//! scrolling run on the caller thread and use the bound shell.
 //! Script evaluation does not. The script thread only produces op batches;
 //! the caller/frame thread owns the `Shell` and applies pending batches.
-//! A one-second interrupt rebuilds the context and remounts the loaded bundle.
+//! A one-second interrupt rebuilds that shell's context and remounts its bundle.
 
 // These are C ABI exports: foreign callers cannot express Rust's `unsafe`
 // contract, so pointer validity is documented per function instead.
@@ -11,12 +13,13 @@
 
 mod script;
 
-use std::collections::VecDeque;
+use std::cell::Cell;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::JoinHandle;
 
 use bubble_core::{
@@ -92,6 +95,9 @@ pub struct Shared {
     input_epoch: AtomicU32,
     requests: Arc<Mutex<VecDeque<HostRequest>>>,
     commands: Mutex<Option<Sender<Cmd>>>,
+    interrupt: AtomicBool,
+    js_since_ms: AtomicU64,
+    stop_watch: AtomicBool,
 }
 
 impl Shared {
@@ -114,14 +120,32 @@ struct Engine {
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
-static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
+struct Engines {
+    next: i32,
+    by_id: HashMap<i32, Engine>,
+}
+
+static ENGINES: LazyLock<Mutex<Engines>> = LazyLock::new(|| {
+    Mutex::new(Engines {
+        next: 1,
+        by_id: HashMap::new(),
+    })
+});
 static ERROR_C: Mutex<Option<CString>> = Mutex::new(None);
 
+thread_local! {
+    static CURRENT: Cell<i32> = const { Cell::new(0) };
+}
+
 fn engine() -> Result<EngineRef, String> {
-    let guard = ENGINE
+    let id = CURRENT.get();
+    if id == 0 {
+        return Err("shell is not created".into());
+    }
+    let guard = ENGINES
         .lock()
         .map_err(|_| "engine lock poisoned".to_string())?;
-    let engine = guard.as_ref().ok_or("shell is not created")?;
+    let engine = guard.by_id.get(&id).ok_or("shell is not created")?;
     Ok(EngineRef {
         shared: Arc::clone(&engine.shared),
         tx: engine.tx.clone(),
@@ -207,12 +231,6 @@ fn send_edits(shared: &Shared, events: Vec<EditEvent>) {
 #[no_mangle]
 pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
     let result = catch(|| {
-        let mut slot = ENGINE
-            .lock()
-            .map_err(|_| "engine lock poisoned".to_string())?;
-        if slot.is_some() {
-            return Err("a shell already exists".into());
-        }
         let (measure, layout, ctx) = unsafe {
             if host.is_null() {
                 (None, None, 0)
@@ -242,26 +260,63 @@ pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
             input_epoch: AtomicU32::new(1),
             requests: Arc::new(Mutex::new(VecDeque::new())),
             commands: Mutex::new(None),
+            interrupt: AtomicBool::new(false),
+            js_since_ms: AtomicU64::new(0),
+            stop_watch: AtomicBool::new(false),
         });
         let (tx, thread) = script::start(Arc::clone(&shared));
         if let Ok(mut slot) = shared.commands.lock() {
             *slot = Some(tx.clone());
         }
-        *slot = Some(Engine {
-            shared,
-            tx,
-            thread: Mutex::new(Some(thread)),
-        });
+        let mut engines = ENGINES
+            .lock()
+            .map_err(|_| "engine lock poisoned".to_string())?;
+        let id = engines.next;
+        engines.next = engines.next.saturating_add(1);
+        engines.by_id.insert(
+            id,
+            Engine {
+                shared,
+                tx,
+                thread: Mutex::new(Some(thread)),
+            },
+        );
+        drop(engines);
+        CURRENT.set(id);
         Ok(())
     });
     finish(result)
 }
 
+/// Select `id` for later calls on this thread. Returns 0, or -1 when missing.
+#[no_mangle]
+pub extern "C" fn bubble_bind(id: i32) -> i32 {
+    let Ok(guard) = ENGINES.lock() else {
+        return -1;
+    };
+    if !guard.by_id.contains_key(&id) {
+        return -1;
+    }
+    CURRENT.set(id);
+    0
+}
+
+/// Id bound on this thread, or 0.
+#[no_mangle]
+pub extern "C" fn bubble_current() -> i32 {
+    CURRENT.get()
+}
+
 #[no_mangle]
 pub extern "C" fn bubble_destroy() {
-    let taken = ENGINE.lock().ok().and_then(|mut slot| slot.take());
+    let id = CURRENT.get();
+    if id == 0 {
+        return;
+    }
+    let taken = ENGINES.lock().ok().and_then(|mut slot| slot.by_id.remove(&id));
+    CURRENT.set(0);
     if let Some(engine) = taken {
-        script::stop_watchdog();
+        script::stop(&engine.shared);
         let _ = engine.tx.send(Cmd::Shutdown);
         if let Ok(mut thread) = engine.thread.lock() {
             if let Some(thread) = thread.take() {

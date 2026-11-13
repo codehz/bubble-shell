@@ -1,10 +1,11 @@
 #pragma once
 #include <stdint.h>
 
-/* Single-instance native shell. The host UI thread calls everything except
- * the measure callback. Measure runs on the UI thread during bubble_frame
- * and must not re-enter this ABI. Script work, including a wedged loop, runs
- * on a private thread and does not hold the tree lock. */
+/* One shell per call to bubble_create. The creating thread is bound to it.
+ * bubble_bind selects another shell for this thread. The host UI thread calls
+ * everything except the measure callback. Measure runs on the UI thread during
+ * bubble_frame and must not re-enter this ABI. Script work, including a wedged
+ * loop, runs on that shell's private thread and does not hold the tree lock. */
 
 typedef struct BubbleHost {
     void (*measure)(void *ctx, const uint8_t *text, uint32_t text_len, float font_size,
@@ -19,6 +20,10 @@ typedef struct BubbleHost {
 } BubbleHost;
 
 int bubble_create(const BubbleHost *host);
+/* Bind `id` (from bubble_current after create) on this thread. 0 ok, -1 missing. */
+int bubble_bind(int id);
+int bubble_current(void);
+/* Destroy the shell bound on this thread. */
 void bubble_destroy(void);
 
 /* `entry` is the manifest entry file. Other manifest files are not accepted yet. */
