@@ -260,7 +260,23 @@ func drainHostCalls() {
         }
         switch methodName {
         case "toast":
-            print("toast:", object["message"] ?? "")
+            let message = String(describing: object["message"] ?? "")
+            DispatchQueue.main.async {
+                let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+                guard let window = scene?.windows.first(where: \.isKeyWindow) ?? scene?.windows.first else { return }
+                let label = UILabel()
+                label.text = message
+                label.textColor = .white
+                label.backgroundColor = UIColor(white: 0.07, alpha: 0.92)
+                label.textAlignment = .center
+                label.font = .systemFont(ofSize: 14)
+                label.layer.cornerRadius = 8
+                label.clipsToBounds = true
+                let width = min(window.bounds.width - 48, 320)
+                label.frame = CGRect(x: (window.bounds.width - width) / 2, y: window.bounds.height - window.safeAreaInsets.bottom - 72, width: width, height: 36)
+                window.addSubview(label)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { label.removeFromSuperview() }
+            }
             finish(1, "null")
         case "openURL":
             if let url = URL(string: String(describing: object["url"] ?? "")) {

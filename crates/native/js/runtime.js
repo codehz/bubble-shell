@@ -1327,6 +1327,11 @@ export function openURL(url) {
   return host.call("openURL", { url: String(url) });
 }
 
+export function navigate(intent) {
+  const body = intent && typeof intent === "object" ? intent : { intent: String(intent ?? "") };
+  return host.call("navigate", body);
+}
+
 export const clipboard = {
   readText() { return host.call("clipboard.readText", null); },
   writeText(text) { return host.call("clipboard.writeText", { text: String(text ?? "") }); },

@@ -77,9 +77,9 @@ Cancel   { id }
 
 | 能力 | API | 说明 |
 |---|---|---|
-| fetch | `fetch(url, init)` | runtime 缓存/离线；Web 受 CORS 限制 |
+| fetch | `fetch(url, init)` | 宿主发请求。Web 受 CORS 限制。不缓存、不离线。 |
 | storage | `get/set/remove/keys` | 按 manifest `id` 隔离。Native 写宿主目录里的 `bubble.storage.<id>.json`（`bubble_set_storage_dir`）；Web 写 `localStorage` 键 `bubble.storage.<id>`。未设目录时只留在内存。 |
-| navigation | `navigate(intent)` | 只发 intent，宿主拥有路由 |
+| navigation | `navigate(intent)` | `host.call("navigate", intent)`。未注册则失败 |
 | clipboard | `readText/writeText` | Web 经主线程代理 |
 | ui | `toast/openURL` | 宿主实现 |
 | lifecycle | 事件订阅 | 前后台、insets、可见性 |
@@ -94,10 +94,9 @@ Cancel   { id }
 
 ## 3. 导航
 
-- runtime 只发 navigation intent：`push`、`pop`、`replace`、`openURL`、`back`。
-- 宿主拥有路由、转场动画、返回栈、深链、权限与埋点。
-- 内容内部多页也映射为宿主路由；runtime 不维护全局页面栈。
-- 返回手势/返回键由宿主处理；runtime 可提供 `canGoBack` 状态供宿主查询。
+- 单根。SDK 不维护页面栈，没有 `push` / `pop` / `replace`。
+- `navigate(intent)` 只把 intent 交给宿主。路由、转场、返回栈、深链、权限和埋点都在宿主。
+- 宿主没注册 `navigate` 时调用失败，runtime 不兜底。
 
 ## 4. 无障碍
 
