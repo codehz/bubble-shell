@@ -143,7 +143,30 @@ M3 在 MVP 之后启动；其故障演练、性能门槛和更新回滚验证同
 
 任何需要新验证工具、设备 harness、测试矩阵或跨平台验收的任务，先暂停并询问用户；默认答案是否。
 
-## 7. 待定项
+## 7. 基础能力设计缺口
+
+以下是契约本身还没定，不是已有契约尚未实现。记录日期 2026-11-13。不进入当前 MVP 的代码或验收；补设计时单独开文档，不要把实现直接塞进里程碑。
+
+已有契约、只是还没做的不在此列：Ed25519、内容寻址、LKG、原子激活见 [03-embedding.md](03-embedding.md) 第 6 节。权限模型、多实例、grid、原生组件嵌入、调试器仍是第 8 节待定项。
+
+| 缺口 | 文档现状 | 缺的契约 |
+|---|---|---|
+| 动画 | `Animate` 只有一行 op（[02-runtime.md](02-runtime.md) 第 3 节） | 时钟、插值、打断、与手势和布局的关系。按下反馈、转场、惯性以外的运动都没有模型 |
+| 书写方向 | 文本 bidi 交给平台；flex 只有物理 `left`/`right` | `direction` 或等价物。RTL 会整棵布局反掉，不是字形问题 |
+| 文本模型 | `Text` 是单一样式字符串 | 样式继承、行内 run、省略、静态文本选区。现在字号和颜色必须逐节点重复，链接和截断标题做不出来 |
+| 图片资源 | `src` 字符串加宿主解码；`SetAsset` 标为预留 | 固有尺寸、解码取消、失败态、缓存键。布局在解码前没有盒子，失败只是跳过该帧 |
+| 列表虚拟化 | `VisibleRangeChanged` 加估算高度，一段话（[02-runtime.md](02-runtime.md) 第 5 节） | 锚点、测量回填、节点回收。长列表缺的是协议，不是再调 Taffy |
+| 宿主能力 | `fetch` 只有 url/method/body；生命周期和 haptics 有名字无事件表；insets 不进脚本 | 请求头、状态码、二进制与取消；生命周期事件名；脚本可读的键盘与安全区 |
+| 故障面 | 「销毁 context、重挂、错误占位」各一句（[02-runtime.md](02-runtime.md) 第 6 节） | 宿主可见的错误树，以及半棵树算不算已挂载 |
+| `measure()` | 约定读上一帧或返回 Promise，没有盒子定义 | 测量的是哪一个盒子、相对谁、滚动后的值算不算 |
+
+文档里还有三处契约互相矛盾，补设计时先改文档再写代码：
+
+- [02-runtime.md](02-runtime.md) 的 CSS 表列了 border、transform、min/max、z-index、letter-spacing；同节又说 border、transform、min/max 仍在路线图。命中测试写了「考虑 transform、z-index」，这两样都没有行为定义。
+- 同文件的通用事件协议列出 `scroll` / `key` / `focus` / `input` / `a11y`，接着又说当前只有 `tap`。手势和编辑已经走 `BSGE` / `BSED`，这张表是过期的。
+- 帧循环第 6 步要求上报帧统计，可观测性整段在 M3。
+
+## 8. 待定项
 
 - 能力权限模型（manifest 允许列表 + 宿主授权）。
 - 多实例与共享 VM/context。
@@ -157,7 +180,7 @@ M3 在 MVP 之后启动；其故障演练、性能门槛和更新回滚验证同
 - Web 带凭证请求的宿主代理协议。
 - App Store 合规结论与 data-only 降级的产品边界。
 
-## 8. 参考
+## 9. 参考
 
 - Compose Multiplatform 1.11 iOS 文本输入：`UIView` + `UITextInput`/`UIKeyInput` 代理。
   <https://kotlinlang.org/docs/multiplatform/whats-new-compose-111.html>
