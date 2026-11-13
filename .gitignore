@@ -5,3 +5,4 @@ examples/web/runtime.js
 examples/android/build/
 examples/android/debug.keystore
 examples/ios/BubbleShell.app/
+/dist
