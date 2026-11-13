@@ -10,7 +10,6 @@
     </style>
   </head>
   <body>
-    <canvas></canvas>
     <script type="importmap">
       {
         "imports": {
@@ -19,6 +18,9 @@
         }
       }
     </script>
-    <script type="module" src="./host.js"></script>
+    <script type="module">
+      import { createPlayer } from "./sdk.js";
+      createPlayer(document.body);
+    </script>
   </body>
 </html>

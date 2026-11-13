@@ -73,6 +73,10 @@ pub enum Cmd {
         ok: bool,
         payload: String,
     },
+    Emit {
+        name: String,
+        payload: String,
+    },
     Wake,
     Shutdown,
 }
@@ -137,6 +141,7 @@ struct Session {
     shared: Arc<Shared>,
     vm: Option<Vm>,
     bundle: Option<(String, Vec<u8>)>,
+    early_events: Vec<(String, String)>,
 }
 
 fn script_main(rx: Receiver<Cmd>, shared: Arc<Shared>) {
@@ -147,6 +152,7 @@ fn script_main(rx: Receiver<Cmd>, shared: Arc<Shared>) {
         shared,
         vm: None,
         bundle: None,
+        early_events: Vec::new(),
     };
     loop {
         let fired = session.vm.as_ref().map(|vm| session.fire_due(vm));
@@ -224,6 +230,12 @@ impl Session {
                 }
                 true
             }
+            Cmd::Emit { name, payload } => {
+                if let Err(err) = self.emit(&name, &payload) {
+                    self.note_fault(&err);
+                }
+                true
+            }
         }
     }
 
@@ -231,8 +243,22 @@ impl Session {
         check_manifest(&manifest, &entry)?;
         self.bundle = Some((manifest, entry));
         self.boot_vm()?;
+        let pending = std::mem::take(&mut self.early_events);
+        if let Some(vm) = self.vm.as_ref() {
+            for (name, payload) in pending {
+                host_emit(vm, &name, &payload)?;
+            }
+        }
         self.shared.set_status("running");
         Ok(())
+    }
+
+    fn emit(&mut self, name: &str, payload: &str) -> Result<(), String> {
+        let Some(vm) = self.vm.as_ref() else {
+            self.early_events.push((name.to_string(), payload.to_string()));
+            return Ok(());
+        };
+        host_emit(vm, name, payload)
     }
 
     fn boot_vm(&mut self) -> Result<(), String> {
@@ -479,6 +505,14 @@ fn install_and_run(vm: &Vm, source: &str, entry: &str) -> Result<(), String> {
         let api: Object = ctx.globals().get("__bubble")?;
         set_api.call::<_, ()>((api,))?;
         ctx.eval::<(), _>(PRELUDE)?;
+        let params = SHARED.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .and_then(|shared| shared.params.lock().ok().map(|params| params.clone()))
+        });
+        if let Some(params) = params {
+            ctx.eval::<(), _>(format!("globalThis.__bubbleHostParams = {params};"))?;
+        }
         let main = Module::evaluate(ctx.clone(), entry, source)?;
         finish_promise(&ctx, &main)?;
         pump(&ctx);
@@ -672,6 +706,10 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
     )?;
     api.set("commit", Function::new(ctx.clone(), api_commit)?)?;
     api.set("request", Function::new(ctx.clone(), api_request)?)?;
+    api.set("storage_get", Function::new(ctx.clone(), api_storage_get)?)?;
+    api.set("storage_set", Function::new(ctx.clone(), api_storage_set)?)?;
+    api.set("storage_remove", Function::new(ctx.clone(), api_storage_remove)?)?;
+    api.set("storage_keys", Function::new(ctx.clone(), api_storage_keys)?)?;
     api.set("schedule", Function::new(ctx.clone(), api_schedule)?)?;
     api.set("cancel", Function::new(ctx.clone(), api_cancel)?)?;
     ctx.globals().set("__bubble", api)?;
@@ -1131,6 +1169,58 @@ fn api_commit() -> i32 {
     }
 }
 
+fn host_emit(vm: &Vm, name: &str, payload: &str) -> Result<(), String> {
+    enter_js();
+    let result = vm.context.with(|ctx| {
+        let emit: Function = ctx.globals().get("__bubbleHostEmit")?;
+        emit.call::<_, ()>((name, payload))?;
+        Ok(())
+    });
+    leave_js();
+    result.map_err(|err: rquickjs::Error| format_eval(vm, err))
+}
+
+fn api_storage_get(key: String) -> String {
+    let Some(shared) = flags() else {
+        return "null".into();
+    };
+    let Ok(map) = shared.storage.lock() else {
+        return "null".into();
+    };
+    map.get(&key)
+        .and_then(|value| serde_json::to_string(value).ok())
+        .unwrap_or_else(|| "null".into())
+}
+
+fn api_storage_set(key: String, value: String) {
+    let Some(shared) = flags() else {
+        return;
+    };
+    if let Ok(mut map) = shared.storage.lock() {
+        map.insert(key, value);
+    };
+}
+
+fn api_storage_remove(key: String) {
+    let Some(shared) = flags() else {
+        return;
+    };
+    if let Ok(mut map) = shared.storage.lock() {
+        map.remove(&key);
+    };
+}
+
+fn api_storage_keys() -> String {
+    let Some(shared) = flags() else {
+        return "[]".into();
+    };
+    let Ok(map) = shared.storage.lock() else {
+        return "[]".into();
+    };
+    let keys: Vec<&String> = map.keys().collect();
+    serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into())
+}
+
 fn api_request(method: String, params: String) -> u32 {
     let id = NEXT_REQUEST.with(|slot| {
         let mut next = slot.borrow_mut();
@@ -1189,13 +1279,49 @@ struct ManifestPath {
 
 const PRELUDE: &str = r#"
 const __hostPending = new Map();
+const __hostListeners = new Map();
+const __hostQueued = [];
+globalThis.__bubbleHostParams = null;
 globalThis.bubbleHost = {
+  get params() { return globalThis.__bubbleHostParams; },
   call(method, params) {
     return new Promise((resolve, reject) => {
       const id = globalThis.__bubble.request(method, JSON.stringify(params ?? null));
       __hostPending.set(id, { resolve, reject });
     });
+  },
+  post(method, params) {
+    void this.call(method, params).catch(() => {});
+  },
+  on(name, fn) {
+    let list = __hostListeners.get(name);
+    if (!list) {
+      list = [];
+      __hostListeners.set(name, list);
+    }
+    list.push(fn);
+    for (let i = __hostQueued.length - 1; i >= 0; i -= 1) {
+      if (__hostQueued[i].name !== name) continue;
+      const [event] = __hostQueued.splice(i, 1);
+      fn(event.payload);
+    }
   }
+};
+globalThis.__bubbleHostEmit = (name, payload) => {
+  let value = payload;
+  try { value = JSON.parse(payload); } catch (err) {}
+  const list = __hostListeners.get(name);
+  if (!list || list.length === 0) {
+    __hostQueued.push({ name, payload: value });
+    return;
+  }
+  for (const fn of list) fn(value);
+};
+globalThis.bubbleStorage = {
+  get(key) { return JSON.parse(globalThis.__bubble.storage_get(String(key))); },
+  set(key, value) { globalThis.__bubble.storage_set(String(key), String(value)); },
+  remove(key) { globalThis.__bubble.storage_remove(String(key)); },
+  keys() { return JSON.parse(globalThis.__bubble.storage_keys()); }
 };
 globalThis.__settleHost = (id, ok, payload) => {
   const slot = __hostPending.get(id);

@@ -25,6 +25,10 @@ int bubble_bind(int id);
 int bubble_current(void);
 /* Destroy the shell bound on this thread. */
 void bubble_destroy(void);
+/* JSON object or array. Applied on the next bubble_load of the bound shell. */
+int bubble_set_params(const char *json);
+/* JSON payload for host.on(name). Queued until a listener exists. */
+int bubble_send(const char *name, const char *payload);
 
 /* `entry` is the manifest entry file. Other manifest files are not accepted yet. */
 int bubble_load(const char *manifest_json, const uint8_t *entry, uint32_t entry_len);

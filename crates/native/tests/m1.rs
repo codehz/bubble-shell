@@ -4,7 +4,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use bubble_ffi::{
-    bubble_bind, bubble_create, bubble_current, bubble_destroy, bubble_edit, bubble_edit_batch_begin, bubble_edit_batch_end,
+    bubble_bind, bubble_create, bubble_current, bubble_destroy, bubble_edit, bubble_edit_batch_begin, bubble_edit_batch_end, bubble_send, bubble_set_params,
     bubble_edit_commit, bubble_edit_compose, bubble_edit_delete_surrounding,
     bubble_edit_finish_composition, bubble_edit_replace, bubble_edit_snapshot, bubble_eval,
     bubble_faults, bubble_finish_request, bubble_font_count, bubble_font_epoch, bubble_frame,
@@ -525,4 +525,32 @@ fn relative_imports_are_rejected_by_the_loader() {
     )
     .unwrap_err();
     assert!(error.contains("relative imports"), "{error}");
+}
+
+#[test]
+fn storage_params_and_host_events_roundtrip() {
+    let _guard = exclusive();
+    bubble_destroy();
+    assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    let params = c(r#"{"id":"42"}"#);
+    assert_eq!(bubble_set_params(params.as_ptr()), 0, "{}", error());
+    let early = c("ping");
+    let body = c(r#"{"n":1}"#);
+    assert_eq!(bubble_send(early.as_ptr(), body.as_ptr()), 0, "{}", error());
+    load_counter();
+    assert_eq!(eval("JSON.stringify(bubbleHost.params)"), r#"{"id":"42"}"#);
+    assert_eq!(
+        eval("bubbleStorage.set('k','v'); bubbleStorage.get('k')"),
+        "v"
+    );
+    eval("bubbleHost.on('ping', (data) => { globalThis.seen = data.n })");
+    assert_eq!(eval("String(globalThis.seen)"), "1");
+    let later = c(r#"{"n":2}"#);
+    assert_eq!(bubble_send(early.as_ptr(), later.as_ptr()), 0, "{}", error());
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline && eval("String(globalThis.seen)") != "2" {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(eval("String(globalThis.seen)"), "2");
+    bubble_destroy();
 }

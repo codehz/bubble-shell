@@ -98,6 +98,8 @@ pub struct Shared {
     interrupt: AtomicBool,
     js_since_ms: AtomicU64,
     stop_watch: AtomicBool,
+    storage: Mutex<HashMap<String, String>>,
+    params: Mutex<String>,
 }
 
 impl Shared {
@@ -263,6 +265,8 @@ pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
             interrupt: AtomicBool::new(false),
             js_since_ms: AtomicU64::new(0),
             stop_watch: AtomicBool::new(false),
+            storage: Mutex::new(HashMap::new()),
+            params: Mutex::new("null".into()),
         });
         let (tx, thread) = script::start(Arc::clone(&shared));
         if let Ok(mut slot) = shared.commands.lock() {
@@ -305,6 +309,45 @@ pub extern "C" fn bubble_bind(id: i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn bubble_current() -> i32 {
     CURRENT.get()
+}
+
+/// JSON value read by `host.params` on the next load of the bound shell.
+#[no_mangle]
+pub extern "C" fn bubble_set_params(json: *const c_char) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        let json = cstr(json)?;
+        serde_json::from_str::<serde_json::Value>(&json).map_err(|err| err.to_string())?;
+        let mut slot = engine
+            .shared
+            .params
+            .lock()
+            .map_err(|_| "params lock poisoned".to_string())?;
+        *slot = json;
+        Ok(())
+    });
+    finish(result)
+}
+
+/// Deliver `payload` JSON to `host.on(name)` listeners. Kept until a bundle is listening.
+#[no_mangle]
+pub extern "C" fn bubble_send(name: *const c_char, payload: *const c_char) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        let name = cstr(name)?;
+        let payload = if payload.is_null() {
+            "null".to_string()
+        } else {
+            cstr(payload)?
+        };
+        serde_json::from_str::<serde_json::Value>(&payload).map_err(|err| err.to_string())?;
+        engine
+            .tx
+            .send(Cmd::Emit { name, payload })
+            .map_err(|_| "script thread is gone".to_string())?;
+        Ok(())
+    });
+    finish(result)
 }
 
 #[no_mangle]

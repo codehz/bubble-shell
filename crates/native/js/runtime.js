@@ -1304,3 +1304,34 @@ function decodeUtf8(bytes, start, end) {
   }
   return out;
 }
+
+export const storage = {
+  get(key) { return globalThis.bubbleStorage.get(key); },
+  set(key, value) { globalThis.bubbleStorage.set(key, value); },
+  remove(key) { globalThis.bubbleStorage.remove(key); },
+  keys() { return globalThis.bubbleStorage.keys(); },
+};
+
+export const host = {
+  get params() { return globalThis.bubbleHost.params; },
+  call(name, data) { return globalThis.bubbleHost.call(name, data); },
+  post(name, data) { globalThis.bubbleHost.post(name, data); },
+  on(name, fn) { globalThis.bubbleHost.on(name, fn); },
+};
+
+export function toast(message) {
+  return host.call("toast", { message: String(message ?? "") });
+}
+
+export function openURL(url) {
+  return host.call("openURL", { url: String(url) });
+}
+
+export const clipboard = {
+  readText() { return host.call("clipboard.readText", null); },
+  writeText(text) { return host.call("clipboard.writeText", { text: String(text ?? "") }); },
+};
+
+export function fetch(url, init) {
+  return host.call("fetch", { url: String(url), method: init && init.method, body: init && init.body });
+}
