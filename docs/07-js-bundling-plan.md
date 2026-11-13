@@ -137,6 +137,7 @@ pub fn compile_module(
 - 单一来源：`crates/native/js/runtime.js`（从 `examples/web/runtime.js` 迁入）。
 - native：`include_str!` 嵌入，由 loader 作为 `bubble-shell` 提供。
 - Web：`examples/build-fixtures.sh` 复制到 `examples/web/runtime.js`；页面通过 import map 使用。
+- Web SDK 源码在 `sdk/web/src/`；同一份运行时的构建副本在 `sdk/web/dist/runtime.js`（gitignored）。`host.js` 用 `bubble-shell` 裸导入，由页面 import map 解析到运行时，不依赖 `dist/` 的相对路径。
 - `bubble:rt` 不复制源码；由 loader / import map 解析到同一模块。
 
 ### 5.3 native loader
@@ -300,7 +301,7 @@ bubble dev examples/app/fixtures/counter.tsx --port 4173
 4. **运行时**：把 `runtime.js` 迁到 `crates/native/js/`；native 安装 loader；Web 增加 import map 与复制步骤。
 5. **CLI**：新增 `crates/cli`；改写 `examples/build-fixtures.sh`；删除旧 manifest 生成脚本。
 6. **Web HMR**：新增 dev server、`hot.js`、WebSocket 协议；接入 `bubble dev`。
-7. **示例**：`examples/web/host.js` 改为加载构建产物；fixture 页面用 import map；加一个带图片资源的 fixture 验证 assets。
+7. **示例**：`sdk/web/src/host.js` 改为加载构建产物；fixture 页面用 import map；加一个带图片资源的 fixture 验证 assets。
 8. **文档**：更新 `docs/README.md` 索引；实现完成后改写 `docs/02-runtime.md` 第 1–2 节、`docs/04-risks-roadmap.md` 的 MVP/里程碑描述。
 9. **清理**：删除旧直译器、`../runtime.js` 路径、手写 fixture manifest、`examples/web/fixtures/*.js` 中由旧编译器生成的产物。
 

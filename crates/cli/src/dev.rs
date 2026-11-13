@@ -411,7 +411,7 @@ const DEV_PAGE: &str = r#"<!doctype html>
         ws: (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/__bubble/ws",
       };
     </script>
-    <script type="module" src="/host.js"></script>
+    <script type="module" src="/src/host.js"></script>
   </body>
 </html>
 "#;

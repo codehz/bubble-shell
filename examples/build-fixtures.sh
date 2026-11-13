@@ -16,5 +16,6 @@ cargo run -q -p bubble-cli -- bundle \
 
 # The runtime has one source of truth; Web serves the same file the native
 # loader embeds.
+mkdir -p sdk/web/dist
 cp crates/native/js/runtime.js examples/web/runtime.js
-cp crates/native/js/runtime.js sdk/web/runtime.js
+cp crates/native/js/runtime.js sdk/web/dist/runtime.js

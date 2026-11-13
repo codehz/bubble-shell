@@ -61,7 +61,7 @@ tasks.register<Copy>("copyRuntimeJs") {
     rename { "runtime.js" }
     doLast {
         val bytes = repoRoot.resolve("crates/native/js/runtime.js").readBytes()
-        val sdk = repoRoot.resolve("sdk/web/runtime.js")
+        val sdk = repoRoot.resolve("sdk/web/dist/runtime.js")
         sdk.parentFile.mkdirs()
         sdk.writeBytes(bytes)
     }

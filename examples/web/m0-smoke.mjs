@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { dispatchGestureEvents, setApi } from "./runtime.js";
-import { layoutSnapshot } from "../../sdk/web/textlayout.js";
+import { layoutSnapshot } from "../../sdk/web/src/textlayout.js";
 
 // Fixture bundles import the host modules by specifier; map them like the
 // page's import map does.

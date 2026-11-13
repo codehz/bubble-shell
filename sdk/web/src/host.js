@@ -1,6 +1,6 @@
 import { scrollActionForKey } from "./a11y.js";
 import { commandsForDom, dragSelection } from "./ime.js";
-import { dispatchEditEvents, dispatchGestureEvents, setApi } from "./runtime.js";
+import { dispatchEditEvents, dispatchGestureEvents, setApi } from "bubble-shell";
 import { layoutSnapshot, wrapLines } from "./textlayout.js";
 
 const dev = window.__bubbleDev ?? null;
