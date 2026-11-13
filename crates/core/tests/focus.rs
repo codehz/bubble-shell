@@ -428,24 +428,24 @@ fn scroll_view(shell: &mut Shell, axis_x: bool, axis_y: bool, content: [f32; 2])
     let mut scroller = NodeDesc::view(2, 1);
     scroller.scroll_x = axis_x;
     scroller.scroll_y = axis_y;
-    scroller.width = Some(100.0);
-    scroller.height = Some(100.0);
     let mut inner = NodeDesc::view(3, 2);
-    inner.width = Some(content[0]);
-    inner.height = Some(content[1]);
     inner.flex_shrink = 0.0;
     let child = 4;
     let mut leaf = NodeDesc::view(child, 3);
-    leaf.width = Some(20.0);
-    leaf.height = Some(20.0);
     leaf.flex_shrink = 0.0;
     shell
         .apply_ops(&encode(
             1,
             &[
                 Op::Spawn { desc: scroller },
+                Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(100.0) },
+                Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(100.0) },
                 Op::Spawn { desc: inner },
+                Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(content[0] as f64) },
+                Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(content[1] as f64) },
                 Op::Spawn { desc: leaf },
+                Op::SetProp { handle: child, key: "width".into(), value: Value::Float(20.0) },
+                Op::SetProp { handle: child, key: "height".into(), value: Value::Float(20.0) },
             ],
         ))
         .unwrap();

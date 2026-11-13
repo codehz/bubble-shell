@@ -359,7 +359,7 @@ fn focused_field_paints_a_caret_and_reports_keyboard_flags() {
             &[
                 Op::SetProp {
                     handle,
-                    key: "paddingLeft".into(),
+                    key: "paddingStart".into(),
                     value: Value::Float(8.0),
                 },
                 Op::SetProp {

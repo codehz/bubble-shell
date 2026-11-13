@@ -39,20 +39,15 @@ fn overflow_clips_each_axis_at_the_padding_box_and_resets_scroll() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
     let mut parent = NodeDesc::view(2, 1);
-    parent.width = Some(60.0);
-    parent.height = Some(60.0);
     parent.flex_shrink = 0.0;
-    parent.padding = [10.0; 4];
     let mut child = NodeDesc::view(3, 2);
-    child.width = Some(120.0);
-    child.height = Some(120.0);
     child.flex_shrink = 0.0;
     child.handler = 77;
     child.background = 0xff00_ff00;
     shell
         .apply_ops(&encode(
             1,
-            &[Op::Spawn { desc: parent }, Op::Spawn { desc: child }],
+            &[Op::Spawn { desc: parent }, Op::Spawn { desc: child }, Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(60.0) }, Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(60.0) }, Op::SetProp { handle: 2, key: "paddingStart".into(), value: Value::Float(10.0) }, Op::SetProp { handle: 2, key: "paddingEnd".into(), value: Value::Float(10.0) }, Op::SetProp { handle: 2, key: "paddingTop".into(), value: Value::Float(10.0) }, Op::SetProp { handle: 2, key: "paddingBottom".into(), value: Value::Float(10.0) }, Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(120.0) }, Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(120.0) }, ],
         ))
         .unwrap();
     set(&mut shell, 3, "position", "absolute");
@@ -89,12 +84,10 @@ fn subtree_hiding_preserves_state_but_updates_layout_focus_and_semantics() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
     let mut parent = NodeDesc::view(2, 1);
-    parent.height = Some(60.0);
     parent.flex_shrink = 0.0;
     let mut child = NodeDesc::text(3, 2, "retained");
     child.handler = 77;
     let mut sibling = NodeDesc::view(4, 1);
-    sibling.height = Some(20.0);
     shell
         .apply_ops(&encode(
             1,
@@ -102,6 +95,8 @@ fn subtree_hiding_preserves_state_but_updates_layout_focus_and_semantics() {
                 Op::Spawn { desc: parent },
                 Op::Spawn { desc: child },
                 Op::Spawn { desc: sibling },
+                Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(60.0) },
+                Op::SetProp { handle: 4, key: "height".into(), value: Value::Float(20.0) },
             ],
         ))
         .unwrap();
@@ -150,9 +145,7 @@ fn hiding_cancels_active_and_pending_taps_without_disposing_declarations() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
     let mut parent = NodeDesc::view(2, 1);
-    parent.height = Some(100.0);
     let mut child = NodeDesc::view(3, 2);
-    child.height = Some(100.0);
     shell
         .apply_ops(&encode(
             1,
@@ -186,6 +179,8 @@ fn hiding_cancels_active_and_pending_taps_without_disposing_declarations() {
                     slot: 5,
                     handler: 79,
                 },
+                Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(100.0) },
+                Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(100.0) },
             ],
         ))
         .unwrap();
@@ -232,14 +227,8 @@ fn nested_axis_clips_intersect_for_pointer_hits_and_paint() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
     let mut outer = NodeDesc::view(2, 1);
-    outer.width = Some(80.0);
-    outer.height = Some(80.0);
     let mut inner = NodeDesc::view(3, 2);
-    inner.width = Some(120.0);
-    inner.height = Some(40.0);
     let mut child = NodeDesc::view(4, 3);
-    child.width = Some(160.0);
-    child.height = Some(120.0);
     child.background = 0xff00_ff00;
     shell
         .apply_ops(&encode(
@@ -247,6 +236,10 @@ fn nested_axis_clips_intersect_for_pointer_hits_and_paint() {
             &[
                 Op::Spawn { desc: outer },
                 Op::Spawn { desc: inner },
+                Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(80.0) },
+                Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(80.0) },
+                Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(120.0) },
+                Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(40.0) },
                 Op::Spawn { desc: child },
                 Op::SpawnGesture {
                     gesture: 10,
@@ -259,6 +252,8 @@ fn nested_axis_clips_intersect_for_pointer_hits_and_paint() {
                     slot: 4,
                     handler: 77,
                 },
+                Op::SetProp { handle: 4, key: "width".into(), value: Value::Float(160.0) },
+                Op::SetProp { handle: 4, key: "height".into(), value: Value::Float(120.0) },
             ],
         ))
         .unwrap();
@@ -318,17 +313,13 @@ fn text_field_hits_respect_clips_and_hidden_overlays() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
     let mut parent = NodeDesc::view(2, 1);
-    parent.width = Some(60.0);
-    parent.height = Some(60.0);
     let mut field = NodeDesc::view(3, 2);
     field.kind = bubble_core::Kind::Field;
-    field.width = Some(120.0);
-    field.height = Some(120.0);
     field.text = "edit".into();
     shell
         .apply_ops(&encode(
             1,
-            &[Op::Spawn { desc: parent }, Op::Spawn { desc: field }],
+            &[Op::Spawn { desc: parent }, Op::Spawn { desc: field }, Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(60.0) }, Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(60.0) }, Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(120.0) }, Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(120.0) }, ],
         ))
         .unwrap();
     set(&mut shell, 3, "position", "absolute");

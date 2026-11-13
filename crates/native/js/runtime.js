@@ -253,29 +253,27 @@ function utf8(value) {
   return Uint8Array.from(out);
 }
 
-// BNOD version 2: header (magic + u16 version) + the `NodeDesc` body + TLV.
-// `id`, `parent`, and `handler` are zero; Rust assigns the handle and parent.
+// BNOD version 3: header (magic + u16 version) + the `NodeDesc` body + TLV.
+// Lengths are not in the body. `id`, `parent`, and `handler` are zero; Rust
+// assigns the handle and parent.
 const SPEC_PROPS = new Set([
   "fontSize",
   "radius",
   "opacity",
-  "width",
-  "height",
   "flexGrow",
   "flexShrink",
   "flexDirection",
-  "padding",
 ]);
 
 function specBytes(kind, props, text) {
   const bytes = utf8(text);
-  const buffer = new Uint8Array(6 + 71 + 4 + bytes.length);
+  const buffer = new Uint8Array(57 + bytes.length);
   buffer[0] = 0x42;
   buffer[1] = 0x4e;
   buffer[2] = 0x4f;
   buffer[3] = 0x44;
   const view = new DataView(buffer.buffer);
-  view.setUint16(4, 2, true);
+  view.setUint16(4, 3, true);
   let offset = 6;
   view.setUint32(offset, 0, true);
   offset += 4;
@@ -301,21 +299,12 @@ function specBytes(kind, props, text) {
   offset += 4;
   view.setUint32(offset, 0, true);
   offset += 4;
-  view.setFloat32(offset, finite(props.width), true);
-  offset += 4;
-  view.setFloat32(offset, finite(props.height), true);
-  offset += 4;
   view.setFloat32(offset, props.flexGrow ?? 0, true);
   offset += 4;
-  view.setFloat32(offset, props.flexShrink ?? 1, true);
+  view.setFloat32(offset, props.flexShrink ?? 0, true);
   offset += 4;
-  view.setUint8(offset, rowFlag(props.flexDirection));
+  view.setUint8(offset, directionFlag(props.flexDirection));
   offset += 1;
-  const pad = props.padding == null ? [0, 0, 0, 0] : cssBox(props.padding, "padding");
-  for (let index = 0; index < 4; index += 1) {
-    view.setFloat32(offset, pad[index] ?? 0, true);
-    offset += 4;
-  }
   view.setUint32(offset, bytes.length, true);
   offset += 4;
   buffer.set(bytes, offset);
@@ -324,30 +313,23 @@ function specBytes(kind, props, text) {
   return buffer;
 }
 
-function finite(value) {
-  return typeof value === "number" && Number.isFinite(value) ? value : NaN;
-}
-
-function rowFlag(value) {
+function directionFlag(value) {
   if (value == null || value === "column") return 0;
   if (value === "row") return 1;
+  if (value === "column-reverse") return 2;
+  if (value === "row-reverse") return 3;
   throw new Error(`unsupported flexDirection ${value}`);
 }
 
 function cssSides(value, key) {
   if (!Array.isArray(value) || (value.length !== 1 && value.length !== 2 && value.length !== 4)) {
-    throw new Error(`${key} must be an array of 1, 2, or 4 numbers`);
+    throw new Error(`${key} must be an array of 1, 2, or 4 lengths`);
   }
   const top = value[0] ?? 0;
-  const right = value.length === 1 ? top : (value[1] ?? 0);
+  const end = value.length === 1 ? top : (value[1] ?? 0);
   const bottom = value.length === 4 ? (value[2] ?? 0) : top;
-  const left = value.length === 4 ? (value[3] ?? 0) : right;
-  return { top, right, bottom, left };
-}
-
-function cssBox(value, key) {
-  const sides = cssSides(value, key);
-  return [sides.left, sides.right, sides.top, sides.bottom];
+  const start = value.length === 4 ? (value[3] ?? 0) : end;
+  return { top, end, bottom, start };
 }
 
 
@@ -364,51 +346,59 @@ function registerChild(parentHandle, handle, index) {
   if (collector && collector.parent === parentHandle) collector.handles.push(handle);
 }
 
-// Authored overflow shorthand is applied before axis overrides, regardless of
-// object key order. A dynamic shorthand shares one binding with the authored
-// axes, so a shorthand change reapplies those axes and they keep precedence.
-// A static or omitted shorthand leaves dynamic axes as independent bindings.
+// Authored shorthands are applied before axis overrides, regardless of object
+// key order. A dynamic shorthand shares one binding with the authored axes.
 // Explicit `setProp` calls keep call order until that authored binding runs.
-function overflowRank(key) {
-  if (key === "overflow") return 0;
-  if (key === "overflowX") return 1;
-  if (key === "overflowY") return 2;
-  return -1;
+function shorthandRank(key) {
+  if (key === "overflow") return [0, 0];
+  if (key === "overflowX") return [0, 1];
+  if (key === "overflowY") return [0, 2];
+  if (key === "gap") return [1, 0];
+  if (key === "rowGap") return [1, 1];
+  if (key === "columnGap") return [1, 2];
+  return null;
 }
 
-function applyOverflowValue(handle, prop) {
+function applyAuthored(handle, prop) {
   setProp(handle, prop.key, prop.run ? prop.run() : prop.value);
+}
+
+function applyShorthandGroup(handle, group) {
+  const shorthand = group[0];
+  const axes = group.slice(1).filter(Boolean);
+  if (shorthand && shorthand.run) {
+    const authored = [shorthand, ...axes];
+    addBinding(() => {
+      for (const prop of authored) applyAuthored(handle, prop);
+    }, handle);
+  } else {
+    if (shorthand) applyAuthored(handle, shorthand);
+    for (const axis of axes) {
+      if (axis.run) bindProp(handle, axis.key, axis.run);
+      else applyAuthored(handle, axis);
+    }
+  }
 }
 
 function applyNodeProps(handle, deferredValues, dynamics) {
   const staticRest = [];
-  const overflow = [null, null, null];
+  const groups = [
+    [null, null, null],
+    [null, null, null],
+  ];
   for (const [key, value] of deferredValues) {
-    const rank = overflowRank(key);
-    if (rank < 0) staticRest.push([key, value]);
-    else overflow[rank] = { key, value };
+    const rank = shorthandRank(key);
+    if (!rank) staticRest.push([key, value]);
+    else groups[rank[0]][rank[1]] = { key, value };
   }
   const dynamicRest = [];
   for (const [key, run] of dynamics) {
-    const rank = overflowRank(key);
-    if (rank < 0) dynamicRest.push([key, run]);
-    else overflow[rank] = { key, run };
+    const rank = shorthandRank(key);
+    if (!rank) dynamicRest.push([key, run]);
+    else groups[rank[0]][rank[1]] = { key, run };
   }
   for (const [key, value] of staticRest) setProp(handle, key, value);
-  const shorthand = overflow[0];
-  const axes = overflow.slice(1).filter(Boolean);
-  if (shorthand && shorthand.run) {
-    const authored = [shorthand, ...axes];
-    addBinding(() => {
-      for (const prop of authored) applyOverflowValue(handle, prop);
-    }, handle);
-  } else {
-    if (shorthand) applyOverflowValue(handle, shorthand);
-    for (const axis of axes) {
-      if (axis.run) bindProp(handle, axis.key, axis.run);
-      else applyOverflowValue(handle, axis);
-    }
-  }
+  for (const group of groups) applyShorthandGroup(handle, group);
   for (const [key, run] of dynamicRest) bindProp(handle, key, run);
 }
 
@@ -696,13 +686,13 @@ export function setProp(handle, key, value) {
     const sides = cssSides(value, key);
     if (key === "inset") {
       setProp(handle, "top", sides.top);
-      setProp(handle, "right", sides.right);
+      setProp(handle, "end", sides.end);
       setProp(handle, "bottom", sides.bottom);
-      setProp(handle, "left", sides.left);
+      setProp(handle, "start", sides.start);
     } else {
       const prefix = key === "padding" ? "padding" : "margin";
-      setProp(handle, `${prefix}Left`, sides.left);
-      setProp(handle, `${prefix}Right`, sides.right);
+      setProp(handle, `${prefix}Start`, sides.start);
+      setProp(handle, `${prefix}End`, sides.end);
       setProp(handle, `${prefix}Top`, sides.top);
       setProp(handle, `${prefix}Bottom`, sides.bottom);
     }

@@ -1,10 +1,10 @@
-//! Node descriptors. Little-endian. `BNOD` version 2 wraps one descriptor;
-//! `Spawn` ops reuse the same body layout. Version 2 appends a TLV extension
-//! block after the text so new fields do not shift existing offsets.
+//! Node descriptors. Little-endian. `BNOD` version 3 wraps one descriptor;
+//! `Spawn` ops reuse the same body layout. Version 3 appends a TLV extension
+//! block after the text. Lengths are not in the body; they arrive as `SetProp`.
 
 use std::io::{Cursor, Read};
 
-pub const NODE_VERSION: u16 = 2;
+pub const NODE_VERSION: u16 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Extension {
@@ -37,13 +37,14 @@ pub struct NodeDesc {
     pub radius: f32,
     pub opacity: f32,
     pub handler: u32,
-    /// `None` is auto.
+    /// Points applied at insert. Not in the `BNOD` body; authored lengths use `SetProp`.
     pub width: Option<f32>,
     pub height: Option<f32>,
+    pub padding: [f32; 4],
     pub flex_grow: f32,
     pub flex_shrink: f32,
-    pub row: bool,
-    pub padding: [f32; 4],
+    /// 0 column, 1 row, 2 column-reverse, 3 row-reverse.
+    pub direction: u8,
     pub text: String,
     pub extensions: Vec<Extension>,
 }
@@ -64,10 +65,10 @@ impl NodeDesc {
             handler: 0,
             width: None,
             height: None,
-            flex_grow: 0.0,
-            flex_shrink: 1.0,
-            row: false,
             padding: [0.0; 4],
+            flex_grow: 0.0,
+            flex_shrink: 0.0,
+            direction: 0,
             text: String::new(),
             extensions: Vec::new(),
         }
@@ -80,7 +81,7 @@ impl NodeDesc {
         node
     }
 
-    /// `BNOD` version 2 envelope for one node.
+    /// `BNOD` version 3 envelope for one node.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"BNOD");
@@ -120,14 +121,9 @@ impl NodeDesc {
         push_f32(out, self.radius);
         push_f32(out, self.opacity);
         out.extend_from_slice(&self.handler.to_le_bytes());
-        push_f32(out, self.width.unwrap_or(f32::NAN));
-        push_f32(out, self.height.unwrap_or(f32::NAN));
         push_f32(out, self.flex_grow);
         push_f32(out, self.flex_shrink);
-        out.push(u8::from(self.row));
-        for value in self.padding {
-            push_f32(out, value);
-        }
+        out.push(self.direction);
         let text = self.text.as_bytes();
         out.extend_from_slice(&(text.len() as u32).to_le_bytes());
         out.extend_from_slice(text);
@@ -163,18 +159,11 @@ impl NodeDesc {
         let radius = read_f32(cur)?;
         let opacity = read_f32(cur)?;
         let handler = read_u32(cur)?;
-        let width = optional_f32(read_f32(cur)?);
-        let height = optional_f32(read_f32(cur)?);
         let flex_grow = read_f32(cur)?;
         let flex_shrink = read_f32(cur)?;
-        let row = match read_u8(cur)? {
-            0 => false,
-            1 => true,
-            other => return Err(format!("bad flex direction {other}")),
-        };
-        let mut padding = [0f32; 4];
-        for slot in &mut padding {
-            *slot = read_f32(cur)?;
+        let direction = read_u8(cur)?;
+        if direction > 3 {
+            return Err(format!("bad flex direction {direction}"));
         }
         let text_len = read_u32(cur)? as usize;
         let mut text_bytes = vec![0u8; text_len];
@@ -210,23 +199,15 @@ impl NodeDesc {
             radius,
             opacity,
             handler,
-            width,
-            height,
+            width: None,
+            height: None,
+            padding: [0.0; 4],
             flex_grow,
             flex_shrink,
-            row,
-            padding,
+            direction,
             text,
             extensions,
         })
-    }
-}
-
-fn optional_f32(value: f32) -> Option<f32> {
-    if value.is_finite() {
-        Some(value)
-    } else {
-        None
     }
 }
 

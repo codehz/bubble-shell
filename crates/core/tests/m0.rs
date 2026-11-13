@@ -1,5 +1,5 @@
 use bubble_core::{
-    encode, encode_set_prop_color, encode_set_text, validate_bundle_hashes, NodeDesc, Op, Shell,
+    encode, encode_set_prop_color, encode_set_text, validate_bundle_hashes, NodeDesc, Op, Shell, Value,
 };
 
 fn measure(
@@ -34,7 +34,6 @@ fn demo_ops() -> Vec<Op> {
     button.background = 0xff3b_82f6;
     button.radius = 8.0;
     button.handler = 1;
-    button.padding = [12.0, 8.0, 12.0, 8.0];
 
     let mut label = NodeDesc::text(4, 3, "Increment");
     label.font_size = 16.0;
@@ -52,13 +51,18 @@ fn demo_ops() -> Vec<Op> {
         Op::Spawn { desc: label },
         Op::Spawn { desc: scroller },
         Op::Spawn { desc: column },
+        Op::SetProp { handle: 3, key: "paddingStart".into(), value: Value::Float(12.0) },
+        Op::SetProp { handle: 3, key: "paddingEnd".into(), value: Value::Float(8.0) },
+        Op::SetProp { handle: 3, key: "paddingTop".into(), value: Value::Float(12.0) },
+        Op::SetProp { handle: 3, key: "paddingBottom".into(), value: Value::Float(8.0) },
     ];
     for index in 0..30 {
         let mut row = NodeDesc::text(7 + index, 6, format!("Row {index:02}"));
         row.font_size = 16.0;
         row.color = 0xffdd_dddd;
-        row.padding = [0.0, 4.0, 0.0, 4.0];
         ops.push(Op::Spawn { desc: row });
+        ops.push(Op::SetProp { handle: (7 + index), key: "paddingEnd".into(), value: Value::Float(4.0) });
+        ops.push(Op::SetProp { handle: (7 + index), key: "paddingBottom".into(), value: Value::Float(4.0) });
     }
     ops
 }
@@ -270,16 +274,12 @@ fn scroll_axes_are_independent() {
     let mut scroller = NodeDesc::view(2, 1);
     scroller.scroll_x = true;
     scroller.scroll_y = true;
-    scroller.width = Some(100.0);
-    scroller.height = Some(60.0);
     let mut lane = NodeDesc::view(3, 2);
-    lane.width = Some(400.0);
-    lane.height = Some(200.0);
     lane.flex_shrink = 0.0;
     shell
         .apply_ops(&encode(
             1,
-            &[Op::Spawn { desc: scroller }, Op::Spawn { desc: lane }],
+            &[Op::Spawn { desc: scroller }, Op::Spawn { desc: lane }, Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(100.0) }, Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(60.0) }, Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(400.0) }, Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(200.0) }, ],
         ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
@@ -318,21 +318,20 @@ fn scroll_axes_are_independent() {
 
     let mut vertical_only = NodeDesc::view(4, 1);
     vertical_only.scroll_y = true;
-    vertical_only.width = Some(100.0);
-    vertical_only.height = Some(40.0);
     let mut tall = NodeDesc::view(5, 4);
-    tall.height = Some(200.0);
     tall.flex_shrink = 0.0;
     shell
         .apply_ops(&encode(
             4,
-            &[Op::Spawn {
-                desc: vertical_only,
-            }],
+            &[
+                Op::Spawn { desc: vertical_only },
+                Op::SetProp { handle: 4, key: "width".into(), value: Value::Float(100.0) },
+                Op::SetProp { handle: 4, key: "height".into(), value: Value::Float(40.0) },
+            ],
         ))
         .unwrap();
     shell
-        .apply_ops(&encode(5, &[Op::Spawn { desc: tall }]))
+        .apply_ops(&encode(5, &[Op::Spawn { desc: tall }, Op::SetProp { handle: 5, key: "height".into(), value: Value::Float(200.0) }, ]))
         .unwrap();
     shell.layout(&mut measure).unwrap();
     shell
@@ -395,13 +394,13 @@ fn signal_commit_updates_text_and_scrolls() {
     let mut button = NodeDesc::view(0, 1);
     button.handler = 1;
     button.background = 0xff3b_82f6;
-    button.height = Some(32.0);
     let button = turn.spawn(button).unwrap();
+    turn.set_prop(button, "height", Value::Float(32.0));
     let mut scroller = NodeDesc::view(0, 1);
     scroller.scroll_y = true;
     scroller.flex_grow = 1.0;
-    scroller.height = Some(80.0);
     let scroller = turn.spawn(scroller).unwrap();
+    turn.set_prop(scroller, "height", Value::Float(80.0));
     let mut row = NodeDesc::text(0, scroller, "row");
     row.font_size = 40.0;
     turn.spawn(row).unwrap();
@@ -460,27 +459,27 @@ fn layout_props_apply_before_the_first_layout() {
     let mut turn = Turn::new();
     let row = turn.spawn(NodeDesc::view(0, 1)).unwrap();
     let mut first = NodeDesc::view(0, row);
-    first.width = Some(20.0);
-    first.height = Some(20.0);
     let first = turn.spawn(first).unwrap();
+    turn.set_prop(first, "width", Value::Float(20.0));
+    turn.set_prop(first, "height", Value::Float(20.0));
     let mut second = NodeDesc::view(0, row);
-    second.width = Some(20.0);
-    second.height = Some(20.0);
     let second = turn.spawn(second).unwrap();
+    turn.set_prop(second, "width", Value::Float(20.0));
+    turn.set_prop(second, "height", Value::Float(20.0));
     let mut absolute = NodeDesc::view(0, row);
-    absolute.width = Some(10.0);
-    absolute.height = Some(10.0);
     let absolute = turn.spawn(absolute).unwrap();
+    turn.set_prop(absolute, "width", Value::Float(10.0));
+    turn.set_prop(absolute, "height", Value::Float(10.0));
 
     turn.set_prop(row, "flexDirection", Value::String("row".into()));
     turn.set_prop(row, "width", Value::Float(200.0));
     turn.set_prop(row, "height", Value::Float(100.0));
     turn.set_prop(row, "gap", Value::Float(10.0));
     turn.set_prop(row, "alignItems", Value::String("center".into()));
-    turn.set_prop(first, "marginLeft", Value::Float(5.0));
+    turn.set_prop(first, "marginStart", Value::Float(5.0));
     turn.set_prop(absolute, "position", Value::String("absolute".into()));
     turn.set_prop(absolute, "top", Value::Float(12.0));
-    turn.set_prop(absolute, "left", Value::Float(7.0));
+    turn.set_prop(absolute, "start", Value::Float(7.0));
 
     shell.apply_ops(&turn.commit().unwrap()).unwrap();
     shell.layout(&mut measure).unwrap();
@@ -549,9 +548,9 @@ fn set_prop_updates_padding_edges() {
     let (base_x, base_y, _, _) = shell.node_box(label).unwrap();
 
     for (key, value) in [
-        ("paddingLeft", 11.0),
+        ("paddingStart", 11.0),
         ("paddingTop", 7.0),
-        ("paddingRight", 5.0),
+        ("paddingEnd", 5.0),
         ("paddingBottom", 3.0),
     ] {
         turn.set_prop(view, key, Value::Float(value));
@@ -573,9 +572,9 @@ fn image_node_emits_image_paint() {
     let mut turn = Turn::new();
     let mut desc = NodeDesc::view(0, 1);
     desc.kind = Kind::Image;
-    desc.width = Some(40.0);
-    desc.height = Some(30.0);
     let image = turn.spawn(desc).unwrap();
+    turn.set_prop(image, "width", Value::Float(40.0));
+    turn.set_prop(image, "height", Value::Float(30.0));
     turn.set_prop(image, "src", Value::String("logo.png".into()));
     turn.set_prop(image, "fit", Value::String("cover".into()));
     shell.apply_ops(&turn.commit().unwrap()).unwrap();
@@ -614,17 +613,15 @@ fn node_descriptor_and_spawn_op_roundtrip() {
     let mut node = NodeDesc::text(9, 4, "hello");
     node.scroll_x = true;
     node.scroll_y = true;
-    node.row = true;
+    node.direction = 1;
     node.background = 0x1122_3344;
     node.color = 0xffff_ffff;
     node.font_size = 18.0;
     node.radius = 3.0;
     node.handler = 7;
-    node.width = Some(120.0);
     node.height = None;
     node.flex_grow = 1.0;
     node.flex_shrink = 0.5;
-    node.padding = [1.0, 2.0, 3.0, 4.0];
     node.extensions.push(bubble_core::Extension {
         tag: 7,
         data: vec![1, 2, 3],

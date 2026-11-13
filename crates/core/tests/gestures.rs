@@ -38,8 +38,6 @@ fn tap_shell() -> Shell {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
     let mut view = NodeDesc::view(2, 1);
-    view.width = Some(200.0);
-    view.height = Some(200.0);
     shell
         .apply_ops(&encode(
             1,
@@ -56,6 +54,8 @@ fn tap_shell() -> Shell {
                     slot: 4,
                     handler: 77,
                 },
+                Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(200.0) },
+                Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(200.0) },
             ],
         ))
         .unwrap();
@@ -182,31 +182,29 @@ fn nested_scroll_consumes_inner_then_outer_and_contain_truncates() {
     shell.set_viewport(200.0, 200.0);
     let mut outer = NodeDesc::view(2, 1);
     outer.scroll_y = true;
-    outer.width = Some(100.0);
-    outer.height = Some(100.0);
     let mut inner = NodeDesc::view(3, 2);
     inner.scroll_y = true;
-    inner.width = Some(100.0);
-    inner.height = Some(50.0);
     inner.flex_shrink = 0.0;
     let mut inner_content = NodeDesc::view(4, 3);
-    inner_content.width = Some(100.0);
-    inner_content.height = Some(80.0);
     inner_content.flex_shrink = 0.0;
     let mut spacer = NodeDesc::view(5, 2);
-    spacer.width = Some(100.0);
-    spacer.height = Some(300.0);
     spacer.flex_shrink = 0.0;
     shell
         .apply_ops(&encode(
             1,
             &[
                 Op::Spawn { desc: outer },
+                Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(100.0) },
+                Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(100.0) },
                 Op::Spawn { desc: inner },
-                Op::Spawn {
-                    desc: inner_content,
-                },
+                Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(100.0) },
+                Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(50.0) },
+                Op::Spawn { desc: inner_content },
+                Op::SetProp { handle: 4, key: "width".into(), value: Value::Float(100.0) },
+                Op::SetProp { handle: 4, key: "height".into(), value: Value::Float(80.0) },
                 Op::Spawn { desc: spacer },
+                Op::SetProp { handle: 5, key: "width".into(), value: Value::Float(100.0) },
+                Op::SetProp { handle: 5, key: "height".into(), value: Value::Float(300.0) },
             ],
         ))
         .unwrap();
@@ -238,29 +236,29 @@ fn reverse_scroll_starts_at_the_deepest_container() {
     shell.set_viewport(200.0, 200.0);
     let mut outer = NodeDesc::view(2, 1);
     outer.scroll_y = true;
-    outer.width = Some(100.0);
-    outer.height = Some(100.0);
     let mut inner = NodeDesc::view(3, 2);
     inner.scroll_y = true;
-    inner.width = Some(100.0);
-    inner.height = Some(50.0);
     inner.flex_shrink = 0.0;
     let mut content = NodeDesc::view(4, 3);
-    content.width = Some(100.0);
-    content.height = Some(80.0);
     content.flex_shrink = 0.0;
     let mut spacer = NodeDesc::view(5, 2);
-    spacer.width = Some(100.0);
-    spacer.height = Some(300.0);
     spacer.flex_shrink = 0.0;
     shell
         .apply_ops(&encode(
             1,
             &[
                 Op::Spawn { desc: outer },
+                Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(100.0) },
+                Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(100.0) },
                 Op::Spawn { desc: inner },
+                Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(100.0) },
+                Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(50.0) },
                 Op::Spawn { desc: content },
+                Op::SetProp { handle: 4, key: "width".into(), value: Value::Float(100.0) },
+                Op::SetProp { handle: 4, key: "height".into(), value: Value::Float(80.0) },
                 Op::Spawn { desc: spacer },
+                Op::SetProp { handle: 5, key: "width".into(), value: Value::Float(100.0) },
+                Op::SetProp { handle: 5, key: "height".into(), value: Value::Float(300.0) },
             ],
         ))
         .unwrap();
@@ -478,11 +476,7 @@ fn a_child_tap_fires_immediately_despite_an_ancestor_double_tap() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
     let mut outer = NodeDesc::view(2, 1);
-    outer.width = Some(200.0);
-    outer.height = Some(200.0);
     let mut child = NodeDesc::view(3, 2);
-    child.width = Some(100.0);
-    child.height = Some(100.0);
     child.flex_shrink = 0.0;
     shell
         .apply_ops(&encode(
@@ -512,6 +506,8 @@ fn a_child_tap_fires_immediately_despite_an_ancestor_double_tap() {
                     slot: 5,
                     handler: 2,
                 },
+                Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(100.0) },
+                Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(100.0) },
             ],
         ))
         .unwrap();
@@ -604,10 +600,8 @@ fn phase_pad() -> Shell {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
     let mut view = NodeDesc::view(2, 1);
-    view.width = Some(200.0);
-    view.height = Some(200.0);
     shell
-        .apply_ops(&encode(1, &[Op::Spawn { desc: view }]))
+        .apply_ops(&encode(1, &[Op::Spawn { desc: view }, Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(200.0) }, Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(200.0) }, ]))
         .unwrap();
     shell.layout(&mut measure).unwrap();
     shell

@@ -34,43 +34,83 @@ struct MeasureCtx {
 /// to a box size.
 type Measure<'a> = &'a mut dyn FnMut(&str, f32, f32, u16, Option<f32>) -> (f32, f32);
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Len {
+    Auto,
+    Pt(f32),
+    /// Fraction of the percentage base. `0.5` is 50%.
+    Pct(f32),
+}
+
+fn zero_len() -> Len {
+    Len::Pt(0.0)
+}
+
+fn zero_box() -> [Len; 4] {
+    [zero_len(); 4]
+}
+
+fn auto_box() -> [Len; 4] {
+    [Len::Auto; 4]
+}
+
 #[derive(Clone, Copy)]
 struct NodeStyle {
-    row: bool,
+    direction: u8,
     overflow_x: Overflow,
     overflow_y: Overflow,
     display: Display,
     flex_grow: f32,
     flex_shrink: f32,
-    width: Option<f32>,
-    height: Option<f32>,
-    padding: [f32; 4],
-    margin: [f32; 4],
-    gap: f32,
+    flex_basis: Len,
+    width: Len,
+    height: Len,
+    min_width: Len,
+    min_height: Len,
+    max_width: Len,
+    max_height: Len,
+    padding: [Len; 4],
+    margin: [Len; 4],
+    gap_column: Len,
+    gap_row: Len,
     align_items: u8,
+    align_self: u8,
     justify_content: u8,
+    align_content: u8,
+    flex_wrap: u8,
     position: u8,
-    inset: [f32; 4],
+    inset: [Len; 4],
+    aspect_ratio: Option<f32>,
 }
 
 impl NodeStyle {
     fn from_node(node: &Node) -> Self {
         Self {
-            row: node.row,
+            direction: node.direction,
             overflow_x: node.overflow_x,
             overflow_y: node.overflow_y,
             display: node.taffy_display(),
             flex_grow: node.flex_grow,
             flex_shrink: node.flex_shrink,
+            flex_basis: node.flex_basis,
             width: node.width,
             height: node.height,
+            min_width: node.min_width,
+            min_height: node.min_height,
+            max_width: node.max_width,
+            max_height: node.max_height,
             padding: node.padding,
             margin: node.margin,
-            gap: node.gap,
+            gap_column: node.gap_column,
+            gap_row: node.gap_row,
             align_items: node.align_items,
+            align_self: node.align_self,
             justify_content: node.justify_content,
+            align_content: node.align_content,
+            flex_wrap: node.flex_wrap,
             position: node.position,
             inset: node.inset,
+            aspect_ratio: node.aspect_ratio,
         }
     }
 }
@@ -78,21 +118,31 @@ impl NodeStyle {
 impl Default for NodeStyle {
     fn default() -> Self {
         Self {
-            row: false,
+            direction: 0,
             overflow_x: Overflow::Visible,
             overflow_y: Overflow::Visible,
             display: Display::Flex,
             flex_grow: 0.0,
-            flex_shrink: 1.0,
-            width: None,
-            height: None,
-            padding: [0.0; 4],
-            margin: [0.0; 4],
-            gap: 0.0,
+            flex_shrink: 0.0,
+            flex_basis: Len::Auto,
+            width: Len::Auto,
+            height: Len::Auto,
+            min_width: Len::Auto,
+            min_height: Len::Auto,
+            max_width: Len::Auto,
+            max_height: Len::Auto,
+            padding: zero_box(),
+            margin: zero_box(),
+            gap_column: zero_len(),
+            gap_row: zero_len(),
             align_items: 0,
+            align_self: 0,
             justify_content: 0,
+            align_content: 0,
+            flex_wrap: 0,
             position: 0,
-            inset: [f32::NAN; 4],
+            inset: auto_box(),
+            aspect_ratio: None,
         }
     }
 }
@@ -110,18 +160,28 @@ struct Node {
     radius: f32,
     opacity: f32,
     handler: u32,
-    width: Option<f32>,
-    height: Option<f32>,
+    width: Len,
+    height: Len,
+    min_width: Len,
+    min_height: Len,
+    max_width: Len,
+    max_height: Len,
+    flex_basis: Len,
     flex_grow: f32,
     flex_shrink: f32,
-    row: bool,
-    padding: [f32; 4],
-    margin: [f32; 4],
-    gap: f32,
+    direction: u8,
+    padding: [Len; 4],
+    margin: [Len; 4],
+    gap_column: Len,
+    gap_row: Len,
     align_items: u8,
+    align_self: u8,
     justify_content: u8,
+    align_content: u8,
+    flex_wrap: u8,
     position: u8,
-    inset: [f32; 4],
+    inset: [Len; 4],
+    aspect_ratio: Option<f32>,
     line_height: f32,
     text_align: u8,
     font_weight: u16,
@@ -410,18 +470,28 @@ impl Shell {
                     radius: 0.0,
                     opacity: 1.0,
                     handler: 0,
-                    width: None,
-                    height: None,
+                    width: Len::Auto,
+                    height: Len::Auto,
+                    min_width: Len::Auto,
+                    min_height: Len::Auto,
+                    max_width: Len::Auto,
+                    max_height: Len::Auto,
+                    flex_basis: Len::Auto,
                     flex_grow: 0.0,
-                    flex_shrink: 1.0,
-                    row: false,
-                    padding: [0.0; 4],
-                    margin: [0.0; 4],
-                    gap: 0.0,
+                    flex_shrink: 0.0,
+                    direction: 0,
+                    padding: zero_box(),
+                    margin: zero_box(),
+                    gap_column: zero_len(),
+                    gap_row: zero_len(),
                     align_items: 0,
+                    align_self: 0,
                     justify_content: 0,
+                    align_content: 0,
+                    flex_wrap: 0,
                     position: 0,
-                    inset: [f32::NAN; 4],
+                    inset: auto_box(),
+                    aspect_ratio: None,
                     line_height: 0.0,
                     text_align: 0,
                     font_weight: 400,
@@ -625,8 +695,8 @@ impl Shell {
         let root_style = {
             let root_node = self.node(1)?;
             let mut style = NodeStyle::from_node(root_node);
-            style.width = Some(self.viewport.width);
-            style.height = Some(self.viewport.height);
+            style.width = Len::Pt(self.viewport.width);
+            style.height = Len::Pt(self.viewport.height);
             style_for(style)
         };
         self.taffy
@@ -2085,12 +2155,17 @@ impl Shell {
                 self.node_mut(id)?.font_size = value.as_f32()?;
                 self.refresh_measure(id)?;
             }
-            Prop::PaddingLeft => self.node_mut(id)?.padding[0] = value.as_f32()?,
-            Prop::PaddingRight => self.node_mut(id)?.padding[1] = value.as_f32()?,
-            Prop::PaddingTop => self.node_mut(id)?.padding[2] = value.as_f32()?,
-            Prop::PaddingBottom => self.node_mut(id)?.padding[3] = value.as_f32()?,
-            Prop::Width => self.node_mut(id)?.width = value.optional_f32()?,
-            Prop::Height => self.node_mut(id)?.height = value.optional_f32()?,
+            Prop::PaddingStart => self.node_mut(id)?.padding[0] = parse_len(value, false)?,
+            Prop::PaddingEnd => self.node_mut(id)?.padding[1] = parse_len(value, false)?,
+            Prop::PaddingTop => self.node_mut(id)?.padding[2] = parse_len(value, false)?,
+            Prop::PaddingBottom => self.node_mut(id)?.padding[3] = parse_len(value, false)?,
+            Prop::Width => self.node_mut(id)?.width = parse_len(value, true)?,
+            Prop::Height => self.node_mut(id)?.height = parse_len(value, true)?,
+            Prop::MinWidth => self.node_mut(id)?.min_width = parse_len(value, true)?,
+            Prop::MinHeight => self.node_mut(id)?.min_height = parse_len(value, true)?,
+            Prop::MaxWidth => self.node_mut(id)?.max_width = parse_len(value, true)?,
+            Prop::MaxHeight => self.node_mut(id)?.max_height = parse_len(value, true)?,
+            Prop::FlexBasis => self.node_mut(id)?.flex_basis = parse_len(value, true)?,
             Prop::FlexGrow => self.node_mut(id)?.flex_grow = value.as_f32()?,
             Prop::FlexShrink => self.node_mut(id)?.flex_shrink = value.as_f32()?,
             Prop::ScrollX => self.assign_overflow(id, true, parse_overflow(value)?)?,
@@ -2116,7 +2191,7 @@ impl Shell {
                     self.conceal_subtree(id);
                 }
             }
-            Prop::Row => self.node_mut(id)?.row = flex_direction_row(value)?,
+            Prop::Row => self.node_mut(id)?.direction = flex_direction(value)?,
             Prop::LineHeight => {
                 self.node_mut(id)?.line_height = value.as_f32()?.max(0.0);
                 self.refresh_measure(id)?;
@@ -2126,18 +2201,34 @@ impl Shell {
                 self.node_mut(id)?.font_weight = value.as_u32()?.clamp(1, 1000) as u16;
                 self.refresh_measure(id)?;
             }
-            Prop::MarginLeft => self.node_mut(id)?.margin[0] = value.as_f32()?,
-            Prop::MarginRight => self.node_mut(id)?.margin[1] = value.as_f32()?,
-            Prop::MarginTop => self.node_mut(id)?.margin[2] = value.as_f32()?,
-            Prop::MarginBottom => self.node_mut(id)?.margin[3] = value.as_f32()?,
-            Prop::Gap => self.node_mut(id)?.gap = value.as_f32()?.max(0.0),
+            Prop::MarginStart => self.node_mut(id)?.margin[0] = parse_len(value, false)?,
+            Prop::MarginEnd => self.node_mut(id)?.margin[1] = parse_len(value, false)?,
+            Prop::MarginTop => self.node_mut(id)?.margin[2] = parse_len(value, false)?,
+            Prop::MarginBottom => self.node_mut(id)?.margin[3] = parse_len(value, false)?,
+            Prop::Gap => {
+                let gap = parse_len(value, false)?;
+                let node = self.node_mut(id)?;
+                node.gap_column = gap;
+                node.gap_row = gap;
+            }
+            Prop::RowGap => self.node_mut(id)?.gap_row = parse_len(value, false)?,
+            Prop::ColumnGap => self.node_mut(id)?.gap_column = parse_len(value, false)?,
             Prop::AlignItems => self.node_mut(id)?.align_items = align_items(value)?,
+            Prop::AlignSelf => self.node_mut(id)?.align_self = align_self(value)?,
+            Prop::AlignContent => self.node_mut(id)?.align_content = justify_content(value)?,
             Prop::JustifyContent => self.node_mut(id)?.justify_content = justify_content(value)?,
+            Prop::FlexWrap => self.node_mut(id)?.flex_wrap = flex_wrap(value)?,
             Prop::Position => self.node_mut(id)?.position = position(value)?,
-            Prop::Top => self.node_mut(id)?.inset[0] = value.optional_f32()?.unwrap_or(f32::NAN),
-            Prop::Right => self.node_mut(id)?.inset[1] = value.optional_f32()?.unwrap_or(f32::NAN),
-            Prop::Bottom => self.node_mut(id)?.inset[2] = value.optional_f32()?.unwrap_or(f32::NAN),
-            Prop::Left => self.node_mut(id)?.inset[3] = value.optional_f32()?.unwrap_or(f32::NAN),
+            Prop::Top => self.node_mut(id)?.inset[0] = parse_len(value, true)?,
+            Prop::End => self.node_mut(id)?.inset[1] = parse_len(value, true)?,
+            Prop::Bottom => self.node_mut(id)?.inset[2] = parse_len(value, true)?,
+            Prop::Start => self.node_mut(id)?.inset[3] = parse_len(value, true)?,
+            Prop::AspectRatio => {
+                self.node_mut(id)?.aspect_ratio = match value {
+                    Value::Null => None,
+                    other => Some(other.as_f32()?),
+                };
+            }
             Prop::ScrollChainX => self.node_mut(id)?.chain_x = !overscroll_chains(value)?,
             Prop::ScrollChainY => self.node_mut(id)?.chain_y = !overscroll_chains(value)?,
             Prop::Src => {
@@ -2273,7 +2364,7 @@ impl Shell {
             return Err(format!("index {index} past {parent_len} children"));
         }
         let style = style_for(NodeStyle {
-            row: desc.row,
+            direction: desc.direction,
             overflow_x: if desc.scroll_x {
                 Overflow::Scroll
             } else {
@@ -2286,9 +2377,9 @@ impl Shell {
             },
             flex_grow: desc.flex_grow,
             flex_shrink: desc.flex_shrink,
-            width: desc.width,
-            height: desc.height,
-            padding: desc.padding,
+            width: desc.width.map(Len::Pt).unwrap_or(Len::Auto),
+            height: desc.height.map(Len::Pt).unwrap_or(Len::Auto),
+            padding: desc.padding.map(Len::Pt),
             ..NodeStyle::default()
         });
         let taffy_id = if matches!(desc.kind, Kind::Text | Kind::Field) {
@@ -2329,18 +2420,28 @@ impl Shell {
             radius: desc.radius,
             opacity: desc.opacity,
             handler: desc.handler,
-            width: desc.width,
-            height: desc.height,
+            min_width: Len::Auto,
+            min_height: Len::Auto,
+            max_width: Len::Auto,
+            max_height: Len::Auto,
+            flex_basis: Len::Auto,
             flex_grow: desc.flex_grow,
             flex_shrink: desc.flex_shrink,
-            row: desc.row,
-            padding: desc.padding,
-            margin: [0.0; 4],
-            gap: 0.0,
+            direction: desc.direction,
+            width: desc.width.map(Len::Pt).unwrap_or(Len::Auto),
+            height: desc.height.map(Len::Pt).unwrap_or(Len::Auto),
+            padding: desc.padding.map(Len::Pt),
+            margin: zero_box(),
+            gap_column: zero_len(),
+            gap_row: zero_len(),
             align_items: 0,
+            align_self: 0,
             justify_content: 0,
+            align_content: 0,
+            flex_wrap: 0,
             position: 0,
-            inset: [f32::NAN; 4],
+            inset: auto_box(),
+            aspect_ratio: None,
             line_height: 0.0,
             text_align: 0,
             font_weight: 400,
@@ -2865,7 +2966,7 @@ impl Shell {
                 layout.padding.top,
                 layout.padding.bottom,
             ],
-            Err(_) => node.padding,
+            Err(_) => [0.0; 4],
         }
     }
 
@@ -2957,40 +3058,61 @@ fn paint_clip(
 fn style_for(node: NodeStyle) -> Style {
     let mut style = Style {
         display: node.display,
-        flex_direction: if node.row {
-            FlexDirection::Row
-        } else {
-            FlexDirection::Column
+        flex_direction: match node.direction {
+            1 => FlexDirection::Row,
+            2 => FlexDirection::ColumnReverse,
+            3 => FlexDirection::RowReverse,
+            _ => FlexDirection::Column,
+        },
+        flex_wrap: match node.flex_wrap {
+            1 => FlexWrap::Wrap,
+            2 => FlexWrap::WrapReverse,
+            _ => FlexWrap::NoWrap,
         },
         flex_grow: node.flex_grow,
         flex_shrink: node.flex_shrink,
+        flex_basis: dim_of(node.flex_basis),
+        aspect_ratio: node.aspect_ratio,
         size: Size {
-            width: dim(node.width),
-            height: dim(node.height),
+            width: dim_of(node.width),
+            height: dim_of(node.height),
+        },
+        min_size: Size {
+            width: min_dim(
+                node.min_width,
+                node.overflow_x == Overflow::Scroll || node.flex_grow > 0.0,
+            ),
+            height: min_dim(
+                node.min_height,
+                node.overflow_y == Overflow::Scroll || node.flex_grow > 0.0,
+            ),
+        },
+        max_size: Size {
+            width: lpa_of(node.max_width),
+            height: lpa_of(node.max_height),
         },
         padding: Rect {
-            left: length(node.padding[0]),
-            right: length(node.padding[1]),
-            top: length(node.padding[2]),
-            bottom: length(node.padding[3]),
+            left: lp_of(node.padding[0]),
+            right: lp_of(node.padding[1]),
+            top: lp_of(node.padding[2]),
+            bottom: lp_of(node.padding[3]),
         },
         margin: Rect {
-            left: length(node.margin[0]),
-            right: length(node.margin[1]),
-            top: length(node.margin[2]),
-            bottom: length(node.margin[3]),
+            left: lpa_of(node.margin[0]),
+            right: lpa_of(node.margin[1]),
+            top: lpa_of(node.margin[2]),
+            bottom: lpa_of(node.margin[3]),
         },
         gap: Size {
-            width: length(node.gap),
-            height: length(node.gap),
+            width: lp_of(node.gap_column),
+            height: lp_of(node.gap_row),
         },
-        align_items: match node.align_items {
-            1 => AlignItems::START,
-            2 => AlignItems::CENTER,
-            3 => AlignItems::END,
-            4 => AlignItems::BASELINE,
-            _ => AlignItems::STRETCH,
+        align_items: map_align(node.align_items),
+        align_self: match node.align_self {
+            0 => None,
+            other => Some(map_align(other - 1)),
         },
+        align_content: map_content(node.align_content),
         justify_content: match node.justify_content {
             1 => JustifyContent::CENTER,
             2 => JustifyContent::END,
@@ -3005,19 +3127,13 @@ fn style_for(node: NodeStyle) -> Style {
             Position::Relative
         },
         inset: Rect {
-            top: inset(node.inset[0]),
-            right: inset(node.inset[1]),
-            bottom: inset(node.inset[2]),
-            left: inset(node.inset[3]),
+            top: lpa_of(node.inset[0]),
+            right: lpa_of(node.inset[1]),
+            bottom: lpa_of(node.inset[2]),
+            left: lpa_of(node.inset[3]),
         },
         ..Style::default()
     };
-    if node.overflow_x == Overflow::Scroll || node.flex_grow > 0.0 {
-        style.min_size.width = length(0.0);
-    }
-    if node.overflow_y == Overflow::Scroll || node.flex_grow > 0.0 {
-        style.min_size.height = length(0.0);
-    }
     style.overflow.x = node.overflow_x;
     style.overflow.y = node.overflow_y;
     if node.overflow_x == Overflow::Scroll || node.overflow_y == Overflow::Scroll {
@@ -3026,11 +3142,55 @@ fn style_for(node: NodeStyle) -> Style {
     style
 }
 
-fn inset(value: f32) -> LengthPercentageAuto {
-    if value.is_finite() {
-        length(value)
-    } else {
-        auto()
+fn map_align(value: u8) -> AlignItems {
+    match value {
+        1 => AlignItems::START,
+        2 => AlignItems::CENTER,
+        3 => AlignItems::END,
+        4 => AlignItems::BASELINE,
+        _ => AlignItems::STRETCH,
+    }
+}
+
+fn map_content(value: u8) -> AlignContent {
+    match value {
+        1 => AlignContent::CENTER,
+        2 => AlignContent::END,
+        3 => AlignContent::SPACE_BETWEEN,
+        4 => AlignContent::SPACE_AROUND,
+        5 => AlignContent::SPACE_EVENLY,
+        _ => AlignContent::START,
+    }
+}
+
+fn dim_of(value: Len) -> Dimension {
+    match value {
+        Len::Auto => auto(),
+        Len::Pt(value) => length(value),
+        Len::Pct(value) => Dimension::percent(value),
+    }
+}
+
+fn min_dim(value: Len, implicit_zero: bool) -> LengthPercentageAuto {
+    match value {
+        Len::Auto if implicit_zero => length(0.0),
+        other => lpa_of(other),
+    }
+}
+
+fn lp_of(value: Len) -> LengthPercentage {
+    match value {
+        Len::Pct(value) => LengthPercentage::percent(value),
+        Len::Pt(value) => LengthPercentage::length(value),
+        Len::Auto => LengthPercentage::length(0.0),
+    }
+}
+
+fn lpa_of(value: Len) -> LengthPercentageAuto {
+    match value {
+        Len::Auto => auto(),
+        Len::Pt(value) => length(value),
+        Len::Pct(value) => LengthPercentageAuto::percent(value),
     }
 }
 
@@ -3132,14 +3292,58 @@ fn parse_visibility_hidden(value: &Value) -> Result<bool, String> {
     }
 }
 
-fn flex_direction_row(value: &Value) -> Result<bool, String> {
+fn flex_direction(value: &Value) -> Result<u8, String> {
     let Value::String(text) = value else {
         return Err("flexDirection must be a string".into());
     };
     match text.as_str() {
-        "row" => Ok(true),
-        "column" => Ok(false),
+        "column" => Ok(0),
+        "row" => Ok(1),
+        "column-reverse" => Ok(2),
+        "row-reverse" => Ok(3),
         other => Err(format!("unsupported flexDirection {other}")),
+    }
+}
+
+fn align_self(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("alignSelf must be a string".into());
+    };
+    if text == "auto" {
+        return Ok(0);
+    }
+    Ok(align_items(&Value::String(text.clone()))? + 1)
+}
+
+fn flex_wrap(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("flexWrap must be a string".into());
+    };
+    match text.as_str() {
+        "nowrap" => Ok(0),
+        "wrap" => Ok(1),
+        "wrap-reverse" => Ok(2),
+        other => Err(format!("unsupported flexWrap {other}")),
+    }
+}
+
+fn parse_len(value: &Value, allow_auto: bool) -> Result<Len, String> {
+    match value {
+        Value::Null if allow_auto => Ok(Len::Auto),
+        Value::Int(value) => Ok(Len::Pt(*value as f32)),
+        Value::Float(value) => Ok(Len::Pt(*value as f32)),
+        Value::String(text) if allow_auto && text == "auto" => Ok(Len::Auto),
+        Value::String(text) => {
+            let Some(number) = text.strip_suffix('%') else {
+                return Err(format!("unsupported length {text}"));
+            };
+            let number: f32 = number
+                .trim()
+                .parse()
+                .map_err(|_| format!("unsupported length {text}"))?;
+            Ok(Len::Pct(number / 100.0))
+        }
+        _ => Err("unsupported length".into()),
     }
 }
 
@@ -3149,12 +3353,6 @@ fn overscroll_chains(value: &Value) -> Result<bool, String> {
         .map_err(|_| "overscroll must be a bool".into())
 }
 
-fn dim(value: Option<f32>) -> Dimension {
-    match value {
-        Some(value) => length(value),
-        None => auto(),
-    }
-}
 
 fn caret_step(value: &str, offset: u32, forward: bool) -> u32 {
     let mut seen = 0u32;
