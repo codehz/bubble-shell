@@ -6,4 +6,9 @@ sdk/web/runtime.js
 examples/android/build/
 examples/android/debug.keystore
 examples/ios/BubbleShell.app/
+examples/android/app/build/
+examples/ios/DerivedData/
+sdk/android/.gradle/
+sdk/android/bubble/build/
+sdk/android/build/
 /dist

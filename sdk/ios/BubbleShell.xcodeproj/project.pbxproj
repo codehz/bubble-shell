@@ -1,0 +1,337 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXAggregateTarget section */
+		A10000000000000000000010 /* BubbleShellXCFramework */ = {
+			isa = PBXAggregateTarget;
+			buildConfigurationList = A10000000000000000000011 /* Build configuration list for PBXAggregateTarget "BubbleShellXCFramework" */;
+			buildPhases = (
+				A10000000000000000000012 /* Package xcframework */,
+			);
+			dependencies = (
+			);
+			name = BubbleShellXCFramework;
+			productName = BubbleShellXCFramework;
+		};
+/* End PBXAggregateTarget section */
+
+/* Begin PBXFileReference section */
+		A10000000000000000000020 /* BubbleShell.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BubbleShell.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000021 /* Shell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shell.swift; sourceTree = "<group>"; };
+		A10000000000000000000022 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = main.swift; path = ../../examples/ios/Sources/main.swift; sourceTree = "<group>"; };
+		A10000000000000000000023 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = ../../examples/ios/Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A10000000000000000000030 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A10000000000000000000040 = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000041 /* Sources */,
+				A10000000000000000000042 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A10000000000000000000041 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000021 /* Shell.swift */,
+				A10000000000000000000022 /* main.swift */,
+				A10000000000000000000023 /* Info.plist */,
+			);
+			name = Sources;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000042 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000020 /* BubbleShell.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A10000000000000000000050 /* BubbleShell */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000000000000000000051 /* Build configuration list for PBXNativeTarget "BubbleShell" */;
+			buildPhases = (
+				A10000000000000000000052 /* Cargo */,
+				A10000000000000000000053 /* Sources */,
+				A10000000000000000000030 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BubbleShell;
+			productName = BubbleShell;
+			productReference = A10000000000000000000020 /* BubbleShell.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A10000000000000000000060 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					A10000000000000000000050 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = A10000000000000000000061 /* Build configuration list for PBXProject "BubbleShell" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A10000000000000000000040;
+			productRefGroup = A10000000000000000000042 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A10000000000000000000050 /* BubbleShell */,
+				A10000000000000000000010 /* BubbleShellXCFramework */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A10000000000000000000052 /* Cargo */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = Cargo;
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nREPO=\"$SRCROOT/../..\"\nif [ \"$PLATFORM_NAME\" = \"iphonesimulator\" ]; then\n  RUST_TARGET=aarch64-apple-ios-sim\nelse\n  RUST_TARGET=aarch64-apple-ios\nfi\nexport IPHONEOS_DEPLOYMENT_TARGET=17.0\ncd \"$REPO\"\ncargo build -p bubble-ffi --release --target \"$RUST_TARGET\"\ncargo run -q -p bubble-cli -- bundle \\\n  examples/app/fixtures/counter.tsx \\\n  examples/app/fixtures/editing.tsx \\\n  examples/app/fixtures/focus.tsx \\\n  examples/app/fixtures/media.tsx \\\n  examples/app/gestures.js \\\n  --out examples/web/fixtures\ncp crates/native/js/runtime.js examples/web/runtime.js\ncp crates/native/js/runtime.js sdk/web/runtime.js\nDEST=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nmkdir -p \"$DEST/fixtures\"\ncp -R examples/web/fixtures/. \"$DEST/fixtures/\"\nFONT=\"/System/Library/Fonts/Supplemental/Arial.ttf\"\nif [ -f \"$FONT\" ]; then\n  cp \"$FONT\" \"$DEST/HostFont.ttf\"\nfi\n";
+		};
+		A10000000000000000000012 /* Package xcframework */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Package xcframework";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nREPO=\"$SRCROOT/../..\"\ncd \"$REPO\"\nexport IPHONEOS_DEPLOYMENT_TARGET=17.0\ncargo build -p bubble-ffi --release --target aarch64-apple-ios-sim\ncargo build -p bubble-ffi --release --target aarch64-apple-ios\nOUT=\"dist/BubbleShell.xcframework\"\nrm -rf \"$OUT\"\nxcodebuild -create-xcframework \\\n  -library target/aarch64-apple-ios-sim/release/libbubble_ffi.a \\\n  -headers crates/native/include \\\n  -library target/aarch64-apple-ios/release/libbubble_ffi.a \\\n  -headers crates/native/include \\\n  -output \"$OUT\"\necho \"$OUT\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A10000000000000000000053 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000070 /* Shell.swift in Sources */,
+				A10000000000000000000071 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000070 /* Shell.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* Shell.swift */; };
+		A10000000000000000000071 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000022 /* main.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin XCBuildConfiguration section */
+		A10000000000000000000080 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				EXCLUDED_ARCHS = x86_64;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_NS_ASSERTIONS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A10000000000000000000081 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				EXCLUDED_ARCHS = x86_64;
+				ONLY_ACTIVE_ARCH = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		A10000000000000000000082 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ../../examples/ios/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/../../target/$(RUST_TARGET_DIR)/release";
+				OTHER_LDFLAGS = (
+					"-lbubble_ffi",
+					"-framework",
+					UIKit,
+					"-framework",
+					CoreText,
+					"-framework",
+					CoreGraphics,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.bubble.shell;
+				PRODUCT_NAME = BubbleShell;
+				"RUST_TARGET_DIR[sdk=iphoneos*]" = "aarch64-apple-ios";
+				"RUST_TARGET_DIR[sdk=iphonesimulator*]" = "aarch64-apple-ios-sim";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		A10000000000000000000083 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ../../examples/ios/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/../../target/$(RUST_TARGET_DIR)/release";
+				OTHER_LDFLAGS = (
+					"-lbubble_ffi",
+					"-framework",
+					UIKit,
+					"-framework",
+					CoreText,
+					"-framework",
+					CoreGraphics,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.bubble.shell;
+				PRODUCT_NAME = BubbleShell;
+				"RUST_TARGET_DIR[sdk=iphoneos*]" = "aarch64-apple-ios";
+				"RUST_TARGET_DIR[sdk=iphonesimulator*]" = "aarch64-apple-ios-sim";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		A10000000000000000000084 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				PRODUCT_NAME = BubbleShellXCFramework;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+			};
+			name = Debug;
+		};
+		A10000000000000000000085 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				PRODUCT_NAME = BubbleShellXCFramework;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A10000000000000000000061 /* Build configuration list for PBXProject "BubbleShell" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000080 /* Debug */,
+				A10000000000000000000081 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000000000000000000051 /* Build configuration list for PBXNativeTarget "BubbleShell" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000082 /* Debug */,
+				A10000000000000000000083 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000000000000000000011 /* Build configuration list for PBXAggregateTarget "BubbleShellXCFramework" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000084 /* Debug */,
+				A10000000000000000000085 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A10000000000000000000060 /* Project object */;
+}

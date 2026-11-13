@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.bubble.shell.test">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <instrumentation
+        android:name="android.test.InstrumentationTestRunner"
+        tools:node="remove" />
     <instrumentation
         android:name="dev.bubble.shell.test.ShellInstrumentation"
         android:targetPackage="dev.bubble.shell"
