@@ -1441,6 +1441,10 @@ final class AppDriver {
     let started = CACurrentMediaTime()
     var link: CADisplayLink?
     var engineReady = false
+    var devURL: URL?
+    var devStamp = ""
+    var devBusy = false
+    var lastDev = 0.0
     var appVisible = true
     var hides = 0
     var selectState = 0
@@ -1507,24 +1511,25 @@ final class AppDriver {
                 }
             }
         }
-        guard let manifestURL = Bundle.main.url(
-                  forResource: fixtureName,
-                  withExtension: "json",
-                  subdirectory: "fixtures"
-              ),
-              let entryURL = Bundle.main.url(
-                  forResource: fixtureName,
-                  withExtension: "js",
-                  subdirectory: "fixtures"
-              ),
-              let manifest = try? String(contentsOf: manifestURL, encoding: .utf8),
-              let entry = try? Data(contentsOf: entryURL) else { return }
-        let loaded: Int32 = manifest.withCString { manifest in
-            entry.withUnsafeBytes { raw in
-                bubble_load(manifest, raw.bindMemory(to: UInt8.self).baseAddress, UInt32(entry.count))
-            }
+        if let raw = ProcessInfo.processInfo.environment["BUBBLE_DEV"],
+           let url = URL(string: raw) {
+            devURL = url
         }
-        if loaded != 0 { NSLog("bubble load failed") }
+        if devURL == nil {
+            guard let manifestURL = Bundle.main.url(
+                      forResource: fixtureName,
+                      withExtension: "json",
+                      subdirectory: "fixtures"
+                  ),
+                  let entryURL = Bundle.main.url(
+                      forResource: fixtureName,
+                      withExtension: "js",
+                      subdirectory: "fixtures"
+                  ),
+                  let manifest = try? String(contentsOf: manifestURL, encoding: .utf8),
+                  let entry = try? Data(contentsOf: entryURL) else { return }
+            loadBundle(manifest, entry)
+        }
         NSLog("bubble bounds %@", NSCoder.string(for: view.bounds))
         if gestureMode {
             view.configureGestureSurface(true)
@@ -1536,7 +1541,39 @@ final class AppDriver {
         self.link = link
     }
 
+    func loadBundle(_ manifest: String, _ entry: Data) {
+        let loaded: Int32 = manifest.withCString { manifest in
+            entry.withUnsafeBytes { raw in
+                bubble_load(manifest, raw.bindMemory(to: UInt8.self).baseAddress, UInt32(entry.count))
+            }
+        }
+        if loaded != 0 { NSLog("bubble load failed") }
+        devStamp = manifest + "\n" + (String(data: entry, encoding: .utf8) ?? "")
+    }
+
+    func pollDev() {
+        guard let devURL, !devBusy else { return }
+        let now = CACurrentMediaTime()
+        if now - lastDev < 1 { return }
+        lastDev = now
+        devBusy = true
+        URLSession.shared.dataTask(with: devURL) { data, _, _ in
+            defer { DispatchQueue.main.async { self.devBusy = false } }
+            guard let data,
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+                  let manifest = object["manifest"],
+                  let entry = object["entry"] else { return }
+            let stamp = manifest + "\n" + entry
+            if stamp == self.devStamp { return }
+            let bytes = Data(entry.utf8)
+            DispatchQueue.main.async {
+                self.loadBundle(manifest, bytes)
+            }
+        }.resume()
+    }
+
     @objc func tick() {
+        pollDev()
         let now = CACurrentMediaTime()
         let dt = (now - last) * 1000
         last = now

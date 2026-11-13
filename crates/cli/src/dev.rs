@@ -8,10 +8,55 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use bubble_bundler::{build_dev, render_dev_bundle, DevChunk};
+use bubble_bundler::{build_dev, bundle_entry, render_dev_bundle, BundleOptions, DevChunk};
 
 const RUNTIME_JS: &str = include_str!("../../native/js/runtime.js");
 const HOT_JS: &str = include_str!("../js/hot.js");
+
+const DEFAULT_MIN_RUNTIME: &str = "0.1.0";
+const PLATFORMS: &[&str] = &["web", "ios", "android"];
+
+pub fn release_manifest(
+    id: Option<&str>,
+    name: &str,
+    code: &str,
+    assets: &[bubble_bundler::BundledAsset],
+) -> String {
+    let id = id
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("com.bubble.{name}"));
+    let files = vec![serde_json::json!({
+        "path": format!("{name}.js"),
+        "sha256": bubble_bundler::content_hash(code.as_bytes()),
+        "size": code.len() as u64,
+    })];
+    let assets: Vec<_> = assets
+        .iter()
+        .map(|asset| {
+            serde_json::json!({
+                "path": asset.path,
+                "sha256": asset.sha256,
+                "size": asset.size,
+            })
+        })
+        .collect();
+    let manifest = serde_json::json!({
+        "schema": 1,
+        "id": id,
+        "version": 1,
+        "minRuntime": DEFAULT_MIN_RUNTIME,
+        "platforms": PLATFORMS,
+        "entry": format!("{name}.js"),
+        "files": files,
+        "assets": assets,
+        "keyId": "m0-placeholder",
+        "signature": "m0-placeholder",
+    });
+    format!(
+        "{}\n",
+        serde_json::to_string_pretty(&manifest).expect("manifest serializes")
+    )
+}
 
 pub struct DevOptions {
     pub entry: PathBuf,
@@ -21,12 +66,15 @@ pub struct DevOptions {
 
 #[derive(Default)]
 struct Shared {
+    entry: PathBuf,
     bundle: String,
     chunks: HashMap<String, String>,
     assets: HashMap<String, Vec<u8>>,
     sources: Vec<PathBuf>,
     clients: Vec<Arc<Mutex<TcpStream>>>,
     failed: bool,
+    native_stamp: Vec<(PathBuf, Option<SystemTime>, u64)>,
+    native_body: String,
 }
 
 pub fn run(options: DevOptions) -> Result<(), String> {
@@ -37,6 +85,7 @@ pub fn run(options: DevOptions) -> Result<(), String> {
 
     let initial = build_dev(&entry)?;
     let shared = Arc::new(Mutex::new(Shared {
+        entry: entry.clone(),
         bundle: render_dev_bundle(&initial),
         chunks: initial
             .chunks
@@ -47,6 +96,8 @@ pub fn run(options: DevOptions) -> Result<(), String> {
         sources: initial.sources.clone(),
         clients: Vec::new(),
         failed: false,
+        native_stamp: Vec::new(),
+        native_body: String::new(),
     }));
 
     let listener = TcpListener::bind(("127.0.0.1", options.port))
@@ -227,6 +278,44 @@ fn write_text_frame(stream: &mut TcpStream, text: &str) -> std::io::Result<()> {
     stream.flush()
 }
 
+fn serve_native(stream: &mut TcpStream, shared: &Arc<Mutex<Shared>>) -> std::io::Result<()> {
+    let (entry, sources) = {
+        let state = shared.lock().unwrap();
+        (state.entry.clone(), state.sources.clone())
+    };
+    let stamp = stamps_of(&sources);
+    {
+        let state = shared.lock().unwrap();
+        if state.native_stamp == stamp && !state.native_body.is_empty() {
+            return respond(
+                stream,
+                200,
+                "application/json",
+                state.native_body.as_bytes(),
+            );
+        }
+    }
+    let bundled = match bundle_entry(&BundleOptions {
+        entry,
+        source_map: false,
+    }) {
+        Ok(bundled) => bundled,
+        Err(error) => return respond(stream, 500, "text/plain", error.as_bytes()),
+    };
+    let manifest = release_manifest(None, &bundled.name, &bundled.code, &bundled.assets);
+    let body = serde_json::json!({
+        "manifest": manifest,
+        "entry": bundled.code,
+    })
+    .to_string();
+    {
+        let mut state = shared.lock().unwrap();
+        state.native_stamp = stamp;
+        state.native_body = body.clone();
+    }
+    respond(stream, 200, "application/json", body.as_bytes())
+}
+
 fn handle_connection(
     mut stream: TcpStream,
     shared: &Arc<Mutex<Shared>>,
@@ -270,6 +359,9 @@ fn handle_connection(
             "text/javascript; charset=utf-8",
             RUNTIME_JS.as_bytes(),
         );
+    }
+    if path == "/__bubble/native.json" {
+        return serve_native(&mut stream, shared);
     }
     if path == "/__bubble/dev.js" {
         let bundle = shared.lock().unwrap().bundle.clone();

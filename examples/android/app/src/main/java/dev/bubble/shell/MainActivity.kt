@@ -9,6 +9,7 @@ import android.view.Choreographer
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.net.URL
 
 class MainActivity : Activity() {
     private lateinit var shell: BubbleView
@@ -21,6 +22,10 @@ class MainActivity : Activity() {
     private val started = System.nanoTime()
     private var gestures = false
     private var acceptance = false
+    private var devUrl: String? = null
+    private var devStamp = ""
+    private var devBusy = false
+    private var lastDev = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,11 +39,14 @@ class MainActivity : Activity() {
             file.writeBytes(bytes)
             shellTypeface = Typeface.createFromFile(file)
         }
-        val requested = intent?.getStringExtra("bubble_fixture") ?: "counter"
-        val fixture = if (requested.matches(Regex("[a-z0-9-]+"))) requested else "counter"
-        val manifest = assets.open("fixtures/$fixture.json").bufferedReader().readText()
-        val entry = assets.open("fixtures/$fixture.js").readBytes()
-        check(BubbleNative.load(manifest, entry) == 0)
+        devUrl = intent?.getStringExtra("bubble_dev")
+        if (devUrl == null) {
+            val requested = intent?.getStringExtra("bubble_fixture") ?: "counter"
+            val fixture = if (requested.matches(Regex("[a-z0-9-]+"))) requested else "counter"
+            val manifest = assets.open("fixtures/$fixture.json").bufferedReader().readText()
+            val entry = assets.open("fixtures/$fixture.js").readBytes()
+            check(BubbleNative.load(manifest, entry) == 0)
+        }
         shell = BubbleView(this)
         shell.setHostTypeface(shellTypeface ?: Typeface.DEFAULT)
         setContentView(shell)
@@ -48,6 +56,7 @@ class MainActivity : Activity() {
     private val frame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (isDestroyed) return
+            pollDev()
             val now = System.nanoTime()
             val dt = (now - last) / 1_000_000.0
             last = now
@@ -147,6 +156,31 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         BubbleNative.destroy()
         super.onDestroy()
+    }
+
+    private fun pollDev() {
+        val url = devUrl ?: return
+        val now = SystemClock.uptimeMillis()
+        if (devBusy || now - lastDev < 1000) return
+        lastDev = now
+        devBusy = true
+        Thread {
+            try {
+                val text = URL(url).readText()
+                val payload = JSONObject(text)
+                val manifest = payload.getString("manifest")
+                val entry = payload.getString("entry")
+                val stamp = manifest + "\n" + entry
+                if (stamp == devStamp) return@Thread
+                runOnUiThread {
+                    devStamp = stamp
+                    BubbleNative.load(manifest, entry.toByteArray())
+                }
+            } catch (_: Exception) {
+            } finally {
+                devBusy = false
+            }
+        }.start()
     }
 
     companion object {

@@ -3,10 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use bubble_bundler::{bundle_entry, content_hash, BundleOptions};
-
-const DEFAULT_MIN_RUNTIME: &str = "0.1.0";
-const PLATFORMS: &[&str] = &["web", "ios", "android"];
+use bubble_bundler::{bundle_entry, BundleOptions};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -145,7 +142,7 @@ fn bundle_command(args: &[String]) -> Result<(), String> {
             }
         }
         if !parsed.dev {
-            let manifest = manifest_json(
+            let manifest = bubble_cli::dev::release_manifest(
                 parsed.id.as_deref(),
                 &bundled.name,
                 &bundled.code,
@@ -160,44 +157,4 @@ fn bundle_command(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn manifest_json(
-    id: Option<&str>,
-    name: &str,
-    code: &str,
-    assets: &[bubble_bundler::BundledAsset],
-) -> String {
-    let id = id
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("com.bubble.{name}"));
-    let files = vec![serde_json::json!({
-        "path": format!("{name}.js"),
-        "sha256": content_hash(code.as_bytes()),
-        "size": code.len() as u64,
-    })];
-    let assets: Vec<_> = assets
-        .iter()
-        .map(|asset| {
-            serde_json::json!({
-                "path": asset.path,
-                "sha256": asset.sha256,
-                "size": asset.size,
-            })
-        })
-        .collect();
-    let manifest = serde_json::json!({
-        "schema": 1,
-        "id": id,
-        "version": 1,
-        "minRuntime": DEFAULT_MIN_RUNTIME,
-        "platforms": PLATFORMS,
-        "entry": format!("{name}.js"),
-        "files": files,
-        "assets": assets,
-        "keyId": "m0-placeholder",
-        "signature": "m0-placeholder",
-    });
-    format!(
-        "{}\n",
-        serde_json::to_string_pretty(&manifest).expect("manifest serializes")
-    )
-}
+

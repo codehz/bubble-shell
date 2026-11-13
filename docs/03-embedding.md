@@ -26,7 +26,7 @@ runtime 负责：
 - 发布 bundle 是 manifest + 单个入口 ES module + `assets/`。应用代码可以来自多个模块，但发布态已链接成一个 ESM；fixture 构建沿用 `<name>.js` / `<name>.json`。
 - `bubble-shell` 与 `bubble:rt` 是宿主提供的原生模块，不打进 bundle。native 由 QuickJS loader 解析；Web 由页面的 import map 解析，两者指向同一份 `runtime.js`。
 - 资源以 `assets/<name>.<hash8>.<ext>` 落盘，manifest 的 `assets` 列出哈希与大小；bundle 内用相对路径引用。Web 以 bundle URL 为 base 解析，native 以 bundle 根目录解析。
-- 开发态 Web 使用 `bubble dev` 的多模块 HMR；native 开发仍重新打包并重启宿主，native 状态保留 HMR 属于 post-MVP。
+- 开发态 Web 使用 `bubble dev` 的多模块 HMR。同一进程还提供 `GET /__bubble/native.json`（`{manifest, entry}`）。iOS 设 `BUBBLE_DEV`、Android 设 `bubble_dev` intent 为该 URL 后，宿主每秒拉取并 `bubble_load` 整包重挂；状态保留 HMR 仍属 post-MVP。
 
 ### 宿主 API 草图
 
