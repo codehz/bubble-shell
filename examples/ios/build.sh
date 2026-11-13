@@ -18,5 +18,6 @@ swiftc -sdk "$SDK" -target arm64-apple-ios17.0-simulator \
   -L target/aarch64-apple-ios-sim/release -lbubble_ffi \
   -import-objc-header /dev/null \
   -o "$OUT/BubbleShell" \
+  sdk/ios/Shell.swift \
   examples/ios/Sources/main.swift
 echo "$OUT"

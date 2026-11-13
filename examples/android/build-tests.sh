@@ -2,9 +2,8 @@
 set -eu
 cd "$(dirname "$0")/../.."
 
-SDK="${ANDROID_HOME:?}"
-BT="$SDK/build-tools/36.1.0"
-ANDROID_JAR="$SDK/platforms/android-35/android.jar"
+eval "$(sh sdk/android/env.sh)"
+BT="$BUILD_TOOLS"
 OUT="examples/android/build"
 CLASSES="$OUT/classes.jar"
 SRC_DIR="examples/android/app/src/androidTest/java/dev/bubble/shell/test"

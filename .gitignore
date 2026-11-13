@@ -2,6 +2,7 @@
 *.wasm
 examples/web/fixtures/
 examples/web/runtime.js
+sdk/web/runtime.js
 examples/android/build/
 examples/android/debug.keystore
 examples/ios/BubbleShell.app/

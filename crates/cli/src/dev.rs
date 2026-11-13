@@ -507,16 +507,39 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+fn sdk_web(root: &Path) -> Option<std::path::PathBuf> {
+    let mut dir = root.to_path_buf();
+    loop {
+        let candidate = dir.join("sdk/web");
+        if candidate.is_dir() {
+            return std::fs::canonicalize(candidate).ok();
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
 fn serve_file(stream: &mut TcpStream, root: &Path, path: &str) -> std::io::Result<()> {
     let relative = path.trim_start_matches('/');
     if relative.split('/').any(|part| part == "..") {
         return respond(stream, 403, "text/plain", b"forbidden");
     }
-    let candidate = root.join(relative);
+    let mut candidate = root.join(relative);
+    if !candidate.is_file() {
+        if let Some(sdk) = sdk_web(root) {
+            let alt = sdk.join(relative);
+            if alt.is_file() {
+                candidate = alt;
+            }
+        }
+    }
     let Ok(canonical) = std::fs::canonicalize(&candidate) else {
         return respond(stream, 404, "text/plain", b"not found");
     };
-    if !canonical.starts_with(root) || !canonical.is_file() {
+    let allowed = canonical.starts_with(root)
+        || sdk_web(root).is_some_and(|sdk| canonical.starts_with(&sdk));
+    if !allowed || !canonical.is_file() {
         return respond(stream, 404, "text/plain", b"not found");
     }
     match std::fs::read(&canonical) {

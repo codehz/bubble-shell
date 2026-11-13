@@ -114,6 +114,7 @@ fn build_ios(root: &Path) -> Result<PathBuf, String> {
         .arg(root.join("target/aarch64-apple-ios-sim/release"))
         .args(["-lbubble_ffi", "-import-objc-header", "/dev/null", "-o"])
         .arg(app.join("BubbleShell"))
+        .arg(root.join("sdk/ios/Shell.swift"))
         .arg(root.join("examples/ios/Sources/main.swift")))?;
     run(Command::new("xcrun")
         .args(["simctl", "install", "booted"])
@@ -214,17 +215,30 @@ pub fn gestures_android() -> Result<SuiteReport, String> {
     android_device(true)
 }
 
+fn android_tools(root: &Path) -> Result<std::collections::HashMap<String, String>, String> {
+    let text = run(Command::new("sh")
+        .arg(root.join("sdk/android/env.sh"))
+        .current_dir(root))?;
+    let mut tools = std::collections::HashMap::new();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        tools.insert(key.to_string(), value.to_string());
+    }
+    for key in ["CC", "AR", "SYSROOT", "BUILD_TOOLS", "ANDROID_JAR", "ANDROID_PLATFORM", "KOTLINC", "KOTLIN_LIB"] {
+        if !tools.contains_key(key) {
+            return Err(format!("sdk/android/env.sh did not report {key}"));
+        }
+    }
+    Ok(tools)
+}
+
 fn build_android(root: &Path) -> Result<PathBuf, String> {
-    let sdk = std::env::var("ANDROID_HOME").map_err(|_| "ANDROID_HOME is unset".to_string())?;
-    let ndk = PathBuf::from(&sdk).join("ndk/27.2.12479018");
-    let pre = ndk.join("toolchains/llvm/prebuilt/darwin-arm64");
-    let pre = if pre.is_dir() {
-        pre
-    } else {
-        ndk.join("toolchains/llvm/prebuilt/darwin-x86_64")
-    };
-    let cc = pre.join("bin/aarch64-linux-android24-clang");
-    let ar = pre.join("bin/llvm-ar");
+    let tools = android_tools(root)?;
+    let cc = tools["CC"].clone();
+    let ar = tools["AR"].clone();
+    let sysroot = tools["SYSROOT"].clone();
     run(Command::new("cargo")
         .args([
             "build",
@@ -239,17 +253,13 @@ fn build_android(root: &Path) -> Result<PathBuf, String> {
         .env("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", &cc)
         .env(
             "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android",
-            format!("--sysroot={}", pre.join("sysroot").display()),
+            format!("--sysroot={sysroot}"),
         )
         .current_dir(root))?;
-    let kotlin = std::env::var("KOTLIN_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/bubble-kotlinc")
-        });
-    let kotlinc = kotlin.join("bin/kotlinc");
-    let bt = PathBuf::from(&sdk).join("build-tools/36.1.0");
-    let android_jar = PathBuf::from(&sdk).join("platforms/android-35/android.jar");
+    let kotlinc = &tools["KOTLINC"];
+    let bt = PathBuf::from(&tools["BUILD_TOOLS"]);
+    let android_jar = &tools["ANDROID_JAR"];
+    let platform = &tools["ANDROID_PLATFORM"];
     let out = root.join("examples/android/build");
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(out.join("apk/lib/arm64-v8a")).map_err(|err| err.to_string())?;
@@ -262,31 +272,27 @@ fn build_android(root: &Path) -> Result<PathBuf, String> {
         &root.join("target/aarch64-linux-android/release/libbubble_ffi.so"),
         &out.join("apk/lib/arm64-v8a/libbubble_ffi.so"),
     )?;
-    let java = root.join("examples/android/app/src/main/java/dev/bubble/shell");
-    run(Command::new(&kotlinc)
-        .args(["-jvm-target", "17", "-classpath"])
-        .arg(&android_jar)
-        .args(["-d"])
+    let sdk_src = root.join("sdk/android/src/dev/bubble/shell");
+    let app_src = root.join("examples/android/app/src/main/java/dev/bubble/shell");
+    run(Command::new(kotlinc)
+        .args(["-jvm-target", "17", "-classpath", android_jar, "-d"])
         .arg(out.join("classes.jar"))
-        .arg(java.join("BubbleView.kt"))
-        .arg(java.join("BubbleNative.kt"))
-        .arg(java.join("FieldLayout.kt"))
-        .arg(java.join("MainActivity.kt")))?;
+        .arg(sdk_src.join("BubbleView.kt"))
+        .arg(sdk_src.join("BubbleNative.kt"))
+        .arg(sdk_src.join("FieldLayout.kt"))
+        .arg(sdk_src.join("HostCalls.kt"))
+        .arg(app_src.join("MainActivity.kt")))?;
     run(Command::new(bt.join("d8"))
-        .args(["--min-api", "24", "--lib"])
-        .arg(&android_jar)
-        .args(["--output"])
+        .args(["--min-api", "24", "--lib", android_jar, "--output"])
         .arg(out.join("apk"))
         .arg(out.join("classes.jar"))
-        .arg(kotlin.join("lib/kotlin-stdlib.jar")))?;
+        .arg(PathBuf::from(&tools["KOTLIN_LIB"]).join("kotlin-stdlib.jar")))?;
     run(Command::new(bt.join("aapt2"))
         .args(["link", "-o"])
         .arg(out.join("base.apk"))
-        .args(["-I"])
-        .arg(&android_jar)
-        .args(["--manifest"])
+        .args(["-I", android_jar, "--manifest"])
         .arg(root.join("examples/android/app/src/main/AndroidManifest.xml"))
-        .args(["--min-sdk-version", "24", "--target-sdk-version", "35"]))?;
+        .args(["--min-sdk-version", "24", "--target-sdk-version", platform]))?;
     run(Command::new("unzip")
         .args(["-q", "-o"])
         .arg(out.join("base.apk"))

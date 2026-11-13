@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { commandsForDom, dragSelection } from "./ime.js";
+import { commandsForDom, dragSelection } from "../../sdk/web/ime.js";
 
 test("insert, paste, and delete map to edit transactions", () => {
   assert.deepEqual(commandsForDom({ type: "beforeinput", inputType: "insertText", data: "a" }), [

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { scrollActionForKey } from "./a11y.js";
+import { scrollActionForKey } from "../../sdk/web/a11y.js";
 
 function tree(leaf = {}, scroller = {}) {
   const nodes = new Map([
