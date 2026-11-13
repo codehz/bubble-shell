@@ -27,6 +27,8 @@ int bubble_current(void);
 void bubble_destroy(void);
 /* JSON object or array. Applied on the next bubble_load of the bound shell. */
 int bubble_set_params(const char *json);
+/* Directory for bubble.storage.<manifest id>.json. Null keeps storage in memory. */
+int bubble_set_storage_dir(const char *path);
 /* JSON payload for host.on(name). Queued until a listener exists. */
 int bubble_send(const char *name, const char *payload);
 

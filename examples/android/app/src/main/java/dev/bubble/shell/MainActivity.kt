@@ -32,6 +32,7 @@ class MainActivity : Activity() {
         gestures = intent?.getBooleanExtra("bubble_gestures", false) == true
         acceptance = intent?.getBooleanExtra("bubble_eval", false) == true
         check(BubbleNative.create() == 0)
+        BubbleNative.setStorageDir(filesDir.absolutePath)
         assets.open("HostFont.ttf").use { input ->
             val bytes = input.readBytes()
             BubbleNative.registerFont("HostFont", bytes)

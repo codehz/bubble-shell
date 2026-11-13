@@ -1,20 +1,37 @@
 // Drop-in page player. One player per document: the wasm shell is still one
 // module. Paint, IME, and the accessibility overlay stay in host.js.
 
-const storage = new Map();
-
 function installHost(options) {
   globalThis.__bubbleHostParams = options.params ?? null;
   const handlers = options.handle ?? {};
+  const storageKey = `bubble.storage.${String(options.id ?? "bubble")}`;
+  const storage = new Map();
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (raw) {
+      for (const [key, value] of Object.entries(JSON.parse(raw))) storage.set(key, String(value));
+    }
+  } catch {
+    /* private mode or a non-browser test */
+  }
+  const save = () => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(storage)));
+    } catch {
+      /* ignore quota and private mode */
+    }
+  };
   globalThis.bubbleStorage = {
     get(key) {
       return storage.has(String(key)) ? storage.get(String(key)) : null;
     },
     set(key, value) {
       storage.set(String(key), String(value));
+      save();
     },
     remove(key) {
       storage.delete(String(key));
+      save();
     },
     keys() {
       return [...storage.keys()];

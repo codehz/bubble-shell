@@ -241,6 +241,7 @@ impl Session {
 
     fn load_bundle(&mut self, manifest: String, entry: Vec<u8>) -> Result<(), String> {
         check_manifest(&manifest, &entry)?;
+        self.shared.bind_storage(&manifest);
         self.bundle = Some((manifest, entry));
         self.boot_vm()?;
         let pending = std::mem::take(&mut self.early_events);
@@ -1198,7 +1199,8 @@ fn api_storage_set(key: String, value: String) {
     };
     if let Ok(mut map) = shared.storage.lock() {
         map.insert(key, value);
-    };
+    }
+    shared.persist_storage();
 }
 
 fn api_storage_remove(key: String) {
@@ -1207,7 +1209,8 @@ fn api_storage_remove(key: String) {
     };
     if let Ok(mut map) = shared.storage.lock() {
         map.remove(&key);
-    };
+    }
+    shared.persist_storage();
 }
 
 fn api_storage_keys() -> String {

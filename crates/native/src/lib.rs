@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::JoinHandle;
+use std::path::PathBuf;
 
 use bubble_core::{
     decode_layout, encode_edit_events, encode_events, encode_paint, wrapping_layout, A11yAction,
@@ -99,6 +100,8 @@ pub struct Shared {
     js_since_ms: AtomicU64,
     stop_watch: AtomicBool,
     storage: Mutex<HashMap<String, String>>,
+    storage_dir: Mutex<Option<PathBuf>>,
+    storage_id: Mutex<String>,
     params: Mutex<String>,
 }
 
@@ -113,6 +116,54 @@ impl Shared {
         if let Ok(mut slot) = self.last_error.lock() {
             *slot = message.to_owned();
         }
+    }
+}
+
+impl Shared {
+    fn bind_storage(&self, manifest: &str) {
+        let id = serde_json::from_str::<serde_json::Value>(manifest)
+            .ok()
+            .and_then(|value| value.get("id").and_then(|id| id.as_str()).map(str::to_string))
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| "default".into());
+        if let Ok(mut slot) = self.storage_id.lock() {
+            *slot = id;
+        }
+        let Some(dir) = self.storage_dir.lock().ok().and_then(|dir| dir.clone()) else {
+            return;
+        };
+        let id = self
+            .storage_id
+            .lock()
+            .map(|id| id.clone())
+            .unwrap_or_else(|_| "default".into());
+        let loaded = std::fs::read_to_string(storage_file(&dir, &id))
+            .ok()
+            .and_then(|text| serde_json::from_str::<HashMap<String, String>>(&text).ok())
+            .unwrap_or_default();
+        if let Ok(mut map) = self.storage.lock() {
+            *map = loaded;
+        }
+    }
+
+    fn persist_storage(&self) {
+        let Some(dir) = self.storage_dir.lock().ok().and_then(|dir| dir.clone()) else {
+            return;
+        };
+        let id = self
+            .storage_id
+            .lock()
+            .map(|id| id.clone())
+            .unwrap_or_else(|_| "default".into());
+        let Ok(map) = self.storage.lock() else {
+            return;
+        };
+        let Ok(text) = serde_json::to_string(&*map) else {
+            return;
+        };
+        drop(map);
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(storage_file(&dir, &id), text);
     }
 }
 
@@ -266,6 +317,8 @@ pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
             js_since_ms: AtomicU64::new(0),
             stop_watch: AtomicBool::new(false),
             storage: Mutex::new(HashMap::new()),
+            storage_dir: Mutex::new(None),
+            storage_id: Mutex::new("default".into()),
             params: Mutex::new("null".into()),
         });
         let (tx, thread) = script::start(Arc::clone(&shared));
@@ -327,6 +380,46 @@ pub extern "C" fn bubble_set_params(json: *const c_char) -> i32 {
         Ok(())
     });
     finish(result)
+}
+
+/// Directory for `bubble.storage.<manifest id>.json`. Null keeps storage in memory.
+#[no_mangle]
+pub extern "C" fn bubble_set_storage_dir(path: *const c_char) -> i32 {
+    let result = catch(|| {
+        let engine = engine()?;
+        let dir = if path.is_null() {
+            None
+        } else {
+            let text = cstr(path)?;
+            if text.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(text))
+            }
+        };
+        let mut slot = engine
+            .shared
+            .storage_dir
+            .lock()
+            .map_err(|_| "storage lock poisoned".to_string())?;
+        *slot = dir;
+        Ok(())
+    });
+    finish(result)
+}
+
+fn storage_file(dir: &std::path::Path, id: &str) -> PathBuf {
+    let safe: String = id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    dir.join(format!("bubble.storage.{safe}.json"))
 }
 
 /// Deliver `payload` JSON to `host.on(name)` listeners. Kept until a bundle is listening.
@@ -1946,6 +2039,19 @@ mod android {
         };
         let result = super::CString_from(&result.to_string_lossy());
         super::bubble_finish_request(id as u32, ok, result.as_ptr());
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_setStorageDir<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        path: JString<'a>,
+    ) -> jint {
+        let Ok(path) = env.get_string(&path) else {
+            return 1;
+        };
+        let path = super::CString_from(&path.to_string_lossy());
+        super::bubble_set_storage_dir(path.as_ptr())
     }
 
     #[no_mangle]

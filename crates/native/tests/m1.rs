@@ -4,7 +4,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use bubble_ffi::{
-    bubble_bind, bubble_create, bubble_current, bubble_destroy, bubble_edit, bubble_edit_batch_begin, bubble_edit_batch_end, bubble_send, bubble_set_params,
+    bubble_bind, bubble_create, bubble_current, bubble_destroy, bubble_edit, bubble_edit_batch_begin, bubble_edit_batch_end, bubble_send, bubble_set_params, bubble_set_storage_dir,
     bubble_edit_commit, bubble_edit_compose, bubble_edit_delete_surrounding,
     bubble_edit_finish_composition, bubble_edit_replace, bubble_edit_snapshot, bubble_eval,
     bubble_faults, bubble_finish_request, bubble_font_count, bubble_font_epoch, bubble_frame,
@@ -553,4 +553,25 @@ fn storage_params_and_host_events_roundtrip() {
     }
     assert_eq!(eval("String(globalThis.seen)"), "2");
     bubble_destroy();
+}
+
+#[test]
+fn storage_reloads_from_the_host_directory() {
+    let _guard = exclusive();
+    let dir = std::env::temp_dir().join(format!("bubble-storage-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = c(dir.to_str().unwrap());
+    bubble_destroy();
+    assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    assert_eq!(bubble_set_storage_dir(path.as_ptr()), 0, "{}", error());
+    try_load_source("export const ready = true;\n").unwrap();
+    assert_eq!(eval("bubbleStorage.set('k','v'); bubbleStorage.get('k')"), "v");
+    bubble_destroy();
+    assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    assert_eq!(bubble_set_storage_dir(path.as_ptr()), 0, "{}", error());
+    try_load_source("export const ready = true;\n").unwrap();
+    assert_eq!(eval("bubbleStorage.get('k')"), "v");
+    bubble_destroy();
+    let _ = std::fs::remove_dir_all(&dir);
 }

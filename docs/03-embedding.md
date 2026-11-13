@@ -78,7 +78,7 @@ Cancel   { id }
 | 能力 | API | 说明 |
 |---|---|---|
 | fetch | `fetch(url, init)` | runtime 缓存/离线；Web 受 CORS 限制 |
-| storage | `get/set/remove/keys` | 按 bundle 命名空间隔离；配额 |
+| storage | `get/set/remove/keys` | 按 manifest `id` 隔离。Native 写宿主目录里的 `bubble.storage.<id>.json`（`bubble_set_storage_dir`）；Web 写 `localStorage` 键 `bubble.storage.<id>`。未设目录时只留在内存。 |
 | navigation | `navigate(intent)` | 只发 intent，宿主拥有路由 |
 | clipboard | `readText/writeText` | Web 经主线程代理 |
 | ui | `toast/openURL` | 宿主实现 |

@@ -8,6 +8,8 @@ func bubble_create(_ host: UnsafePointer<BubbleHost>?) -> Int32
 func bubble_destroy()
 @_silgen_name("bubble_load")
 func bubble_load(_ manifest: UnsafePointer<CChar>?, _ entry: UnsafePointer<UInt8>?, _ entryLen: UInt32) -> Int32
+@_silgen_name("bubble_set_storage_dir")
+func bubble_set_storage_dir(_ path: UnsafePointer<CChar>?) -> Int32
 @_silgen_name("bubble_poll_request")
 func bubble_poll_request(_ id: UnsafeMutablePointer<UInt32>?, _ method: UnsafeMutablePointer<CChar>?, _ methodCap: UInt32, _ params: UnsafeMutablePointer<CChar>?, _ paramsCap: UInt32) -> Int32
 @_silgen_name("bubble_finish_request")
@@ -1495,6 +1497,10 @@ final class AppDriver {
         var host = BubbleHost(measure: measure, ctx: nil, layout: layoutText)
         guard bubble_create(&host) == 0 else { return }
         engineReady = true
+        if let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            _ = base.path.withCString { bubble_set_storage_dir($0) }
+        }
         bubble_set_visible(appVisible ? 1 : 0)
         if let fontURL = Bundle.main.url(forResource: "HostFont", withExtension: "ttf"),
            let data = try? Data(contentsOf: fontURL) {
