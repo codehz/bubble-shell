@@ -8,6 +8,10 @@ func bubble_create(_ host: UnsafePointer<BubbleHost>?) -> Int32
 func bubble_destroy()
 @_silgen_name("bubble_load")
 func bubble_load(_ manifest: UnsafePointer<CChar>?, _ entry: UnsafePointer<UInt8>?, _ entryLen: UInt32) -> Int32
+@_silgen_name("bubble_poll_request")
+func bubble_poll_request(_ id: UnsafeMutablePointer<UInt32>?, _ method: UnsafeMutablePointer<CChar>?, _ methodCap: UInt32, _ params: UnsafeMutablePointer<CChar>?, _ paramsCap: UInt32) -> Int32
+@_silgen_name("bubble_finish_request")
+func bubble_finish_request(_ id: UInt32, _ ok: Int32, _ result: UnsafePointer<CChar>?)
 @_silgen_name("bubble_frame")
 func bubble_frame(_ width: Float, _ height: Float, _ paint: UnsafeMutablePointer<UnsafePointer<UInt8>?>?, _ paintLen: UnsafeMutablePointer<UInt32>?) -> Int32
 @_silgen_name("bubble_pointer")
@@ -235,6 +239,64 @@ func layoutSnapshot(_ text: String, _ width: CGFloat, _ fontSize: CGFloat, _ lin
     return data
 }
 
+func drainHostCalls() {
+    while true {
+        var id: UInt32 = 0
+        let method = UnsafeMutablePointer<CChar>.allocate(capacity: 128)
+        let params = UnsafeMutablePointer<CChar>.allocate(capacity: 8192)
+        method.initialize(repeating: 0, count: 128)
+        params.initialize(repeating: 0, count: 8192)
+        let code = bubble_poll_request(&id, method, 128, params, 8192)
+        let methodName = String(cString: method)
+        let paramText = String(cString: params)
+        method.deallocate()
+        params.deallocate()
+        if code != 1 { return }
+        let object = (try? JSONSerialization.jsonObject(with: Data(paramText.utf8))) as? [String: Any] ?? [:]
+        func finish(_ ok: Int32, _ result: String) {
+            result.withCString { bubble_finish_request(id, ok, $0) }
+        }
+        switch methodName {
+        case "toast":
+            print("toast:", object["message"] ?? "")
+            finish(1, "null")
+        case "openURL":
+            if let url = URL(string: String(describing: object["url"] ?? "")) {
+                UIApplication.shared.open(url)
+            }
+            finish(1, "null")
+        case "clipboard.readText":
+            let text = UIPasteboard.general.string ?? ""
+            let quoted = String(data: (try? JSONEncoder().encode(text)) ?? Data("\"\"".utf8), encoding: .utf8) ?? "\"\""
+            finish(1, quoted)
+        case "clipboard.writeText":
+            UIPasteboard.general.string = String(describing: object["text"] ?? "")
+            finish(1, "null")
+        case "fetch":
+            let urlText = String(describing: object["url"] ?? "")
+            guard let url = URL(string: urlText) else {
+                finish(0, "bad url")
+                continue
+            }
+            var request = URLRequest(url: url)
+            if let verb = object["method"] as? String, !verb.isEmpty { request.httpMethod = verb }
+            if let body = object["body"] as? String { request.httpBody = Data(body.utf8) }
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                if let error {
+                    finish(0, error.localizedDescription)
+                    return
+                }
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                let encoded = String(data: (try? JSONEncoder().encode(text)) ?? Data("\"\"".utf8), encoding: .utf8) ?? "\"\""
+                finish(1, "{\"status\":\(status),\"text\":\(encoded)}")
+            }.resume()
+        default:
+            finish(0, "no host handler for \(methodName)")
+        }
+    }
+}
+
 
 final class BubbleView: UIView {
     var paint = Data()
@@ -419,6 +481,7 @@ final class BubbleView: UIView {
 
     func refresh() {
         _ = bubble_tick(CACurrentMediaTime() * 1000)
+        drainHostCalls()
         var ptr: UnsafePointer<UInt8>?
         var len: UInt32 = 0
         let size = contentSize()

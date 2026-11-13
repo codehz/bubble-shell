@@ -49,4 +49,6 @@ object BubbleNative {
     external fun faults(): Int
     external fun generation(): Int
     external fun fontEpoch(): Int
+    external fun pollRequest(): String?
+    external fun finishRequest(id: Int, ok: Int, result: String)
 }

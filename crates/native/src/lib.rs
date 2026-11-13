@@ -1910,6 +1910,45 @@ mod android {
     }
 
     #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_pollRequest<'a>(
+        env: JNIEnv<'a>,
+        _class: JClass<'a>,
+    ) -> JString<'a> {
+        let mut id = 0u32;
+        let mut method = vec![0u8; 128];
+        let mut params = vec![0u8; 8192];
+        let code = super::bubble_poll_request(
+            &mut id,
+            method.as_mut_ptr().cast(),
+            method.len() as u32,
+            params.as_mut_ptr().cast(),
+            params.len() as u32,
+        );
+        if code != 1 {
+            return JObject::null().into();
+        }
+        let method = cstr_lossy(&method);
+        let params = cstr_lossy(&params);
+        let body = serde_json::json!([id, method, params]).to_string();
+        env.new_string(body).unwrap_or_else(|_| JObject::null().into())
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_finishRequest<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        id: jint,
+        ok: jint,
+        result: JString<'a>,
+    ) {
+        let Ok(result) = env.get_string(&result) else {
+            return;
+        };
+        let result = super::CString_from(&result.to_string_lossy());
+        super::bubble_finish_request(id as u32, ok, result.as_ptr());
+    }
+
+    #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_load<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
@@ -2489,6 +2528,11 @@ mod android {
         _class: JClass<'a>,
     ) -> jint {
         super::bubble_font_epoch() as jint
+    }
+
+    fn cstr_lossy(bytes: &[u8]) -> String {
+        let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+        String::from_utf8_lossy(&bytes[..end]).into_owned()
     }
 
     #[allow(dead_code)]

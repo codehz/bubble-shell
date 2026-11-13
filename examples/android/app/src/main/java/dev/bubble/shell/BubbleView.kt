@@ -77,6 +77,7 @@ class BubbleView(context: Context) : View(context) {
 
     fun refresh() {
         BubbleNative.tick(SystemClock.uptimeMillis().toDouble())
+        drainHostCalls(context)
         val size = contentSize()
         paintBytes = BubbleNative.frame(size[0], size[1])
         updateSemantics()
