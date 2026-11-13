@@ -1,15 +1,11 @@
 package dev.bubble.shell
 
 import android.app.Activity
-import android.graphics.Typeface
 import android.os.Bundle
-import android.os.SystemClock
 import android.util.Log
-import android.view.Choreographer
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.net.URL
 
 class MainActivity : Activity() {
     private lateinit var shell: BubbleView
@@ -22,87 +18,68 @@ class MainActivity : Activity() {
     private val started = System.nanoTime()
     private var gestures = false
     private var acceptance = false
-    private var devUrl: String? = null
-    private var devStamp = ""
-    private var devBusy = false
-    private var lastDev = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         gestures = intent?.getBooleanExtra("bubble_gestures", false) == true
         acceptance = intent?.getBooleanExtra("bubble_eval", false) == true
-        check(BubbleNative.create() == 0)
-        BubbleNative.setStorageDir(filesDir.absolutePath)
-        assets.open("HostFont.ttf").use { input ->
-            val bytes = input.readBytes()
-            BubbleNative.registerFont("HostFont", bytes)
-            val file = File(cacheDir, "HostFont.ttf")
-            file.writeBytes(bytes)
-            shellTypeface = Typeface.createFromFile(file)
-        }
-        devUrl = intent?.getStringExtra("bubble_dev")
-        if (devUrl == null) {
+        shell = BubbleView(this)
+        val font = assets.open("HostFont.ttf").use { it.readBytes() }
+        val devUrl = intent?.getStringExtra("bubble_dev")
+        if (devUrl != null) {
+            shell.open(filesDir, font, null, null, devUrl)
+        } else {
             val requested = intent?.getStringExtra("bubble_fixture") ?: "counter"
             val fixture = if (requested.matches(Regex("[a-z0-9-]+"))) requested else "counter"
             val manifest = assets.open("fixtures/$fixture.json").bufferedReader().readText()
             val entry = assets.open("fixtures/$fixture.js").readBytes()
-            check(BubbleNative.load(manifest, entry) == 0)
+            shell.open(filesDir, font, manifest, entry, null)
         }
-        shell = BubbleView(this)
-        shell.setHostTypeface(shellTypeface ?: Typeface.DEFAULT)
+        if (acceptance && !gestures) shell.onFrame = { sampleAcceptance() }
         setContentView(shell)
-        Choreographer.getInstance().postFrameCallback(frame)
     }
 
-    private val frame = object : Choreographer.FrameCallback {
-        override fun doFrame(frameTimeNanos: Long) {
-            if (isDestroyed) return
-            pollDev()
-            val now = System.nanoTime()
-            val dt = (now - last) / 1_000_000.0
-            last = now
-            shell.refresh()
-            if (gestures || !acceptance) {
-                if (!isDestroyed) Choreographer.getInstance().postFrameCallback(this)
-                return
+    private fun sampleAcceptance() {
+        if (isDestroyed) return
+        val now = System.nanoTime()
+        val dt = (now - last) / 1_000_000.0
+        last = now
+        frames += 1
+        if (frames > 5) frameMs += dt
+        when (phase) {
+            0 -> if (frames == 20) {
+                val box = BubbleNative.nodeBox(4)
+                val x = box[0] + box[2] / 2f
+                val y = box[1] + box[3] / 2f
+                BubbleNative.pointer(0, 1, x, y, 0.0, 0, 1)
+                BubbleNative.pointer(2, 1, x, y, 20.0, 0, 0)
+                phase = 1
             }
-            frames += 1
-            if (frames > 5) frameMs += dt
-            when (phase) {
-                0 -> if (frames == 20) {
-                    val box = BubbleNative.nodeBox(4)
-                    val x = box[0] + box[2] / 2f
-                    val y = box[1] + box[3] / 2f
-                    BubbleNative.pointer(0, 1, x, y, 0.0, 0, 1)
-                    BubbleNative.pointer(2, 1, x, y, 20.0, 0, 0)
-                    phase = 1
-                }
-                1 -> if (BubbleNative.nodeText(3) == "Count: 1") {
-                    BubbleNative.postEval("while (true) {}")
-                    hangFrames = 0
-                    phase = 2
-                }
-                2 -> {
-                    if (BubbleNative.faults() == 0) hangFrames += 1
-                    if (BubbleNative.faults() > 0 && BubbleNative.nodeText(3) == "Count: 0") {
-                        if (!scrollLogged) {
-                            logScrollerRect()
-                            scrollLogged = true
-                        }
-                        if (BubbleNative.scrollYOf(6) >= 40f) {
-                            report()
-                            phase = 3
-                        }
+            1 -> if (BubbleNative.nodeText(3) == "Count: 1") {
+                BubbleNative.postEval("while (true) {}")
+                hangFrames = 0
+                phase = 2
+            }
+            2 -> {
+                if (BubbleNative.faults() == 0) hangFrames += 1
+                if (BubbleNative.faults() > 0 && BubbleNative.nodeText(3) == "Count: 0") {
+                    if (!scrollLogged) {
+                        logScrollerRect()
+                        scrollLogged = true
+                    }
+                    if (BubbleNative.scrollYOf(6) >= 40f) {
+                        report()
+                        phase = 3
                     }
                 }
             }
-            if (phase != 3 && now - started > 12_000_000_000L) {
-                report()
-                phase = 3
-            }
-            if (!isDestroyed) Choreographer.getInstance().postFrameCallback(this)
+        }
+        if (phase != 3 && now - started > 12_000_000_000L) {
+            report()
+            phase = 3
         }
     }
+
 
     private fun logScrollerRect() {
         val box = BubbleNative.nodeBox(6)
@@ -143,48 +120,8 @@ class MainActivity : Activity() {
         Log.i("BUBBLE_EVAL", json)
     }
 
-    override fun onResume() {
-        super.onResume()
-        BubbleNative.setVisible(1)
-    }
-
-    override fun onPause() {
-        if (::shell.isInitialized) shell.cancelActivePointers(SystemClock.uptimeMillis().toDouble())
-        BubbleNative.setVisible(0)
-        super.onPause()
-    }
-
     override fun onDestroy() {
-        BubbleNative.destroy()
+        if (::shell.isInitialized) shell.destroyEngine()
         super.onDestroy()
-    }
-
-    private fun pollDev() {
-        val url = devUrl ?: return
-        val now = SystemClock.uptimeMillis()
-        if (devBusy || now - lastDev < 1000) return
-        lastDev = now
-        devBusy = true
-        Thread {
-            try {
-                val text = URL(url).readText()
-                val payload = JSONObject(text)
-                val manifest = payload.getString("manifest")
-                val entry = payload.getString("entry")
-                val stamp = manifest + "\n" + entry
-                if (stamp == devStamp) return@Thread
-                runOnUiThread {
-                    devStamp = stamp
-                    BubbleNative.load(manifest, entry.toByteArray())
-                }
-            } catch (_: Exception) {
-            } finally {
-                devBusy = false
-            }
-        }.start()
-    }
-
-    companion object {
-        var shellTypeface: Typeface? = null
     }
 }

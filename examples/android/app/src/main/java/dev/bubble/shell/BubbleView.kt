@@ -1,7 +1,9 @@
 package dev.bubble.shell
 
 import android.content.Context
+import android.graphics.Typeface
 import android.os.SystemClock
+import android.view.Choreographer
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -10,7 +12,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
-import android.graphics.Typeface
+import java.io.File
 import android.text.TextPaint
 import android.view.MotionEvent
 import android.view.View
@@ -59,6 +61,19 @@ class BubbleView(context: Context) : View(context) {
     private var accessibilityFocus = 0
     private var semanticSnapshot = ""
     private var selectionDrag: Pair<Int, Int>? = null
+    private var engine = false
+    private var devUrl: String? = null
+    private var devStamp = ""
+    private var devBusy = false
+    private var lastDev = 0L
+    var onFrame: (() -> Unit)? = null
+    private val frameCallback: Choreographer.FrameCallback = Choreographer.FrameCallback {
+        if (!isAttachedToWindow) return@FrameCallback
+        pollDev()
+        refresh()
+        onFrame?.invoke()
+        Choreographer.getInstance().postFrameCallback(frameCallback)
+    }
 
     init {
         setBackgroundColor(Color.BLACK)
@@ -71,6 +86,71 @@ class BubbleView(context: Context) : View(context) {
     fun setHostTypeface(typeface: Typeface) {
         family = typeface
         FieldLayout.hostFamily = typeface
+    }
+
+    fun open(storageDir: File, font: ByteArray, manifest: String?, entry: ByteArray?, devUrl: String?) {
+        if (!engine) {
+            check(BubbleNative.create() == 0)
+            engine = true
+        }
+        BubbleNative.setStorageDir(storageDir.absolutePath)
+        BubbleNative.registerFont("HostFont", font)
+        val file = File(context.cacheDir, "HostFont.ttf")
+        file.writeBytes(font)
+        setHostTypeface(Typeface.createFromFile(file))
+        this.devUrl = devUrl
+        if (devUrl == null && manifest != null && entry != null) {
+            check(BubbleNative.load(manifest, entry) == 0)
+        }
+    }
+
+    fun destroyEngine() {
+        if (!engine) return
+        Choreographer.getInstance().removeFrameCallback(frameCallback)
+        BubbleNative.destroy()
+        engine = false
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (engine) BubbleNative.setVisible(1)
+        Choreographer.getInstance().postFrameCallback(frameCallback)
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        if (!engine) return
+        if (visibility == VISIBLE) {
+            BubbleNative.setVisible(1)
+        } else {
+            cancelActivePointers(SystemClock.uptimeMillis().toDouble())
+            BubbleNative.setVisible(0)
+        }
+    }
+
+    private fun pollDev() {
+        val url = devUrl ?: return
+        val now = SystemClock.uptimeMillis()
+        if (devBusy || now - lastDev < 1000) return
+        lastDev = now
+        devBusy = true
+        Thread {
+            try {
+                val text = java.net.URL(url).readText()
+                val payload = org.json.JSONObject(text)
+                val manifest = payload.getString("manifest")
+                val entry = payload.getString("entry")
+                val stamp = manifest + "\n" + entry
+                if (stamp == devStamp) return@Thread
+                post {
+                    devStamp = stamp
+                    BubbleNative.load(manifest, entry.toByteArray())
+                }
+            } catch (_: Exception) {
+            } finally {
+                devBusy = false
+            }
+        }.start()
     }
 
     fun paintSize(): Int = paintBytes.size
@@ -793,7 +873,7 @@ class BubbleView(context: Context) : View(context) {
     }
 
     fun cancelActivePointers(timeMs: Double) {
-        if (activePointers.isEmpty()) return
+        if (!engine || activePointers.isEmpty()) return
         val ids = activePointers.toList()
         activePointers.clear()
         for (id in ids) {
@@ -804,11 +884,12 @@ class BubbleView(context: Context) : View(context) {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (!hasFocus) cancelActivePointers(SystemClock.uptimeMillis().toDouble())
+        if (engine && !hasFocus) cancelActivePointers(SystemClock.uptimeMillis().toDouble())
     }
 
     override fun onDetachedFromWindow() {
-        cancelActivePointers(SystemClock.uptimeMillis().toDouble())
+        Choreographer.getInstance().removeFrameCallback(frameCallback)
+        if (engine) cancelActivePointers(SystemClock.uptimeMillis().toDouble())
         super.onDetachedFromWindow()
     }
 

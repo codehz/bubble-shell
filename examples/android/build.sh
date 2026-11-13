@@ -2,16 +2,7 @@
 set -eu
 cd "$(dirname "$0")/../.."
 
-NDK="${ANDROID_HOME:?}/ndk/27.2.12479018"
-PRE="$NDK/toolchains/llvm/prebuilt/darwin-arm64"
-if [ ! -d "$PRE" ]; then
-  PRE="$NDK/toolchains/llvm/prebuilt/darwin-x86_64"
-fi
-export CC_aarch64_linux_android="$PRE/bin/aarch64-linux-android24-clang"
-export AR_aarch64_linux_android="$PRE/bin/llvm-ar"
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
-export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$PRE/sysroot"
-cargo build -p bubble-ffi --release --target aarch64-linux-android
+sh examples/android/package-aar.sh
 
 KOTLIN_HOME="${KOTLIN_HOME:-$HOME/.cache/bubble-kotlinc}"
 if [ ! -x "$KOTLIN_HOME/bin/kotlinc" ]; then
@@ -30,18 +21,27 @@ ANDROID_JAR="$SDK/platforms/android-35/android.jar"
 sh examples/build-fixtures.sh
 
 OUT="examples/android/build"
+SDK_DIR="dist/android"
 rm -rf "$OUT"
-mkdir -p "$OUT/classes" "$OUT/apk/assets" "$OUT/apk/lib/arm64-v8a"
+mkdir -p "$OUT/classes" "$OUT/app" "$OUT/apk/assets" "$OUT/apk/lib/arm64-v8a"
 
 cp -R examples/web/fixtures "$OUT/apk/assets/fixtures"
 FONT="/System/Library/Fonts/Supplemental/Arial.ttf"
 if [ -f "$FONT" ]; then
   cp "$FONT" "$OUT/apk/assets/HostFont.ttf"
 fi
-cp target/aarch64-linux-android/release/libbubble_ffi.so "$OUT/apk/lib/arm64-v8a/libbubble_ffi.so"
+cp "$SDK_DIR/jni/arm64-v8a/libbubble_ffi.so" "$OUT/apk/lib/arm64-v8a/libbubble_ffi.so"
 
-"$KOTLIN_HOME/bin/kotlinc" -jvm-target 17 -classpath "$ANDROID_JAR" -d "$OUT/classes.jar" \
-  examples/android/app/src/main/java/dev/bubble/shell/*.kt
+"$KOTLIN_HOME/bin/kotlinc" -jvm-target 17 -classpath "$ANDROID_JAR:$SDK_DIR/classes.jar" \
+  -d "$OUT/app" \
+  examples/android/app/src/main/java/dev/bubble/shell/MainActivity.kt
+(
+  cd "$OUT/classes"
+  jar xf "../../../$SDK_DIR/classes.jar"
+  cp -R ../app/* .
+  rm -rf META-INF
+  jar cf ../classes.jar .
+)
 "$BT/d8" --min-api 24 --lib "$ANDROID_JAR" --output "$OUT/apk" "$OUT/classes.jar" \
   "$KOTLIN_HOME/lib/kotlin-stdlib.jar"
 
