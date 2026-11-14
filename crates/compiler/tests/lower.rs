@@ -379,6 +379,34 @@ mount(App);
 }
 
 #[test]
+fn hot_mode_keeps_mount_calls_with_extra_arguments() {
+    // A multi-argument mount call must survive untouched; the hot transform
+    // used to blank the statement, dropping the app in dev builds only.
+    let source = r#"
+import { mount, Text } from "bubble-shell";
+function App() {
+  return <Text>hi</Text>;
+}
+mount(App, null);
+"#;
+    let compiled = compile_module(
+        "app.tsx",
+        source,
+        &CompileOptions {
+            source_map: false,
+            hot: Some("/repo/app.tsx".to_string()),
+        },
+    )
+    .unwrap();
+    let code = compiled.code;
+    assert!(code.contains("mount(App, null)"), "{code}");
+    assert!(
+        code.contains("import { mount } from \"bubble-shell\""),
+        "the shell import stays referenced:\n{code}"
+    );
+}
+
+#[test]
 fn release_mode_has_no_hot_runtime() {
     let source = "import { mount, Text } from \"bubble-shell\";\nfunction App() { return <Text>hi</Text>; }\nmount(App);\n";
     let code = compile("app.tsx", source);

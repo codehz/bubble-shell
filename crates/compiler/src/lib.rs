@@ -1848,7 +1848,7 @@ impl<'a> Lower<'a> {
         let Expression::Identifier(callee) = &call.callee else {
             return;
         };
-        if callee.name.as_str() != "mount" {
+        if callee.name.as_str() != "mount" || call.arguments.len() != 1 {
             return;
         }
         let span = call.span;
@@ -1857,9 +1857,6 @@ impl<'a> Lower<'a> {
             return;
         };
         let mut arguments = call.arguments.take_in(&self.builder);
-        if arguments.len() != 1 {
-            return;
-        }
         let argument = arguments.remove(0);
         let Ok(component) = Expression::try_from(argument) else {
             return;
