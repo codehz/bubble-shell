@@ -715,6 +715,15 @@ const SOURCE_CODES = {
   focused: 2,
   disabled: 3,
   editing: 4,
+  // Pan translation from the target gesture declaration, logical px.
+  "gesture.translationX": 5,
+  "gesture.translationY": 6,
+  // Pinch values from the target transform gesture declaration.
+  "gesture.scale": 7,
+  "gesture.rotation": 8,
+  // Scroll offsets from the target scroll container, logical px.
+  "scroll.x": 9,
+  "scroll.y": 10,
 };
 
 // Settle requests per variable id; resolved when the shell reports the
@@ -794,7 +803,11 @@ function resolveTarget(target) {
 }
 
 /// One UI-thread variable. `createVar({ source, target })` binds a state
-/// source the shell drives; `createVar(0)` makes a script-driven variable
+/// source the shell drives; sources `gesture.translationX` /
+/// `gesture.translationY` / `gesture.scale` / `gesture.rotation` read the
+/// target gesture declaration's live values (`scale` stays `1.0` and
+/// translations `0` while idle), `scroll.x` / `scroll.y` read the target
+/// container's scroll offsets. `createVar(0)` makes a script-driven variable
 /// written with `set` / `bind`. Either form accepts `{ value }` for the
 /// starting value.
 export function createVar(valueOrOptions, options) {
@@ -879,12 +892,12 @@ function encodeStyleTree(tree, enums, colorSlot) {
   const hasVar = { value: false };
   const code = walk(tree);
 
-  function leaf(value, enumKey) {
+  function leaf(value, enumKey, numberAsColor) {
     if (value == null) throw new Error("style expressions do not accept null");
     if (typeof value === "boolean") return [["c", intern({ tag: 3, number: value ? 1 : 0 })]];
     if (typeof value === "number") {
       if (!Number.isFinite(value)) throw new Error("style expressions only accept finite numbers");
-      if (colorSlot) {
+      if (numberAsColor) {
         if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
           throw new Error(`numeric color ${value} is not 0xAARRGGBB`);
         }
@@ -908,12 +921,12 @@ function encodeStyleTree(tree, enums, colorSlot) {
   }
 
   function walk(node) {
-    if (!Array.isArray(node)) return leaf(node, null);
+    if (!Array.isArray(node)) return leaf(node, null, colorSlot);
     const [op, ...args] = node;
     if (!(op in EXPR_OPS)) throw new Error(`unknown style expression ${op}`);
     const opcode = EXPR_OPS[op];
     if (op === "neg" || op === "not" || op === "abs") {
-      const inner = walk1(args[0], null);
+      const inner = walk1(args[0], null, false);
       return [...inner, ["o", opcode]];
     }
     const binary = op === "add" || op === "sub" || op === "mul" || op === "div"
@@ -921,32 +934,32 @@ function encodeStyleTree(tree, enums, colorSlot) {
       || op === "eq" || op === "ne" || op === "and" || op === "or"
       || op === "min" || op === "max";
     if (binary) {
-      const a = walk1(args[0], null);
-      const b = walk1(args[1], null);
+      const a = walk1(args[0], null, false);
+      const b = walk1(args[1], null, false);
       return [...a, ...b, ["o", opcode]];
     }
     if (op === "select") {
-      const cond = walk1(args[0], null);
-      const a = walk1(args[1], enums);
-      const b = walk1(args[2], enums);
+      const cond = walk1(args[0], null, false);
+      const a = walk1(args[1], enums, false);
+      const b = walk1(args[2], enums, false);
       return [...cond, ...a, ...b, ["o", opcode]];
     }
     const ternary = op === "mix" || op === "lerp" || op === "clamp";
     if (ternary) {
-      const a = walk1(args[0], colorSlot && op === "mix");
-      const b = walk1(args[1], colorSlot && op === "mix");
-      const c = walk1(args[2], null);
+      const asColor = colorSlot && op === "mix";
+      const a = walk1(args[0], asColor, asColor);
+      const b = walk1(args[1], asColor, asColor);
+      const c = walk1(args[2], null, false);
       return [...a, ...b, ...c, ["o", opcode]];
     }
     throw new Error(`unknown style expression ${op}`);
   }
 
-  function walk1(node, enumKey) {
-    if (!Array.isArray(node) && typeof node === "string" && enumKey) return leaf(node, enumKey);
-    if (!Array.isArray(node) && typeof node === "number" && enumKey) {
-      return leaf(node, null);
+  function walk1(node, enumKey, numberAsColor) {
+    if (!Array.isArray(node) && typeof node === "string" && enumKey) {
+      return leaf(node, enumKey, numberAsColor);
     }
-    return Array.isArray(node) ? walk(node) : leaf(node, enumKey);
+    return Array.isArray(node) ? walk(node) : leaf(node, enumKey, numberAsColor);
   }
 
   // A tree with no variables and no operations folds to the plain value.

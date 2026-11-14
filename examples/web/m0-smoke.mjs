@@ -157,8 +157,8 @@ setApi({
   bind_gesture_event: exports.bind_gesture_event,
   dispose_gesture: exports.dispose_gesture,
   move_gesture: exports.move_gesture,
-  create_var(source, initialTag, initialNumber) {
-    return exports.create_var(source, initialTag, initialNumber);
+  create_var(...args) {
+    return exports.create_var(...args);
   },
   bind_var: exports.bind_var,
   dispose_var: exports.dispose_var,

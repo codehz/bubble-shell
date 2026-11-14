@@ -10,6 +10,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ops::Value;
 use crate::ordered::OrderedDecls;
+use crate::state_style::{
+    SOURCE_GESTURE_ROTATION, SOURCE_GESTURE_SCALE, SOURCE_GESTURE_TX, SOURCE_GESTURE_TY,
+};
 
 /// Maximum movement that still counts as a tap.
 pub const TAP_SLOP: f32 = 10.0;
@@ -332,6 +335,15 @@ struct Sequence {
     dead: bool,
 }
 
+/// Neutral value per gesture source when nothing is active.
+fn neutral(source: u8) -> f32 {
+    if source == SOURCE_GESTURE_SCALE {
+        1.0
+    } else {
+        0.0
+    }
+}
+
 /// Pointer declarations plus the one live touch sequence.
 pub struct Recognizer {
     ordered: OrderedDecls<GestureDecl>,
@@ -594,6 +606,41 @@ impl Recognizer {
 
     pub fn drain_events(&mut self) -> Vec<GestureEvent> {
         std::mem::take(&mut self.events)
+    }
+
+    /// Live value for a gesture-driven variable: pan translation from the
+    /// accepted candidate, pinch values from the active transform state.
+    /// Inactive declarations report the field's neutral value (scale stays
+    /// `1.0`, everything else `0.0`) so vars read like idle rest values.
+    pub fn live(&self, decl: u32, source: u8) -> f32 {
+        let Some(seq) = &self.sequence else {
+            return neutral(source);
+        };
+        if seq.transform_decl == Some(decl) {
+            if let Some(state) = &seq.transform {
+                return match source {
+                    SOURCE_GESTURE_TX => state.translation_x,
+                    SOURCE_GESTURE_TY => state.translation_y,
+                    SOURCE_GESTURE_SCALE => state.scale,
+                    SOURCE_GESTURE_ROTATION => state.rotation as f32,
+                    _ => neutral(source),
+                };
+            }
+        }
+        if source == SOURCE_GESTURE_TX || source == SOURCE_GESTURE_TY {
+            if let Some(cand) = seq
+                .cands
+                .iter()
+                .find(|cand| cand.decl == decl && cand.state == CandState::Accepted)
+            {
+                return if source == SOURCE_GESTURE_TX {
+                    seq.last_x - cand.start_x
+                } else {
+                    seq.last_y - cand.start_y
+                };
+            }
+        }
+        neutral(source)
     }
 
     pub fn drain_scroll(&mut self) -> Vec<ScrollRequest> {

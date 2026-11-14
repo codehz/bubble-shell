@@ -1019,3 +1019,238 @@ fn gesture_scopes_keep_authored_order_across_branch_rebuild() {
 }
 
 
+
+/// Parse one paint frame and return the colors of every `Fill` command,
+/// tolerating clips, opacity, and transforms around them.
+fn frame_fill_colors(width: f32, height: f32) -> Vec<[u8; 4]> {
+    let mut paint = ptr::null();
+    let mut len = 0u32;
+    assert_eq!(
+        bubble_frame(width, height, &mut paint, &mut len),
+        0,
+        "{}",
+        error()
+    );
+    let bytes = unsafe { std::slice::from_raw_parts(paint, len as usize) };
+    let count = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+    let channel = |offset: usize| {
+        let value = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        (value.clamp(0.0, 1.0) * 255.0).round() as u8
+    };
+    let mut offset = 4;
+    let mut out = Vec::new();
+    for _ in 0..count {
+        match bytes[offset] {
+            1 => {
+                out.push([
+                    channel(offset + 21),
+                    channel(offset + 25),
+                    channel(offset + 29),
+                    channel(offset + 33),
+                ]);
+                offset += 37;
+            }
+            2 => {
+                let text_len =
+                    u32::from_le_bytes(bytes[offset + 43..offset + 47].try_into().unwrap()) as usize;
+                offset += 47 + text_len;
+            }
+            3 => offset += 17,
+            4 | 6 | 10 => offset += 1,
+            5 => offset += 5,
+            7 => {
+                let src_len =
+                    u32::from_le_bytes(bytes[offset + 25..offset + 29].try_into().unwrap()) as usize;
+                offset += 29 + src_len;
+            }
+            9 => offset += 25,
+            other => panic!("unexpected paint command {other}"),
+        }
+    }
+    assert_eq!(offset, bytes.len(), "paint frame must decode exactly");
+    out
+}
+
+/// Parse one paint frame and return every `PushTransform` payload
+/// `(cx, cy, translateX, translateY, scale, rotate)` in order.
+fn frame_transforms(width: f32, height: f32) -> Vec<[f32; 6]> {
+    let mut paint = ptr::null();
+    let mut len = 0u32;
+    assert_eq!(
+        bubble_frame(width, height, &mut paint, &mut len),
+        0,
+        "{}",
+        error()
+    );
+    let bytes = unsafe { std::slice::from_raw_parts(paint, len as usize) };
+    let count = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+    let f32_at = |offset: usize| f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+    let mut offset = 4;
+    let mut out = Vec::new();
+    for _ in 0..count {
+        match bytes[offset] {
+            1 => offset += 37,
+            2 => {
+                let text_len =
+                    u32::from_le_bytes(bytes[offset + 43..offset + 47].try_into().unwrap()) as usize;
+                offset += 47 + text_len;
+            }
+            3 => offset += 17,
+            4 | 6 | 10 => offset += 1,
+            5 => offset += 5,
+            7 => {
+                let src_len =
+                    u32::from_le_bytes(bytes[offset + 25..offset + 29].try_into().unwrap()) as usize;
+                offset += 29 + src_len;
+            }
+            9 => {
+                out.push([
+                    f32_at(offset + 1),
+                    f32_at(offset + 5),
+                    f32_at(offset + 9),
+                    f32_at(offset + 13),
+                    f32_at(offset + 17),
+                    f32_at(offset + 21),
+                ]);
+                offset += 25;
+            }
+            other => panic!("unexpected paint command {other}"),
+        }
+    }
+    assert_eq!(offset, bytes.len(), "paint frame must decode exactly");
+    out
+}
+
+const SCRIPT_PAN_APP: &str = r##"
+import * as shell from "bubble-shell";
+
+const viewRef = shell.ref();
+shell.mount(function App() {
+  shell.primitive(
+    "View",
+    { ref: viewRef, backgroundColor: "#ffffff", width: 100, height: 100 },
+    () => {
+      const pan = shell.panGesture({ onPanUpdate: () => {} });
+      const tx = shell.createVar({ source: "gesture.translationX", target: pan });
+      shell.primitive("ViewStyle", { target: viewRef, when: true, translateX: tx });
+    },
+  );
+});
+"##;
+
+#[test]
+fn pan_var_drives_transform_follow() {
+    let _guard = exclusive();
+    bubble_destroy();
+    assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    try_load_source(SCRIPT_PAN_APP).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0xff, 0xff, 0xff, 0xff]]);
+
+    // Idle: the unit transform is skipped entirely.
+    assert_eq!(frame_transforms(200.0, 100.0), Vec::<[f32; 6]>::new());
+
+    // Drag right: the pan var tracks the live translation.
+    assert_eq!(bubble_pointer(0, 1, 50.0, 50.0, 0.0, 0, 1), 0, "{}", error());
+    assert_eq!(bubble_pointer(1, 1, 80.0, 50.0, 16.0, 0, 1), 0, "{}", error());
+    let transforms = frame_transforms(200.0, 100.0);
+    assert_eq!(transforms.len(), 1, "one transform around the node center");
+    let [cx, cy, tx, ty, scale, rotate] = transforms[0];
+    assert_eq!((cx, cy), (50.0, 50.0));
+    assert_eq!((tx, ty), (30.0, 0.0));
+    assert_eq!((scale, rotate), (1.0, 0.0));
+
+    // Lift: the sequence ends and the node returns to rest.
+    assert_eq!(bubble_pointer(2, 1, 80.0, 50.0, 32.0, 0, 1), 0, "{}", error());
+    assert_eq!(frame_transforms(200.0, 100.0), Vec::<[f32; 6]>::new());
+    assert_eq!(bubble_faults(), 0, "{}", error());
+    bubble_destroy();
+}
+
+const SCRIPT_SCROLL_APP: &str = r##"
+import * as shell from "bubble-shell";
+
+const containerRef = shell.ref();
+const childRef = shell.ref();
+shell.mount(function App() {
+  shell.primitive(
+    "View",
+    { ref: containerRef, overflowY: "scroll", width: 100, height: 100 },
+    () => {
+      const sy = shell.createVar({ source: "scroll.y", target: containerRef });
+      shell.primitive("View", {
+        ref: childRef,
+        width: 100,
+        height: 200,
+        backgroundColor: "#ffffff",
+      }, () => {
+        shell.primitive("ViewStyle", {
+          target: childRef,
+          when: true,
+          backgroundColor: ["mix", 0xffff0000, 0xff00ff00, ["div", sy, 200]],
+        });
+      });
+    },
+  );
+});
+"##;
+
+#[test]
+fn scroll_var_tracks_offsets() {
+    let _guard = exclusive();
+    bubble_destroy();
+    assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    try_load_source(SCRIPT_SCROLL_APP).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(frame_fill_colors(200.0, 200.0), vec![[0xff, 0x00, 0x00, 0xff]]);
+
+    // Scrolling the container drives the color patch: half the content
+    // height means the mix lands midway between red and green.
+    bubble_scroll(50.0, 50.0, 0.0, 100.0);
+    assert_eq!(frame_fill_colors(200.0, 200.0), vec![[0x80, 0x80, 0x00, 0xff]]);
+    assert_eq!(bubble_faults(), 0, "{}", error());
+    bubble_destroy();
+}
+
+const SCRIPT_PINCH_APP: &str = r##"
+import * as shell from "bubble-shell";
+
+const viewRef = shell.ref();
+shell.mount(function App() {
+  shell.primitive(
+    "View",
+    { ref: viewRef, backgroundColor: "#ffffff", width: 100, height: 100 },
+    () => {
+      const pinch = shell.transformGesture({
+        mode: ["pinch"],
+        onTransformUpdate: () => {},
+      });
+      const scale = shell.createVar({ source: "gesture.scale", target: pinch });
+      shell.primitive("ViewStyle", { target: viewRef, when: true, scale });
+    },
+  );
+});
+"##;
+
+#[test]
+fn pinch_var_drives_scale_transform() {
+    let _guard = exclusive();
+    bubble_destroy();
+    assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    try_load_source(SCRIPT_PINCH_APP).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(frame_fill_colors(200.0, 200.0), vec![[0xff, 0xff, 0xff, 0xff]]);
+    assert_eq!(frame_transforms(200.0, 200.0), Vec::<[f32; 6]>::new());
+
+    // Two fingers spread from 10 to 20 apart: scale 2 around the center.
+    assert_eq!(bubble_pointer(0, 1, 50.0, 50.0, 0.0, 0, 2), 0, "{}", error());
+    assert_eq!(bubble_pointer(0, 2, 60.0, 50.0, 0.0, 0, 2), 0, "{}", error());
+    assert_eq!(bubble_pointer(1, 1, 45.0, 50.0, 16.0, 0, 2), 0, "{}", error());
+    assert_eq!(bubble_pointer(1, 1, 40.0, 50.0, 32.0, 0, 2), 0, "{}", error());
+    let transforms = frame_transforms(200.0, 200.0);
+    assert_eq!(transforms.len(), 1, "one transform while pinching");
+    let [cx, cy, tx, ty, scale, rotate] = transforms[0];
+    assert_eq!((cx, cy), (50.0, 50.0));
+    assert_eq!((tx, ty), (0.0, 0.0));
+    assert_eq!(scale, 2.0, "distance doubled from 10 to 20");
+    assert_eq!(rotate, 0.0);
+    assert_eq!(bubble_faults(), 0, "{}", error());
+    bubble_destroy();
+}

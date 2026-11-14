@@ -25,6 +25,19 @@ pub const SOURCE_PRESSED: u8 = 1;
 pub const SOURCE_FOCUSED: u8 = 2;
 pub const SOURCE_DISABLED: u8 = 3;
 pub const SOURCE_EDITING: u8 = 4;
+/// Source read: pan translation along x of one gesture declaration, logical px.
+pub const SOURCE_GESTURE_TX: u8 = 5;
+/// Source read: pan translation along y of one gesture declaration, logical px.
+pub const SOURCE_GESTURE_TY: u8 = 6;
+/// Source read: pinch scale of one transform gesture declaration; `1.0` idle.
+pub const SOURCE_GESTURE_SCALE: u8 = 7;
+/// Source read: pinch rotation of one transform gesture declaration, radians
+/// around the gesture center.
+pub const SOURCE_GESTURE_ROTATION: u8 = 8;
+/// Source read: horizontal scroll offset of one scroll container, logical px.
+pub const SOURCE_SCROLL_X: u8 = 9;
+/// Source read: vertical scroll offset of one scroll container, logical px.
+pub const SOURCE_SCROLL_Y: u8 = 10;
 
 /// Interest bits: which state sources a declaration's programs may read,
 /// precomputed from the variables the programs load. The hit path consults
@@ -249,11 +262,6 @@ impl AnimState {
                 (Some(mix_values(&self.from, &self.to, self.progress).unwrap_or_else(|| self.to.clone())), converged)
             }
         }
-    }
-
-    /// The value the variable shows at the current progress.
-    pub fn value(&self) -> ExprValue {
-        mix_values(&self.from, &self.to, self.progress).unwrap_or_else(|| self.to.clone())
     }
 }
 

@@ -23,8 +23,9 @@ use crate::semantics::{
 use crate::expr::ExprValue;
 use crate::state_style::{
     slot_allowed, slot_of, slot_type, AnimChoice, AnimSpec, AnimState, DeclExpr, ResolvedPatch,
-    SlotType, StyleDecls, SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE,
-    SOURCE_PRESSED, VarEvent, VarTable,
+    SlotType, StyleDecls, VarEvent, VarTable, SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED,
+    SOURCE_GESTURE_ROTATION, SOURCE_GESTURE_SCALE, SOURCE_GESTURE_TX, SOURCE_GESTURE_TY,
+    SOURCE_NONE, SOURCE_PRESSED, SOURCE_SCROLL_X, SOURCE_SCROLL_Y,
 };
 use taffy::prelude::*;
 use taffy::style::Overflow;
@@ -948,8 +949,9 @@ impl Shell {
             changed |= self.clear_press();
         }
         self.flush_gesture_scroll();
+        // Gesture and scroll vars track every sample, not just press edges.
+        self.sample_sources();
         if changed {
-            self.sample_sources();
             self.paint_dirty.set(true);
         }
     }
@@ -1060,10 +1062,16 @@ impl Shell {
         initial: &Value,
         anim: Option<AnimSpec>,
     ) -> Result<(), String> {
+        if source > SOURCE_SCROLL_Y {
+            return Err(format!("var {var} has unknown source {source}"));
+        }
         let value = match source {
             SOURCE_NONE => parse_expr_value(initial)
                 .ok_or_else(|| format!("var {var} initial value must be a number, color, or bool"))?,
-            SOURCE_PRESSED => ExprValue::Num(0.0),
+            SOURCE_PRESSED | SOURCE_GESTURE_TX | SOURCE_GESTURE_TY | SOURCE_GESTURE_ROTATION
+            | SOURCE_SCROLL_X | SOURCE_SCROLL_Y => ExprValue::Num(0.0),
+            // Pinch scale reads as "no transform" while idle.
+            SOURCE_GESTURE_SCALE => ExprValue::Num(1.0),
             _ => ExprValue::Bool(false),
         };
         self.vars.create(var, source, 0, value, anim)
@@ -1355,12 +1363,7 @@ impl Shell {
     /// and only changed vars touch declarations.
     fn sample_sources(&mut self) {
         let mut changed: Vec<u32> = Vec::new();
-        let ids: Vec<(u32, u8, u32)> = self
-            .vars
-            .all_with_source()
-            .into_iter()
-            .map(|(id, source, target)| (id, source, target))
-            .collect();
+        let ids: Vec<(u32, u8, u32)> = self.vars.all_with_source();
         for (id, source, target) in ids {
             let next = match source {
                 SOURCE_PRESSED => ExprValue::Num(if self.visual.target == target {
@@ -1374,6 +1377,18 @@ impl Shell {
                 ),
                 SOURCE_EDITING => ExprValue::Bool(
                     target != 0 && self.focused == target && self.fields.contains_key(&target),
+                ),
+                SOURCE_GESTURE_TX | SOURCE_GESTURE_TY | SOURCE_GESTURE_SCALE
+                | SOURCE_GESTURE_ROTATION => {
+                    ExprValue::Num(self.recognizer.live(target, source))
+                }
+                SOURCE_SCROLL_X => ExprValue::Num(
+                    self.node(target)
+                        .map(|node| node.scroll_left)
+                        .unwrap_or(0.0),
+                ),
+                SOURCE_SCROLL_Y => ExprValue::Num(
+                    self.node(target).map(|node| node.scroll_top).unwrap_or(0.0),
                 ),
                 _ => continue,
             };
@@ -2768,6 +2783,7 @@ impl Shell {
             }
         }
         if outcome.changed() {
+            self.sample_sources();
             self.paint_dirty.set(true);
         }
         if self.recognizer.is_tracing() {
@@ -2808,6 +2824,7 @@ impl Shell {
         let node = self.node_mut(id)?;
         node.scroll_left = x.clamp(0.0, limit_x);
         node.scroll_top = y.clamp(0.0, limit_y);
+        self.sample_sources();
         self.paint_dirty.set(true);
         Ok(())
     }
