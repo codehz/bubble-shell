@@ -1,0 +1,7 @@
+# Tap and double tap go through the pointer path. Long press and pan have
+# explicit sample choreography, covered by a Rust test in this crate.
+tap id:tap-area
+expect tapped
+tap id:double-area
+tap id:double-area
+expect double-tapped

@@ -1,0 +1,5 @@
+# Host calls: queue a bubbleHost.call, answer it from the host side.
+app counter
+eval "bubbleHost.call('toast', { message: 'hi' }).then((value) => { globalThis.hostValue = value.ok }); 'queued'"
+host-reply {"ok":true}
+expect-status running

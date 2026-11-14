@@ -1,0 +1,6 @@
+# A hung script thread records a fault and the shell keeps running; the frame
+# pump keeps laying out frames during the hang.
+app counter
+post-eval while (true) {}
+expect-faults >= 1
+expect-status running

@@ -1,0 +1,8 @@
+# Text fields: focus and insert through the edit transaction path; the secure
+# field echoes mask characters.
+type id:name-field "Ada"
+expect Ada
+type id:secret-field "hunter2"
+expect *******
+type id:note-field "hello world"
+expect hello world

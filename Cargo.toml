@@ -8,4 +8,5 @@ members = [
     "crates/cli",
     "crates/native",
     "crates/eval",
+    "crates/testing",
 ]

@@ -1,0 +1,13 @@
+# Modal dialogs: content inside the modal is visible, the background field
+# leaves semantics, and closing restores it.
+expect Background field
+tap id:open
+expect Settings
+absent Background field
+tap id:open-nested
+expect Confirmation
+tap id:close-nested
+absent Confirmation
+tap id:close
+absent Settings
+expect Background field

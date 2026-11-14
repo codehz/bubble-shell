@@ -1,0 +1,4 @@
+# Asset import: the bundle references the hashed asset and the image node
+# carries its label.
+expect Asset import
+expect logo

@@ -1,0 +1,9 @@
+# Slots: named slot with fallback, children slot, For over a signal, and the
+# forwarding chain through Panel.
+expect head
+expect body
+expect tail
+expect no header
+expect item one
+expect item two
+expect chained

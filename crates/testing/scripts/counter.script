@@ -1,0 +1,14 @@
+# Counter fixture: tap, scroll, visibility, and synchronous eval.
+expect Count: 0
+tap id:increment
+expect Count: 1
+tap id:increment
+tap id:increment
+expect Count: 3
+scroll id:list 0 40
+expect Item 1
+absent Count: 42
+visible off
+visible on
+eval "1 + 1"
+expect-status running

@@ -1713,6 +1713,7 @@ impl Shell {
         let semantic = node.kind != Kind::View
             || node.role.is_some()
             || !node.label.is_empty()
+            || !node.test_id.is_empty()
             || node.scrolls_x()
             || node.scrolls_y()
             || self.is_focusable(id)
