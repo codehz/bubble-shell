@@ -1,6 +1,6 @@
-//! QuickJS on a private thread. Script calls only touch the signal graph and
-//! the op buffer; the tree is owned by the host/frame thread, so a dead loop
-//! cannot stall layout.
+//! quickjs-oxide (pure Rust, zero `unsafe`) on a private thread. Script calls
+//! only touch the signal graph and the op buffer; the tree is owned by the
+//! host/frame thread, so a dead loop cannot stall layout.
 
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::Ordering;
@@ -13,16 +13,16 @@ use bubble_core::{
     validate_bundle_hashes, AnimChoice, AnimSpec, ComputationKind, GestureKind, Kind, NodeDesc,
     Op, Sched, Turn, Value,
 };
-use rquickjs::loader::{ImportAttributes, Loader, Resolver};
-use rquickjs::{
-    Context, Ctx, Function, Module, Object, Runtime, TypedArray, Value as JsValue,
+use quickjs_oxide::engine::api::core::{
+    CallableRef, Context, HeapLimits, Host, Js, JsString, ModuleImportAttributes, ModuleLoader,
+    ModuleScope, ModuleSource, NativeErrorKind, ObjectRef, PropertyKey, PromiseState, Runtime,
+    RuntimeError, RuntimeOptions, Scope, TypedArrayKind, Value as JsValue,
 };
 use serde::Deserialize;
 
 use crate::Shared;
 
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
-const STACK_LIMIT: usize = 512 * 1024;
 const INTERRUPT_MS: u64 = 1000;
 const RUNTIME_JS: &str = include_str!("../js/runtime.js");
 /// Both author-facing and compiler-facing specifiers resolve to this module id,
@@ -137,8 +137,8 @@ fn leave_js() {
 
 struct Vm {
     context: Context,
-    // Declared after `context` so it drops second. QuickJS requires that order.
-    #[allow(dead_code)]
+    // `Context` clones the runtime's `Rc`, so this only pins the lifetime;
+    // both drop together.
     runtime: Runtime,
 }
 
@@ -160,8 +160,8 @@ fn script_main(rx: Receiver<Cmd>, shared: Arc<Shared>) {
         early_events: Vec::new(),
     };
     loop {
-        let fired = session.vm.as_ref().map(|vm| session.fire_due(vm));
-        if let Some(Err(err)) = fired {
+        let fired = session.fire_due();
+        if let Err(err) = fired {
             if fatal(&err) {
                 let _ = session.recover();
             } else {
@@ -256,7 +256,7 @@ impl Session {
         self.bundle = Some((manifest, entry));
         self.boot_vm()?;
         let pending = std::mem::take(&mut self.early_events);
-        if let Some(vm) = self.vm.as_ref() {
+        if let Some(vm) = self.vm.as_mut() {
             for (name, payload) in pending {
                 host_emit(vm, &name, &payload)?;
             }
@@ -266,7 +266,7 @@ impl Session {
     }
 
     fn emit(&mut self, name: &str, payload: &str) -> Result<(), String> {
-        let Some(vm) = self.vm.as_ref() else {
+        let Some(vm) = self.vm.as_mut() else {
             self.early_events
                 .push((name.to_string(), payload.to_string()));
             return Ok(());
@@ -291,8 +291,10 @@ impl Session {
             })
             .unwrap_or_else(|| "main.js".to_string());
         self.vm = Some(make_vm(&self.shared)?);
-        let vm = self.vm.as_ref().expect("vm");
-        let loaded = guarded(|| install_and_run(vm, &source, &entry_name));
+        let loaded = {
+            let vm = self.vm.as_mut().expect("vm");
+            guarded(|| install_and_run(vm, &source, &entry_name))
+        };
         match loaded {
             Ok(()) => Ok(()),
             Err(err) => {
@@ -303,7 +305,7 @@ impl Session {
     }
 
     fn eval_user(&mut self, source: &str) -> Result<String, String> {
-        let Some(vm) = self.vm.as_ref() else {
+        let Some(vm) = self.vm.as_mut() else {
             return Err("bundle is not loaded".into());
         };
         match guarded(|| eval_in(vm, source)) {
@@ -324,7 +326,7 @@ impl Session {
     }
 
     fn dispatch_gestures(&mut self, bytes: &[u8]) -> Result<(), String> {
-        let Some(vm) = self.vm.as_ref() else {
+        let Some(vm) = self.vm.as_mut() else {
             return Ok(());
         };
         match guarded(|| gesture_in(vm, bytes)) {
@@ -341,7 +343,7 @@ impl Session {
     }
 
     fn dispatch_edits(&mut self, bytes: &[u8]) -> Result<(), String> {
-        let Some(vm) = self.vm.as_ref() else {
+        let Some(vm) = self.vm.as_mut() else {
             return Ok(());
         };
         match guarded(|| edit_in(vm, bytes)) {
@@ -358,14 +360,14 @@ impl Session {
     }
 
     fn dispatch_vars(&mut self, bytes: &[u8]) -> Result<(), String> {
-        let Some(vm) = self.vm.as_ref() else {
+        let Some(vm) = self.vm.as_mut() else {
             return Ok(());
         };
         guarded(|| vars_in(vm, bytes))
     }
 
     fn settle(&mut self, id: u32, ok: bool, payload: &str) -> Result<(), String> {
-        let Some(vm) = self.vm.as_ref() else {
+        let Some(vm) = self.vm.as_mut() else {
             return Ok(());
         };
         guarded(|| settle_in(vm, id, ok, payload))
@@ -386,7 +388,7 @@ impl Session {
         self.shared.set_error(err);
     }
 
-    fn fire_due(&self, vm: &Vm) -> Result<(), String> {
+    fn fire_due(&mut self) -> Result<(), String> {
         if !self.shared.visible.load(Ordering::Relaxed) {
             return Ok(());
         }
@@ -407,18 +409,24 @@ impl Session {
         if due.is_empty() {
             return Ok(());
         }
+        let Some(vm) = self.vm.as_mut() else {
+            return Ok(());
+        };
         guarded(|| {
             enter_js();
-            let result = vm.context.with(|ctx| {
+            let result = (|| -> Result<(), RuntimeError> {
                 for id in due {
-                    let fire: Function = ctx.globals().get("__fireTimer")?;
-                    fire.call::<_, ()>((id,))?;
+                    let fire = js_callable(&mut vm.context, "__fireTimer")?;
+                    vm.context.call(
+                        &fire,
+                        JsValue::Undefined,
+                        &[JsValue::number(f64::from(id))],
+                    )?;
                 }
-                pump(&ctx);
-                Ok(())
-            });
+                pump(vm)
+            })();
             leave_js();
-            result.map_err(|err: rquickjs::Error| err.to_string())
+            result.map_err(|err| err.to_string())
         })
     }
 
@@ -436,12 +444,15 @@ impl Session {
     }
 }
 
-/// A fault that leaves the VM unsafe to reuse: an interrupt or a memory
-/// allocation failure. Both rebuild the context and remount the bundle.
+/// A fault that leaves the VM unsafe to reuse: an interrupt, a memory
+/// allocation failure, or a host-function panic (the runtime is poisoned).
+/// All rebuild the context and remount the bundle.
 fn fatal(err: &str) -> bool {
     flags().is_some_and(|shared| shared.interrupt.load(Ordering::Relaxed))
         || err.contains("interrupted")
         || err.to_ascii_lowercase().contains("out of memory")
+        || err.contains("poisoned")
+        || err.contains("panicked")
 }
 
 fn guarded<T>(body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
@@ -452,341 +463,421 @@ fn guarded<T>(body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 }
 
 /// Resolve host modules and reject anything a release bundle must not import.
-#[derive(Debug, Default)]
-struct BubbleResolver;
-
-impl Resolver for BubbleResolver {
-    fn resolve<'js>(
-        &mut self,
-        _ctx: &Ctx<'js>,
-        base: &str,
-        name: &str,
-        _attributes: Option<ImportAttributes<'js>>,
-    ) -> rquickjs::Result<String> {
-        match name {
-            "bubble-shell" | "bubble:rt" => Ok(RUNTIME_ID.to_string()),
-            other if other.starts_with('.') || other.starts_with('/') => {
-                Err(rquickjs::Error::new_resolving_message(
-                    base,
-                    other,
-                    "release bundles must not contain relative imports",
-                ))
-            }
-            other => Err(rquickjs::Error::new_resolving_message(
-                base,
-                other,
-                "unknown native module",
-            )),
-        }
-    }
-}
-
+/// Errors are values to throw, made through the loader's scope.
 #[derive(Debug, Default)]
 struct BubbleLoader;
 
-impl Loader for BubbleLoader {
-    fn load<'js>(
+impl ModuleLoader for BubbleLoader {
+    fn normalize(
         &mut self,
-        ctx: &Ctx<'js>,
+        scope: &mut ModuleScope<'_>,
+        _referrer: &str,
+        specifier: &str,
+        _attributes: &ModuleImportAttributes,
+    ) -> Result<String, JsValue> {
+        if specifier.starts_with('.') || specifier.starts_with('/') {
+            return Err(loader_error(
+                scope,
+                "release bundles must not contain relative imports",
+            ));
+        }
+        match specifier {
+            "bubble-shell" | "bubble:rt" => Ok(RUNTIME_ID.to_string()),
+            other => Ok(other.to_string()),
+        }
+    }
+
+    fn load(
+        &mut self,
+        scope: &mut ModuleScope<'_>,
         name: &str,
-        _attributes: Option<ImportAttributes<'js>>,
-    ) -> rquickjs::Result<Module<'js, rquickjs::module::Declared>> {
+        _attributes: &ModuleImportAttributes,
+    ) -> Result<ModuleSource, JsValue> {
         if name == RUNTIME_ID {
-            Module::declare(ctx.clone(), RUNTIME_ID, RUNTIME_JS)
+            Ok(ModuleSource::source(RUNTIME_JS))
         } else {
-            Err(rquickjs::Error::new_loading_message(
-                name,
-                "unknown native module",
-            ))
+            Err(loader_error(scope, "unknown native module"))
         }
     }
 }
 
+/// The error value a loader throws.
+fn loader_error(scope: &mut ModuleScope<'_>, message: &str) -> JsValue {
+    scope
+        .new_native_error(NativeErrorKind::Reference, message)
+        .unwrap_or(JsValue::Undefined)
+}
+
 fn make_vm(shared: &Arc<Shared>) -> Result<Vm, String> {
-    let runtime = Runtime::new().map_err(|err| err.to_string())?;
-    runtime.set_loader(BubbleResolver, BubbleLoader);
-    runtime.set_memory_limit(MEMORY_LIMIT);
-    runtime.set_max_stack_size(STACK_LIMIT);
-    let interrupt = Arc::clone(shared);
-    runtime.set_interrupt_handler(Some(Box::new(move || {
-        interrupt.interrupt.load(Ordering::Relaxed)
-    })));
-    let context = Context::full(&runtime).map_err(|err| err.to_string())?;
+    let options = RuntimeOptions::from(HeapLimits {
+        max_bytes: MEMORY_LIMIT,
+    });
+    let runtime = Runtime::with_host(
+        BubbleHost {
+            interrupt: Arc::clone(shared),
+        },
+        options,
+    );
+    runtime
+        .set_module_loader(BubbleLoader)
+        .map_err(|err| err.to_string())?;
+    let context = runtime.context();
     Ok(Vm { context, runtime })
 }
 
-fn install_and_run(vm: &Vm, source: &str, entry: &str) -> Result<(), String> {
+/// The engine's host: the watchdog interrupts through the shared flag, so
+/// `enter_js`'s clear and the watchdog's set drive it exactly as before.
+struct BubbleHost {
+    interrupt: Arc<Shared>,
+}
+
+impl Host for BubbleHost {
+    fn interrupt(&mut self) -> bool {
+        self.interrupt.interrupt.load(Ordering::Relaxed)
+    }
+}
+
+fn install_and_run(vm: &mut Vm, source: &str, entry: &str) -> Result<(), String> {
     enter_js();
-    let result = vm.context.with(|ctx| {
-        bind_api(&ctx)?;
-        let promise = Module::evaluate(ctx.clone(), RUNTIME_ID, RUNTIME_JS)?;
-        finish_promise(&ctx, &promise)?;
-        let set_api: Function = ctx.globals().get("__bubbleSetApi")?;
-        let api: Object = ctx.globals().get("__bubble")?;
-        set_api.call::<_, ()>((api,))?;
-        ctx.eval::<(), _>(PRELUDE)?;
+    let result = run_install(vm, source, entry);
+    leave_js();
+    result.map_err(|err| format_eval(vm, err))
+}
+
+fn run_install(vm: &mut Vm, source: &str, entry: &str) -> Result<(), RuntimeError> {
+    let promise = {
+        let ctx = &mut vm.context;
+        bind_api(ctx)?;
+        let runtime_module =
+            ctx.compile_module_bytes_with_filename(RUNTIME_JS.as_bytes(), RUNTIME_ID)?;
+        ctx.execute_module(&runtime_module)?
+    };
+    finish_promise(vm, promise)?;
+    let promise = {
+        let ctx = &mut vm.context;
+        let set_api = js_callable(ctx, "__bubbleSetApi")?;
+        let api_key = PropertyKey::from_js_string(JsString::from_static("__bubble"));
+        let global = ctx.global_object()?;
+        let api = match ctx.get_property(&global, &api_key)? {
+            JsValue::Object(api) => api,
+            _ => return Err(RuntimeError::Invariant("__bubble is an object")),
+        };
+        ctx.call(&set_api, JsValue::Undefined, &[JsValue::Object(api)])?;
+        ctx.eval(PRELUDE)?;
         let params = SHARED.with(|slot| {
             slot.borrow()
                 .as_ref()
                 .and_then(|shared| shared.params.lock().ok().map(|params| params.clone()))
         });
         if let Some(params) = params {
-            ctx.eval::<(), _>(format!("globalThis.__bubbleHostParams = {params};"))?;
+            ctx.eval(&format!("globalThis.__bubbleHostParams = {params};"))?;
         }
-        let main = Module::evaluate(ctx.clone(), entry, source)?;
-        finish_promise(&ctx, &main)?;
-        pump(&ctx);
-        Ok(())
-    });
-    leave_js();
-    result.map_err(|err: rquickjs::Error| format_eval(vm, err))
+        let main = ctx.compile_module_bytes_with_filename(source.as_bytes(), entry)?;
+        ctx.execute_module(&main)?
+    };
+    finish_promise(vm, promise)?;
+    pump(vm)
 }
 
-fn eval_in(vm: &Vm, source: &str) -> Result<String, String> {
+fn eval_in(vm: &mut Vm, source: &str) -> Result<String, String> {
     enter_js();
-    let result = vm.context.with(|ctx| {
-        let value: JsValue = ctx.eval(source)?;
-        pump(&ctx);
-        Ok(value_string(&ctx, value))
-    });
+    let result = (|| -> Result<String, RuntimeError> {
+        let value = vm.context.eval(source)?;
+        pump(vm)?;
+        Ok(value_string(&mut vm.context, &value))
+    })();
     leave_js();
-    result.map_err(|err: rquickjs::Error| format_eval(vm, err))
+    result.map_err(|err| format_eval(vm, err))
 }
 
-fn gesture_in(vm: &Vm, bytes: &[u8]) -> Result<(), String> {
+fn gesture_in(vm: &mut Vm, bytes: &[u8]) -> Result<(), String> {
     enter_js();
-    let result = vm.context.with(|ctx| {
-        let array = TypedArray::new(ctx.clone(), bytes.to_vec())?;
-        let dispatch: Function = ctx.globals().get("__bubbleGesture")?;
-        dispatch.call::<_, ()>((array,))?;
-        pump(&ctx);
-        Ok(())
-    });
+    let result = (|| -> Result<(), RuntimeError> {
+        let array = byte_array_value(vm, bytes)?;
+        let dispatch = js_callable(&mut vm.context, "__bubbleGesture")?;
+        vm.context
+            .call(&dispatch, JsValue::Undefined, &[array])?;
+        pump(vm)
+    })();
     leave_js();
-    result.map_err(|err: rquickjs::Error| format_eval(vm, err))
+    result.map_err(|err| format_eval(vm, err))
 }
 
-fn edit_in(vm: &Vm, bytes: &[u8]) -> Result<(), String> {
+fn edit_in(vm: &mut Vm, bytes: &[u8]) -> Result<(), String> {
     enter_js();
-    let result = vm.context.with(|ctx| {
-        let array = TypedArray::new(ctx.clone(), bytes.to_vec())?;
-        let dispatch: Function = ctx.globals().get("__bubbleEdit")?;
-        dispatch.call::<_, ()>((array,))?;
-        pump(&ctx);
-        Ok(())
-    });
+    let result = (|| -> Result<(), RuntimeError> {
+        let array = byte_array_value(vm, bytes)?;
+        let dispatch = js_callable(&mut vm.context, "__bubbleEdit")?;
+        vm.context
+            .call(&dispatch, JsValue::Undefined, &[array])?;
+        pump(vm)
+    })();
     leave_js();
-    result.map_err(|err: rquickjs::Error| format_eval(vm, err))
+    result.map_err(|err| format_eval(vm, err))
 }
 
-fn vars_in(vm: &Vm, bytes: &[u8]) -> Result<(), String> {
+fn vars_in(vm: &mut Vm, bytes: &[u8]) -> Result<(), String> {
     enter_js();
-    let result = vm.context.with(|ctx| {
-        let array = TypedArray::new(ctx.clone(), bytes.to_vec())?;
-        let dispatch: Function = ctx.globals().get("__bubbleVar")?;
-        dispatch.call::<_, ()>((array,))?;
-        pump(&ctx);
-        Ok(())
-    });
+    let result = (|| -> Result<(), RuntimeError> {
+        let array = byte_array_value(vm, bytes)?;
+        let dispatch = js_callable(&mut vm.context, "__bubbleVar")?;
+        vm.context
+            .call(&dispatch, JsValue::Undefined, &[array])?;
+        pump(vm)
+    })();
     leave_js();
-    result.map_err(|err: rquickjs::Error| format_eval(vm, err))
+    result.map_err(|err| format_eval(vm, err))
 }
 
-fn settle_in(vm: &Vm, id: u32, ok: bool, payload: &str) -> Result<(), String> {
+fn settle_in(vm: &mut Vm, id: u32, ok: bool, payload: &str) -> Result<(), String> {
     enter_js();
-    let result = vm.context.with(|ctx| {
-        let settle: Function = ctx.globals().get("__settleHost")?;
-        settle.call::<_, ()>((id, ok, payload))?;
-        pump(&ctx);
-        Ok(())
-    });
+    let result = (|| -> Result<(), RuntimeError> {
+        let settle = js_callable(&mut vm.context, "__settleHost")?;
+        vm.context.call(
+            &settle,
+            JsValue::Undefined,
+            &[
+                JsValue::number(f64::from(id)),
+                JsValue::Bool(ok),
+                JsValue::String(JsString::try_from_utf8(payload)?),
+            ],
+        )?;
+        pump(vm)
+    })();
     leave_js();
-    result.map_err(|err: rquickjs::Error| format_eval(vm, err))
+    result.map_err(|err| format_eval(vm, err))
 }
 
-fn format_eval(vm: &Vm, err: rquickjs::Error) -> String {
-    if err.is_exception() {
-        vm.context.with(|ctx| {
-            let value = ctx.catch();
-            let text = value_string(&ctx, value);
+fn format_eval(vm: &mut Vm, err: RuntimeError) -> String {
+    match err {
+        RuntimeError::Exception(value) => {
+            let text = value_string(&mut vm.context, &value);
             if text.is_empty() {
                 "exception".into()
             } else {
                 text
             }
-        })
-    } else {
-        err.to_string()
+        }
+        other => other.to_string(),
     }
 }
 
-fn finish_promise(ctx: &Ctx, promise: &rquickjs::Promise) -> rquickjs::Result<()> {
+/// A module's evaluation promise: drain the queue while it stays pending,
+/// then report fulfillment or the rejection reason.
+fn finish_promise(vm: &Vm, promise: JsValue) -> Result<(), RuntimeError> {
+    let JsValue::Object(object) = &promise else {
+        return Ok(());
+    };
     for _ in 0..128 {
-        if promise.state() != rquickjs::promise::PromiseState::Pending {
+        let snapshot = vm
+            .runtime
+            .promise_snapshot(object)?
+            .ok_or(RuntimeError::Invariant("not a promise"))?;
+        if snapshot.state() != PromiseState::Pending {
             break;
         }
-        if !ctx.execute_pending_job() {
+        if !vm.runtime.run_pending_job()?.executed() {
             break;
         }
     }
-    match promise.result::<JsValue>() {
-        None => Err(rquickjs::Error::new_from_js("promise", "settled")),
-        Some(Ok(_)) => Ok(()),
-        Some(Err(err)) => Err(err),
+    let snapshot = vm
+        .runtime
+        .promise_snapshot(object)?
+        .ok_or(RuntimeError::Invariant("not a promise"))?;
+    match snapshot.state() {
+        PromiseState::Fulfilled => Ok(()),
+        PromiseState::Rejected => Err(RuntimeError::Exception(snapshot.result().clone())),
+        PromiseState::Pending => Err(RuntimeError::Invariant("promise did not settle")),
     }
 }
 
-fn pump(ctx: &Ctx) {
+fn pump(vm: &Vm) -> Result<(), RuntimeError> {
     for _ in 0..64 {
-        if !ctx.execute_pending_job() {
+        if !vm.runtime.run_pending_job()?.executed() {
             break;
         }
     }
+    Ok(())
 }
 
-fn value_string(ctx: &Ctx, value: JsValue) -> String {
-    if value.is_undefined() {
-        return "undefined".into();
-    }
-    if value.is_null() {
-        return "null".into();
-    }
-    if let Some(text) = value.as_string() {
-        return text.to_string().unwrap_or_default();
-    }
-    if let Some(int) = value.as_int() {
-        return int.to_string();
-    }
-    if let Some(number) = value.as_float() {
-        return number.to_string();
-    }
-    if let Some(flag) = value.as_bool() {
-        return flag.to_string();
-    }
-    if let Some(object) = value.as_object() {
-        let name = object.get::<_, String>("name").unwrap_or_default();
-        let message = object.get::<_, String>("message").unwrap_or_default();
-        let stack = object.get::<_, String>("stack").unwrap_or_default();
-        if !name.is_empty() || !message.is_empty() {
-            return format!("{name}: {message}\n{stack}");
+fn value_string(js: &mut impl Js, value: &JsValue) -> String {
+    match value {
+        JsValue::Undefined => return "undefined".into(),
+        JsValue::Null => return "null".into(),
+        JsValue::String(text) => return text.to_utf8_lossy(),
+        JsValue::Int(int) => return int.to_string(),
+        JsValue::Float(number) => return number.to_string(),
+        JsValue::Bool(flag) => return flag.to_string(),
+        JsValue::Object(object) => {
+            let name = property_string(js, object, "name");
+            let message = property_string(js, object, "message");
+            let stack = property_string(js, object, "stack");
+            if !name.is_empty() || !message.is_empty() {
+                return format!("{name}: {message}\n{stack}");
+            }
         }
+        _ => {}
     }
-    let _ = ctx;
     "value".into()
 }
 
-fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
-    let api = Object::new(ctx.clone())?;
-    api.set("boot", Function::new(ctx.clone(), api_boot)?)?;
-    api.set("error", Function::new(ctx.clone(), api_error)?)?;
-    api.set(
-        "signal_alloc",
-        Function::new(ctx.clone(), api_signal_alloc)?,
-    )?;
-    api.set("signal_read", Function::new(ctx.clone(), api_signal_read)?)?;
-    api.set(
-        "signal_notify",
-        Function::new(ctx.clone(), api_signal_notify)?,
-    )?;
-    api.set("alloc_node", Function::new(ctx.clone(), api_alloc_node)?)?;
-    api.set("mount_node", Function::new(ctx.clone(), api_mount_node)?)?;
-    api.set(
-        "dispose_node",
-        Function::new(ctx.clone(), api_dispose_node)?,
-    )?;
-    api.set("on_cleanup", Function::new(ctx.clone(), api_on_cleanup)?)?;
-    api.set("run_init", Function::new(ctx.clone(), api_run_init)?)?;
-    api.set("run_updates", Function::new(ctx.clone(), api_run_updates)?)?;
-    api.set("spawn", Function::new(ctx.clone(), api_spawn)?)?;
-    api.set("spawn_at", Function::new(ctx.clone(), api_spawn_at)?)?;
-    api.set("dispose", Function::new(ctx.clone(), api_dispose)?)?;
-    api.set("move_node", Function::new(ctx.clone(), api_move_node)?)?;
-    api.set("set_prop", Function::new(ctx.clone(), api_set_prop)?)?;
-    api.set(
-        "queue_text_utf8",
-        Function::new(ctx.clone(), api_queue_text)?,
-    )?;
-    api.set("bind_event", Function::new(ctx.clone(), api_bind)?)?;
-    api.set("focus", Function::new(ctx.clone(), api_focus)?)?;
-    api.set(
-        "set_editing_value",
-        Function::new(ctx.clone(), api_set_editing)?,
-    )?;
-    api.set(
-        "spawn_gesture",
-        Function::new(ctx.clone(), api_spawn_gesture)?,
-    )?;
-    api.set(
-        "set_gesture_prop",
-        Function::new(ctx.clone(), api_set_gesture_prop)?,
-    )?;
-    api.set(
-        "bind_gesture_event",
-        Function::new(ctx.clone(), api_bind_gesture_event)?,
-    )?;
-    api.set(
-        "dispose_gesture",
-        Function::new(ctx.clone(), api_dispose_gesture)?,
-    )?;
-    api.set(
-        "move_gesture",
-        Function::new(ctx.clone(), api_move_gesture)?,
-    )?;
-    api.set(
-        "create_var",
-        Function::new(ctx.clone(), api_create_var)?,
-    )?;
-    api.set(
-        "bind_var",
-        Function::new(ctx.clone(), api_bind_var)?,
-    )?;
-    api.set(
-        "set_var",
-        Function::new(ctx.clone(), api_set_var)?,
-    )?;
-    api.set(
-        "settle_var",
-        Function::new(ctx.clone(), api_settle_var)?,
-    )?;
-    api.set(
-        "dispose_var",
-        Function::new(ctx.clone(), api_dispose_var)?,
-    )?;
-    api.set(
-        "spawn_style_decl",
-        Function::new(ctx.clone(), api_spawn_style_decl)?,
-    )?;
-    api.set(
-        "set_style_prop",
-        Function::new(ctx.clone(), api_set_style_prop)?,
-    )?;
-    api.set(
-        "set_style_prop_program",
-        Function::new(ctx.clone(), api_set_style_prop_program)?,
-    )?;
-    api.set(
-        "move_style_decl",
-        Function::new(ctx.clone(), api_move_style_decl)?,
-    )?;
-    api.set(
-        "dispose_style_decl",
-        Function::new(ctx.clone(), api_dispose_style_decl)?,
-    )?;
-    api.set("commit", Function::new(ctx.clone(), api_commit)?)?;
-    api.set("request", Function::new(ctx.clone(), api_request)?)?;
-    api.set("storage_get", Function::new(ctx.clone(), api_storage_get)?)?;
-    api.set("storage_set", Function::new(ctx.clone(), api_storage_set)?)?;
-    api.set(
-        "storage_remove",
-        Function::new(ctx.clone(), api_storage_remove)?,
-    )?;
-    api.set(
-        "storage_keys",
-        Function::new(ctx.clone(), api_storage_keys)?,
-    )?;
-    api.set("schedule", Function::new(ctx.clone(), api_schedule)?)?;
-    api.set("cancel", Function::new(ctx.clone(), api_cancel)?)?;
-    ctx.globals().set("__bubble", api)?;
+fn property_string(js: &mut impl Js, object: &ObjectRef, key: &'static str) -> String {
+    let key = PropertyKey::from_js_string(JsString::from_static(key));
+    match js.get_property(object, &key) {
+        Ok(JsValue::String(text)) => text.to_utf8_lossy(),
+        _ => String::new(),
+    }
+}
+
+/// A `Uint8Array` view over a copy of `bytes`, as a JS argument.
+fn byte_array_value(vm: &mut Vm, bytes: &[u8]) -> Result<JsValue, RuntimeError> {
+    let buffer = vm.context.new_array_buffer(bytes)?;
+    let array =
+        vm.context
+            .new_typed_array(TypedArrayKind::Uint8, &buffer, 0, None)?;
+    Ok(JsValue::Object(array))
+}
+
+fn bind_api(ctx: &Context) -> Result<(), RuntimeError> {
+    let api = ctx.new_object()?;
+    ctx.define_function(&api, "boot", 0, |_: &mut Scope<'_>| {
+        Ok(JsValue::from(api_boot()))
+    })?;
+    ctx.define_function(&api, "error", 0, |_: &mut Scope<'_>| {
+        Ok(JsValue::String(JsString::try_from_utf8(&api_error())?))
+    })?;
+    ctx.define_function(&api, "signal_alloc", 0, |_: &mut Scope<'_>| {
+        Ok(JsValue::number(f64::from(api_signal_alloc())))
+    })?;
+    ctx.define_function(&api, "signal_read", 1, |scope: &mut Scope<'_>, id: f64| {
+        Ok(api_signal_read(scope, id))
+    })?;
+    ctx.define_function(&api, "signal_notify", 1, |scope: &mut Scope<'_>, id: f64| {
+        Ok(api_signal_notify(scope, id))
+    })?;
+    ctx.define_function(&api, "alloc_node", 1, |_: &mut Scope<'_>, kind: f64| {
+        Ok(api_alloc_node(kind))
+    })?;
+    ctx.define_function(&api, "mount_node", 1, |scope: &mut Scope<'_>, id: f64| {
+        Ok(api_mount_node(scope, id))
+    })?;
+    ctx.define_function(&api, "dispose_node", 1, |scope: &mut Scope<'_>, id: f64| {
+        Ok(api_dispose_node(scope, id))
+    })?;
+    ctx.define_function(&api, "on_cleanup", 1, |_: &mut Scope<'_>, id: f64| {
+        Ok(api_on_cleanup(id))
+    })?;
+    ctx.define_function(&api, "run_init", 0, |scope: &mut Scope<'_>| {
+        Ok(JsValue::from(api_run_init(scope)))
+    })?;
+    ctx.define_function(&api, "run_updates", 0, |scope: &mut Scope<'_>| {
+        Ok(JsValue::from(api_run_updates(scope)))
+    })?;
+    ctx.define_function(&api, "spawn", 3, |_: &mut Scope<'_>, parent: f64, kind: f64, text: String| {
+        Ok(api_spawn(parent, kind, text))
+    })?;
+    ctx.define_function(&api, "spawn_at", 4, |_: &mut Scope<'_>, parent: f64, index: f64, kind: f64, text: String| {
+        Ok(api_spawn_at(parent, index, kind, text))
+    })?;
+    ctx.define_function(&api, "dispose", 1, |_: &mut Scope<'_>, handle: f64| {
+        Ok(api_dispose(handle))
+    })?;
+    ctx.define_function(&api, "move_node", 3, |_: &mut Scope<'_>, handle: f64, parent: f64, index: f64| {
+        Ok(api_move_node(handle, parent, index))
+    })?;
+    ctx.define_function(&api, "set_prop", 5, |_: &mut Scope<'_>, handle: f64, key: String, tag: f64, number: f64, text: String| {
+        Ok(api_set_prop(handle, key, tag, number, text))
+    })?;
+    ctx.define_function(&api, "queue_text_utf8", 2, |_: &mut Scope<'_>, handle: f64, text: String| {
+        Ok(api_queue_text(handle, text))
+    })?;
+    ctx.define_function(&api, "bind_event", 2, |_: &mut Scope<'_>, handle: f64, handler: f64| {
+        Ok(api_bind(handle, handler))
+    })?;
+    ctx.define_function(&api, "focus", 1, |_: &mut Scope<'_>, handle: f64| {
+        Ok(api_focus(handle))
+    })?;
+    ctx.define_function(&api, "set_editing_value", 6, |_: &mut Scope<'_>, handle: f64, epoch: f64, value: String, sel_start: f64, sel_end: f64, cancel: f64| {
+        Ok(api_set_editing(handle, epoch, value, sel_start, sel_end, cancel))
+    })?;
+    ctx.define_function(&api, "spawn_gesture", 3, |_: &mut Scope<'_>, target: f64, kind: f64, index: f64| {
+        Ok(api_spawn_gesture(target, kind, index))
+    })?;
+    ctx.define_function(&api, "set_gesture_prop", 5, |_: &mut Scope<'_>, handle: f64, key: String, tag: f64, number: f64, text: String| {
+        Ok(api_set_gesture_prop(handle, key, tag, number, text))
+    })?;
+    ctx.define_function(&api, "bind_gesture_event", 3, |_: &mut Scope<'_>, handle: f64, slot: f64, handler: f64| {
+        Ok(api_bind_gesture_event(handle, slot, handler))
+    })?;
+    ctx.define_function(&api, "dispose_gesture", 1, |_: &mut Scope<'_>, handle: f64| {
+        Ok(api_dispose_gesture(handle))
+    })?;
+    ctx.define_function(&api, "move_gesture", 3, |_: &mut Scope<'_>, handle: f64, target: f64, index: f64| {
+        Ok(api_move_gesture(handle, target, index))
+    })?;
+    ctx.define_function(&api, "create_var", 7, |_: &mut Scope<'_>, source: f64, initial_tag: f64, initial_number: f64, anim: f64, a: f64, b: f64, c: f64| {
+        Ok(api_create_var(source, initial_tag, initial_number, anim, a, b, c))
+    })?;
+    ctx.define_function(&api, "bind_var", 2, |_: &mut Scope<'_>, var: f64, target: f64| {
+        Ok(api_bind_var(var, target))
+    })?;
+    ctx.define_function(&api, "set_var", 7, |_: &mut Scope<'_>, var: f64, tag: f64, number: f64, anim: f64, a: f64, b: f64, c: f64| {
+        Ok(api_set_var(var, tag, number, anim, a, b, c))
+    })?;
+    ctx.define_function(&api, "settle_var", 1, |_: &mut Scope<'_>, var: f64| {
+        Ok(api_settle_var(var))
+    })?;
+    ctx.define_function(&api, "dispose_var", 1, |_: &mut Scope<'_>, var: f64| {
+        Ok(api_dispose_var(var))
+    })?;
+    ctx.define_function(&api, "spawn_style_decl", 3, |_: &mut Scope<'_>, target: f64, component: f64, index: f64| {
+        Ok(api_spawn_style_decl(target, component, index))
+    })?;
+    ctx.define_function(&api, "set_style_prop", 5, |_: &mut Scope<'_>, decl: f64, key: String, tag: f64, number: f64, text: String| {
+        Ok(api_set_style_prop(decl, key, tag, number, text))
+    })?;
+    ctx.define_function(&api, "set_style_prop_program", 3, |scope: &mut Scope<'_>, decl: f64, key: String, bytes: JsValue| {
+        Ok(api_set_style_prop_program(scope, decl, key, bytes))
+    })?;
+    ctx.define_function(&api, "move_style_decl", 3, |_: &mut Scope<'_>, decl: f64, target: f64, index: f64| {
+        Ok(api_move_style_decl(decl, target, index))
+    })?;
+    ctx.define_function(&api, "dispose_style_decl", 1, |_: &mut Scope<'_>, decl: f64| {
+        Ok(api_dispose_style_decl(decl))
+    })?;
+    ctx.define_function(&api, "commit", 0, |_: &mut Scope<'_>| {
+        Ok(JsValue::from(api_commit()))
+    })?;
+    ctx.define_function(&api, "request", 2, |_: &mut Scope<'_>, method: String, params: String| {
+        Ok(api_request(method, params))
+    })?;
+    ctx.define_function(&api, "storage_get", 1, |_: &mut Scope<'_>, key: String| {
+        Ok(api_storage_get(key))
+    })?;
+    ctx.define_function(&api, "storage_set", 2, |_: &mut Scope<'_>, key: String, value: String| {
+        api_storage_set(key, value);
+        Ok(())
+    })?;
+    ctx.define_function(&api, "storage_remove", 1, |_: &mut Scope<'_>, key: String| {
+        api_storage_remove(key);
+        Ok(())
+    })?;
+    ctx.define_function(&api, "storage_keys", 0, |_: &mut Scope<'_>| {
+        Ok(JsValue::String(JsString::try_from_utf8(&api_storage_keys())?))
+    })?;
+    ctx.define_function(&api, "schedule", 2, |_: &mut Scope<'_>, id: f64, ms: f64| {
+        api_schedule(id, ms);
+        Ok(())
+    })?;
+    ctx.define_function(&api, "cancel", 1, |_: &mut Scope<'_>, id: f64| {
+        api_cancel(id);
+        Ok(())
+    })?;
+    let key = PropertyKey::from_js_string(JsString::from_static("__bubble"));
+    let global = ctx.global_object()?;
+    if !ctx.set_property(&global, &key, JsValue::Object(api))? {
+        return Err(RuntimeError::Invariant("__bubble is writable"));
+    }
     Ok(())
 }
 
@@ -842,15 +933,15 @@ fn api_signal_alloc() -> u32 {
     with_turn(|turn| Ok(turn.alloc_signal())).unwrap_or(0)
 }
 
-fn api_signal_read(ctx: Ctx, id: f64) -> i32 {
-    graph_call(&ctx, |turn, host| {
+fn api_signal_read(scope: &mut Scope<'_>, id: f64) -> i32 {
+    graph_call(scope, |turn, host| {
         turn.read(id as u32, host)?;
         note_graph(turn)
     })
 }
 
-fn api_signal_notify(ctx: Ctx, id: f64) -> i32 {
-    graph_call(&ctx, |turn, host| {
+fn api_signal_notify(scope: &mut Scope<'_>, id: f64) -> i32 {
+    graph_call(scope, |turn, host| {
         turn.notify(id as u32, host)?;
         note_graph(turn)
     })
@@ -875,18 +966,15 @@ fn api_alloc_node(kind: f64) -> u32 {
     }
 }
 
-fn api_mount_node(ctx: Ctx, id: f64) -> i32 {
-    let result = graph_call(&ctx, |turn, host| {
+fn api_mount_node(scope: &mut Scope<'_>, id: f64) -> i32 {
+    graph_call(scope, |turn, host| {
         turn.mount_computation(id as u32, host)?;
         note_graph(turn)
-    });
-    if result != 0 {
-    }
-    result
+    })
 }
 
-fn api_dispose_node(ctx: Ctx, id: f64) -> i32 {
-    graph_call(&ctx, |turn, host| {
+fn api_dispose_node(scope: &mut Scope<'_>, id: f64) -> i32 {
+    graph_call(scope, |turn, host| {
         turn.dispose_computation(id as u32, host);
         note_graph(turn)
     })
@@ -899,20 +987,22 @@ fn api_on_cleanup(id: f64) -> i32 {
     }
 }
 
-fn api_run_init(ctx: Ctx) -> i32 {
-    graph_call(&ctx, |turn, host| {
+fn api_run_init(scope: &mut Scope<'_>) -> i32 {
+    graph_call(scope, |turn, host| {
         turn.run_scheduled(true, host);
         note_graph(turn)
     })
 }
 
-fn api_run_updates(ctx: Ctx) -> i32 {
-    let result = graph_call(&ctx, |turn, host| {
+fn api_run_updates(scope: &mut Scope<'_>) -> i32 {
+    let result = graph_call(scope, |turn, host| {
         turn.run_scheduled(false, host);
         note_graph(turn)
     });
     if result != 0 {
-        let debug: Result<String, _> = ctx.eval("(globalThis.__bubbleLastError ?? '') + ' @ ' + String(globalThis.__bubbleRunMax) + ' ' + globalThis.__bubbleLastErrorStack");
+        let debug: Result<String, RuntimeError> =
+            scope.eval("(globalThis.__bubbleLastError ?? '') + ' @ ' + String(globalThis.__bubbleRunMax) + ' ' + globalThis.__bubbleLastErrorStack")
+                .and_then(|value| Ok(value_string(scope, &value)));
         eprintln!("DEBUG run_updates js_error={debug:?}");
     }
     result
@@ -925,8 +1015,11 @@ fn note_graph(turn: &mut Turn) -> Result<(), String> {
     }
 }
 
-fn graph_call(ctx: &Ctx, body: impl FnOnce(&mut Turn, &mut JsHost) -> Result<(), String>) -> i32 {
-    let mut host = JsHost { ctx: ctx.clone() };
+fn graph_call(
+    scope: &mut Scope<'_>,
+    body: impl FnOnce(&mut Turn, &mut JsHost<'_, '_>) -> Result<(), String>,
+) -> i32 {
+    let mut host = JsHost { scope };
     match with_turn(|turn| body(turn, &mut host)) {
         Ok(()) => 0,
         Err(err) => {
@@ -936,28 +1029,49 @@ fn graph_call(ctx: &Ctx, body: impl FnOnce(&mut Turn, &mut JsHost) -> Result<(),
     }
 }
 
-struct JsHost<'a> {
-    ctx: Ctx<'a>,
+struct JsHost<'a, 'js> {
+    scope: &'a mut Scope<'js>,
 }
 
-impl Sched for JsHost<'_> {
+impl Sched for JsHost<'_, '_> {
     fn body(&mut self) {
-        let Ok(func) = self.ctx.globals().get::<_, Function>("__bubbleBody") else {
-            return;
-        };
-        let _ = func.call::<_, ()>(());
+        if let Ok(func) = js_callable(self.scope, "__bubbleBody") {
+            let _ = self.scope.call(&func, JsValue::Undefined, &[]);
+        }
     }
     fn run(&mut self, id: u32) -> i32 {
-        let Ok(func) = self.ctx.globals().get::<_, Function>("__bubbleRun") else {
+        let Ok(func) = js_callable(self.scope, "__bubbleRun") else {
             return -1;
         };
-        func.call((id,)).unwrap_or(-1)
+        match self
+            .scope
+            .call(&func, JsValue::Undefined, &[JsValue::number(f64::from(id))])
+        {
+            Ok(value) => value.as_number().map_or(-1, |number| number as i32),
+            Err(_) => -1,
+        }
     }
     fn cleanup(&mut self, id: u32) {
-        let Ok(func) = self.ctx.globals().get::<_, Function>("__bubbleCleanup") else {
-            return;
-        };
-        let _ = func.call::<_, ()>((id,));
+        if let Ok(func) = js_callable(self.scope, "__bubbleCleanup") {
+            let _ = self.scope.call(
+                &func,
+                JsValue::Undefined,
+                &[JsValue::number(f64::from(id))],
+            );
+        }
+    }
+}
+
+/// A function value on the global object, for `Js` implementors; an error
+/// when missing or not callable, as `globals().get::<Function>` did.
+fn js_callable(js: &mut impl Js, name: &'static str) -> Result<CallableRef, RuntimeError> {
+    let global = js.global_object()?;
+    let key = PropertyKey::from_js_string(JsString::from_static(name));
+    match js.get_property(&global, &key)? {
+        JsValue::Object(object) => js
+            .as_callable(&object)?
+            .ok_or(RuntimeError::Invariant("a callable global")),
+        _ => Err(RuntimeError::Invariant("a callable global")),
     }
 }
 
@@ -1366,22 +1480,14 @@ fn api_set_style_prop(decl: f64, key: String, tag: f64, number: f64, text: Strin
 }
 
 /// Program bytes arrive as a JS array of byte numbers; programs are small.
-fn api_set_style_prop_program(
-    ctx: Ctx,
-    decl: f64,
-    key: String,
-    bytes: rquickjs::Array,
-) -> i32 {
-    let mut data = Vec::with_capacity(bytes.len());
-    for item in bytes.iter::<f64>() {
-        match item {
-            Ok(value) => data.push(value as u8),
-            Err(_) => {
-                set_api_error("style program is not a byte array".into());
-                return 1;
-            }
+fn api_set_style_prop_program(scope: &mut Scope<'_>, decl: f64, key: String, bytes: JsValue) -> i32 {
+    let data = match byte_array(scope, &bytes) {
+        Some(data) => data,
+        None => {
+            set_api_error("style program is not a byte array".into());
+            return 1;
         }
-    }
+    };
     let program = match bubble_core::decode_program(&data) {
         Ok(program) => program,
         Err(error) => {
@@ -1389,7 +1495,6 @@ fn api_set_style_prop_program(
             return 1;
         }
     };
-    let _ = ctx;
     match with_turn(|turn| {
         turn.set_style_decl_prop(decl as u32, key, Value::Program(program));
         Ok(())
@@ -1400,6 +1505,26 @@ fn api_set_style_prop_program(
             1
         }
     }
+}
+
+/// A JS array of byte numbers; any non-numeric item rejects the whole array.
+fn byte_array(scope: &mut Scope<'_>, value: &JsValue) -> Option<Vec<u8>> {
+    let JsValue::Object(object) = value else {
+        return None;
+    };
+    let key = PropertyKey::from_js_string(JsString::from_static("length"));
+    let length = scope.get_property(object, &key).ok()?;
+    let length = scope.to_number(&length).ok()?;
+    let length = length.max(0.0) as usize;
+    let mut data = Vec::with_capacity(length);
+    for index in 0..length {
+        let item = scope
+            .get_property(object, &PropertyKey::index(index as u32))
+            .ok()?;
+        let number = scope.to_number(&item).ok()?;
+        data.push(number as u8);
+    }
+    Some(data)
 }
 
 fn api_move_style_decl(decl: f64, target: f64, index: f64) -> i32 {
@@ -1459,15 +1584,22 @@ fn api_commit() -> i32 {
     }
 }
 
-fn host_emit(vm: &Vm, name: &str, payload: &str) -> Result<(), String> {
+fn host_emit(vm: &mut Vm, name: &str, payload: &str) -> Result<(), String> {
     enter_js();
-    let result = vm.context.with(|ctx| {
-        let emit: Function = ctx.globals().get("__bubbleHostEmit")?;
-        emit.call::<_, ()>((name, payload))?;
-        Ok(())
-    });
+    let result = (|| -> Result<(), RuntimeError> {
+        let emit = js_callable(&mut vm.context, "__bubbleHostEmit")?;
+        vm.context.call(
+            &emit,
+            JsValue::Undefined,
+            &[
+                JsValue::String(JsString::try_from_utf8(name)?),
+                JsValue::String(JsString::try_from_utf8(payload)?),
+            ],
+        )?;
+        pump(vm)
+    })();
     leave_js();
-    result.map_err(|err: rquickjs::Error| format_eval(vm, err))
+    result.map_err(|err| format_eval(vm, err))
 }
 
 fn api_storage_get(key: String) -> String {

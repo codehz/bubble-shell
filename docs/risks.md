@@ -2,14 +2,14 @@
 
 | 风险 | 级别 | 影响 | 缓解 |
 |---|---|---|---|
-| QuickJS 事件循环、async、调试器需自建 | 高 | 开发效率与线上排障 | 基于 quickjs-ng/libc；先做最小事件循环；调试协议与 conformance 延后 |
+| QuickJS 事件循环、async、调试器需自建 | 高 | 开发效率与线上排障 | 基于 quickjs-oxide（纯 Rust）；先做最小事件循环；调试协议与 conformance 延后 |
 | Oxc `0.61 → 0.158` 与 rolldown 迁移 | 中 | 编译器重写、构建变慢 | 按 [adr/js-bundling.md](adr/js-bundling.md) 分步；rolldown 只作构建依赖；测试用最小 fixture |
 | 主线程脚本卡住绘制 | 中 | Web 长任务掉帧，且无法强杀 | 接受。软预算只埋点；不做 Worker、不做切片 |
 | a11y/IME 是最大平台差异面 | 高 | 产品可用性与合规 | MVP 只交付语义树与平台桥；VoiceOver/TalkBack/NVDA 验收延后 |
 | Android IME 与自绘编辑状态语义不一致 | 高 | CJK 组合、选区、删除与光标位置失败 | 按 [adr/input-model.md](adr/input-model.md) 锁步迁移编辑事务；模拟器验证；真机与厂商键盘延后 |
 | 全表面重绘性能 | 中 | 60fps 门槛 | 脏矩形、静态子树缓存、帧耗时埋点；性能门槛延后 |
 | 远程 JS 的 App Store 合规 | 高 | iOS 上线 | 第一方签名、无 JIT；准备 data-only 降级；提前审核沟通 |
-| FFI / QuickJS 内存安全 | 高 | 宿主崩溃 | 安全封装、panic 屏障、配额、灰度；fuzz 延后 |
+| 脚本引擎缺陷 | 中 | 宿主崩溃/行为偏差 | 引擎为纯 Rust（quickjs-oxide，零 `unsafe`，无 C FFI）；panic 屏障、64 MiB 堆配额与 1 s 中断已验证；fuzz 延后 |
 | 三端文本布局差异（已接受） | 中 | 视觉/高度不一致 | 接受差异；布局不依赖固定文本高度；golden 快照延后 |
 | 密钥管理与回滚 | 中 | 供应链安全 | `keyId` 轮换、吊销、单调版本、LKG；回退演练延后 |
 | Web CORS / 鉴权 | 中 | 数据获取受限 | 公开内容 runtime fetch；带凭证 API 走宿主代理 |
