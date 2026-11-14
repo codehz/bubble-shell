@@ -13,6 +13,7 @@
 | [05-gestures-plan.md](05-gestures-plan.md) | M2 输入控件前置计划：虚拟手势节点、声明式协商、双指 transform、按轴滚动级联与行为契约 |
 | [06-input-model-plan.md](06-input-model-plan.md) | 自绘输入模型重设计：编辑事务、Android IME、跨平台迁移、排版快照与行为契约 |
 | [07-js-bundling-plan.md](07-js-bundling-plan.md) | JS 打包：Oxc + rolldown、原生运行时模块、资源命名、Web HMR；设计与迁移步骤，实现偏差见第 13 节 |
+| [08-shared-variables-plan.md](08-shared-variables-plan.md) | 共享变量与样式声明升级：移除 StateStyle，改为 ViewStyle/TextStyle + UI 线程变量 + 表达式引擎；设计稿，分四阶段 |
 
 ## 状态
 
