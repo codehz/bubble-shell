@@ -11,21 +11,17 @@
 //! change. A later explicit `setProp` keeps call order until that binding runs
 //! again.
 //!
-//! `STATE_STYLE_PROPS` is the paint-only subset a `StateStyle` declaration may
-//! override while a node is pressed or focused. Layout properties stay on the
-//! node.
+//! `VIEW_STYLE_PROPS` / `TEXT_STYLE_PROPS` are the paint-only whitelists a
+//! `ViewStyle` / `TextStyle` declaration may patch. Layout properties stay on
+//! the node.
 
 use crate::ops::Value;
 
-/// Paint properties a `StateStyle` declaration may override.
-pub const STATE_STYLE_PROPS: &[&str] = &[
-    "backgroundColor",
-    "color",
-    "opacity",
-    "radius",
-    "textAlign",
-    "fit",
-];
+/// Paint properties a `ViewStyle` declaration may patch.
+pub const VIEW_STYLE_PROPS: &[&str] = &["backgroundColor", "radius", "opacity", "fit"];
+
+/// Paint properties a `TextStyle` declaration may patch.
+pub const TEXT_STYLE_PROPS: &[&str] = &["color", "textAlign"];
 
 /// `0` left, `1` center, `2` right.
 pub(crate) fn text_align(value: &Value) -> Result<u8, String> {

@@ -1,6 +1,6 @@
 # 08 · 共享变量与样式声明升级计划
 
-状态：设计稿，未实现。现有 `StateStyle` 机制整体移除，不做兼容。本文基于现有机制的问题与用户确认的十一个决策（见第 2 节）给出完整设计；实现分四个阶段，只有阶段 1 属于当前 MVP，其余按阶段推进。本文不引入任何新的验证工具或设备矩阵；所有验证仍限于 `cargo test --workspace`、`cargo check --workspace`、`node --test examples/web/*.test.mjs` 与手动 demo 冒烟。
+状态：实现中。阶段 1（`expr.rs` 引擎 + VarTable + 四个状态源 + `ViewStyle`/`TextStyle` 组件与程序化 when/patch，`StateStyle` 整体移除）按第 10 节落地；阶段 2-4 未开始。实现偏差记录在文末「阶段 1 实现记录」。本文不引入任何新的验证工具或设备矩阵；所有验证仍限于 `cargo test --workspace`、`cargo check --workspace`、`node --test examples/web/*.test.mjs` 与手动 demo 冒烟。
 
 实现落点：`crates/core/src/state_style.rs`（重写为声明表与求值）、`crates/core/src/props.rs`（`STATE_STYLE_PROPS` 按组件拆分）、`crates/core/src/shell.rs`（状态源采样、绘制合并、事件批次）、`crates/core/src/ops.rs` / `turn.rs`（新 op 与批次压缩）、`crates/core/src/expr.rs`（新：表达式引擎）、`crates/compiler/src/lib.rs`（JSX 属性表达式降级与组件属性白名单）、`crates/native/js/runtime.js`（JS 侧变量对象）、三端 ABI 不变（复用 `bubble_tick` / `bubble_frame`）。
 

@@ -19,7 +19,8 @@ pub struct Turn {
     seq: u32,
     next_handle: u32,
     next_gesture: u32,
-    next_state_style: u32,
+    next_var: u32,
+    next_style: u32,
 }
 
 impl Default for Turn {
@@ -37,7 +38,8 @@ impl Turn {
             seq: 0,
             next_handle: 2,
             next_gesture: 1,
-            next_state_style: 1,
+            next_var: 1,
+            next_style: 1,
         }
     }
 
@@ -184,39 +186,74 @@ impl Turn {
         self.push(Op::DisposeGesture { gesture });
     }
 
-    /// Allocate a state style id and queue its declaration under `target`.
-    pub fn spawn_state_style(&mut self, target: u32, index: u32) -> Result<u32, String> {
-        let style = self.next_state_style;
-        self.next_state_style = self
-            .next_state_style
+    /// Allocate a variable id and queue its creation. `source` is one of the
+    /// `SOURCE_*` codes; `initial` carries the starting value for
+    /// script-driven variables. The source target arrives with `bind_var`
+    /// once the reference resolves.
+    pub fn create_var(&mut self, source: u8, initial: Value) -> Result<u32, String> {
+        let var = self.next_var;
+        self.next_var = self
+            .next_var
             .checked_add(1)
-            .ok_or_else(|| "state style space exhausted".to_string())?;
-        self.push(Op::SpawnStateStyle {
-            style,
-            target,
-            index,
+            .ok_or_else(|| "var space exhausted".to_string())?;
+        self.push(Op::CreateVar {
+            var,
+            source,
+            initial,
         });
-        Ok(style)
+        Ok(var)
     }
 
-    pub fn set_state_style_prop(&mut self, style: u32, key: impl Into<String>, value: Value) {
-        self.push(Op::SetStateStyleProp {
-            style,
+    /// Attach a variable's source target; the reference may resolve after the
+    /// variable is created.
+    pub fn bind_var(&mut self, var: u32, target: u32) {
+        self.push(Op::BindVar { var, target });
+    }
+
+    pub fn dispose_var(&mut self, var: u32) {
+        self.push(Op::DisposeVar { var });
+    }
+
+    /// Allocate a style declaration id and queue its declaration under
+    /// `target`. `component` 1 ViewStyle, 2 TextStyle.
+    pub fn spawn_style_decl(
+        &mut self,
+        target: u32,
+        component: u8,
+        index: u32,
+    ) -> Result<u32, String> {
+        let decl = self.next_style;
+        self.next_style = self
+            .next_style
+            .checked_add(1)
+            .ok_or_else(|| "style declaration space exhausted".to_string())?;
+        self.push(Op::SpawnStyleDecl {
+            decl,
+            target,
+            component,
+            index,
+        });
+        Ok(decl)
+    }
+
+    pub fn set_style_decl_prop(&mut self, decl: u32, key: impl Into<String>, value: Value) {
+        self.push(Op::SetStyleDeclProp {
+            decl,
             key: key.into(),
             value,
         });
     }
 
-    pub fn move_state_style(&mut self, style: u32, target: u32, index: u32) {
-        self.push(Op::MoveStateStyle {
-            style,
+    pub fn move_style_decl(&mut self, decl: u32, target: u32, index: u32) {
+        self.push(Op::MoveStyleDecl {
+            decl,
             target,
             index,
         });
     }
 
-    pub fn dispose_state_style(&mut self, style: u32) {
-        self.push(Op::DisposeStateStyle { style });
+    pub fn dispose_style_decl(&mut self, decl: u32) {
+        self.push(Op::DisposeStyleDecl { decl });
     }
 
     pub fn set_prop(&mut self, handle: u32, key: impl Into<String>, value: Value) {
@@ -293,14 +330,14 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
                 }
             }
         }
-        Op::SetStateStyleProp { style, key, value } => {
+        Op::SetStyleDeclProp { decl, key, value } => {
             for item in buf.iter_mut().rev() {
                 match item {
-                    Op::SetStateStyleProp {
-                        style: existing,
+                    Op::SetStyleDeclProp {
+                        decl: existing,
                         key: existing_key,
                         value: slot,
-                    } if existing == style && existing_key == key => {
+                    } if existing == decl && existing_key == key => {
                         *slot = value.clone();
                         return;
                     }

@@ -54,6 +54,18 @@ impl Color {
     pub fn is_visible(self) -> bool {
         self.a > 0.0
     }
+
+    /// Linear interpolation in extended nonlinear sRGB, the same space paint
+    /// consumes. `t` outside `[0, 1]` extrapolates.
+    pub fn mix(self, other: &Color, t: f32) -> Color {
+        let blend = |a: f32, b: f32| a + (b - a) * t;
+        Color::new(
+            blend(self.r, other.r),
+            blend(self.g, other.g),
+            blend(self.b, other.b),
+            blend(self.a, other.a).clamp(0.0, 1.0),
+        )
+    }
 }
 
 impl Default for Color {

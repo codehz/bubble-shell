@@ -5,6 +5,7 @@
 use std::io::{Cursor, Read};
 
 use crate::color::Color;
+use crate::expr::{decode_program, Program};
 use crate::ir::{Kind, NodeDesc};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -14,6 +15,9 @@ pub enum Value {
     Int(i64),
     Float(f64),
     String(String),
+    /// Compiled expression program. Only style declaration props accept it;
+    /// every other consumer rejects it.
+    Program(Program),
 }
 
 impl Value {
@@ -159,27 +163,45 @@ pub enum Op {
         sel_end: u32,
         cancel: bool,
     },
-    /// Virtual state style declaration attached to `target`; `index` is its
-    /// position among that target's declarations.
-    SpawnStateStyle {
-        style: u32,
+    /// UI-thread variable. `source` 0 means script-driven; `target` is bound
+    /// by a later `BindVar` op when the reference resolves.
+    CreateVar {
+        var: u32,
+        source: u8,
+        initial: Value,
+    },
+    /// Attach a variable's source target; `target` 0 detaches.
+    BindVar {
+        var: u32,
         target: u32,
+    },
+    DisposeVar {
+        var: u32,
+    },
+    /// Virtual style declaration attached to `target`; `index` is its
+    /// position among that target's declarations. `component` 1 ViewStyle,
+    /// 2 TextStyle.
+    SpawnStyleDecl {
+        decl: u32,
+        target: u32,
+        component: u8,
         index: u32,
     },
-    /// One declaration property: `when`, `enabled`, or a paint override.
-    SetStateStyleProp {
-        style: u32,
+    /// One declaration value: `when` or a paint override. `Value::Program`
+    /// carries a compiled expression; `Null` clears a patch slot.
+    SetStyleDeclProp {
+        decl: u32,
         key: String,
         value: Value,
     },
     /// Final declaration index after it leaves its old slot.
-    MoveStateStyle {
-        style: u32,
+    MoveStyleDecl {
+        decl: u32,
         target: u32,
         index: u32,
     },
-    DisposeStateStyle {
-        style: u32,
+    DisposeStyleDecl {
+        decl: u32,
     },
 }
 
@@ -323,6 +345,12 @@ fn write_value(payload: &mut Vec<u8>, value: &Value, intern: &mut impl FnMut(&st
             let value_id = intern(value);
             payload.push(4);
             payload.extend_from_slice(&value_id.to_le_bytes());
+        }
+        Value::Program(program) => {
+            let bytes = program.encode();
+            payload.push(5);
+            payload.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            payload.extend_from_slice(&bytes);
         }
     }
 }
@@ -482,36 +510,57 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.extend_from_slice(&sel_end.to_le_bytes());
                 payload.push(u8::from(*cancel));
             }
-            Op::SpawnStateStyle {
-                style,
+            Op::CreateVar {
+                var,
+                source,
+                initial,
+            } => {
+                payload.push(22);
+                payload.extend_from_slice(&var.to_le_bytes());
+                payload.push(*source);
+                write_value(&mut payload, initial, &mut intern);
+            }
+            Op::BindVar { var, target } => {
+                payload.push(23);
+                payload.extend_from_slice(&var.to_le_bytes());
+                payload.extend_from_slice(&target.to_le_bytes());
+            }
+            Op::DisposeVar { var } => {
+                payload.push(24);
+                payload.extend_from_slice(&var.to_le_bytes());
+            }
+            Op::SpawnStyleDecl {
+                decl,
                 target,
+                component,
                 index,
             } => {
                 payload.push(18);
-                payload.extend_from_slice(&style.to_le_bytes());
+                payload.extend_from_slice(&decl.to_le_bytes());
                 payload.extend_from_slice(&target.to_le_bytes());
+                payload.push(*component);
                 payload.extend_from_slice(&index.to_le_bytes());
             }
-            Op::SetStateStyleProp { style, key, value } => {
+            Op::SetStyleDeclProp { decl, key, value } => {
                 let key_id = intern(key);
                 payload.push(19);
-                payload.extend_from_slice(&style.to_le_bytes());
+                payload.extend_from_slice(&decl.to_le_bytes());
                 payload.extend_from_slice(&key_id.to_le_bytes());
                 write_value(&mut payload, value, &mut intern);
             }
-            Op::MoveStateStyle {
-                style,
+            Op::MoveStyleDecl {
+                decl,
                 target,
                 index,
             } => {
                 payload.push(20);
-                payload.extend_from_slice(&style.to_le_bytes());
+                payload.extend_from_slice(&decl.to_le_bytes());
                 payload.extend_from_slice(&target.to_le_bytes());
                 payload.extend_from_slice(&index.to_le_bytes());
             }
-            Op::DisposeStateStyle { style } => {
+            Op::DisposeStyleDecl { decl } => {
                 payload.push(21);
-                payload.extend_from_slice(&style.to_le_bytes());
+                payload.extend_from_slice(&decl.to_le_bytes());
             }
         }
     }
@@ -708,28 +757,46 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                     cancel,
                 });
             }
-            18 => ops.push(Op::SpawnStateStyle {
-                style: read_u32(&mut payload_cur)?,
+            22 => {
+                let var = read_u32(&mut payload_cur)?;
+                let source = read_u8(&mut payload_cur)?;
+                let initial = read_value(&mut payload_cur, &strings)?;
+                ops.push(Op::CreateVar {
+                    var,
+                    source,
+                    initial,
+                });
+            }
+            23 => ops.push(Op::BindVar {
+                var: read_u32(&mut payload_cur)?,
                 target: read_u32(&mut payload_cur)?,
+            }),
+            24 => ops.push(Op::DisposeVar {
+                var: read_u32(&mut payload_cur)?,
+            }),
+            18 => ops.push(Op::SpawnStyleDecl {
+                decl: read_u32(&mut payload_cur)?,
+                target: read_u32(&mut payload_cur)?,
+                component: read_u8(&mut payload_cur)?,
                 index: read_u32(&mut payload_cur)?,
             }),
             19 => {
-                let style = read_u32(&mut payload_cur)?;
+                let decl = read_u32(&mut payload_cur)?;
                 let key_id = read_u32(&mut payload_cur)? as usize;
                 let key = strings
                     .get(key_id)
-                    .ok_or("state style key out of range")?
+                    .ok_or("style declaration key out of range")?
                     .clone();
                 let value = read_value(&mut payload_cur, &strings)?;
-                ops.push(Op::SetStateStyleProp { style, key, value });
+                ops.push(Op::SetStyleDeclProp { decl, key, value });
             }
-            20 => ops.push(Op::MoveStateStyle {
-                style: read_u32(&mut payload_cur)?,
+            20 => ops.push(Op::MoveStyleDecl {
+                decl: read_u32(&mut payload_cur)?,
                 target: read_u32(&mut payload_cur)?,
                 index: read_u32(&mut payload_cur)?,
             }),
-            21 => ops.push(Op::DisposeStateStyle {
-                style: read_u32(&mut payload_cur)?,
+            21 => ops.push(Op::DisposeStyleDecl {
+                decl: read_u32(&mut payload_cur)?,
             }),
             other => return Err(format!("unknown op tag {other}")),
         }
@@ -754,6 +821,12 @@ fn read_value(cur: &mut Cursor<&[u8]>, strings: &[String]) -> Result<Value, Stri
                     .ok_or("value string out of range")?
                     .clone(),
             )
+        }
+        5 => {
+            let len = read_u32(cur)? as usize;
+            let mut buf = vec![0u8; len];
+            cur.read_exact(&mut buf).map_err(|_| "truncated program value")?;
+            Value::Program(decode_program(&buf).map_err(|e| e.to_string())?)
         }
         other => return Err(format!("unsupported prop value tag {other}")),
     })

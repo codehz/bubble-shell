@@ -20,7 +20,11 @@ use crate::semantics::{
     ACTION_SCROLL_DOWN, ACTION_SCROLL_FORWARD, ACTION_SCROLL_LEFT, ACTION_SCROLL_RIGHT,
     ACTION_SCROLL_UP, ACTION_SET_VALUE,
 };
-use crate::state_style::{StateStylePatch, StateStyles, WHEN_FOCUSED, WHEN_PRESSED};
+use crate::expr::ExprValue;
+use crate::state_style::{
+    slot_allowed, slot_of, slot_type, DeclExpr, ResolvedPatch, SlotType, StyleDecls, SOURCE_DISABLED,
+    SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED, VarTable,
+};
 use taffy::prelude::*;
 use taffy::style::Overflow;
 use taffy::{compute_leaf_layout, NodeId, TaffyTree};
@@ -280,7 +284,8 @@ pub struct Shell {
     paint_cache: RefCell<Vec<PaintCmd>>,
     paint_dirty: Cell<bool>,
     recognizer: Recognizer,
-    state_styles: StateStyles,
+    vars: VarTable,
+    state_styles: StyleDecls,
     visual: VisualPress,
     fields: HashMap<u32, EditSession>,
     focused: u32,
@@ -566,7 +571,8 @@ impl Shell {
             paint_cache: RefCell::new(Vec::new()),
             paint_dirty: Cell::new(true),
             recognizer: Recognizer::new(),
-            state_styles: StateStyles::new(),
+            vars: VarTable::new(),
+            state_styles: StyleDecls::new(),
             visual: VisualPress::default(),
             fields: HashMap::new(),
             focused: 0,
@@ -702,26 +708,34 @@ impl Shell {
                     sel_end,
                     cancel,
                 } => self.set_editing_value(handle, epoch, &value, sel_start, sel_end, cancel)?,
-                Op::SpawnStateStyle {
-                    style,
+                Op::CreateVar {
+                    var,
+                    source,
+                    initial,
+                } => self.create_var(var, source, &initial)?,
+                Op::BindVar { var, target } => self.bind_var(var, target)?,
+                Op::DisposeVar { var } => self.dispose_var(var)?,
+                Op::SpawnStyleDecl {
+                    decl,
+                    target,
+                    component,
+                    index,
+                } => {
+                    self.node(target)?;
+                    self.state_styles.spawn(decl, target, component, index)?;
+                }
+                Op::SetStyleDeclProp { decl, key, value } => {
+                    self.set_style_decl_prop(decl, &key, &value)?
+                }
+                Op::MoveStyleDecl {
+                    decl,
                     target,
                     index,
                 } => {
                     self.node(target)?;
-                    self.state_styles.spawn(style, target, index)?;
+                    self.state_styles.move_decl(decl, target, index)?;
                 }
-                Op::SetStateStyleProp { style, key, value } => {
-                    self.state_styles.set_prop(style, &key, &value)?
-                }
-                Op::MoveStateStyle {
-                    style,
-                    target,
-                    index,
-                } => {
-                    self.node(target)?;
-                    self.state_styles.move_decl(style, target, index)?;
-                }
-                Op::DisposeStateStyle { style } => self.state_styles.dispose(style)?,
+                Op::DisposeStyleDecl { decl } => self.state_styles.dispose(decl)?,
             }
         }
         if self.focused != 0
@@ -908,6 +922,7 @@ impl Shell {
         }
         self.flush_gesture_scroll();
         if changed {
+            self.sample_sources();
             self.paint_dirty.set(true);
         }
     }
@@ -921,6 +936,7 @@ impl Shell {
             self.hit_path(1, input.x, input.y, &mut input.path);
         }
         if self.track_press(&input, false) {
+            self.sample_sources();
             self.paint_dirty.set(true);
         }
     }
@@ -937,6 +953,7 @@ impl Shell {
         }
         self.flush_gesture_scroll();
         if changed {
+            self.sample_sources();
             self.paint_dirty.set(true);
         }
     }
@@ -948,12 +965,14 @@ impl Shell {
         self.recognizer.cancel(reason);
         self.flush_gesture_scroll();
         if self.reset_press() {
+            self.sample_sources();
             self.paint_dirty.set(true);
         }
         self.take_gesture_events()
     }
 
-    /// Base paint values with the state style patches that match right now.
+    /// Base paint values with the currently matching style declaration
+    /// patches applied. Reads cached declaration results only.
     fn effective_paint_style(&self, id: u32, node: &Node) -> EffectivePaintStyle {
         let mut style = EffectivePaintStyle {
             background: node.background,
@@ -963,9 +982,8 @@ impl Shell {
             text_align: node.text_align,
             fit: node.fit,
         };
-        let mut patch = StateStylePatch::default();
-        self.state_styles
-            .overlay(id, self.state_bits(id), &mut patch);
+        let mut patch = ResolvedPatch::default();
+        self.state_styles.overlay(id, &mut patch);
         if let Some(value) = patch.background {
             style.background = value;
         }
@@ -987,28 +1005,227 @@ impl Shell {
         style
     }
 
-    /// Interaction state of one node. Focus is the node's own focus, not
-    /// focus-within; pressed is the pressed target only, not its subtree.
-    fn state_bits(&self, id: u32) -> u8 {
-        let mut bits = 0;
-        if self.focused == id {
-            bits |= WHEN_FOCUSED;
+    /// Create a variable. Script-driven variables take their value from
+    /// `initial`; source-driven ones start at the source's zero value and are
+    /// attached to their target node by a later `BindVar`.
+    fn create_var(&mut self, var: u32, source: u8, initial: &Value) -> Result<(), String> {
+        let value = match source {
+            SOURCE_NONE => parse_expr_value(initial)
+                .ok_or_else(|| format!("var {var} initial value must be a number, color, or bool"))?,
+            SOURCE_PRESSED => ExprValue::Num(0.0),
+            _ => ExprValue::Bool(false),
+        };
+        self.vars.create(var, source, 0, value)
+    }
+
+    /// Attach a variable's source target. Re-samples the source so dependent
+    /// declarations re-evaluate.
+    fn bind_var(&mut self, var: u32, target: u32) -> Result<(), String> {
+        let Some(var_slot) = self.vars.get_mut(var) else {
+            return Err(format!("unknown var {var}"));
+        };
+        var_slot.target = target;
+        self.sample_sources();
+        Ok(())
+    }
+
+    fn dispose_var(&mut self, var: u32) -> Result<(), String> {
+        let dependents = self.vars.dispose(var)?;
+        for decl in dependents {
+            self.mark_decl_unmatched(decl);
         }
-        if self.visual.target == id {
-            bits |= WHEN_PRESSED;
+        self.paint_dirty.set(true);
+        Ok(())
+    }
+
+    /// Mark one declaration as not matching after a variable it read retired.
+    fn mark_decl_unmatched(&mut self, decl: u32) {
+        if let Some(decl) = self.state_styles_decl_mut(decl) {
+            decl.resolved_when = false;
+            decl.resolved = ResolvedPatch::default();
         }
-        bits
+        self.paint_dirty.set(true);
+    }
+
+    fn state_styles_decl_mut(
+        &mut self,
+        id: u32,
+    ) -> Option<&mut crate::state_style::StyleDecl> {
+        // The declaration table is owned by `state_styles`; expose the mutable
+        // decl through a narrow accessor on the table.
+        self.state_styles.decl_mut(id)
+    }
+
+    /// Apply one declaration value: `when` or a paint slot. Programs are
+    /// validated and evaluated once here, so a type or range error fails the
+    /// batch instead of painting a wrong value.
+    fn set_style_decl_prop(&mut self, decl: u32, key: &str, value: &Value) -> Result<(), String> {
+        let slot = if key == "when" {
+            None
+        } else {
+            let slot = slot_of(key).ok_or_else(|| format!("style declaration has no property {key}"))?;
+            let component = self
+                .state_styles
+                .decl(decl)
+                .ok_or_else(|| format!("unknown style declaration {decl}"))?
+                .component;
+            if !slot_allowed(component, slot) {
+                return Err(format!("this style component has no property {key}"));
+            }
+            Some(slot)
+        };
+        let expr = match (slot, value) {
+            (None, Value::Bool(constant)) => Some(DeclExpr::Static(ExprValue::Bool(*constant))),
+            (None, Value::Program(program)) => {
+                program
+                    .result_type(&|id| self.vars.get(id).map(|var| var.value_type()))
+                    .map_err(|error| format!("when: {error}"))?;
+                Some(DeclExpr::Program(Box::new(program.clone())))
+            }
+            (Some(_), Value::Null) => None,
+            (Some(_), Value::Program(program)) => {
+                program
+                    .result_type(&|id| self.vars.get(id).map(|var| var.value_type()))
+                    .map_err(|error| format!("{key}: {error}"))?;
+                Some(DeclExpr::Program(Box::new(program.clone())))
+            }
+            (Some(slot), static_value) => {
+                let parsed = match slot_type(slot) {
+                    SlotType::Color => {
+                        ExprValue::Color(static_value.as_color().map_err(|error| {
+                            format!("{key}: {error}")
+                        })?)
+                    }
+                    SlotType::Enum if matches!(static_value, Value::String(_)) => {
+                        // Enum names are static values too: map them to codes.
+                        let code = if slot == crate::state_style::SLOT_TEXT_ALIGN {
+                            crate::props::text_align(static_value)? as f32
+                        } else {
+                            crate::props::image_fit(static_value)? as f32
+                        };
+                        ExprValue::Num(code)
+                    }
+                    _ => parse_expr_value(static_value)
+                        .ok_or_else(|| format!("{key} value must be a number, color, or bool"))?,
+                };
+                Some(DeclExpr::Static(parsed))
+            }
+            (None, other) => {
+                return Err(format!("when must be a bool or a program, got {other:?}"))
+            }
+        };
+        // Store the slot, recompute interests, and evaluate once.
+        self.state_styles.set_slot(decl, slot, expr)?;
+        self.state_styles.register_deps(decl, &self.vars);
+        self.eval_decl(decl);
+        self.paint_dirty.set(true);
+        Ok(())
+    }
+
+    /// Re-evaluate one declaration's cached result against current variable
+    /// values. Programs that fail re-evaluation mark the declaration as not
+    /// matching rather than corrupting paint.
+    fn eval_decl(&mut self, decl: u32) {
+        let (when, patch) = {
+            let Some(decl) = self.state_styles.decl(decl) else {
+                return;
+            };
+            (decl.when.clone(), decl.patch.clone())
+        };
+        let mut resolved = ResolvedPatch::default();
+        let mut matched = match &when {
+            Some(when) => {
+                matches!(
+                decl_eval_slot(None, when, &self.vars),
+                Ok(Some(ExprValue::Bool(true)))
+            )
+            }
+            None => false,
+        };
+        if matched {
+            for slot in 0..crate::state_style::SLOT_COUNT {
+                let Some(expr) = &patch[slot] else {
+                    continue;
+                };
+                let value = match decl_eval_slot(Some(slot), expr, &self.vars) {
+                    Ok(Some(value)) => value,
+                    _ => {
+                        matched = false;
+                        break;
+                    }
+                };
+                resolved = match (value, crate::state_style::slot_type(slot)) {
+                    (ExprValue::Color(color), SlotType::Color) => {
+                        assign_resolved(resolved, slot, color, 0.0)
+                    }
+                    (ExprValue::Num(code), SlotType::Num | SlotType::Enum) => {
+                        assign_resolved(resolved, slot, Color::TRANSPARENT, code)
+                    }
+                    _ => {
+                        matched = false;
+                        break;
+                    }
+                };
+            }
+        }
+        let Some(decl) = self.state_styles.decl_mut(decl) else {
+            return;
+        };
+        decl.resolved_when = matched;
+        decl.resolved = resolved;
+    }
+
+    /// Re-sample every source-driven variable and re-evaluate the
+    /// declarations that read a changed one. Cheap: only vars with sources,
+    /// and only changed vars touch declarations.
+    fn sample_sources(&mut self) {
+        let mut changed: Vec<u32> = Vec::new();
+        let ids: Vec<(u32, u8, u32)> = self
+            .vars
+            .all_with_source()
+            .into_iter()
+            .map(|(id, source, target)| (id, source, target))
+            .collect();
+        for (id, source, target) in ids {
+            let next = match source {
+                SOURCE_PRESSED => ExprValue::Num(if self.visual.target == target {
+                    1.0
+                } else {
+                    0.0
+                }),
+                SOURCE_FOCUSED => ExprValue::Bool(self.focused == target && target != 0),
+                SOURCE_DISABLED => ExprValue::Bool(
+                    self.node(target).map(|node| node.disabled).unwrap_or(true),
+                ),
+                SOURCE_EDITING => ExprValue::Bool(
+                    target != 0 && self.focused == target && self.fields.contains_key(&target),
+                ),
+                _ => continue,
+            };
+            if let Some(var) = self.vars.get_mut(id) {
+                if var.value != next {
+                    var.value = next;
+                    changed.push(id);
+                }
+            }
+        }
+        if changed.is_empty() {
+            return;
+        }
+        for decl in self.state_styles.dependents_of(changed) {
+            self.eval_decl(decl);
+        }
+        self.paint_dirty.set(true);
     }
 
     /// A matching `focused` declaration replaces the default focus ring, even
     /// when it patches nothing. Disabled or not-yet-matching ones do not.
     fn focus_style_taken(&self, id: u32) -> bool {
-        self.state_styles
-            .matching(id, WHEN_FOCUSED, self.state_bits(id))
+        self.state_styles.focus_style_taken(id)
     }
 
     /// Nearest node that owns pressed feedback for a fresh touch. A deeper
-    /// click target blocks its ancestors even without a state style.
+    /// click target blocks its ancestors even without a style declaration.
     fn press_target(&self, path: &[u32]) -> u32 {
         let modal = self.active_modal();
         for id in path {
@@ -1101,19 +1318,21 @@ impl Shell {
     /// Re-check the pressed target after a configuration or visibility change.
     /// A node that lost its click family, its pressed style, or its
     /// availability drops the state instead of handing the touch elsewhere.
+    /// Regaining feedback does not revive a dropped touch.
     fn sync_press_target(&mut self) {
         let target = self.visual.target;
         if target == 0 {
             return;
         }
         let alive = self.interaction_available(target, self.active_modal())
-            && (self.state_styles.pressed_interest(target)
+            && (self.state_styles.pressed_feedback(target)
                 || self
                     .recognizer
                     .click_target(std::slice::from_ref(&target))
                     .is_some());
         if !alive {
             self.visual.target = 0;
+            self.sample_sources();
             self.paint_dirty.set(true);
         }
     }
@@ -1144,6 +1363,7 @@ impl Shell {
         if handle == 0 {
             self.abort_edit_batch();
             self.focused = 0;
+            self.sample_sources();
             self.paint_dirty.set(true);
             return Ok(());
         }
@@ -1158,6 +1378,7 @@ impl Shell {
             self.abort_edit_batch();
         }
         self.focused = handle;
+        self.sample_sources();
         self.paint_dirty.set(true);
         Ok(())
     }
@@ -2545,7 +2766,10 @@ impl Shell {
                 };
                 self.node_mut(id)?.label = text.clone();
             }
-            Prop::Disabled => self.node_mut(id)?.disabled = value.as_bool()?,
+            Prop::Disabled => {
+                self.node_mut(id)?.disabled = value.as_bool()?;
+                self.sample_sources();
+            }
             Prop::Hidden => self.node_mut(id)?.a11y_hidden = value.as_bool()?,
             Prop::Focusable => self.node_mut(id)?.focusable = value.as_bool()?,
             Prop::Modal => self.node_mut(id)?.modal = value.as_bool()?,
@@ -2846,6 +3070,7 @@ impl Shell {
         self.recognizer.conceal_target(id);
         if self.visual.target == id {
             self.visual.target = 0;
+            self.sample_sources();
         }
         let count = self
             .nodes
@@ -2889,6 +3114,15 @@ impl Shell {
         self.taffy.remove(taffy_id).map_err(|err| err.to_string())?;
         self.nodes[handle as usize] = None;
         self.state_styles.target_disposed(handle);
+        // Variables sourced at the destroyed node retire; declarations that
+        // read them stop matching.
+        let retired_vars = self.vars.retire_target(handle);
+        for var in retired_vars {
+            let dependents = self.vars.dispose(var).unwrap_or_default();
+            for decl in dependents {
+                self.mark_decl_unmatched(decl);
+            }
+        }
         if self.visual.target == handle {
             self.visual.target = 0;
         }
@@ -3612,6 +3846,73 @@ fn overscroll_chains(value: &Value) -> Result<bool, String> {
     value
         .as_bool()
         .map_err(|_| "overscroll must be a bool".into())
+}
+
+/// Static value for a variable or patch slot. Numeric colors are
+/// `0xAARRGGBB`; strings parse as CSS colors.
+fn parse_expr_value(value: &Value) -> Option<ExprValue> {
+    match value {
+        Value::Bool(value) => Some(ExprValue::Bool(*value)),
+        Value::Int(value) => Some(ExprValue::Num(*value as f32)),
+        Value::Float(value) if value.is_finite() => Some(ExprValue::Num(*value as f32)),
+        _ => value.as_color().ok().map(ExprValue::Color),
+    }
+}
+
+/// Evaluate one declaration slot against current variable values. The
+/// apply-time pass runs this first, so type or range errors fail the batch.
+fn decl_eval_slot(
+    slot: Option<usize>,
+    expr: &DeclExpr,
+    vars: &VarTable,
+) -> Result<Option<ExprValue>, String> {
+    let value = match expr {
+        DeclExpr::Static(value) => *value,
+        DeclExpr::Program(program) => program
+            .eval(&|id| vars.get(id).map(|var| var.value))
+            .map_err(|error| error.to_string())?,
+    };
+    match slot {
+        None => match value {
+            ExprValue::Bool(_) => Ok(Some(value)),
+            _ => Err("when must be a bool".into()),
+        },
+        Some(slot) => match crate::state_style::slot_type(slot) {
+            SlotType::Num => match value {
+                ExprValue::Num(value) if value.is_finite() => Ok(Some(ExprValue::Num(value))),
+                _ => Err("patch expects a finite number".into()),
+            },
+            SlotType::Color => match value {
+                ExprValue::Color(_) => Ok(Some(value)),
+                _ => Err("patch expects a color".into()),
+            },
+            SlotType::Enum => match value {
+                ExprValue::Num(value) if value.is_finite() => {
+                    let code = value.round();
+                    if (0.0..=2.0).contains(&value) && (value - code).abs() <= f32::EPSILON * 4.0 {
+                        Ok(Some(ExprValue::Num(code)))
+                    } else {
+                        Err("patch expects a textAlign or fit code in 0..=2".into())
+                    }
+                }
+                _ => Err("patch expects a textAlign or fit code in 0..=2".into()),
+            },
+        },
+    }
+}
+
+/// Fold one evaluated slot into a resolved patch.
+fn assign_resolved(mut patch: ResolvedPatch, slot: usize, color: Color, num: f32) -> ResolvedPatch {
+    match slot {
+        crate::state_style::SLOT_BACKGROUND => patch.background = Some(color),
+        crate::state_style::SLOT_COLOR => patch.color = Some(color),
+        crate::state_style::SLOT_OPACITY => patch.opacity = Some(num.clamp(0.0, 1.0)),
+        crate::state_style::SLOT_RADIUS => patch.radius = Some(num.max(0.0)),
+        crate::state_style::SLOT_TEXT_ALIGN => patch.text_align = Some(num as u8),
+        crate::state_style::SLOT_FIT => patch.fit = Some(num as u8),
+        _ => {}
+    }
+    patch
 }
 
 fn caret_step(value: &str, offset: u32, forward: bool) -> u32 {

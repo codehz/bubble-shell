@@ -1,8 +1,15 @@
-//! Consumer-visible state style behavior: pressed and focused paint overrides.
+//! Consumer-visible style declaration behavior: source-driven paint overrides.
+//!
+//! Declarations are `ViewStyle` / `TextStyle` virtual components whose `when`
+//! and patch values are expression programs over UI-thread variables. These
+//! tests drive the ops directly; the compiler and runtime lower the authored
+//! syntax to exactly these ops.
 
 use bubble_core::{
-    encode, encode_set_prop_color, spawn_ops, wrapping_layout, Color, Kind, LayoutRequest,
-    NodeDesc, Op, PaintCmd, PointerAction, PointerInput, Shell, Value,
+    encode, encode_set_prop_color, spawn_ops, wrapping_layout, Color, Kind, LayoutRequest, NodeDesc,
+    Op, PaintCmd, PointerAction, PointerInput, ProgramBuilder, Shell, Value, OP_AND, OP_CONST,
+    OP_GT, OP_LOAD, OP_NOT, SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE,
+    SOURCE_PRESSED,
 };
 
 const BLUE: u32 = 0xff25_63eb;
@@ -72,24 +79,74 @@ fn host(
     }))
 }
 
-fn style(style: u32, target: u32, index: u32, when: &str) -> Vec<Op> {
+fn program(build: impl FnOnce(&mut ProgramBuilder)) -> Value {
+    let mut builder = ProgramBuilder::new();
+    build(&mut builder);
+    Value::Program(builder.build().expect("test program"))
+}
+
+/// `when` is a Bool program over the variable table.
+fn load(var: u32) -> impl FnOnce(&mut ProgramBuilder) {
+    move |builder: &mut ProgramBuilder| {
+        builder.load(var);
+    }
+}
+
+/// A pressed source is a 0..1 number, so the old string bit becomes `press > 0`.
+fn when_pressed(var: u32) -> impl FnOnce(&mut ProgramBuilder) {
+    move |builder: &mut ProgramBuilder| {
+        builder.load(var).const_num(0.0).op(OP_GT);
+    }
+}
+
+fn when_not(var: u32) -> impl FnOnce(&mut ProgramBuilder) {
+    move |builder: &mut ProgramBuilder| {
+        builder.load(var).op(OP_NOT);
+    }
+}
+
+fn when_and(left: impl FnOnce(&mut ProgramBuilder), right: impl FnOnce(&mut ProgramBuilder)) 
+-> impl FnOnce(&mut ProgramBuilder) {
+    move |builder: &mut ProgramBuilder| {
+        left(builder);
+        right(builder);
+        builder.op(OP_AND);
+    }
+}
+
+/// Source variable plus its target binding.
+fn source_var(var: u32, source: u8, target: u32) -> Vec<Op> {
     vec![
-        Op::SpawnStateStyle {
-            style,
+        Op::CreateVar {
+            var,
+            source,
+            initial: Value::Null,
+        },
+        Op::BindVar { var, target },
+    ]
+}
+
+/// One declaration: `target` node, `component` 1 ViewStyle / 2 TextStyle,
+/// `when` value, then paint overrides.
+fn decl(id: u32, target: u32, component: u8, index: u32, when: Value) -> Vec<Op> {
+    vec![
+        Op::SpawnStyleDecl {
+            decl: id,
             target,
+            component,
             index,
         },
-        Op::SetStateStyleProp {
-            style,
+        Op::SetStyleDeclProp {
+            decl: id,
             key: "when".into(),
-            value: Value::String(when.into()),
+            value: when,
         },
     ]
 }
 
-fn paint_op(style: u32, key: &str, value: Value) -> Op {
-    Op::SetStateStyleProp {
-        style,
+fn paint_op(decl: u32, key: &str, value: Value) -> Op {
+    Op::SetStyleDeclProp {
+        decl,
         key: key.into(),
         value,
     }
@@ -117,7 +174,8 @@ fn pressed_shell() -> Shell {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
     let mut ops = button(2, BLUE);
-    ops.extend(style(1, 2, 0, "pressed"));
+    ops.extend(source_var(1, SOURCE_PRESSED, 2));
+    ops.extend(decl(1, 2, 1, 0, program(when_pressed(1))));
     ops.push(paint_op(1, "backgroundColor", Value::Int(RED as i64)));
     shell.apply_ops(&encode(1, &ops)).unwrap();
     shell.layout(&mut measure).unwrap();
@@ -133,7 +191,7 @@ fn pressed_overlay_uses_latest_base_and_stops_on_input_end() {
     assert_eq!(fills(&shell), vec![RED], "pressed replaces the base value");
     assert!(
         shell.take_gesture_events().is_empty(),
-        "a state style creates no gesture events"
+        "a style declaration creates no gesture events"
     );
 
     // The node's own value keeps changing underneath the pressed overlay.
@@ -221,11 +279,20 @@ fn state_cascade_focus_and_declaration_lifecycle() {
         key: "role".into(),
         value: Value::String("button".into()),
     });
-    ops.extend(style(1, 2, 0, "focused"));
+    ops.extend(source_var(1, SOURCE_FOCUSED, 2));
+    ops.extend(source_var(2, SOURCE_PRESSED, 2));
+    ops.extend(decl(1, 2, 1, 0, program(load(1))));
     ops.push(paint_op(1, "backgroundColor", Value::Int(FOCUSED as i64)));
-    ops.extend(style(2, 2, 1, "pressed"));
+    ops.extend(decl(2, 2, 1, 1, program(when_pressed(2))));
     ops.push(paint_op(2, "backgroundColor", Value::Int(PRESSED as i64)));
-    ops.extend(style(3, 2, 2, "pressed focused"));
+    // `pressed && focused`, expressed as one program over both variables.
+    ops.extend(decl(
+        3,
+        2,
+        1,
+        2,
+        program(when_and(when_pressed(2), load(1))),
+    ));
     ops.push(paint_op(3, "backgroundColor", Value::Int(BOTH as i64)));
     shell.apply_ops(&encode(1, &ops)).unwrap();
     shell.layout(&mut measure).unwrap();
@@ -235,13 +302,13 @@ fn state_cascade_focus_and_declaration_lifecycle() {
     assert_eq!(fills(&shell), vec![FOCUSED]);
     let ring = Color::new(0.30, 0.64, 1.0, 0.95).to_argb();
 
-    // A disabled focused declaration does not take the ring over.
+    // A declaration whose `when` no longer holds does not take the ring over.
     shell
-        .apply_ops(&encode(2, &[paint_op(1, "enabled", Value::Bool(false))]))
+        .apply_ops(&encode(2, &[paint_op(1, "when", Value::Bool(false))]))
         .unwrap();
     assert_eq!(fills(&shell), vec![BLUE, ring, ring, ring, ring]);
     shell
-        .apply_ops(&encode(3, &[paint_op(1, "enabled", Value::Bool(true))]))
+        .apply_ops(&encode(3, &[paint_op(1, "when", program(load(1)))]))
         .unwrap();
     assert_eq!(fills(&shell), vec![FOCUSED]);
 
@@ -251,8 +318,8 @@ fn state_cascade_focus_and_declaration_lifecycle() {
     shell
         .apply_ops(&encode(
             4,
-            &[Op::MoveStateStyle {
-                style: 3,
+            &[Op::MoveStyleDecl {
+                decl: 3,
                 target: 2,
                 index: 0,
             }],
@@ -262,8 +329,8 @@ fn state_cascade_focus_and_declaration_lifecycle() {
     shell
         .apply_ops(&encode(
             5,
-            &[Op::MoveStateStyle {
-                style: 1,
+            &[Op::MoveStyleDecl {
+                decl: 1,
                 target: 2,
                 index: 2,
             }],
@@ -277,20 +344,23 @@ fn state_cascade_focus_and_declaration_lifecycle() {
         .unwrap();
     assert_eq!(fills(&shell), vec![PRESSED]);
 
-    // Disabling and disposing step the cascade back one layer at a time.
+    // A `when` that stopped matching steps the cascade back one layer.
     shell
-        .apply_ops(&encode(7, &[paint_op(2, "enabled", Value::Bool(false))]))
+        .apply_ops(&encode(7, &[paint_op(2, "when", Value::Bool(false))]))
         .unwrap();
     assert_eq!(fills(&shell), vec![BOTH]);
     shell
-        .apply_ops(&encode(8, &[Op::DisposeStateStyle { style: 3 }]))
+        .apply_ops(&encode(8, &[Op::DisposeStyleDecl { decl: 3 }]))
         .unwrap();
     assert_eq!(fills(&shell), vec![BLUE]);
 
-    // Disposing the last pressed declaration cleared the live press, and
-    // re-enabling does not revive it inside the same touch.
+    // Disposing the matching pressed declaration cleared the live press, and
+    // re-matching does not revive it inside the same touch.
     shell
-        .apply_ops(&encode(9, &[paint_op(2, "enabled", Value::Bool(true))]))
+        .apply_ops(&encode(
+            9,
+            &[paint_op(2, "when", program(when_pressed(2)))],
+        ))
         .unwrap();
     assert_eq!(fills(&shell), vec![BLUE]);
     shell.pointer(input(PointerAction::Up, 1, 50.0, 50.0, 60.0));
@@ -335,17 +405,77 @@ fn state_cascade_focus_and_declaration_lifecycle() {
 }
 
 #[test]
-fn effective_text_alignment_matches_edit_geometry() {
+fn disabled_source_overrides_pressed_and_blocks_feedback() {
     let mut shell = Shell::blank().unwrap();
-    shell.set_viewport(320.0, 200.0);
+    shell.set_viewport(200.0, 200.0);
+    let mut ops = button(2, BLUE);
+    ops.extend(source_var(1, SOURCE_PRESSED, 2));
+    ops.extend(source_var(2, SOURCE_DISABLED, 2));
+    // `!disabled && press > 0`: the combination the old string `when` could not
+    // express.
+    ops.extend(decl(
+        1,
+        2,
+        1,
+        0,
+        program(when_and(when_not(2), when_pressed(1))),
+    ));
+    ops.push(paint_op(1, "backgroundColor", Value::Int(RED as i64)));
+    ops.extend(decl(3, 2, 1, 1, program(load(2))));
+    ops.push(paint_op(3, "opacity", Value::Float(0.5)));
+    shell.apply_ops(&encode(1, &ops)).unwrap();
+    shell.layout(&mut measure).unwrap();
+
+    shell.pointer(input(PointerAction::Down, 1, 50.0, 50.0, 0.0));
+    // Pressed feedback still engages on the interest bit, but `disabled` is
+    // false so the pressed paint wins.
+    assert_eq!(fills(&shell), vec![RED]);
+
+    // Disabling mid-touch: the pressed variable drops to 0 and the disabled
+    // declaration takes over with no extra input.
+    shell
+        .apply_ops(&encode(
+            2,
+            &[Op::SetProp {
+                handle: 2,
+                key: "disabled".into(),
+                value: Value::Bool(true),
+            }],
+        ))
+        .unwrap();
+    let paint = shell.paint();
+    let opacity: Vec<f32> = paint
+        .iter()
+        .filter_map(|cmd| match cmd {
+            PaintCmd::PushOpacity { opacity } => Some(*opacity),
+            _ => None,
+        })
+        .collect();
+    drop(paint);
+    assert_eq!(opacity, vec![0.5], "the disabled declaration patches opacity");
+    assert_eq!(fills(&shell), vec![BLUE], "the pressed overlay is gone");
+
+    shell
+        .apply_ops(&encode(
+            3,
+            &[Op::SetProp {
+                handle: 2,
+                key: "disabled".into(),
+                value: Value::Bool(false),
+            }],
+        ))
+        .unwrap();
+    assert_eq!(fills(&shell), vec![BLUE], "a disabled touch does not revive");
+}
+
+#[test]
+fn focused_and_editing_sources_drive_their_variables() {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 200.0);
     let mut field = NodeDesc::view(2, 1);
     field.kind = Kind::Field;
     field.text = "Edit".into();
     field.color = 0xffff_ffff;
-    let mut text = NodeDesc::text(3, 1, "label");
-    text.color = 0xff_ff_ff_ff;
-    let mut image = NodeDesc::view(4, 1);
-    image.kind = Kind::Image;
     let mut ops = spawn_ops(field);
     ops.push(Op::SetProp {
         handle: 2,
@@ -357,133 +487,157 @@ fn effective_text_alignment_matches_edit_geometry() {
         key: "height".into(),
         value: Value::Float(40.0),
     });
-    ops.extend(spawn_ops(text));
-    ops.push(Op::SetProp {
-        handle: 3,
-        key: "width".into(),
-        value: Value::Float(100.0),
-    });
-    ops.push(Op::SetProp {
-        handle: 3,
-        key: "height".into(),
-        value: Value::Float(20.0),
-    });
-    ops.extend(spawn_ops(image));
-    ops.push(Op::SetProp {
-        handle: 4,
-        key: "width".into(),
-        value: Value::Float(100.0),
-    });
-    ops.push(Op::SetProp {
-        handle: 4,
-        key: "height".into(),
-        value: Value::Float(20.0),
-    });
-    ops.push(Op::SetProp {
-        handle: 4,
-        key: "src".into(),
-        value: Value::String("logo.png".into()),
-    });
-    ops.push(Op::SetProp {
-        handle: 4,
-        key: "fit".into(),
-        value: Value::String("contain".into()),
-    });
-    ops.extend(style(1, 2, 0, "focused"));
-    ops.push(paint_op(1, "textAlign", Value::String("right".into())));
-    ops.extend(style(2, 3, 0, "pressed"));
-    ops.push(paint_op(2, "color", Value::Int(0xff12_3456)));
-    ops.extend(style(3, 4, 0, "pressed"));
-    ops.push(paint_op(3, "fit", Value::String("cover".into())));
-    ops.push(paint_op(3, "radius", Value::Float(6.0)));
+    ops.extend(source_var(1, SOURCE_FOCUSED, 2));
+    ops.extend(source_var(2, SOURCE_EDITING, 2));
+    ops.extend(decl(1, 2, 2, 0, program(load(1))));
+    ops.push(paint_op(1, "color", Value::Int(0xff12_3456)));
+    ops.extend(decl(2, 2, 2, 1, program(load(2))));
+    ops.push(paint_op(2, "textAlign", Value::Int(2)));
     shell.apply_ops(&encode(1, &ops)).unwrap();
 
+    let value = |shell: &Shell| {
+        shell
+            .paint()
+            .iter()
+            .find_map(|cmd| match cmd {
+                PaintCmd::Text { color, text, .. } if text == "Edit" => Some(color.to_argb()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(value(&shell), 0xffff_ffff);
+    shell.focus(2).unwrap();
+    assert_eq!(value(&shell), 0xff12_3456, "focused colors the field text");
+    // An editing source is true for the focused field, so the text aligns
+    // right in the layout snapshot the caret uses.
+    let mut keys: Vec<u8> = Vec::new();
+    shell
+        .layout_with(&mut measure, &mut |req| host(&mut keys, req))
+        .unwrap();
+    assert_eq!(keys, vec![2]);
+    shell.focus(0).unwrap();
+    assert_eq!(value(&shell), 0xffff_ffff);
     let mut keys: Vec<u8> = Vec::new();
     shell
         .layout_with(&mut measure, &mut |req| host(&mut keys, req))
         .unwrap();
     assert!(keys.is_empty(), "an unfocused field asks for no snapshot");
-    shell.focus(2).unwrap();
-    shell
-        .layout_with(&mut measure, &mut |req| host(&mut keys, req))
-        .unwrap();
-    assert_eq!(keys, vec![2], "the field lays out with the focused align");
-    let box_before = shell.node_box(2).unwrap();
+}
 
-    let align = shell
-        .paint()
-        .iter()
-        .find_map(|cmd| match cmd {
-            PaintCmd::Text { align, text, .. } if text == "Edit" => Some(*align),
-            _ => None,
-        })
-        .expect("field text");
-    assert_eq!(align, 2, "paint uses the effective alignment");
-
-    let unit = shell
-        .unit_at(150.0, 20.0, &mut measure)
-        .unwrap()
-        .expect("focused field");
-    let caret = shell
-        .caret_rect_at(unit, &mut measure)
-        .unwrap()
-        .expect("caret");
-    let round_trip = shell
-        .unit_at(caret.0 + 1.0, caret.1 + 1.0, &mut measure)
-        .unwrap()
-        .expect("focused field");
-    assert_eq!(round_trip, unit, "caret and hit testing agree");
-    assert!(
-        caret.0 > 100.0,
-        "right alignment moves the caret into the right half"
-    );
-
-    // A pressed Text patches its own color, and the sibling Image is
-    // untouched by it.
-    let label = |shell: &Shell| {
-        shell.paint().iter().find_map(|cmd| match cmd {
-            PaintCmd::Text { color, text, .. } if text == "label" => Some(color.to_argb()),
-            _ => None,
-        })
-    };
-    let art = |shell: &Shell| {
-        shell.paint().iter().find_map(|cmd| match cmd {
-            PaintCmd::Image { fit, radius, .. } => Some((*fit, *radius)),
-            _ => None,
-        })
-    };
-    assert_eq!(label(&shell), Some(0xff_ff_ff_ff));
-    assert_eq!(art(&shell), Some((0, 0.0)));
-    let box_at = |shell: &Shell, handle: u32| {
-        let (x, y, w, h) = shell.node_box(handle).unwrap();
-        (x + w / 2.0, y + h / 2.0)
-    };
-    let (text_x, text_y) = box_at(&shell, 3);
-    shell.pointer(input(PointerAction::Down, 1, text_x, text_y, 0.0));
-    assert_eq!(label(&shell), Some(0xff12_3456));
-    assert_eq!(art(&shell), Some((0, 0.0)), "a sibling keeps its own style");
-    shell.pointer(input(PointerAction::Up, 1, text_x, text_y, 20.0));
-    assert_eq!(label(&shell), Some(0xff_ff_ff_ff));
-
-    let (art_x, art_y) = box_at(&shell, 4);
-    shell.pointer(input(PointerAction::Down, 1, art_x, art_y, 40.0));
-    assert_eq!(art(&shell), Some((1, 6.0)));
-    shell.pointer(input(PointerAction::Up, 1, art_x, art_y, 60.0));
-    assert_eq!(art(&shell), Some((0, 0.0)));
-
-    // Losing focus returns the field to the base alignment.
-    shell.focus(0).unwrap();
+#[test]
+fn script_writes_an_unlinked_variable() {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 200.0);
+    let mut ops = button(2, BLUE);
+    ops.extend([Op::CreateVar {
+        var: 1,
+        source: SOURCE_NONE,
+        initial: Value::Float(0.0),
+    }]);
+    ops.extend(decl(
+        1,
+        2,
+        1,
+        0,
+        program(|builder| {
+            builder.load(1).const_num(0.0).op(OP_GT);
+        }),
+    ));
+    ops.push(paint_op(1, "backgroundColor", Value::Int(RED as i64)));
+    shell.apply_ops(&encode(1, &ops)).unwrap();
     shell.layout(&mut measure).unwrap();
-    let align = shell
-        .paint()
-        .iter()
-        .find_map(|cmd| match cmd {
-            PaintCmd::Text { align, text, .. } if text == "Edit" => Some(*align),
-            _ => None,
-        })
-        .expect("field text");
-    assert_eq!(align, 0);
-    assert_eq!(shell.node_box(2).unwrap(), box_before);
+    assert_eq!(fills(&shell), vec![BLUE]);
+
+    // A script-driven variable reaches the UI thread only through a batch;
+    // stage 2 wires `SetVar` writes, so the value stays at 0 for now.
+    shell
+        .apply_ops(&encode(2, &[Op::BindVar { var: 1, target: 0 }]))
+        .unwrap();
+    assert_eq!(fills(&shell), vec![BLUE]);
+}
+
+#[test]
+fn static_when_and_program_validation_fail_fast() {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 200.0);
+    let ops = button(2, BLUE);
+    shell.apply_ops(&encode(1, &ops)).unwrap();
+
+    // `when` must be a bool program or bool constant.
+    assert!(shell
+        .apply_ops(&encode(
+            2,
+            &[
+                Op::SpawnStyleDecl {
+                    decl: 1,
+                    target: 2,
+                    component: 1,
+                    index: 0,
+                },
+                paint_op(1, "when", Value::Int(1)),
+            ],
+        ))
+        .is_err());
+    // A patch slot with the wrong type fails the batch.
+    assert!(shell
+        .apply_ops(&encode(
+            3,
+            &[
+                Op::SpawnStyleDecl {
+                    decl: 2,
+                    target: 2,
+                    component: 1,
+                    index: 0,
+                },
+                paint_op(2, "when", Value::Bool(true)),
+                paint_op(2, "backgroundColor", Value::Int(RED as i64)),
+            ],
+        ))
+        .is_ok());
+    // ViewStyle has no color/textAlign; TextStyle has no background.
+    assert!(shell
+        .apply_ops(&encode(
+            4,
+            &[
+                Op::SpawnStyleDecl {
+                    decl: 3,
+                    target: 2,
+                    component: 2,
+                    index: 1,
+                },
+                paint_op(3, "color", Value::Int(0xff12_3456)),
+            ],
+        ))
+        .is_ok());
+    assert!(shell
+        .apply_ops(&encode(
+            5,
+            &[
+                Op::SpawnStyleDecl {
+                    decl: 4,
+                    target: 2,
+                    component: 1,
+                    index: 2,
+                },
+                paint_op(4, "textAlign", Value::Int(2)),
+            ],
+        ))
+        .is_err());
+    // Unknown variables are rejected at apply time.
+    assert!(shell
+        .apply_ops(&encode(
+            6,
+            &[
+                Op::SpawnStyleDecl {
+                    decl: 5,
+                    target: 2,
+                    component: 1,
+                    index: 3,
+                },
+                paint_op(5, "when", program(load(99))),
+            ],
+        ))
+        .is_err());
 }
 
 /// A node with an enabled tap family still shows pressed feedback; the click
@@ -493,7 +647,8 @@ fn pressed_feedback_survives_a_tap_family() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
     let mut ops = button(2, BLUE);
-    ops.extend(style(1, 2, 0, "pressed"));
+    ops.extend(source_var(1, SOURCE_PRESSED, 2));
+    ops.extend(decl(1, 2, 1, 0, program(when_pressed(1))));
     ops.push(paint_op(1, "opacity", Value::Float(0.7)));
     ops.extend([
         Op::SpawnGesture {
