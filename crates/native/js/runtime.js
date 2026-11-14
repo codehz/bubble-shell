@@ -27,12 +27,18 @@ export function setApi(next) {
   api = next;
 }
 
-export class Dynamic {
+// Internal wrapper the compiler emits around primitive prop expressions that
+// read signals; `pack` / `packGesture` split these out and `bindProp` /
+// `bindGestureProp` own their lifecycle. Component props are getters instead,
+// so Dynamic is not part of the author-facing API.
+class Dynamic {
   constructor(run) {
     this.run = run;
   }
 }
 
+// Compiler-facing wrapper for primitive props that read signals. The compiler
+// emits these calls from `bubble:rt`; author code never imports it.
 export function dynamic(run) {
   if (typeof run !== "function") throw new Error("dynamic expects a function");
   return new Dynamic(run);
@@ -427,6 +433,24 @@ export function slot(thunk, fallback) {
   }
   if (typeof thunk !== "function") throw new Error("slot expects a render function");
   thunk();
+}
+
+// Children-position element expression (`{pad}`, `{cond ? <A/> : <B/>}`): run
+// the thunk once now and again whenever the signals it reads change, replacing
+// the nodes it mounted (the same replaceBranch path Show uses). The thunk must
+// mount nodes into the current parent; a thunk that yields no nodes renders
+// nothing.
+export function content(thunk) {
+  if (typeof thunk !== "function") throw new Error("content expects a render function");
+  const parentHandle = parent();
+  const anchor = createAnchor();
+  const scope = newVirtualScope(parentHandle, currentVirtualScope);
+  currentVirtualScope.entries.push(scope);
+  let branch = { parent: parentHandle, handles: [] };
+  addBinding(() => {
+    branch = replaceBranch(parentHandle, anchor, branch, thunk, scope);
+  }, anchor);
+  return anchor;
 }
 
 const primitives = new Map();

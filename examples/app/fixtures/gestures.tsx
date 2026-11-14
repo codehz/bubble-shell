@@ -1,4 +1,4 @@
-import { mount, signal, Text, View, TapGesture, DoubleTapGesture, LongPressGesture, PanGesture, TransformGesture, ViewStyle, createVar, ref, For, Dynamic } from "bubble-shell";
+import { mount, signal, Text, View, TapGesture, DoubleTapGesture, LongPressGesture, PanGesture, TransformGesture, ViewStyle, createVar, ref, For } from "bubble-shell";
 
 const SCENES = [
   { id: "tap", label: "Tap" },
@@ -38,35 +38,29 @@ function describe(event) {
   return line;
 }
 
-// The compiler wraps non-element JSX attributes in Dynamic; unwrap to the
-// signal the scene passed down.
-function unwrap(value) {
-  return value instanceof Dynamic ? value.run() : value;
-}
-
+// Props are Solid-style getters: scenes pass current values like
+// live={live()} and the pad re-reads them wherever they render.
 function Pad(props) {
   const pad = ref();
   const pressed = createVar({ source: "pressed", target: pad });
-  const live = unwrap(props.live);
   return (
-    <View ref={pad} backgroundColor={props.color} radius={12} flexGrow={1} flexShrink={1} label={props.title}>
+    <View ref={pad} backgroundColor={props.color()} radius={12} flexGrow={1} flexShrink={1} label={props.title()}>
       <ViewStyle target={pad} when={pressed > 0} opacity={0.7} />
       {props.children}
-      <Text color="#ffffff" fontSize={18} textAlign="center">{props.title}</Text>
-      <Text color="#e5e7eb" fontSize={13} textAlign="center">{props.detail}</Text>
-      <Text color="#fbbf24" fontSize={14} textAlign="center">{live()}</Text>
+      <Text color="#ffffff" fontSize={18} textAlign="center">{props.title()}</Text>
+      <Text color="#e5e7eb" fontSize={13} textAlign="center">{props.detail()}</Text>
+      <Text color="#fbbf24" fontSize={14} textAlign="center">{props.live()}</Text>
     </View>
   );
 }
 
 function SceneFrame(props) {
-  const events = unwrap(props.events);
   return (
     <View flexGrow={1} flexShrink={1} gap={8}>
-      <Text color="#9ca3af" fontSize={13}>{props.hint}</Text>
+      <Text color="#9ca3af" fontSize={13}>{props.hint()}</Text>
       {props.children}
       <View height={150} flexShrink={0} overflowY="scroll" backgroundColor="#111827" radius={8} padding={[8, 10, 10, 8]} label="Gesture log">
-        <Text color="#cbd5e1" fontSize={12}>{events().length ? events().join("\n") : "no events yet"}</Text>
+        <Text color="#cbd5e1" fontSize={12}>{props.events().length ? props.events().join("\n") : "no events yet"}</Text>
       </View>
     </View>
   );
@@ -84,8 +78,8 @@ function useRecorder() {
 function TapScene() {
   const { events, live, record } = useRecorder();
   return (
-    <SceneFrame hint={HINTS.tap} events={events}>
-      <Pad title="Tap pad" detail="down · up · tap · cancel" color="#26364a" live={live}>
+    <SceneFrame hint={HINTS.tap} events={events()}>
+      <Pad title="Tap pad" detail="down · up · tap · cancel" color="#26364a" live={live()}>
         <TapGesture
           onTapStart={(e) => record("tap", e)}
           onTap={(e) => record("tap", e)}
@@ -100,8 +94,8 @@ function TapScene() {
 function DoubleScene() {
   const { events, record } = useRecorder();
   return (
-    <SceneFrame hint={HINTS.double} events={events}>
-      <Pad title="Double tap pad" detail="two quick taps" color="#31405a" live={signal("")}>
+    <SceneFrame hint={HINTS.double} events={events()}>
+      <Pad title="Double tap pad" detail="two quick taps" color="#31405a" live="">
         <DoubleTapGesture onDoubleTap={(e) => record("double", e)} />
       </Pad>
     </SceneFrame>
@@ -111,8 +105,8 @@ function DoubleScene() {
 function LongScene() {
   const { events, record } = useRecorder();
   return (
-    <SceneFrame hint={HINTS.long} events={events}>
-      <Pad title="Long press pad" detail="hold 500 ms" color="#3d2f4d" live={signal("")}>
+    <SceneFrame hint={HINTS.long} events={events()}>
+      <Pad title="Long press pad" detail="hold 500 ms" color="#3d2f4d" live="">
         <LongPressGesture
           duration={500}
           maxDistance={10}
@@ -128,8 +122,8 @@ function LongScene() {
 function PanScene() {
   const { events, live, record } = useRecorder();
   return (
-    <SceneFrame hint={HINTS.pan} events={events}>
-      <Pad title="Pan pad" detail="any axis, 10 px threshold" color="#1f3d34" live={live}>
+    <SceneFrame hint={HINTS.pan} events={events()}>
+      <Pad title="Pan pad" detail="any axis, 10 px threshold" color="#1f3d34" live={live()}>
         <PanGesture
           axis="both"
           minDistance={10}
@@ -152,8 +146,8 @@ function PanScene() {
 function TransformScene() {
   const { events, live, record } = useRecorder();
   return (
-    <SceneFrame hint={HINTS.transform} events={events}>
-      <Pad title="Transform pad" detail="pan + pinch + rotate" color="#3d2f2f" live={live}>
+    <SceneFrame hint={HINTS.transform} events={events()}>
+      <Pad title="Transform pad" detail="pan + pinch + rotate" color="#3d2f2f" live={live()}>
         <TransformGesture
           mode={["pan", "pinch", "rotate"]}
           minDistance={10}
@@ -176,7 +170,7 @@ function TransformScene() {
 function ParallelScene() {
   const { events, live, record } = useRecorder();
   return (
-    <SceneFrame hint={HINTS.parallel} events={events}>
+    <SceneFrame hint={HINTS.parallel} events={events()}>
       <View height={260} flexShrink={0} overflowY="scroll" backgroundColor="#26364a" radius={12} padding={[8, 8, 8, 8]} gap={8}>
         <View height={140} flexShrink={0} backgroundColor="#4c1d95" radius={8} label="Pan pad">
           <PanGesture
@@ -204,7 +198,7 @@ function ParallelScene() {
 function ReserveScene() {
   const { events, record } = useRecorder();
   return (
-    <SceneFrame hint={HINTS.reserve} events={events}>
+    <SceneFrame hint={HINTS.reserve} events={events()}>
       <View height={260} flexShrink={0} overflowY="scroll" backgroundColor="#26364a" radius={12} padding={[8, 8, 8, 8]} gap={8}>
         <View height={140} flexShrink={0} backgroundColor="#7c2d12" radius={8} label="Hold pad">
           <LongPressGesture
@@ -235,7 +229,7 @@ function ReserveScene() {
 function ContainScene() {
   const { events } = useRecorder();
   return (
-    <SceneFrame hint={HINTS.contain} events={events}>
+    <SceneFrame hint={HINTS.contain} events={events()}>
       <View height={280} flexShrink={0} overflowY="scroll" backgroundColor="#26364a" radius={12} padding={[8, 8, 8, 8]} gap={8}>
         <View height={120} flexShrink={0} overflowY="scroll" overscrollY={false} backgroundColor="#526b83" radius={8} label="Inner list">
           <Text color="#ffffff" fontSize={13}>Inner row 1</Text>
@@ -259,33 +253,38 @@ function ContainScene() {
 
 function DisposeScene() {
   const { events, live, record } = useRecorder();
+  // The pad is a node value: declaring it mounts nothing; `{pad}` below
+  // places (and re-renders) it at that position in the frame.
+  const pad = (
+    <Pad title="Dispose pad" detail="pan removes itself on first move" color="#134e4a" live={live()}>
+      <PanGesture
+        axis="both"
+        minDistance={10}
+        onPanStart={(e) => record("pan", e)}
+        onPanUpdate={(e) => {
+          live.update(() => describe(e));
+          record("pan", e);
+        }}
+        onPanEnd={(e) => record("pan", e)}
+      />
+    </Pad>
+  );
   return (
-    <SceneFrame hint={HINTS.dispose} events={events}>
-      <Pad title="Dispose pad" detail="pan removes itself on first move" color="#134e4a" live={live}>
-        <PanGesture
-          axis="both"
-          minDistance={10}
-          onPanStart={(e) => record("pan", e)}
-          onPanUpdate={(e) => {
-            live.update(() => describe(e));
-            record("pan", e);
-          }}
-          onPanEnd={(e) => record("pan", e)}
-        />
-      </Pad>
+    <SceneFrame hint={HINTS.dispose} events={events()}>
+      {pad}
     </SceneFrame>
   );
 }
 
 function Scene(props) {
-  if (props.name === "tap") return <TapScene />;
-  if (props.name === "double") return <DoubleScene />;
-  if (props.name === "long") return <LongScene />;
-  if (props.name === "pan") return <PanScene />;
-  if (props.name === "transform") return <TransformScene />;
-  if (props.name === "parallel") return <ParallelScene />;
-  if (props.name === "reserve") return <ReserveScene />;
-  if (props.name === "contain") return <ContainScene />;
+  if (props.name() === "tap") return <TapScene />;
+  if (props.name() === "double") return <DoubleScene />;
+  if (props.name() === "long") return <LongScene />;
+  if (props.name() === "pan") return <PanScene />;
+  if (props.name() === "transform") return <TransformScene />;
+  if (props.name() === "parallel") return <ParallelScene />;
+  if (props.name() === "reserve") return <ReserveScene />;
+  if (props.name() === "contain") return <ContainScene />;
   return <DisposeScene />;
 }
 

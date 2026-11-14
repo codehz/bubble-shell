@@ -30,8 +30,9 @@ mount(() => <Counter />);
 - 静态属性和子节点设一次；会读本地 `signal()` / `computed()` 的表达式登记为绑定。
 - 绑定重跑时，原生渲染器直接产出对应 op（`SetText` / `SetProp` / 插入 / 移动 / 销毁）。没有 VDOM diff，也没有「模板 IR + 按绑定生成的 JS 更新函数」。
 - `<Show>` / `<For>` / `<Index>` / `<Switch>` / `<Match>` 是运行时控制流：`when` / `each` 是每次重跑都调用的 accessor，不走 `dynamic()`。三元、`&&` 和 `when()` / `each()` 不再是控制流。
-- 组件是普通函数：大写标签编译成 `component(Fn, props, children?)`，在父节点构建时同步执行一次。传给组件的 JSX 值属性编译成渲染 thunk（`header={<Text/>}` → `header: () => primitive(...)`），在组件调用它的位置才求值；函数属性原样传递。
+- 组件是普通函数：大写标签编译成 `component(Fn, props, children?)`，在父节点构建时同步执行一次。组件 props 采用统一 getter：非函数表达式一律编译成 `() => expr`，组件用 `props.x()` 读取（JSX 值例外，编译成渲染 thunk；`children` prop 维持 JSX / 函数值 / `props.children` 转发三选一）。裸 signal 绑定标识符作 prop（`live={live}`）编译报错，须写 `live={live()}`。读 signal 的原语 prop 仍编译成 `dynamic(() => expr)`，由 runtime 内部的 `bindProp` / `bindGestureProp` 消费；`dynamic` / `Dynamic` 不属于作者 API（详见 [plans/jsx-transform.md](plans/jsx-transform.md)）。
 - 子节点位置写 `{props.children}` 或 `{props.children()}` 即在该处渲染 children；`children` / `*.children` 是保留的槽引用，不能当文本或原语属性用。命名槽用 `<Slot of={props.header} />` 或 `<Slot>{props.header}</Slot>`，可选 `fallback={<Text>…</Text>}` 在槽为空时渲染。槽没有自己的节点；槽内容放进 `<Show>` / `<For>` 时跟随分支的插入与销毁。控制流 render 里写 `{() => props.children}` 会自动降成槽调用；其余裸函数返回值（如 `{() => props.header}`）不会渲染，要写 `{() => props.header()}` 或 `<Slot of={props.header} />`。
+- children 中的 `{expr}` 按编译期分类：元素绑定（`const pad = <Pad/>`，声明处降成 thunk，使用点 `content(pad)`）、显式 thunk 或含 JSX 的表达式（`{cond ? <A/> : <B/>}`）→ `content(thunk)` 分支，依赖变化时销毁重建；读 signal 的值表达式与字符串 → 就地响应式 `<Text>`；无法静态分类的函数调用（`{make()}`）与被当作文本的元素绑定（`<Text>{pad}</Text>`）编译报错。`content()` 每次重建整段节点，高频更新应走 `<Text>` 字符串路径。
 
 ### 运行时
 

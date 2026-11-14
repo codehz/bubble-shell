@@ -1,6 +1,6 @@
 # 09 · JSX 转换方案 v2：Solid 一致的惰性元素与统一 getter props
 
-状态：方案已定稿，未实现。本文不引入任何新的验证工具或设备矩阵；所有验证仍限于 `cargo test --workspace`、`cargo check --workspace`、`node --test examples/web/*.test.mjs` 与手动 demo 冒烟（`node examples/web/m0-smoke.mjs <fixture>`）。
+状态：已实现（2026-11-14）。降级规则术语已同步到 `docs/reference/runtime.md`；文中提及的 `docs/07-js-bundling-plan.md` 已不在仓库（打包细节见 `docs/adr/js-bundling.md`），其降级规则章节由 runtime.md 承接。本文不引入任何新的验证工具或设备矩阵；所有验证仍限于 `cargo test --workspace`、`cargo check --workspace`、`node --test examples/web/*.test.mjs` 与手动 demo 冒烟（`node examples/web/m0-smoke.mjs <fixture>`）。
 
 实现落点：`crates/compiler/src/lib.rs`（绑定扫描扩展、props/children 降级规则重写）、`crates/native/js/runtime.js`（新增 `content()` 分支原语、`Dynamic` 收回内部）、`examples/app/fixtures/*.tsx` 与 `crates/testing/apps/*.tsx`（按新规则迁移）、`crates/compiler/tests/lower.rs`（用例更新）、`docs/07-js-bundling-plan.md` 与本文件（术语同步）。
 
@@ -82,7 +82,9 @@
 1. `examples/app/fixtures/`：6 个 fixture。gestures.tsx 可回退为自然写法（删掉 `SceneFrame`/`unwrap`/`Dynamic` 解包样板：`live={live()}` 直接传 getter，`{pad}` 类组合直接写）。
 2. `crates/testing/apps/`：6 个 TSX 迁移；`scripts/*.script` 断言不涉及 props 形态，预期零改动。
 3. `crates/compiler/tests/lower.rs`：断言更新为 getter/content 形态。
-4. 文档：`docs/07-js-bundling-plan.md` 的降级规则章节指向本文件；`docs/reference/embedding.md` 术语核对。
+4. 文档：`docs/07-js-bundling-plan.md` 已不在仓库，降级规则术语同步到 `docs/reference/runtime.md`；`docs/reference/embedding.md` 无相关术语。
+
+实现记录的两处偏差：`gestures.tsx` 保留 `SceneFrame`（它是布局复用组件而非转换样板，删除只重复 9 份 frame JSX）；`dynamic` 函数保留 `bubble:rt` 导出（编译产物仍需 `dynamic(() => expr)`，仅 `Dynamic` 类取消导出、两者均移出作者 API）。
 
 ## 6. 验证
 

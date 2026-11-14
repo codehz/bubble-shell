@@ -35,6 +35,7 @@ const RT_PRIMITIVE: &str = "__bubble_rt_primitive";
 const RT_COMPONENT: &str = "__bubble_rt_component";
 const RT_DYNAMIC: &str = "__bubble_rt_dynamic";
 const RT_SLOT: &str = "__bubble_rt_slot";
+const RT_CONTENT: &str = "__bubble_rt_content";
 const RT_STYLE_EXPR: &str = "__bubble_rt_styleExpr";
 const RT_SHOW: &str = "__bubble_rt_show";
 const RT_FOR_EACH: &str = "__bubble_rt_forEach";
@@ -118,6 +119,7 @@ pub fn compile_module(
         name,
         source,
         scopes: Vec::new(),
+        thunk_jsx: false,
         errors: Vec::new(),
     };
     lower.visit_program(&mut program);
@@ -160,6 +162,7 @@ fn runtime_import<'a>(builder: &AstBuilder<'a>) -> Statement<'a> {
         ("component", RT_COMPONENT),
         ("dynamic", RT_DYNAMIC),
         ("slot", RT_SLOT),
+        ("content", RT_CONTENT),
         ("styleExpr", RT_STYLE_EXPR),
         ("show", RT_SHOW),
         ("forEach", RT_FOR_EACH),
@@ -260,9 +263,21 @@ struct Lower<'a> {
     builder: AstBuilder<'a>,
     name: &'a str,
     source: &'a str,
-    /// Signal bindings per lexical scope, outermost first.
-    scopes: Vec<HashSet<String>>,
+    /// Bindings per lexical scope, outermost first. Signals feed the primitive
+    /// `dynamic` wrap and the bare-signal prop error; elements classify
+    /// `{x}` children as node-valued and lower their declarators to thunks.
+    scopes: Vec<Scope>,
+    /// When set, a JSX element met in immediate evaluation position lowers to
+    /// a render thunk instead of mounting. Function bodies clear it: JSX
+    /// inside `() => ...` only executes when the function runs.
+    thunk_jsx: bool,
     errors: Vec<String>,
+}
+
+#[derive(Clone, Default)]
+struct Scope {
+    signals: HashSet<String>,
+    elements: HashSet<String>,
 }
 
 impl<'a> Lower<'a> {
@@ -348,6 +363,46 @@ impl<'a> Lower<'a> {
         self.arrow(span, ArrowFunctionBody::FunctionBody(body))
     }
 
+    /// `() => { const b = EXPR; if (typeof b === "function") b(); }` — used
+    /// where a compound expression's JSX operands were lowered to thunks: the
+    /// expression yields whichever thunk its logic selected, and mounting it
+    /// requires one more call.
+    fn call_if_thunk(&self, span: Span, expression: Expression<'a>) -> Expression<'a> {
+        let id = BindingPattern::BindingIdentifier(ArenaBox::new_in(
+            BindingIdentifier::new(SPAN, Ident::from("b"), &self.builder),
+            &self.builder,
+        ));
+        let declarator =
+            VariableDeclarator::new(span, id, None, Some(expression), false, &self.builder);
+        let mut declarations = self.ast_vec();
+        declarations.push(declarator);
+        let declaration = Statement::new_variable_declaration(
+            span,
+            VariableDeclarationKind::Const,
+            declarations,
+            false,
+            &self.builder,
+        );
+        let test = Expression::new_binary_expression(
+            span,
+            Expression::new_unary_expression(
+                span,
+                UnaryOperator::Typeof,
+                self.ident("b"),
+                &self.builder,
+            ),
+            BinaryOperator::StrictEquality,
+            self.string("function", span),
+            &self.builder,
+        );
+        let consequent = self.statement(span, self.call("b", vec![], span));
+        let branch = Statement::new_if_statement(span, test, consequent, None, &self.builder);
+        let mut statements = self.ast_vec();
+        statements.push(declaration);
+        statements.push(branch);
+        self.arrow_block(span, statements)
+    }
+
     fn statement(&self, span: Span, expression: Expression<'a>) -> Statement<'a> {
         Statement::new_expression_statement(span, expression, &self.builder)
     }
@@ -382,20 +437,44 @@ impl<'a> Lower<'a> {
     }
 
     fn reads_signal(&self, expression: &Expression<'a>) -> bool {
-        let Some(signals) = self.scopes.last() else {
+        let Some(scope) = self.scopes.last() else {
             return false;
         };
         let mut scan = SignalScan {
-            signals,
+            signals: &scope.signals,
             found: false,
         };
         scan.visit_expression(expression);
         scan.found
     }
 
-    fn push_scope(&mut self, bindings: HashSet<String>) {
+    /// A bare identifier that names a locally declared signal binding.
+    fn is_signal_identifier(&self, expression: &Expression<'a>) -> bool {
+        match expression {
+            Expression::Identifier(id) => self
+                .scopes
+                .last()
+                .is_some_and(|scope| scope.signals.contains(id.name.as_str())),
+            _ => false,
+        }
+    }
+
+    /// A bare identifier that names a locally declared element binding, whose
+    /// value is a render thunk.
+    fn is_element_binding(&self, expression: &Expression<'a>) -> bool {
+        match expression {
+            Expression::Identifier(id) => self
+                .scopes
+                .last()
+                .is_some_and(|scope| scope.elements.contains(id.name.as_str())),
+            _ => false,
+        }
+    }
+
+    fn push_scope(&mut self, bindings: Scope) {
         let mut scope = self.scopes.last().cloned().unwrap_or_default();
-        scope.extend(bindings);
+        scope.signals.extend(bindings.signals);
+        scope.elements.extend(bindings.elements);
         self.scopes.push(scope);
     }
 
@@ -622,9 +701,11 @@ impl<'a> Lower<'a> {
             .collect()
     }
 
-    /// Component props: a JSX value becomes a render thunk that the component
-    /// invokes where it wants the content rendered; the `children` prop names
-    /// the children slot. Returns the prepared props and the children thunk.
+    /// Component props use Solid-style getters: every non-handler expression
+    /// compiles to `() => expr` and the component reads `props.x()`. A JSX
+    /// value is a render thunk the component invokes where it wants the
+    /// content rendered; the `children` prop names the children slot. Returns
+    /// the prepared props and the children thunk.
     fn prepare_component_props(
         &mut self,
         span: Span,
@@ -655,7 +736,26 @@ impl<'a> Lower<'a> {
                         );
                         other = self.null(span);
                     }
-                    self.prepare_value(other)
+                    if self.is_signal_identifier(&other) {
+                        self.error(
+                            span,
+                            format!(
+                                "<{tag}> prop {key} is a signal binding; pass its current value with a read: {key}={{{key}()}}"
+                            ),
+                        );
+                    }
+                    let is_function = matches!(
+                        other,
+                        Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)
+                    );
+                    self.visit_expression(&mut other);
+                    if !is_function {
+                        // Handlers stay plain so the component can pass them
+                        // on unchanged; everything else is a getter the
+                        // component reads with `props.{key}()`.
+                        other = self.arrow_expr(span, other);
+                    }
+                    other
                 }
             };
             prepared.push((key, value));
@@ -1184,12 +1284,10 @@ impl<'a> Lower<'a> {
                         continue;
                     }
                     let mut expression = container.expression.into_expression();
-                    if contains_jsx(&expression) && !matches!(expression, Expression::JSXElement(_))
-                    {
-                        self.error(
-                            container_span,
-                            "JSX control flow must use Show, For, Index, or Switch",
-                        );
+                    if slot_ref(&expression) || is_slot_call(&expression) {
+                        let thunk = self.reduce_slot(expression);
+                        let call = self.call(RT_SLOT, vec![thunk], span);
+                        statements.push(self.statement(container_span, call));
                         continue;
                     }
                     if matches!(expression, Expression::JSXElement(_)) {
@@ -1197,13 +1295,45 @@ impl<'a> Lower<'a> {
                         statements.push(self.statement(container_span, expression));
                         continue;
                     }
-                    if slot_ref(&expression) || is_slot_call(&expression) {
-                        let thunk = self.reduce_slot(expression);
-                        let call = self.call(RT_SLOT, vec![thunk], span);
+                    // Node-valued child: element binding (`{pad}`), explicit
+                    // thunk (`{() => <Text/>}`), or any expression containing
+                    // JSX (`{cond ? <A/> : <B/>}`). The branch primitive owns
+                    // replacement when the signals the thunk reads change.
+                    if self.is_element_binding(&expression) {
+                        let call = self.call(RT_CONTENT, vec![expression], container_span);
                         statements.push(self.statement(container_span, call));
                         continue;
                     }
+                    if matches!(
+                        expression,
+                        Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)
+                    ) {
+                        self.visit_expression(&mut expression);
+                        let call = self.call(RT_CONTENT, vec![expression], container_span);
+                        statements.push(self.statement(container_span, call));
+                        continue;
+                    }
+                    if contains_jsx(&expression) {
+                        let expr_span = expression.span();
+                        self.thunk_jsx = true;
+                        self.visit_expression(&mut expression);
+                        self.thunk_jsx = false;
+                        let build = self.call_if_thunk(expr_span, expression);
+                        let call = self.call(RT_CONTENT, vec![build], container_span);
+                        statements.push(self.statement(container_span, call));
+                        continue;
+                    }
+                    // A bare function call cannot be classified: it may return
+                    // an element, which would silently degrade to text.
+                    let calls = is_call_expression(&expression);
                     self.visit_expression(&mut expression);
+                    if calls && !self.reads_signal(&expression) {
+                        self.error(
+                            container_span,
+                            "component calls must be written as JSX tags or element bindings",
+                        );
+                        continue;
+                    }
                     let span = expression.span();
                     let text = Expression::new_call_expression(
                         span,
@@ -1288,6 +1418,13 @@ impl<'a> Lower<'a> {
                         self.error(
                             container.span,
                             "children cannot be rendered as text; place <Slot> inside a View",
+                        );
+                        continue;
+                    }
+                    if self.is_element_binding(&expression) || contains_jsx(&expression) {
+                        self.error(
+                            container.span,
+                            "Text children must be text or value expressions; element bindings and JSX render nodes — use a View child",
                         );
                         continue;
                     }
@@ -1410,6 +1547,18 @@ fn is_slot_call(expression: &Expression<'_>) -> bool {
     }
 }
 
+/// Any function call in evaluation position: `make()`, `obj.make?.()`.
+fn is_call_expression(expression: &Expression<'_>) -> bool {
+    match expression {
+        Expression::ParenthesizedExpression(paren) => is_call_expression(&paren.expression),
+        Expression::CallExpression(_) => true,
+        Expression::ChainExpression(chain) => {
+            matches!(chain.expression, ChainElement::CallExpression(_))
+        }
+        _ => false,
+    }
+}
+
 fn contains_jsx(expression: &Expression<'_>) -> bool {
     struct Scan {
         found: bool,
@@ -1448,8 +1597,8 @@ impl<'a, 's> Visit<'a> for SignalScan<'s> {
 }
 
 impl<'a> Lower<'a> {
-    fn signal_bindings(&self, statements: &ArenaVec<'a, Statement<'a>>) -> HashSet<String> {
-        let mut bindings = HashSet::new();
+    fn signal_bindings(&self, statements: &ArenaVec<'a, Statement<'a>>) -> Scope {
+        let mut bindings = Scope::default();
         for statement in statements {
             let Statement::VariableDeclaration(declaration) = statement else {
                 continue;
@@ -1465,7 +1614,9 @@ impl<'a> Lower<'a> {
                     continue;
                 };
                 if is_signal_call(init) {
-                    bindings.insert(id.name.as_str().to_string());
+                    bindings.signals.insert(id.name.as_str().to_string());
+                } else if is_element_init(init) {
+                    bindings.elements.insert(id.name.as_str().to_string());
                 }
             }
         }
@@ -1483,10 +1634,24 @@ fn is_signal_call(expression: &Expression<'_>) -> bool {
     matches!(callee.name.as_str(), "signal" | "computed")
 }
 
+/// A declarator whose value is an element: a bare JSX element, or any
+/// non-function expression that contains JSX. Arrow/function inits stay out —
+/// `const Row = (props) => <Text/>` is a component definition, not a node
+/// value, and JSX inside a function body only executes when it runs. Shallow
+/// data-flow, like the signal scan: values passed through parameters, returns,
+/// or object properties do not enter the classification.
+fn is_element_init(expression: &Expression<'_>) -> bool {
+    match expression {
+        Expression::JSXElement(_) | Expression::JSXFragment(_) => true,
+        Expression::FunctionExpression(_) | Expression::ArrowFunctionExpression(_) => false,
+        _ => contains_jsx(expression),
+    }
+}
+
 impl<'a> VisitMut<'a> for Lower<'a> {
     fn visit_program(&mut self, program: &mut Program<'a>) {
         // Exported signals are shared across modules and bind by value.
-        let mut bindings = HashSet::new();
+        let mut bindings = Scope::default();
         for statement in &program.body {
             let Statement::VariableDeclaration(declaration) = statement else {
                 continue;
@@ -1498,8 +1663,13 @@ impl<'a> VisitMut<'a> for Lower<'a> {
                 let BindingPattern::BindingIdentifier(id) = &declarator.id else {
                     continue;
                 };
-                if declarator.init.as_ref().is_some_and(is_signal_call) {
-                    bindings.insert(id.name.as_str().to_string());
+                let Some(init) = &declarator.init else {
+                    continue;
+                };
+                if is_signal_call(init) {
+                    bindings.signals.insert(id.name.as_str().to_string());
+                } else if is_element_init(init) {
+                    bindings.elements.insert(id.name.as_str().to_string());
                 }
             }
         }
@@ -1516,20 +1686,26 @@ impl<'a> VisitMut<'a> for Lower<'a> {
             .as_ref()
             .map(|body| self.signal_bindings(&body.statements))
             .unwrap_or_default();
+        let thunk_jsx = self.thunk_jsx;
+        self.thunk_jsx = false;
         self.push_scope(bindings);
         oxc::ast_visit::walk_mut::walk_function(self, function, flags);
         self.scopes.pop();
+        self.thunk_jsx = thunk_jsx;
     }
 
     fn visit_arrow_function_expression(&mut self, arrow: &mut ArrowFunctionExpression<'a>) {
         let bindings = if let ArrowFunctionBody::FunctionBody(body) = &arrow.body {
             self.signal_bindings(&body.statements)
         } else {
-            HashSet::new()
+            Scope::default()
         };
+        let thunk_jsx = self.thunk_jsx;
+        self.thunk_jsx = false;
         self.push_scope(bindings);
         oxc::ast_visit::walk_mut::walk_arrow_function_expression(self, arrow);
         self.scopes.pop();
+        self.thunk_jsx = thunk_jsx;
     }
 
     fn visit_expression(&mut self, expression: &mut Expression<'a>) {
@@ -1542,7 +1718,12 @@ impl<'a> VisitMut<'a> for Lower<'a> {
             let lowered = match taken {
                 Expression::JSXElement(element) => {
                     let element = self.take(element);
-                    self.lower_element(element)
+                    let lowered = self.lower_element(element);
+                    if self.thunk_jsx {
+                        self.arrow_expr(span, lowered)
+                    } else {
+                        lowered
+                    }
                 }
                 Expression::JSXFragment(_) => {
                     self.error(span, "JSX fragments are not supported");
@@ -1554,6 +1735,36 @@ impl<'a> VisitMut<'a> for Lower<'a> {
             return;
         }
         oxc::ast_visit::walk_mut::walk_expression(self, expression);
+    }
+
+    fn visit_variable_declarator(&mut self, declarator: &mut VariableDeclarator<'a>) {
+        let is_element = declarator
+            .init
+            .as_ref()
+            .is_some_and(|init| is_element_init(init));
+        if !is_element {
+            oxc::ast_visit::walk_mut::walk_variable_declarator(self, declarator);
+            return;
+        }
+        // `const pad = <Pad/>` (or any non-function init containing JSX) is a
+        // node value: lower the JSX to a thunk. A bare element thunk mounts
+        // when called; a compound init (ternary, `&&`) may yield a thunk, so
+        // the declarator calls whatever it got.
+        let bare = matches!(
+            declarator.init,
+            Some(Expression::JSXElement(_)) | Some(Expression::JSXFragment(_))
+        );
+        let span = declarator.init.as_ref().map(|init| init.span()).unwrap_or(SPAN);
+        self.thunk_jsx = true;
+        oxc::ast_visit::walk_mut::walk_variable_declarator(self, declarator);
+        self.thunk_jsx = false;
+        if !bare {
+            let Some(init) = declarator.init.take() else {
+                return;
+            };
+            let run = self.call_if_thunk(span, init);
+            declarator.init = Some(run);
+        }
     }
 }
 

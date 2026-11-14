@@ -1,7 +1,7 @@
 import { mount, signal, Text, View, TapGesture, ViewStyle, createVar, ref } from "bubble-shell";
 
 function Row(props) {
-  return <Text color="#dddddd" fontSize={18}>{props.label}</Text>;
+  return <Text color="#dddddd" fontSize={18}>{props.label()}</Text>;
 }
 
 function Counter() {

@@ -57,7 +57,10 @@ mount(App);
 "##;
     let code = compile("app.tsx", source);
     assert!(code.contains("__bubble_rt_primitive(\"View\""), "{code}");
-    assert!(code.contains("__bubble_rt_component(Row"), "{code}");
+    assert!(
+        code.contains("__bubble_rt_component(Row, { label: () => \"one\" })"),
+        "component props compile to getters:\n{code}"
+    );
     assert!(code.contains("__bubble_rt_show"), "{code}");
     // Tags that were only used in JSX are dropped from the author import.
     assert!(
@@ -93,6 +96,150 @@ function App() {
     );
     assert!(code.contains("onTap: () => count.update"), "{code}");
     assert!(code.contains("label + \": \" + count()"), "{code}");
+}
+
+#[test]
+fn lowers_component_getter_props() {
+    let source = r#"
+import { Text } from "bubble-shell";
+function Row(props) {
+  return <Text>{props.label()}</Text>;
+}
+function App() {
+  return <Row label={"n" + 1} flag={true} onTap={() => 1} />;
+}
+"#;
+    let code = compile("app.tsx", source);
+    assert!(
+        code.contains("label: () => \"n\" + 1"),
+        "value props become getters:\n{code}"
+    );
+    assert!(code.contains("flag: () => true"), "{code}");
+    assert!(
+        code.contains("onTap: () => 1"),
+        "handlers pass through unwrapped:\n{code}"
+    );
+}
+
+#[test]
+fn reports_bare_signal_props() {
+    let source = r#"
+import { signal, Text } from "bubble-shell";
+const live = signal(0);
+function Pad(props) {
+  return <Text>{props.live()}</Text>;
+}
+function App() {
+  return <Pad live={live} />;
+}
+"#;
+    let error = compile_module("bad.tsx", source, &CompileOptions::default()).unwrap_err();
+    assert!(
+        error.contains("prop live is a signal binding; pass its current value with a read: live={live()}"),
+        "{error}"
+    );
+}
+
+#[test]
+fn lowers_element_bindings_to_content_branches() {
+    let source = r#"
+import { signal, Text, View } from "bubble-shell";
+function App() {
+  const open = signal(false);
+  const pad = <Text>pad</Text>;
+  return (
+    <View>
+      {pad}
+      <View>{open() ? <Text>a</Text> : <Text>b</Text>}</View>
+      <View>{() => <Text>thunk</Text>}</View>
+    </View>
+  );
+}
+"#;
+    let code = compile("app.tsx", source);
+    assert!(
+        code.contains("const pad = () => __bubble_rt_primitive(\"Text\""),
+        "element bindings declare render thunks:\n{code}"
+    );
+    assert!(
+        code.contains("__bubble_rt_content(pad);"),
+        "element references become content branches:\n{code}"
+    );
+    assert!(
+        code.contains("__bubble_rt_content(() => {"),
+        "compound JSX expressions become content branches:\n{code}"
+    );
+    assert!(
+        code.contains("typeof b === \"function\""),
+        "compound branches call the thunk they yield:\n{code}"
+    );
+    assert!(
+        code.contains("__bubble_rt_content(() => __bubble_rt_primitive(\"Text\""),
+        "explicit thunks pass through:\n{code}"
+    );
+}
+
+#[test]
+fn keeps_plain_children_as_in_place_text() {
+    let source = r#"
+import { signal, Text, View } from "bubble-shell";
+function App() {
+  const count = signal(0);
+  return (
+    <View>
+      {count()}
+      {"literal"}
+    </View>
+  );
+}
+"#;
+    let code = compile("app.tsx", source);
+    assert!(
+        code.contains("__bubble_rt_primitive(\"Text\", {}, () => String(count()))"),
+        "signal-reading calls stay cheap in-place text:\n{code}"
+    );
+    assert!(
+        code.contains("__bubble_rt_primitive(\"Text\", {}, () => String(\"literal\"))"),
+        "{code}"
+    );
+}
+
+#[test]
+fn reports_function_calls_in_children() {
+    let source = r#"
+import { Text, View } from "bubble-shell";
+function make() {
+  return null;
+}
+function App() {
+  return (
+    <View>
+      {make()}
+    </View>
+  );
+}
+"#;
+    let error = compile_module("bad.tsx", source, &CompileOptions::default()).unwrap_err();
+    assert!(
+        error.contains("component calls must be written as JSX tags or element bindings"),
+        "{error}"
+    );
+}
+
+#[test]
+fn reports_element_values_in_text() {
+    let source = r#"
+import { Text } from "bubble-shell";
+function App() {
+  const pad = <Text>pad</Text>;
+  return <Text>{pad}</Text>;
+}
+"#;
+    let error = compile_module("bad.tsx", source, &CompileOptions::default()).unwrap_err();
+    assert!(
+        error.contains("Text children must be text or value expressions"),
+        "{error}"
+    );
 }
 
 #[test]
