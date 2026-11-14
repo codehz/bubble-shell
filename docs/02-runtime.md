@@ -123,20 +123,25 @@ assets/
 | `ScrollTo` | handle, x, y | 滚动容器；按轴 clamp，未启用轴归零 |
 | `Focus` | handle | 焦点 |
 | `SetEditingValue` | handle, epoch, value, selection | 受控文本 |
-| `SpawnStateStyle` | style, target, index | 虚拟状态样式声明；`index` 是该目标内的声明序号 |
-| `SetStateStyleProp` | style, key, value | `when` / `enabled` / 六项绘制属性；先解析再写入 |
-| `MoveStateStyle` | style, target, index | `index` 是移除自身后的最终位置 |
-| `DisposeStateStyle` | style | 目标销毁时声明随之销毁 |
+| `CreateVar` | var, source, initial | UI 线程共享变量；`source` 0 为脚本驱动，其他为状态源 |
+| `BindVar` | var, target | 关联状态源目标节点；0 解绑 |
+| `DisposeVar` | var | 变量退役，依赖它的声明转为不匹配 |
+| `SetVar` | var, value | 脚本驱动的变量写入，帧边界生效；写状态源变量报错 |
+| `SettleVar` | var | 请求收敛通知；无动画时随批次立即发 `BSVE` 事件 |
+| `SpawnStyleDecl` | decl, target, component, index | 虚拟样式声明（1 ViewStyle、2 TextStyle）；`index` 是该目标内的声明序号 |
+| `SetStyleDeclProp` | decl, key, value | `when` / patch 项；值为静态值或表达式程序 |
+| `MoveStyleDecl` | decl, target, index | `index` 是移除自身后的最终位置 |
+| `DisposeStyleDecl` | decl | 目标销毁时声明随之销毁 |
 | `SetAsset` | handle, contentHash | 预留；当前 `Image` 通过 `SetProp src` 交给宿主解析 |
 
-当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`、`Focus`、`SetEditingValue`，以及手势声明 op 和状态样式 op。`TextField`（kind 4）的编辑状态在 UI 线程，由 `EditSession` 持有 UTF-16 文档位置、方向性选区、独立组合区、`revision` 与撤销历史；`BSED` v2 每批向脚本投递有序 delta 和最终快照。iOS `UITextInput`、Android `InputConnection`、Web 隐藏 textarea 已接入文本编辑。语义树由节点属性派生并经 `bubble_semantics` / wasm `semantics` 输出 JSON；iOS `UIAccessibility`、Android `AccessibilityNodeProvider` 与 Web ARIA 覆盖层读取同一快照。其余 op（含 `InsertNode`、动画、显式 `SetSemantics`）随后续里程碑。
+当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`、`Focus`、`SetEditingValue`，以及手势声明 op、共享变量 op 和样式声明 op。`TextField`（kind 4）的编辑状态在 UI 线程，由 `EditSession` 持有 UTF-16 文档位置、方向性选区、独立组合区、`revision` 与撤销历史；`BSED` v2 每批向脚本投递有序 delta 和最终快照。iOS `UITextInput`、Android `InputConnection`、Web 隐藏 textarea 已接入文本编辑。语义树由节点属性派生并经 `bubble_semantics` / wasm `semantics` 输出 JSON；iOS `UIAccessibility`、Android `AccessibilityNodeProvider` 与 Web ARIA 覆盖层读取同一快照。其余 op（含 `InsertNode`、动画、显式 `SetSemantics`）随后续里程碑。
 
 节点创建不再携带描述符：`Spawn` / `SpawnAt` 只有身份和初始文本，其余属性一律是 `SetProp`。`NodeDesc` 保留为 Rust 侧的直接调用构造器，`Turn::spawn` 会把它降级为 `Spawn` 加属性 op；wire 上不存在按类型布局的定长体。滚动、布局和绘制属性因此只有一条解析路径。
 
 属性与虚拟子节点：
 
 - 手势是虚拟子节点：`TapGesture`、`DoubleTapGesture`、`LongPressGesture`、`PanGesture`、`TransformGesture`。没有 `View onPress`。事件名为 `onTap` / `onTapStart` / `onTapEnd` / `onTapCancel`、`onDoubleTap*`、`onLongPress` / `onLongPressEnd` / `onLongPressCancel`、`onPanStart` / `onPanUpdate` / `onPanEnd` / `onPanCancel`、`onTransformStart` / `onTransformUpdate` / `onTransformEnd` / `onTransformCancel`。Transform 用 `mode`（字符串或字符串数组：`pan` / `pinch` / `rotate`）。`direction` 是方向字符串数组。`captureAxis="none"|"x"|"y"|"both"` 把该轴滚动让给这条手势。
-- 状态样式也是虚拟子节点：`<StateStyle when="pressed" opacity={0.7} />`。`when` 必填，按空白切分后只接受 `pressed` 与 `focused`，多个 token 为 AND；`enabled` 默认 true；可覆盖的绘制属性只有 `backgroundColor`、`color`、`opacity`、`radius`、`textAlign`、`fit`，其他 key 一律报错。声明只作用于最近的实际父节点，不继承、不选中后代、不创建盒子、不命中、不进入语义树。同目标的多条匹配声明按虚拟源码顺序覆盖，后者胜出；`null` 移除该项 patch。匹配的 `focused` 声明接管默认焦点框（空 patch 也算），`pressed` 反馈由 UI 线程在首指按下、移出 `TAP_SLOP`、抬起、宿主取消、第二指按下或手势胜出时更新。`View`、`Text`、`TextField`、`Image` 都接受直接子 `StateStyle`；叶子节点不接受其他子内容，条件开关请用 `enabled`/`when` 的 Dynamic 值。
+- 样式声明与共享变量是虚拟子节点。`createVar({ source: "pressed", target: view })` 绑定状态源（`pressed` 是 0..1 进度，`focused` / `disabled` / `editing` 是布尔），`createVar(0)` 建脚本驱动变量，由 `set` / `bind`（signal 重跑编码 `SetVar`）写入，`settle()` 返回收敛 Promise（`BSVE` 事件）。声明组件 `<ViewStyle target={view} when={!disabled && press > 0} opacity={1 - press * 0.4} />` 与 `<TextStyle target={label} when={focused} color={accent} />`：`when` 与 patch 值都是表达式（常量折叠为静态值），标识符解析为作用域内变量或常量；可 patch 的只有 `ViewStyle` 的 `backgroundColor`/`radius`/`opacity`/`fit` 与 `TextStyle` 的 `color`/`textAlign`，`textAlign`/`fit` 用 `select(cond, a, b)` 在枚举常量间选择。声明不创建盒子、不命中、不进入语义树；`target` 显式必填，同目标多声明按源码顺序覆盖，后者胜出。匹配中的含 `Focused` 源声明接管默认焦点框（空 patch 也算）；`pressed` 反馈由 UI 线程在首指按下、移出 `TAP_SLOP`、抬起、宿主取消、第二指按下或手势胜出时更新。脚本写状态源变量、写未知变量均报错。
 - 属性只有一个入口：`SetProp`。`Prop::parse` 是名称的唯一权威；静态值、动态绑定、简写展开和直接 Rust 调用都走同一条解析路径。`padding` / `margin` / `inset` 数组由 JS 展开为边属性，`gap` 先于 `rowGap` / `columnGap`，`overflow` 先于两轴。
 - 无障碍属性：`role`（`button`、`link`、`textbox`、`checkbox`、`heading`、`dialog` 等）、`label`、`disabled`、`hidden`（仅语义隐藏，不裁切，也不改变布局、绘制、命中或焦点）、`focusable`、`modal`（焦点陷阱）、`checked`、`selected`、`expanded`。`Text`、`Image`、`TextField` 分别派生 text/image/textbox 角色；`TextField` 的语义值在 `secure` 时为空。可滚动容器即使没有角色或标签也会进入语义树，并输出对应方向的滚动 action 位。绘制上的隐藏用 `visibility`、`display` 或 `overflow`。
 

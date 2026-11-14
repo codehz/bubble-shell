@@ -214,6 +214,18 @@ impl Turn {
         self.push(Op::DisposeVar { var });
     }
 
+    /// Queue one script-driven variable write. It lands on the UI thread at
+    /// the frame boundary and re-evaluates the declarations that read it.
+    pub fn set_var(&mut self, var: u32, value: Value) {
+        self.push(Op::SetVar { var, value });
+    }
+
+    /// Request a settle event for `var`. With no animation configured the
+    /// variable converges as the batch applies, so the event goes out then.
+    pub fn settle_var(&mut self, var: u32) {
+        self.push(Op::SettleVar { var });
+    }
+
     /// Allocate a style declaration id and queue its declaration under
     /// `target`. `component` 1 ViewStyle, 2 TextStyle.
     pub fn spawn_style_decl(
@@ -342,6 +354,41 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
                         return;
                     }
                     Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } => {}
+                    _ => break,
+                }
+            }
+        }
+        Op::SetVar { var, value } => {
+            for item in buf.iter_mut().rev() {
+                match item {
+                    Op::SetVar {
+                        var: existing,
+                        value: slot,
+                    } if existing == var => {
+                        *slot = value.clone();
+                        return;
+                    }
+                    Op::SetText { .. }
+                    | Op::SetPropColor { .. }
+                    | Op::SetProp { .. }
+                    | Op::SetStyleDeclProp { .. }
+                    | Op::SetGestureProp { .. }
+                    | Op::SetVar { .. } => {}
+                    _ => break,
+                }
+            }
+        }
+        Op::SettleVar { var } => {
+            for item in buf.iter_mut().rev() {
+                match item {
+                    // A pending request already covers this variable.
+                    Op::SettleVar { var: existing } if existing == var => return,
+                    Op::SetText { .. }
+                    | Op::SetPropColor { .. }
+                    | Op::SetProp { .. }
+                    | Op::SetStyleDeclProp { .. }
+                    | Op::SetGestureProp { .. }
+                    | Op::SetVar { .. } => {}
                     _ => break,
                 }
             }

@@ -22,8 +22,9 @@ use crate::semantics::{
 };
 use crate::expr::ExprValue;
 use crate::state_style::{
-    slot_allowed, slot_of, slot_type, DeclExpr, ResolvedPatch, SlotType, StyleDecls, SOURCE_DISABLED,
-    SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED, VarTable,
+    slot_allowed, slot_of, slot_type, DeclExpr, ResolvedPatch, SlotType, StyleDecls,
+    SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED, VarEvent,
+    VarTable,
 };
 use taffy::prelude::*;
 use taffy::style::Overflow;
@@ -285,6 +286,7 @@ pub struct Shell {
     paint_dirty: Cell<bool>,
     recognizer: Recognizer,
     vars: VarTable,
+    var_events: Vec<VarEvent>,
     state_styles: StyleDecls,
     visual: VisualPress,
     fields: HashMap<u32, EditSession>,
@@ -572,6 +574,7 @@ impl Shell {
             paint_dirty: Cell::new(true),
             recognizer: Recognizer::new(),
             vars: VarTable::new(),
+            var_events: Vec::new(),
             state_styles: StyleDecls::new(),
             visual: VisualPress::default(),
             fields: HashMap::new(),
@@ -715,6 +718,8 @@ impl Shell {
                 } => self.create_var(var, source, &initial)?,
                 Op::BindVar { var, target } => self.bind_var(var, target)?,
                 Op::DisposeVar { var } => self.dispose_var(var)?,
+                Op::SetVar { var, value } => self.set_var(var, &value)?,
+                Op::SettleVar { var } => self.settle_var(var)?,
                 Op::SpawnStyleDecl {
                     decl,
                     target,
@@ -1036,6 +1041,44 @@ impl Shell {
         }
         self.paint_dirty.set(true);
         Ok(())
+    }
+
+    /// Apply one script-driven variable write. Source-linked variables are
+    /// owned by the UI thread, so the script may not write them.
+    fn set_var(&mut self, var: u32, value: &Value) -> Result<(), String> {
+        let next = parse_expr_value(value)
+            .ok_or_else(|| format!("var {var} value must be a number, color, or bool"))?;
+        let Some(var_slot) = self.vars.get_mut(var) else {
+            return Err(format!("unknown var {var}"));
+        };
+        if var_slot.source != SOURCE_NONE {
+            return Err(format!("var {var} is driven by a state source"));
+        }
+        if var_slot.value == next {
+            return Ok(());
+        }
+        var_slot.value = next;
+        for decl in self.state_styles.dependents_of([var]) {
+            self.eval_decl(decl);
+        }
+        self.paint_dirty.set(true);
+        Ok(())
+    }
+
+    /// Record a settle request. Stage 2 has no animation, so the variable has
+    /// already converged by the time the batch applies and the event goes out
+    /// immediately; the animation tick will gate this later.
+    fn settle_var(&mut self, var: u32) -> Result<(), String> {
+        if self.vars.get(var).is_none() {
+            return Err(format!("unknown var {var}"));
+        }
+        self.var_events.push(VarEvent { var });
+        Ok(())
+    }
+
+    /// Settled-variable events since the last drain, for the script thread.
+    pub fn take_var_events(&mut self) -> Vec<VarEvent> {
+        std::mem::take(&mut self.var_events)
     }
 
     /// Mark one declaration as not matching after a variable it read retired.

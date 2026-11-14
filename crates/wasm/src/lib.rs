@@ -14,9 +14,9 @@ use std::collections::VecDeque;
 
 use bubble_core::{
     decode_layout, encode_edit_events, encode_events, encode_paint, encode_set_text,
-    validate_bundle_hashes, A11yAction, ComputationKind, EditCommand, EditEvent, EditMenuAction,
-    GestureEvent, GestureKind, Key, Kind, LayoutRequest, NodeDesc, Op, PointerAction, PointerInput,
-    Sched, Shell, Turn, Value,
+    encode_var_events, validate_bundle_hashes, A11yAction, ComputationKind, EditCommand, EditEvent,
+    EditMenuAction, GestureEvent, GestureKind, Key, Kind, LayoutRequest, NodeDesc, Op,
+    PointerAction, PointerInput, Sched, Shell, Turn, Value, VarEvent,
 };
 use bubble_core::decode_program;
 
@@ -29,6 +29,7 @@ thread_local! {
     static ERROR: RefCell<String> = const { RefCell::new(String::new()) };
     static GESTURES: RefCell<Vec<GestureEvent>> = const { RefCell::new(Vec::new()) };
     static EDITS: RefCell<Vec<EditEvent>> = const { RefCell::new(Vec::new()) };
+    static VARS: RefCell<Vec<VarEvent>> = const { RefCell::new(Vec::new()) };
 }
 
 #[link(wasm_import_module = "env")]
@@ -177,6 +178,10 @@ fn collect_events(shell: &mut Shell) {
     let edits = shell.take_edit_events();
     if !edits.is_empty() {
         EDITS.with(|queue| queue.borrow_mut().extend(edits));
+    }
+    let vars = shell.take_var_events();
+    if !vars.is_empty() {
+        VARS.with(|queue| queue.borrow_mut().extend(vars));
     }
 }
 
@@ -950,6 +955,18 @@ pub extern "C" fn take_edit_events() -> u32 {
     }
 }
 
+/// Encoded `BSVE` batch of settled variables since the last drain; 0 bytes
+/// when empty.
+#[no_mangle]
+pub extern "C" fn take_var_events() -> u32 {
+    let events = VARS.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
+    if events.is_empty() {
+        store_scratch(Vec::new())
+    } else {
+        store_scratch(encode_var_events(&events))
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn focus(handle: u32) -> i32 {
     match with_turn(|turn| {
@@ -1491,6 +1508,45 @@ pub extern "C" fn create_var(source: u32, initial_tag: u32, initial_number: f64)
 pub extern "C" fn bind_var(var: u32, target: u32) -> i32 {
     match with_turn(|turn| {
         turn.bind_var(var, target);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+/// `tag` 0 none, 1 bool, 2 int, 3 float; matches `propParts` on the JS side.
+#[no_mangle]
+pub extern "C" fn set_var(var: u32, tag: u32, number: f64) -> i32 {
+    let value = match tag {
+        0 => Value::Null,
+        1 => Value::Bool(number != 0.0),
+        2 => Value::Int(number as i64),
+        3 => Value::Float(number),
+        other => {
+            set_error(format!("unsupported var value tag {other}"));
+            return 1;
+        }
+    };
+    match with_turn(|turn| {
+        turn.set_var(var, value);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn settle_var(var: u32) -> i32 {
+    match with_turn(|turn| {
+        turn.settle_var(var);
         Ok(())
     }) {
         Ok(()) => 0,

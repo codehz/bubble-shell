@@ -693,6 +693,37 @@ fn spawn_descriptor_lowers_to_identity_and_props() {
 }
 
 #[test]
+fn var_ops_roundtrip_and_coalesce() {
+    use bubble_core::Turn;
+
+    let mut turn = Turn::new();
+    let var = turn
+        .create_var(bubble_core::SOURCE_NONE, Value::Bool(false))
+        .unwrap();
+    turn.set_var(var, Value::Float(2.5));
+    turn.set_var(var, Value::Bool(true));
+    turn.settle_var(var);
+    turn.settle_var(var);
+    let (_, decoded) = bubble_core::decode_ops(&turn.commit().unwrap()).unwrap();
+    // Same-variable writes keep the last value; settle requests dedupe.
+    assert_eq!(
+        decoded,
+        vec![
+            Op::CreateVar {
+                var,
+                source: bubble_core::SOURCE_NONE,
+                initial: Value::Bool(false),
+            },
+            Op::SetVar {
+                var,
+                value: Value::Bool(true),
+            },
+            Op::SettleVar { var },
+        ]
+    );
+}
+
+#[test]
 fn indexed_spawn_move_and_dispose_reorder_paint() {
     use bubble_core::Turn;
 

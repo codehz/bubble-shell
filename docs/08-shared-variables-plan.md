@@ -1,6 +1,6 @@
 # 08 · 共享变量与样式声明升级计划
 
-状态：实现中。阶段 1（`expr.rs` 引擎 + VarTable + 四个状态源 + `ViewStyle`/`TextStyle` 组件与程序化 when/patch，`StateStyle` 整体移除）按第 10 节落地；阶段 2-4 未开始。实现偏差记录在文末「阶段 1 实现记录」。本文不引入任何新的验证工具或设备矩阵；所有验证仍限于 `cargo test --workspace`、`cargo check --workspace`、`node --test examples/web/*.test.mjs` 与手动 demo 冒烟。
+状态：实现中。阶段 1（`expr.rs` 引擎 + VarTable + 四个状态源 + `ViewStyle`/`TextStyle` 组件与程序化 when/patch，`StateStyle` 整体移除）与阶段 2（JS 显式变量、`SetVar`、settle 事件、`bind` signal）已落地；阶段 3-4 未开始。本文不引入任何新的验证工具或设备矩阵；所有验证仍限于 `cargo test --workspace`、`cargo check --workspace`、`node --test examples/web/*.test.mjs` 与手动 demo 冒烟。
 
 实现落点：`crates/core/src/state_style.rs`（重写为声明表与求值）、`crates/core/src/props.rs`（`STATE_STYLE_PROPS` 按组件拆分）、`crates/core/src/shell.rs`（状态源采样、绘制合并、事件批次）、`crates/core/src/ops.rs` / `turn.rs`（新 op 与批次压缩）、`crates/core/src/expr.rs`（新：表达式引擎）、`crates/compiler/src/lib.rs`（JSX 属性表达式降级与组件属性白名单）、`crates/native/js/runtime.js`（JS 侧变量对象）、三端 ABI 不变（复用 `bubble_tick` / `bubble_frame`）。
 
@@ -221,6 +221,7 @@ t.bind(() => someSignal());      // signal 结合：render effect 重跑 → Set
 - 仅对带动画的写入发出：`target ≠ value` 且收敛（到达 target 或被取消/覆盖）时产生 `VarSettle { var }` 事件。
 - 走现有事件批次（`take_gesture_events` 同一条编码通道，`send_events` 分发），JS 侧 resolve 对应 `settle()` 的 Promise。
 - 无动画写入不产生事件；被更新的写入（批次压缩后）只对最后一次产生事件。
+- 阶段 2 实现（无动画）：每次 `settle()` 请求在批次应用时立即发 `BSVE { var }` 事件（独立于手势批次，`send_vars` 分发到 `__bubbleVar`），阶段 3 的动画 tick 在此基础上把「请求 → 发事件」改为收敛判定。
 
 ## 9. 动画系统接入点（为后续实现预留）
 
@@ -233,8 +234,8 @@ t.bind(() => someSignal());      // signal 结合：render effect 重跑 → Set
 
 | 阶段 | 内容 | 验证 |
 |---|---|---|
-| 1（MVP 内） | `expr.rs` 引擎 + VarTable + Pressed/Focused/Disabled/Editing 源 + `ViewStyle`/`TextStyle` 组件与程序化 when/patch（含静态折叠）；`StateStyle` 代码、语法、测试全部移除 | `cargo test --workspace`；`node --test examples/web/*.test.mjs`；demo 冒烟点击/聚焦 |
-| 2 | JS 显式变量、`SetVar`、settle 事件、`bind` signal | 同上；回归测试覆盖「写入 → settle」路径 |
+| 1（MVP 内） | `expr.rs` 引擎 + VarTable + Pressed/Focused/Disabled/Editing 源 + `ViewStyle`/`TextStyle` 组件与程序化 when/patch（含静态折叠）；`StateStyle` 代码、语法、测试全部移除 | 已落地 |
+| 2（MVP 内） | JS 显式变量、`SetVar`、settle 事件、`bind` signal | 已落地：`createVar(0)` + `set`/`bind`/`settle`，回归测试覆盖「写入 → settle」路径 |
 | 3 | 动画系统：AnimSpec、tick 积分、双模写入、transform patch | 同上；demo 冒烟一次按压缩放 |
 | 4 | 手势源（pan/pinch）与 ScrollOffset 源 | 同上；demo 冒烟一次拖动跟随 |
 

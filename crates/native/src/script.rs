@@ -63,6 +63,11 @@ pub enum Cmd {
         epoch: u32,
         bytes: Vec<u8>,
     },
+    /// Encoded `BSVE` settled-variable batch. No epoch: variables belong to
+    /// the current mount and settle events are dropped on reset.
+    Vars {
+        bytes: Vec<u8>,
+    },
     Eval {
         source: String,
         ack: Option<Sender<Result<String, String>>>,
@@ -212,6 +217,12 @@ impl Session {
                 }
                 true
             }
+            Cmd::Vars { bytes } => {
+                if self.dispatch_vars(&bytes).is_ok() {
+                    self.shared.generation.fetch_add(1, Ordering::Relaxed);
+                }
+                true
+            }
             Cmd::Eval { source, ack } => {
                 let result = self.eval_user(&source);
                 if let Some(ack) = ack {
@@ -343,6 +354,13 @@ impl Session {
                 Err(err)
             }
         }
+    }
+
+    fn dispatch_vars(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let Some(vm) = self.vm.as_ref() else {
+            return Ok(());
+        };
+        guarded(|| vars_in(vm, bytes))
     }
 
     fn settle(&mut self, id: u32, ok: bool, payload: &str) -> Result<(), String> {
@@ -560,6 +578,19 @@ fn edit_in(vm: &Vm, bytes: &[u8]) -> Result<(), String> {
     result.map_err(|err: rquickjs::Error| format_eval(vm, err))
 }
 
+fn vars_in(vm: &Vm, bytes: &[u8]) -> Result<(), String> {
+    enter_js();
+    let result = vm.context.with(|ctx| {
+        let array = TypedArray::new(ctx.clone(), bytes.to_vec())?;
+        let dispatch: Function = ctx.globals().get("__bubbleVar")?;
+        dispatch.call::<_, ()>((array,))?;
+        pump(&ctx);
+        Ok(())
+    });
+    leave_js();
+    result.map_err(|err: rquickjs::Error| format_eval(vm, err))
+}
+
 fn settle_in(vm: &Vm, id: u32, ok: bool, payload: &str) -> Result<(), String> {
     enter_js();
     let result = vm.context.with(|ctx| {
@@ -707,6 +738,14 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
     api.set(
         "bind_var",
         Function::new(ctx.clone(), api_bind_var)?,
+    )?;
+    api.set(
+        "set_var",
+        Function::new(ctx.clone(), api_set_var)?,
+    )?;
+    api.set(
+        "settle_var",
+        Function::new(ctx.clone(), api_settle_var)?,
     )?;
     api.set(
         "dispose_var",
@@ -1190,6 +1229,42 @@ fn api_create_var(source: f64, initial_tag: f64, initial_number: f64) -> u32 {
 fn api_bind_var(var: f64, target: f64) -> i32 {
     match with_turn(|turn| {
         turn.bind_var(var as u32, target as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_set_var(var: f64, tag: f64, number: f64) -> i32 {
+    let value = match tag as u32 {
+        0 => Value::Null,
+        1 => Value::Bool(number != 0.0),
+        2 => Value::Int(number as i64),
+        3 => Value::Float(number),
+        other => {
+            set_api_error(format!("unsupported var value tag {other}"));
+            return 1;
+        }
+    };
+    match with_turn(|turn| {
+        turn.set_var(var as u32, value);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_settle_var(var: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.settle_var(var as u32);
         Ok(())
     }) {
         Ok(()) => 0,

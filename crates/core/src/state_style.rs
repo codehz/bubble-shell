@@ -448,3 +448,24 @@ impl StyleDecls {
         }
     }
 }
+
+/// A script-driven variable finished converging on the UI thread.
+///
+/// Stage 2 has no animation, so convergence is immediate and the shell emits
+/// the event as the batch applies; the animation tick will delay it later.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VarEvent {
+    pub var: u32,
+}
+
+/// `BSVE` version 1. Little-endian batch of settled variable ids.
+pub fn encode_var_events(events: &[VarEvent]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(10 + events.len() * 4);
+    out.extend_from_slice(b"BSVE");
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&(events.len() as u32).to_le_bytes());
+    for event in events {
+        out.extend_from_slice(&event.var.to_le_bytes());
+    }
+    out
+}

@@ -27,6 +27,27 @@ fn c(text: &str) -> CString {
     CString::new(text).unwrap()
 }
 
+
+/// Poll a script global until it equals `expected`; the script thread handles
+/// host events asynchronously, so settled-variable promises resolve there.
+fn wait_for(name: &str, expected: i64, context: &str) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if eval(&format!("Number(globalThis.{name})")) == expected.to_string() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{context}: {name} never matched; value={:?} dispatch={:?} faults={} err={}",
+            eval(&format!("String(globalThis.{name})")),
+            eval("String(globalThis.__varDispatch ?? 'none')"),
+            bubble_faults(),
+            error()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn error() -> String {
     let ptr = bubble_last_error();
     if ptr.is_null() {
@@ -812,6 +833,72 @@ fn style_decl_scopes_keep_authored_order_and_cleanup() {
     bubble_destroy();
 }
 
+
+const SCRIPT_VAR_APP: &str = r##"
+import * as shell from "bubble-shell";
+
+globalThis.settled = 0;
+
+const viewRef = shell.ref();
+shell.mount(function App() {
+  // Signals live inside the mount: boot resets the reactive graph.
+  const count = shell.signal(0);
+  const on = shell.signal(false);
+  globalThis.sigs = { count, on };
+  const t = shell.createVar({ value: false });
+  globalThis.t = t;
+  // A signal can drive the variable: each render effect rerun encodes one
+  // SetVar op that lands on the UI thread at the frame boundary.
+  t.bind(() => count() !== 0);
+  t.settle().then(() => { globalThis.settled += 1; });
+  shell.primitive(
+    "View",
+    { ref: viewRef, backgroundColor: "#ffffff", width: 200, height: 100 },
+    () => {
+      shell.primitive("ViewStyle", {
+        target: viewRef,
+        when: t,
+        backgroundColor: "#00ff00",
+      });
+    },
+  );
+});
+
+globalThis.appStep = (fn) => {
+  shell.batch(fn);
+  shell.flush();
+};
+"##;
+
+#[test]
+fn script_vars_set_bind_and_settle() {
+    let _guard = exclusive();
+    bubble_destroy();
+    assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    try_load_source(SCRIPT_VAR_APP).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0xff, 0xff, 0xff, 0xff]]);
+
+    // A direct write drives the declaration and settles.
+    eval("appStep(() => t.set(true))");
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0x00, 0xff, 0x00, 0xff]]);
+    eval("appStep(() => { t.set(false); t.settle().then(() => { globalThis.settled += 1; }); })");
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0xff, 0xff, 0xff, 0xff]]);
+    // The mount's initial request and this one both report.
+    wait_for("settled", 2, "every settle request reports once");
+
+    // A later request reports on its own.
+    eval("appStep(() => { t.set(true); t.settle().then(() => { globalThis.settled += 1; }); })");
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0x00, 0xff, 0x00, 0xff]]);
+    wait_for("settled", 3, "settle requests report one for one");
+
+    // Writing through bind follows the signal on the frame boundary.
+    eval("appStep(() => { sigs.count.set(1); sigs.on.set(true); })");
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0x00, 0xff, 0x00, 0xff]]);
+    eval("appStep(() => sigs.count.set(0))");
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0xff, 0xff, 0xff, 0xff]]);
+    assert_eq!(bubble_faults(), 0, "{}", error());
+    bubble_destroy();
+}
 
 const GESTURE_ORDER_APP: &str = r##"
 import * as shell from "bubble-shell";

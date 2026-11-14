@@ -717,6 +717,10 @@ const SOURCE_CODES = {
   editing: 4,
 };
 
+// Settle requests per variable id; resolved when the shell reports the
+// variable converged.
+const settleWaiters = new Map();
+
 // Opcode table for the style expression program; must match crates/core/src/expr.rs.
 const EXPR_OPS = {
   add: 2,
@@ -763,20 +767,29 @@ function resolveTarget(target) {
   throw new Error("target must be a ref or a node handle");
 }
 
-/// One UI-thread variable. Source-linked variables are driven by the shell;
-/// unlinked ones start at `value` and are written with `set` / `bind`.
-export function createVar(options) {
+/// One UI-thread variable. `createVar({ source, target })` binds a state
+/// source the shell drives; `createVar(0)` makes a script-driven variable
+/// written with `set` / `bind`. Either form accepts `{ value }` for the
+/// starting value.
+export function createVar(valueOrOptions, options) {
   if (typeof api.create_var !== "function") {
     throw new Error("host does not expose shared variables");
   }
-  const source = (options && options.source) ?? "none";
-  if (!(source in SOURCE_CODES)) throw new Error(`unknown var source ${source}`);
-  let initial = options && options.value;
+  let opts = valueOrOptions;
+  let initial;
+  if (valueOrOptions !== null && typeof valueOrOptions === "object") {
+    initial = valueOrOptions.value;
+  } else {
+    initial = valueOrOptions;
+    opts = options ?? {};
+  }
   if (initial == null) initial = 0;
+  const source = (opts && opts.source) ?? "none";
+  if (!(source in SOURCE_CODES)) throw new Error(`unknown var source ${source}`);
   const [tag, number] = propParts(initial);
   const id = api.create_var(SOURCE_CODES[source], tag, number);
   if (!id) throw new Error(api.error() || "create_var failed");
-  const targetRef = options && options.target;
+  const targetRef = opts && opts.target;
   const target = resolveTarget(targetRef);
   if (target != 0) {
     if (api.bind_var(id, target) !== 0) throw new Error(api.error() || "bind_var failed");
@@ -786,8 +799,30 @@ export function createVar(options) {
     (targetRef.pending ??= []).push(id);
   }
   const self = { id, current: target, source };
-  self.set = () => {
-    throw new Error("variable writes arrive in stage 2; use createVar with a source");
+  if (source !== "none") {
+    // The shell owns the value; writes would fight the source driver.
+    self.set = () => {
+      throw new Error("source-driven variables are written by the UI thread");
+    };
+  } else {
+    self.set = (value) => {
+      const [valueTag, valueNumber] = propParts(value);
+      if (api.set_var(id, valueTag, valueNumber) !== 0) {
+        throw new Error(api.error() || "set_var failed");
+      }
+    };
+    self.bind = (run) => {
+      if (typeof run !== "function") throw new Error("bind requires a function");
+      addBinding(() => self.set(run()));
+    };
+  }
+  self.settle = () => {
+    if (api.settle_var(id) !== 0) throw new Error(api.error() || "settle_var failed");
+    return new Promise((resolve) => {
+      const waiters = settleWaiters.get(id);
+      if (waiters) waiters.push(resolve);
+      else settleWaiters.set(id, [resolve]);
+    });
   };
   return self;
 }
@@ -1515,6 +1550,35 @@ globalThis.__bubbleSetApi = setApi;
 globalThis.__bubblePress = press;
 globalThis.__bubbleGesture = dispatchGestureEvents;
 globalThis.__bubbleEdit = dispatchEditEvents;
+globalThis.__bubbleVar = dispatchVarEvents;
+
+export function dispatchVarEvents(bytes) {
+  const events = decodeVarEvents(bytes);
+  for (const event of events) {
+    const waiters = settleWaiters.get(event.var);
+    settleWaiters.delete(event.var);
+    if (waiters) for (const resolve of waiters) resolve();
+  }
+  return events.length;
+}
+
+function decodeVarEvents(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.byteLength < 10 || view.getUint8(0) !== 0x42 || view.getUint8(1) !== 0x53 ||
+      view.getUint8(2) !== 0x56 || view.getUint8(3) !== 0x45) {
+    throw new Error("bad var event batch");
+  }
+  const version = view.getUint16(4, true);
+  if (version !== 1) throw new Error(`unsupported var event version ${version}`);
+  const count = view.getUint32(6, true);
+  const events = [];
+  let offset = 10;
+  for (let index = 0; index < count; index += 1) {
+    events.push({ var: view.getUint32(offset, true) });
+    offset += 4;
+  }
+  return events;
+}
 
 export function dispatchEditEvents(bytes) {
   const events = decodeEditEvents(bytes);

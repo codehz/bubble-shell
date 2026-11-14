@@ -178,6 +178,17 @@ pub enum Op {
     DisposeVar {
         var: u32,
     },
+    /// Script-driven variable write, applied when the batch lands on the UI
+    /// thread. Writing a source-linked variable is an error.
+    SetVar {
+        var: u32,
+        value: Value,
+    },
+    /// Ask the shell to emit a settle event for `var` once its pending writes
+    /// converge. With no animation configured that is immediate.
+    SettleVar {
+        var: u32,
+    },
     /// Virtual style declaration attached to `target`; `index` is its
     /// position among that target's declarations. `component` 1 ViewStyle,
     /// 2 TextStyle.
@@ -529,6 +540,15 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.push(24);
                 payload.extend_from_slice(&var.to_le_bytes());
             }
+            Op::SetVar { var, value } => {
+                payload.push(25);
+                payload.extend_from_slice(&var.to_le_bytes());
+                write_value(&mut payload, value, &mut intern);
+            }
+            Op::SettleVar { var } => {
+                payload.push(26);
+                payload.extend_from_slice(&var.to_le_bytes());
+            }
             Op::SpawnStyleDecl {
                 decl,
                 target,
@@ -772,6 +792,14 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                 target: read_u32(&mut payload_cur)?,
             }),
             24 => ops.push(Op::DisposeVar {
+                var: read_u32(&mut payload_cur)?,
+            }),
+            25 => {
+                let var = read_u32(&mut payload_cur)?;
+                let value = read_value(&mut payload_cur, &strings)?;
+                ops.push(Op::SetVar { var, value });
+            }
+            26 => ops.push(Op::SettleVar {
                 var: read_u32(&mut payload_cur)?,
             }),
             18 => ops.push(Op::SpawnStyleDecl {

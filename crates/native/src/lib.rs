@@ -24,9 +24,9 @@ use std::thread::JoinHandle;
 use std::path::PathBuf;
 
 use bubble_core::{
-    decode_layout, encode_edit_events, encode_events, encode_paint, wrapping_layout, A11yAction,
-    EditCommand, EditEvent, EditMenuAction, GestureEvent, Key, LayoutRequest, LayoutSnapshot,
-    PointerAction, PointerInput, Shell,
+    decode_layout, encode_edit_events, encode_events, encode_paint, encode_var_events,
+    wrapping_layout, A11yAction, EditCommand, EditEvent, EditMenuAction, GestureEvent, Key,
+    LayoutRequest, LayoutSnapshot, PointerAction, PointerInput, Shell, VarEvent,
 };
 
 use script::Cmd;
@@ -227,7 +227,7 @@ fn catch<T>(body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 /// swaps in a fresh root before the new batch is applied.
 fn drain_pending(shared: &Shared) -> Result<(), String> {
     let reset = shared.reset.swap(false, Ordering::SeqCst);
-    let (events, edits) = {
+    let (events, edits, vars) = {
         let mut queue = shared
             .pending
             .lock()
@@ -242,10 +242,15 @@ fn drain_pending(shared: &Shared) -> Result<(), String> {
         while let Some(bytes) = queue.pop_front() {
             shell.apply_ops(&bytes)?;
         }
-        (shell.take_gesture_events(), shell.take_edit_events())
+        (
+            shell.take_gesture_events(),
+            shell.take_edit_events(),
+            shell.take_var_events(),
+        )
     };
     send_events(shared, events);
     send_edits(shared, edits);
+    send_vars(shared, vars);
     Ok(())
 }
 
@@ -277,6 +282,21 @@ fn send_edits(shared: &Shared, events: Vec<EditEvent>) {
         let _ = tx.send(Cmd::Edit {
             epoch: shared.input_epoch.load(Ordering::SeqCst),
             bytes: encode_edit_events(&events),
+        });
+    }
+}
+
+/// Hand settled-variable events to the script thread.
+fn send_vars(shared: &Shared, events: Vec<VarEvent>) {
+    if events.is_empty() {
+        return;
+    }
+    let Ok(slot) = shared.commands.lock() else {
+        return;
+    };
+    if let Some(tx) = slot.as_ref() {
+        let _ = tx.send(Cmd::Vars {
+            bytes: encode_var_events(&events),
         });
     }
 }

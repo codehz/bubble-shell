@@ -1,6 +1,6 @@
 import { scrollActionForKey } from "./a11y.js";
 import { commandsForDom, dragSelection } from "./ime.js";
-import { dispatchEditEvents, dispatchGestureEvents, setApi } from "bubble-shell";
+import { dispatchEditEvents, dispatchGestureEvents, dispatchVarEvents, setApi } from "bubble-shell";
 import { layoutSnapshot, wrapLines } from "./textlayout.js";
 
 const dev = window.__bubbleDev ?? null;
@@ -433,6 +433,10 @@ setApi({
     return exports.create_var(source, initialTag, initialNumber);
   },
   bind_var: exports.bind_var,
+  set_var(varId, tag, number) {
+    return exports.set_var(varId, tag, number);
+  },
+  settle_var: exports.settle_var,
   dispose_var: exports.dispose_var,
   spawn_style_decl: exports.spawn_style_decl,
   set_style_prop(decl, key, tag, number, text) {
@@ -461,6 +465,7 @@ setApi({
   tick: exports.tick,
   gesture_pending: exports.gesture_pending,
   take_gesture_events: exports.take_gesture_events,
+  take_var_events: exports.take_var_events,
   queue_text: exports.queue_text,
   commit: exports.commit,
   // Layout after a committed batch must also repaint: programmatic focus and
@@ -677,6 +682,12 @@ function pumpGestures() {
     const bytes = new Uint8Array(memory().buffer, exports.scratch_ptr(), len).slice();
     dispatchEditEvents(bytes);
     len = exports.take_edit_events();
+  }
+  len = exports.take_var_events();
+  while (len > 0) {
+    const bytes = new Uint8Array(memory().buffer, exports.scratch_ptr(), len).slice();
+    dispatchVarEvents(bytes);
+    len = exports.take_var_events();
   }
 }
 

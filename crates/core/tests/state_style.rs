@@ -7,9 +7,8 @@
 
 use bubble_core::{
     encode, encode_set_prop_color, spawn_ops, wrapping_layout, Color, Kind, LayoutRequest, NodeDesc,
-    Op, PaintCmd, PointerAction, PointerInput, ProgramBuilder, Shell, Value, OP_AND, OP_CONST,
-    OP_GT, OP_LOAD, OP_NOT, SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE,
-    SOURCE_PRESSED,
+    Op, PaintCmd, PointerAction, PointerInput, ProgramBuilder, Shell, Value, VarEvent, OP_AND,
+    OP_GT, OP_NOT, SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED,
 };
 
 const BLUE: u32 = 0xff25_63eb;
@@ -676,4 +675,104 @@ fn pressed_feedback_survives_a_tap_family() {
         .collect();
     drop(paint);
     assert_eq!(opacities, vec![0.7], "pressed opacity reaches paint");
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2: script-driven variables
+// ---------------------------------------------------------------------------
+
+/// A Bool script variable plus a `when: var` declaration patching green.
+fn var_shell() -> Shell {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 200.0);
+    let mut ops = button(2, BLUE);
+    ops.push(Op::CreateVar {
+        var: 1,
+        source: SOURCE_NONE,
+        initial: Value::Bool(false),
+    });
+    ops.extend(decl(1, 2, 1, 0, program(load(1))));
+    ops.push(paint_op(1, "backgroundColor", Value::Int(GREEN as i64)));
+    shell.apply_ops(&encode(1, &ops)).unwrap();
+    shell.layout(&mut measure).unwrap();
+    shell
+}
+
+#[test]
+fn script_var_write_drives_declaration_paint() {
+    let mut shell = var_shell();
+    assert_eq!(fills(&shell), vec![BLUE]);
+
+    shell
+        .apply_ops(&encode(2, &[Op::SetVar {
+            var: 1,
+            value: Value::Bool(true),
+        }]))
+        .unwrap();
+    shell.layout(&mut measure).unwrap();
+    assert_eq!(fills(&shell), vec![GREEN]);
+
+    shell
+        .apply_ops(&encode(3, &[Op::SetVar {
+            var: 1,
+            value: Value::Bool(false),
+        }]))
+        .unwrap();
+    shell.layout(&mut measure).unwrap();
+    assert_eq!(fills(&shell), vec![BLUE], "false reverts the patch");
+}
+
+#[test]
+fn script_var_write_rejects_source_variable() {
+    let mut shell = pressed_shell();
+    let err = shell
+        .apply_ops(&encode(2, &[Op::SetVar {
+            var: 1,
+            value: Value::Bool(true),
+        }]))
+        .unwrap_err();
+    assert!(err.contains("state source"), "{err}");
+    // The failed write left the variable untouched.
+    shell.layout(&mut measure).unwrap();
+    assert_eq!(fills(&shell), vec![BLUE]);
+}
+
+#[test]
+fn script_var_write_unknown_var_fails() {
+    let mut shell = Shell::blank().unwrap();
+    let err = shell
+        .apply_ops(&encode(1, &[Op::SetVar {
+            var: 9,
+            value: Value::Bool(true),
+        }]))
+        .unwrap_err();
+    assert!(err.contains("unknown var"), "{err}");
+}
+
+#[test]
+fn settle_var_emits_one_event_per_request() {
+    let mut shell = var_shell();
+    shell
+        .apply_ops(&encode(
+            2,
+            &[
+                Op::SetVar {
+                    var: 1,
+                    value: Value::Bool(true),
+                },
+                Op::SettleVar { var: 1 },
+            ],
+        ))
+        .unwrap();
+    assert_eq!(shell.take_var_events(), vec![VarEvent { var: 1 }]);
+    assert!(shell.take_var_events().is_empty(), "drain empties");
+}
+
+#[test]
+fn settle_var_unknown_var_fails() {
+    let mut shell = Shell::blank().unwrap();
+    let err = shell
+        .apply_ops(&encode(1, &[Op::SettleVar { var: 9 }]))
+        .unwrap_err();
+    assert!(err.contains("unknown var"), "{err}");
 }
