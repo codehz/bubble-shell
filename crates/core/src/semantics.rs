@@ -120,6 +120,9 @@ pub struct SemanticsNode {
     pub role: Role,
     pub label: String,
     pub value: String,
+    /// Author-supplied `testID`, empty when unset.
+    #[serde(default)]
+    pub test_id: String,
     pub bounds: [f32; 4],
     pub actions: u32,
     pub focusable: bool,

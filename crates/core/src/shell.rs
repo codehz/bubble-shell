@@ -242,6 +242,7 @@ struct Node {
     autofill: String,
     role: Option<Role>,
     label: String,
+    test_id: String,
     disabled: bool,
     a11y_hidden: bool,
     /// `display: none`. The subtree is out of layout, paint, hit, focus, and semantics.
@@ -570,6 +571,7 @@ impl Shell {
                     autofill: String::new(),
                     role: None,
                     label: String::new(),
+                    test_id: String::new(),
                     disabled: false,
                     a11y_hidden: false,
                     display_none: false,
@@ -1772,6 +1774,7 @@ impl Shell {
                 role,
                 label,
                 value,
+                test_id: node.test_id.clone(),
                 bounds: [node.x, node.y, node.w, node.h],
                 actions,
                 focusable: !hidden && !node.disabled && self.is_focusable(id),
@@ -2958,6 +2961,12 @@ impl Shell {
                 };
                 self.node_mut(id)?.label = text.clone();
             }
+            Prop::TestID => {
+                let Value::String(text) = value else {
+                    return Err("testID must be a string".into());
+                };
+                self.node_mut(id)?.test_id = text.clone();
+            }
             Prop::Disabled => {
                 self.node_mut(id)?.disabled = value.as_bool()?;
                 self.sample_sources();
@@ -3152,6 +3161,7 @@ impl Shell {
             autofill: String::new(),
             role: None,
             label: String::new(),
+            test_id: String::new(),
             disabled: false,
             a11y_hidden: false,
             display_none: false,
