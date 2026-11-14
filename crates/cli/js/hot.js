@@ -159,6 +159,12 @@ function clearOverlay() {
 
 export function connect(url) {
   socket = new WebSocket(url);
+  socket.addEventListener("close", () => {
+    socket = null;
+    setTimeout(() => {
+      if (!socket) connect(url);
+    }, 1000);
+  });
   socket.addEventListener("message", (event) => {
     let message;
     try {
