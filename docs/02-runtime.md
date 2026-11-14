@@ -30,6 +30,8 @@ mount(() => <Counter />);
 - 静态属性和子节点设一次；会读本地 `signal()` / `computed()` 的表达式登记为绑定。
 - 绑定重跑时，原生渲染器直接产出对应 op（`SetText` / `SetProp` / 插入 / 移动 / 销毁）。没有 VDOM diff，也没有「模板 IR + 按绑定生成的 JS 更新函数」。
 - `<Show>` / `<For>` / `<Index>` / `<Switch>` / `<Match>` 是运行时控制流：`when` / `each` 是每次重跑都调用的 accessor，不走 `dynamic()`。三元、`&&` 和 `when()` / `each()` 不再是控制流。
+- 组件是普通函数：大写标签编译成 `component(Fn, props, children?)`，在父节点构建时同步执行一次。传给组件的 JSX 值属性编译成渲染 thunk（`header={<Text/>}` → `header: () => primitive(...)`），在组件调用它的位置才求值；函数属性原样传递。
+- 子节点位置写 `{props.children}` 或 `{props.children()}` 即在该处渲染 children；`children` / `*.children` 是保留的槽引用，不能当文本或原语属性用。命名槽用 `<Slot of={props.header} />` 或 `<Slot>{props.header}</Slot>`，可选 `fallback={<Text>…</Text>}` 在槽为空时渲染。槽没有自己的节点；槽内容放进 `<Show>` / `<For>` 时跟随分支的插入与销毁。控制流 render 里写 `{() => props.children}` 会自动降成槽调用；其余裸函数返回值（如 `{() => props.header}`）不会渲染，要写 `{() => props.header()}` 或 `<Slot of={props.header} />`。
 
 ### 运行时
 

@@ -416,6 +416,19 @@ export function component(type, props, children) {
   return type({ ...(props ?? {}), children });
 }
 
+// Place a render thunk (component children or a named slot) at this position.
+// The thunk runs once per invocation and emits into the current parent; the
+// branch machinery of Show / For / Switch owns any later replacement of the
+// emitted nodes. A missing thunk renders the fallback.
+export function slot(thunk, fallback) {
+  if (thunk == null) {
+    if (typeof fallback === "function") fallback();
+    return;
+  }
+  if (typeof thunk !== "function") throw new Error("slot expects a render function");
+  thunk();
+}
+
 const primitives = new Map();
 
 export function registerPrimitive(name, factory) {

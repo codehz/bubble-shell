@@ -11,6 +11,7 @@ cargo run -q -p bubble-cli -- bundle \
   examples/app/fixtures/editing.tsx \
   examples/app/fixtures/focus.tsx \
   examples/app/fixtures/media.tsx \
+  examples/app/fixtures/slot.tsx \
   examples/app/gestures.js \
   --out "$OUT"
 

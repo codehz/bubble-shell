@@ -34,6 +34,7 @@ const HOT_MODULE: &str = "bubble:hot";
 const RT_PRIMITIVE: &str = "__bubble_rt_primitive";
 const RT_COMPONENT: &str = "__bubble_rt_component";
 const RT_DYNAMIC: &str = "__bubble_rt_dynamic";
+const RT_SLOT: &str = "__bubble_rt_slot";
 const RT_STYLE_EXPR: &str = "__bubble_rt_styleExpr";
 const RT_SHOW: &str = "__bubble_rt_show";
 const RT_FOR_EACH: &str = "__bubble_rt_forEach";
@@ -158,6 +159,7 @@ fn runtime_import<'a>(builder: &AstBuilder<'a>) -> Statement<'a> {
         ("primitive", RT_PRIMITIVE),
         ("component", RT_COMPONENT),
         ("dynamic", RT_DYNAMIC),
+        ("slot", RT_SLOT),
         ("styleExpr", RT_STYLE_EXPR),
         ("show", RT_SHOW),
         ("forEach", RT_FOR_EACH),
@@ -423,6 +425,7 @@ impl<'a> Lower<'a> {
                 self.error(span, "Match must be a child of Switch");
                 self.null(span)
             }
+            "Slot" => self.lower_slot(span, attributes, children),
             other => {
                 if other == "ViewStyle" || other == "TextStyle" {
                     return self.lower_style_element(span, other, attributes, children);
@@ -430,12 +433,9 @@ impl<'a> Lower<'a> {
                 let (props, controls) =
                     self.split_attributes(span, attributes, &control_names(other));
                 debug_assert!(controls.is_empty());
-                let props = props
-                    .into_iter()
-                    .map(|(key, value)| (key, self.prepare_value(value)))
-                    .collect::<Vec<_>>();
-                let props = self.object(span, props);
                 if PRIMITIVES.contains(&other) {
+                    let prepared = self.prepare_primitive_props(span, props);
+                    let props = self.object(span, prepared);
                     if other == "Text" {
                         let (styles, rest) = self.split_style_children(children);
                         let content = self.text_content(span, rest);
@@ -466,10 +466,12 @@ impl<'a> Lower<'a> {
                     .next()
                     .is_some_and(|ch| ch.is_ascii_uppercase())
                 {
-                    let callee = self.ident(other);
-                    let mut args = vec![callee, props];
-                    if has_children(&children) {
-                        args.push(self.children_block(span, children));
+                    let (props, children_expr) =
+                        self.prepare_component_props(span, other, props, children);
+                    let props = self.object(span, props);
+                    let mut args = vec![self.ident(other), props];
+                    if let Some(children_expr) = children_expr {
+                        args.push(children_expr);
                     }
                     self.call(RT_COMPONENT, args, span)
                 } else {
@@ -600,6 +602,234 @@ impl<'a> Lower<'a> {
         } else {
             self.dynamic(span, expression)
         }
+    }
+
+    /// Primitive props carry plain values; JSX belongs in children.
+    fn prepare_primitive_props(
+        &mut self,
+        span: Span,
+        props: Vec<(&'a str, Expression<'a>)>,
+    ) -> Vec<(&'a str, Expression<'a>)> {
+        props
+            .into_iter()
+            .map(|(key, value)| {
+                if contains_jsx(&value) {
+                    self.error(span, format!("primitive <{key}> props cannot contain JSX"));
+                    return (key, self.null(span));
+                }
+                (key, self.prepare_value(value))
+            })
+            .collect()
+    }
+
+    /// Component props: a JSX value becomes a render thunk that the component
+    /// invokes where it wants the content rendered; the `children` prop names
+    /// the children slot. Returns the prepared props and the children thunk.
+    fn prepare_component_props(
+        &mut self,
+        span: Span,
+        tag: &'a str,
+        props: Vec<(&'a str, Expression<'a>)>,
+        children: ArenaVec<'a, JSXChild<'a>>,
+    ) -> (Vec<(&'a str, Expression<'a>)>, Option<Expression<'a>>) {
+        let mut children_attr: Option<Expression<'a>> = None;
+        let mut prepared = Vec::new();
+        for (key, value) in props {
+            if key == "children" {
+                if children_attr.is_some() {
+                    self.error(span, "duplicate children prop");
+                } else {
+                    children_attr = Some(value);
+                }
+                continue;
+            }
+            let value = match value {
+                Expression::JSXElement(_) => self.slot_thunk_of(span, value),
+                mut other => {
+                    if contains_jsx(&other) {
+                        self.error(
+                            span,
+                            format!(
+                                "<{tag}> prop {key} contains JSX; pass a render function instead: {key}={{() => ...}}"
+                            ),
+                        );
+                        other = self.null(span);
+                    }
+                    self.prepare_value(other)
+                }
+            };
+            prepared.push((key, value));
+        }
+        let has_jsx_children = has_children(&children);
+        let children_expr = match (children_attr, has_jsx_children) {
+            (Some(_), true) => {
+                self.error(
+                    span,
+                    format!("<{tag}> cannot have both a children prop and JSX children"),
+                );
+                Some(self.null(span))
+            }
+            (Some(value), false) => Some(self.children_attr_thunk(span, value)),
+            (None, true) => Some(self.children_block(span, children)),
+            (None, false) => None,
+        };
+        (prepared, children_expr)
+    }
+
+    /// The `children` prop must name a render thunk: JSX, a function value, or
+    /// a forwarded children reference.
+    fn children_attr_thunk(&mut self, span: Span, value: Expression<'a>) -> Expression<'a> {
+        let thunk = self.slot_thunk_of(span, value);
+        let is_function = matches!(
+            thunk,
+            Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)
+        );
+        if is_function || slot_ref(&thunk) {
+            return thunk;
+        }
+        self.error(span, "children prop must be a render function or JSX element");
+        self.null(span)
+    }
+
+    /// Normalize a slot value: JSX renders lazily via a thunk; function
+    /// values and forwarded references pass through unchanged.
+    fn slot_thunk_of(&mut self, span: Span, mut value: Expression<'a>) -> Expression<'a> {
+        if contains_jsx(&value) && !matches!(value, Expression::JSXElement(_)) {
+            self.error(span, "JSX control flow must use Show, For, Index, or Switch");
+            return self.null(span);
+        }
+        if !matches!(value, Expression::JSXElement(_)) {
+            return value;
+        }
+        let taken = value.take_in(&self.builder);
+        let Expression::JSXElement(element) = taken else {
+            unreachable!("guarded above");
+        };
+        let lowered = self.lower_element(self.take(element));
+        self.arrow_expr(span, lowered)
+    }
+
+    /// `() => props.children` in control-flow children reads as "render the
+    /// children here"; rewrite the concise body to a slot invocation so the
+    /// thunk is actually called instead of returned.
+    fn slot_arrow_body(&mut self, expression: &mut Expression<'a>) {
+        let Expression::ArrowFunctionExpression(arrow) = expression else {
+            return;
+        };
+        let is_slot_body = arrow
+            .body
+            .as_expression()
+            .is_some_and(|body| slot_ref(body) || is_slot_call(body));
+        if !is_slot_body {
+            return;
+        }
+        let taken = std::mem::replace(
+            &mut arrow.body,
+            ArrowFunctionBody::from(self.null(SPAN)),
+        );
+        let span = taken.span();
+        let thunk = self.reduce_slot(taken.into_expression());
+        let call = self.call(RT_SLOT, vec![thunk], span);
+        arrow.body = ArrowFunctionBody::from(call);
+    }
+
+    /// Reduce a recognized slot expression — `children`, `props.children`,
+    /// optionally invoked, optionally optional-chained — to its thunk value.
+    fn reduce_slot(&mut self, mut expression: Expression<'a>) -> Expression<'a> {
+        let mut taken = expression.take_in(&self.builder);
+        loop {
+            taken = match taken {
+                Expression::ParenthesizedExpression(mut paren) => {
+                    paren.take_in(&self.builder).expression
+                }
+                Expression::ChainExpression(mut chain) => {
+                    chain.take_in(&self.builder).expression.into()
+                }
+                Expression::CallExpression(mut call) => call.take_in(&self.builder).callee,
+                Expression::Identifier(_) | Expression::StaticMemberExpression(_)
+                | Expression::ComputedMemberExpression(_) => {
+                    let mut thunk = taken;
+                    self.visit_expression(&mut thunk);
+                    return thunk;
+                }
+                other => {
+                    let mut thunk = other;
+                    self.visit_expression(&mut thunk);
+                    return thunk;
+                }
+            };
+        }
+    }
+
+    /// `<Slot>` places a render thunk (children or a named slot) in the tree.
+    fn lower_slot(
+        &mut self,
+        span: Span,
+        attributes: ArenaVec<'a, JSXAttributeItem<'a>>,
+        children: ArenaVec<'a, JSXChild<'a>>,
+    ) -> Expression<'a> {
+        let (props, mut controls) = self.split_attributes(span, attributes, &["of", "fallback"]);
+        for (key, _) in &props {
+            self.error(span, format!("<Slot> has no property {key}"));
+        }
+        let mut thunk = self
+            .control(span, &mut controls, "of")
+            .map(|value| self.slot_thunk_of(span, value));
+        if thunk.is_none() {
+            let mut child_thunk: Option<Expression<'a>> = None;
+            let mut extra = 0;
+            for child in children {
+                match child {
+                    JSXChild::Text(text) if text.value.trim().is_empty() => {}
+                    JSXChild::Text(text) => {
+                        self.error(
+                            text.span,
+                            "<Slot> children must be a render function value",
+                        );
+                    }
+                    JSXChild::ExpressionContainer(container) => {
+                        let container = self.take(container);
+                        if !container.expression.is_expression() {
+                            continue;
+                        }
+                        if child_thunk.is_some() {
+                            extra += 1;
+                            continue;
+                        }
+                        let expression = container.expression.into_expression();
+                        child_thunk = Some(self.slot_thunk_of(span, expression));
+                    }
+                    JSXChild::Element(element) => {
+                        self.error(
+                            element.span,
+                            "<Slot> expects a render function value like {props.children}; JSX children render in place without a Slot",
+                        );
+                    }
+                    JSXChild::Fragment(fragment) => {
+                        self.error(fragment.span, "JSX fragments are not supported");
+                    }
+                    JSXChild::Spread(spread) => {
+                        self.error(spread.span, "JSX spread children are not supported");
+                    }
+                }
+            }
+            if extra > 0 {
+                self.error(span, "<Slot> takes a single function child");
+            }
+            thunk = child_thunk;
+        }
+        let fallback = self
+            .control(span, &mut controls, "fallback")
+            .map(|value| self.fallback(span, Some(value)));
+        let Some(thunk) = thunk else {
+            self.error(span, "<Slot> requires a function child or an of prop");
+            return self.null(span);
+        };
+        let mut args = vec![thunk];
+        if let Some(fallback) = fallback {
+            args.push(fallback);
+        }
+        self.call(RT_SLOT, args, span)
     }
 
     fn accessor_value(&mut self, span: Span, mut expression: Expression<'a>) -> Expression<'a> {
@@ -917,6 +1147,7 @@ impl<'a> Lower<'a> {
                         self.error(span, "control flow child must be an arrow function");
                         return self.null(span);
                     }
+                    self.slot_arrow_body(&mut expression);
                     self.visit_expression(&mut expression);
                     return expression;
                 }
@@ -964,6 +1195,12 @@ impl<'a> Lower<'a> {
                     if matches!(expression, Expression::JSXElement(_)) {
                         self.visit_expression(&mut expression);
                         statements.push(self.statement(container_span, expression));
+                        continue;
+                    }
+                    if slot_ref(&expression) || is_slot_call(&expression) {
+                        let thunk = self.reduce_slot(expression);
+                        let call = self.call(RT_SLOT, vec![thunk], span);
+                        statements.push(self.statement(container_span, call));
                         continue;
                     }
                     self.visit_expression(&mut expression);
@@ -1047,6 +1284,13 @@ impl<'a> Lower<'a> {
                         continue;
                     }
                     let mut expression = container.expression.into_expression();
+                    if slot_ref(&expression) || is_slot_call(&expression) {
+                        self.error(
+                            container.span,
+                            "children cannot be rendered as text; place <Slot> inside a View",
+                        );
+                        continue;
+                    }
                     self.visit_expression(&mut expression);
                     parts.push(TextPart::Expression(expression));
                 }
@@ -1136,6 +1380,34 @@ fn has_children(children: &ArenaVec<'_, JSXChild<'_>>) -> bool {
         JSXChild::Text(text) => !text.value.trim().is_empty(),
         _ => true,
     })
+}
+
+/// A children slot reference: `children` or a member access ending in
+/// `children` (for example `props.children`).
+fn slot_ref(expression: &Expression<'_>) -> bool {
+    match expression {
+        Expression::ParenthesizedExpression(paren) => slot_ref(&paren.expression),
+        Expression::Identifier(id) => id.name.as_str() == "children",
+        Expression::StaticMemberExpression(member) => member.property.name.as_str() == "children",
+        Expression::ComputedMemberExpression(member) => matches!(
+            &member.expression,
+            Expression::StringLiteral(literal) if literal.value.as_str() == Some("children")
+        ),
+        _ => false,
+    }
+}
+
+/// A call or optional call to a children slot reference: `props.children()`.
+fn is_slot_call(expression: &Expression<'_>) -> bool {
+    match expression {
+        Expression::ParenthesizedExpression(paren) => is_slot_call(&paren.expression),
+        Expression::CallExpression(call) => slot_ref(&call.callee),
+        Expression::ChainExpression(chain) => match &chain.expression {
+            ChainElement::CallExpression(call) => slot_ref(&call.callee),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn contains_jsx(expression: &Expression<'_>) -> bool {
