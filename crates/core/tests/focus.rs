@@ -1,7 +1,8 @@
 use bubble_core::{
-    encode, A11yAction, EditCommand, EditMenuAction, Key, Kind, NodeDesc, Op, Role, Shell, Value,
-    ACTION_ACTIVATE, ACTION_SCROLL_BACKWARD, ACTION_SCROLL_DOWN, ACTION_SCROLL_FORWARD,
-    ACTION_SCROLL_LEFT, ACTION_SCROLL_RIGHT, ACTION_SCROLL_UP, ACTION_SET_VALUE,
+    encode, spawn_ops, A11yAction, EditCommand, EditMenuAction, Key, Kind, NodeDesc, Op, Role,
+    Shell, Value, ACTION_ACTIVATE, ACTION_SCROLL_BACKWARD, ACTION_SCROLL_DOWN,
+    ACTION_SCROLL_FORWARD, ACTION_SCROLL_LEFT, ACTION_SCROLL_RIGHT, ACTION_SCROLL_UP,
+    ACTION_SET_VALUE,
 };
 
 fn field(shell: &mut Shell, text: &str) -> u32 {
@@ -437,16 +438,47 @@ fn scroll_view(shell: &mut Shell, axis_x: bool, axis_y: bool, content: [f32; 2])
         .apply_ops(&encode(
             1,
             &[
-                Op::Spawn { desc: scroller },
-                Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(100.0) },
-                Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(100.0) },
-                Op::Spawn { desc: inner },
-                Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(content[0] as f64) },
-                Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(content[1] as f64) },
-                Op::Spawn { desc: leaf },
-                Op::SetProp { handle: child, key: "width".into(), value: Value::Float(20.0) },
-                Op::SetProp { handle: child, key: "height".into(), value: Value::Float(20.0) },
-            ],
+                spawn_ops(scroller),
+                vec![
+                    Op::SetProp {
+                        handle: 2,
+                        key: "width".into(),
+                        value: Value::Float(100.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "height".into(),
+                        value: Value::Float(100.0),
+                    },
+                ],
+                spawn_ops(inner),
+                vec![
+                    Op::SetProp {
+                        handle: 3,
+                        key: "width".into(),
+                        value: Value::Float(content[0] as f64),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "height".into(),
+                        value: Value::Float(content[1] as f64),
+                    },
+                ],
+                spawn_ops(leaf),
+                vec![
+                    Op::SetProp {
+                        handle: child,
+                        key: "width".into(),
+                        value: Value::Float(20.0),
+                    },
+                    Op::SetProp {
+                        handle: child,
+                        key: "height".into(),
+                        value: Value::Float(20.0),
+                    },
+                ],
+            ]
+            .concat(),
         ))
         .unwrap();
     layout(shell);

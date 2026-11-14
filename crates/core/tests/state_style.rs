@@ -1,8 +1,8 @@
 //! Consumer-visible state style behavior: pressed and focused paint overrides.
 
 use bubble_core::{
-    encode, encode_set_prop_color, wrapping_layout, Color, Kind, LayoutRequest, NodeDesc, Op,
-    PaintCmd, PointerAction, PointerInput, Shell, Value,
+    encode, encode_set_prop_color, spawn_ops, wrapping_layout, Color, Kind, LayoutRequest,
+    NodeDesc, Op, PaintCmd, PointerAction, PointerInput, Shell, Value,
 };
 
 const BLUE: u32 = 0xff25_63eb;
@@ -95,23 +95,22 @@ fn paint_op(style: u32, key: &str, value: Value) -> Op {
     }
 }
 
-/// A 200x200 view. Sizes arrive as `SetProp`; the descriptor body has none.
+/// A 200x200 view. Props use the same `SetProp` path as authored styles.
 fn button(id: u32, background: u32) -> Vec<Op> {
     let mut node = NodeDesc::view(id, 1);
     node.background = background;
-    vec![
-        Op::Spawn { desc: node },
-        Op::SetProp {
-            handle: id,
-            key: "width".into(),
-            value: Value::Float(200.0),
-        },
-        Op::SetProp {
-            handle: id,
-            key: "height".into(),
-            value: Value::Float(200.0),
-        },
-    ]
+    let mut ops = spawn_ops(node);
+    ops.push(Op::SetProp {
+        handle: id,
+        key: "width".into(),
+        value: Value::Float(200.0),
+    });
+    ops.push(Op::SetProp {
+        handle: id,
+        key: "height".into(),
+        value: Value::Float(200.0),
+    });
+    ops
 }
 
 fn pressed_shell() -> Shell {
@@ -347,51 +346,49 @@ fn effective_text_alignment_matches_edit_geometry() {
     text.color = 0xff_ff_ff_ff;
     let mut image = NodeDesc::view(4, 1);
     image.kind = Kind::Image;
-    let mut ops = vec![
-        Op::Spawn { desc: field },
-        Op::SetProp {
-            handle: 2,
-            key: "width".into(),
-            value: Value::Float(200.0),
-        },
-        Op::SetProp {
-            handle: 2,
-            key: "height".into(),
-            value: Value::Float(40.0),
-        },
-        Op::Spawn { desc: text },
-        Op::SetProp {
-            handle: 3,
-            key: "width".into(),
-            value: Value::Float(100.0),
-        },
-        Op::SetProp {
-            handle: 3,
-            key: "height".into(),
-            value: Value::Float(20.0),
-        },
-        Op::Spawn { desc: image },
-        Op::SetProp {
-            handle: 4,
-            key: "width".into(),
-            value: Value::Float(100.0),
-        },
-        Op::SetProp {
-            handle: 4,
-            key: "height".into(),
-            value: Value::Float(20.0),
-        },
-        Op::SetProp {
-            handle: 4,
-            key: "src".into(),
-            value: Value::String("logo.png".into()),
-        },
-        Op::SetProp {
-            handle: 4,
-            key: "fit".into(),
-            value: Value::String("contain".into()),
-        },
-    ];
+    let mut ops = spawn_ops(field);
+    ops.push(Op::SetProp {
+        handle: 2,
+        key: "width".into(),
+        value: Value::Float(200.0),
+    });
+    ops.push(Op::SetProp {
+        handle: 2,
+        key: "height".into(),
+        value: Value::Float(40.0),
+    });
+    ops.extend(spawn_ops(text));
+    ops.push(Op::SetProp {
+        handle: 3,
+        key: "width".into(),
+        value: Value::Float(100.0),
+    });
+    ops.push(Op::SetProp {
+        handle: 3,
+        key: "height".into(),
+        value: Value::Float(20.0),
+    });
+    ops.extend(spawn_ops(image));
+    ops.push(Op::SetProp {
+        handle: 4,
+        key: "width".into(),
+        value: Value::Float(100.0),
+    });
+    ops.push(Op::SetProp {
+        handle: 4,
+        key: "height".into(),
+        value: Value::Float(20.0),
+    });
+    ops.push(Op::SetProp {
+        handle: 4,
+        key: "src".into(),
+        value: Value::String("logo.png".into()),
+    });
+    ops.push(Op::SetProp {
+        handle: 4,
+        key: "fit".into(),
+        value: Value::String("contain".into()),
+    });
     ops.extend(style(1, 2, 0, "focused"));
     ops.push(paint_op(1, "textAlign", Value::String("right".into())));
     ops.extend(style(2, 3, 0, "pressed"));

@@ -31,15 +31,17 @@ pub use gesture::{
     encode_events, GestureConfig, GestureDecl, GestureEvent, GestureKind, PointerAction,
     PointerInput, Recognizer, ScrollRequest, REASON_HOST_CANCEL,
 };
-pub use ir::{Extension, Kind, NodeDesc, NODE_VERSION};
+pub use ir::{Kind, NodeDesc};
 pub use layout::{
     decode_layout, encode_layout, snap_unit, wrapping_layout, CaretEdge, LayoutKey, LayoutRequest,
     LayoutRun, LayoutSnapshot, LAYOUT_MAGIC,
 };
 pub use manifest::validate_bundle_hashes;
-pub use ops::{decode_ops, encode, encode_set_prop_color, encode_set_text, Op, Value};
+pub use ops::{
+    decode_ops, encode, encode_set_prop_color, encode_set_text, spawn_at_ops, spawn_ops, Op, Value,
+};
 pub use paint::encode_paint;
-pub use props::{Prop, DEFERRED_PROPS, SET_PROPS, SPAWN_PROPS, STATE_STYLE_PROPS};
+pub use props::{Prop, STATE_STYLE_PROPS};
 pub use reactive::{Kind as ComputationKind, Sched};
 pub use semantics::{
     Role, SemanticsNode, SemanticsSnapshot, ACTION_ACTIVATE, ACTION_FOCUS, ACTION_SCROLL_BACKWARD,

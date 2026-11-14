@@ -1,5 +1,6 @@
 use bubble_core::{
-    encode, A11yAction, NodeDesc, Op, PaintCmd, PointerAction, PointerInput, Shell, Value,
+    encode, spawn_ops, A11yAction, NodeDesc, Op, PaintCmd, PointerAction, PointerInput, Shell,
+    Value,
 };
 
 fn layout(shell: &mut Shell) {
@@ -47,7 +48,53 @@ fn overflow_clips_each_axis_at_the_padding_box_and_resets_scroll() {
     shell
         .apply_ops(&encode(
             1,
-            &[Op::Spawn { desc: parent }, Op::Spawn { desc: child }, Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(60.0) }, Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(60.0) }, Op::SetProp { handle: 2, key: "paddingStart".into(), value: Value::Float(10.0) }, Op::SetProp { handle: 2, key: "paddingEnd".into(), value: Value::Float(10.0) }, Op::SetProp { handle: 2, key: "paddingTop".into(), value: Value::Float(10.0) }, Op::SetProp { handle: 2, key: "paddingBottom".into(), value: Value::Float(10.0) }, Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(120.0) }, Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(120.0) }, ],
+            &[
+                spawn_ops(parent),
+                spawn_ops(child),
+                vec![
+                    Op::SetProp {
+                        handle: 2,
+                        key: "width".into(),
+                        value: Value::Float(60.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "height".into(),
+                        value: Value::Float(60.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "paddingStart".into(),
+                        value: Value::Float(10.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "paddingEnd".into(),
+                        value: Value::Float(10.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "paddingTop".into(),
+                        value: Value::Float(10.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "paddingBottom".into(),
+                        value: Value::Float(10.0),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "width".into(),
+                        value: Value::Float(120.0),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "height".into(),
+                        value: Value::Float(120.0),
+                    },
+                ],
+            ]
+            .concat(),
         ))
         .unwrap();
     set(&mut shell, 3, "position", "absolute");
@@ -87,17 +134,28 @@ fn subtree_hiding_preserves_state_but_updates_layout_focus_and_semantics() {
     parent.flex_shrink = 0.0;
     let mut child = NodeDesc::text(3, 2, "retained");
     child.handler = 77;
-    let mut sibling = NodeDesc::view(4, 1);
+    let sibling = NodeDesc::view(4, 1);
     shell
         .apply_ops(&encode(
             1,
             &[
-                Op::Spawn { desc: parent },
-                Op::Spawn { desc: child },
-                Op::Spawn { desc: sibling },
-                Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(60.0) },
-                Op::SetProp { handle: 4, key: "height".into(), value: Value::Float(20.0) },
-            ],
+                spawn_ops(parent),
+                spawn_ops(child),
+                spawn_ops(sibling),
+                vec![
+                    Op::SetProp {
+                        handle: 2,
+                        key: "height".into(),
+                        value: Value::Float(60.0),
+                    },
+                    Op::SetProp {
+                        handle: 4,
+                        key: "height".into(),
+                        value: Value::Float(20.0),
+                    },
+                ],
+            ]
+            .concat(),
         ))
         .unwrap();
     set(&mut shell, 3, "role", "button");
@@ -144,44 +202,55 @@ fn subtree_hiding_preserves_state_but_updates_layout_focus_and_semantics() {
 fn hiding_cancels_active_and_pending_taps_without_disposing_declarations() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
-    let mut parent = NodeDesc::view(2, 1);
-    let mut child = NodeDesc::view(3, 2);
+    let parent = NodeDesc::view(2, 1);
+    let child = NodeDesc::view(3, 2);
     shell
         .apply_ops(&encode(
             1,
             &[
-                Op::Spawn { desc: parent },
-                Op::Spawn { desc: child },
-                Op::SpawnGesture {
-                    gesture: 10,
-                    target: 3,
-                    kind: 1,
-                    index: 0,
-                },
-                Op::BindGestureEvent {
-                    gesture: 10,
-                    slot: 4,
-                    handler: 77,
-                },
-                Op::BindGestureEvent {
-                    gesture: 10,
-                    slot: 3,
-                    handler: 78,
-                },
-                Op::SpawnGesture {
-                    gesture: 11,
-                    target: 3,
-                    kind: 2,
-                    index: 1,
-                },
-                Op::BindGestureEvent {
-                    gesture: 11,
-                    slot: 5,
-                    handler: 79,
-                },
-                Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(100.0) },
-                Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(100.0) },
-            ],
+                spawn_ops(parent),
+                spawn_ops(child),
+                vec![
+                    Op::SpawnGesture {
+                        gesture: 10,
+                        target: 3,
+                        kind: 1,
+                        index: 0,
+                    },
+                    Op::BindGestureEvent {
+                        gesture: 10,
+                        slot: 4,
+                        handler: 77,
+                    },
+                    Op::BindGestureEvent {
+                        gesture: 10,
+                        slot: 3,
+                        handler: 78,
+                    },
+                    Op::SpawnGesture {
+                        gesture: 11,
+                        target: 3,
+                        kind: 2,
+                        index: 1,
+                    },
+                    Op::BindGestureEvent {
+                        gesture: 11,
+                        slot: 5,
+                        handler: 79,
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "height".into(),
+                        value: Value::Float(100.0),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "height".into(),
+                        value: Value::Float(100.0),
+                    },
+                ],
+            ]
+            .concat(),
         ))
         .unwrap();
     layout(&mut shell);
@@ -226,35 +295,64 @@ fn hiding_cancels_active_and_pending_taps_without_disposing_declarations() {
 fn nested_axis_clips_intersect_for_pointer_hits_and_paint() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
-    let mut outer = NodeDesc::view(2, 1);
-    let mut inner = NodeDesc::view(3, 2);
+    let outer = NodeDesc::view(2, 1);
+    let inner = NodeDesc::view(3, 2);
     let mut child = NodeDesc::view(4, 3);
     child.background = 0xff00_ff00;
     shell
         .apply_ops(&encode(
             1,
             &[
-                Op::Spawn { desc: outer },
-                Op::Spawn { desc: inner },
-                Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(80.0) },
-                Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(80.0) },
-                Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(120.0) },
-                Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(40.0) },
-                Op::Spawn { desc: child },
-                Op::SpawnGesture {
-                    gesture: 10,
-                    target: 4,
-                    kind: 1,
-                    index: 0,
-                },
-                Op::BindGestureEvent {
-                    gesture: 10,
-                    slot: 4,
-                    handler: 77,
-                },
-                Op::SetProp { handle: 4, key: "width".into(), value: Value::Float(160.0) },
-                Op::SetProp { handle: 4, key: "height".into(), value: Value::Float(120.0) },
-            ],
+                spawn_ops(outer),
+                spawn_ops(inner),
+                vec![
+                    Op::SetProp {
+                        handle: 2,
+                        key: "width".into(),
+                        value: Value::Float(80.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "height".into(),
+                        value: Value::Float(80.0),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "width".into(),
+                        value: Value::Float(120.0),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "height".into(),
+                        value: Value::Float(40.0),
+                    },
+                ],
+                spawn_ops(child),
+                vec![
+                    Op::SpawnGesture {
+                        gesture: 10,
+                        target: 4,
+                        kind: 1,
+                        index: 0,
+                    },
+                    Op::BindGestureEvent {
+                        gesture: 10,
+                        slot: 4,
+                        handler: 77,
+                    },
+                    Op::SetProp {
+                        handle: 4,
+                        key: "width".into(),
+                        value: Value::Float(160.0),
+                    },
+                    Op::SetProp {
+                        handle: 4,
+                        key: "height".into(),
+                        value: Value::Float(120.0),
+                    },
+                ],
+            ]
+            .concat(),
         ))
         .unwrap();
     set(&mut shell, 3, "position", "absolute");
@@ -312,14 +410,40 @@ fn nested_axis_clips_intersect_for_pointer_hits_and_paint() {
 fn text_field_hits_respect_clips_and_hidden_overlays() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
-    let mut parent = NodeDesc::view(2, 1);
+    let parent = NodeDesc::view(2, 1);
     let mut field = NodeDesc::view(3, 2);
     field.kind = bubble_core::Kind::Field;
     field.text = "edit".into();
     shell
         .apply_ops(&encode(
             1,
-            &[Op::Spawn { desc: parent }, Op::Spawn { desc: field }, Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(60.0) }, Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(60.0) }, Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(120.0) }, Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(120.0) }, ],
+            &[
+                spawn_ops(parent),
+                spawn_ops(field),
+                vec![
+                    Op::SetProp {
+                        handle: 2,
+                        key: "width".into(),
+                        value: Value::Float(60.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "height".into(),
+                        value: Value::Float(60.0),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "width".into(),
+                        value: Value::Float(120.0),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "height".into(),
+                        value: Value::Float(120.0),
+                    },
+                ],
+            ]
+            .concat(),
         ))
         .unwrap();
     set(&mut shell, 3, "position", "absolute");

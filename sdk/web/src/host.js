@@ -371,18 +371,6 @@ setApi({
   alloc: exports.alloc,
   dealloc: exports.dealloc,
   boot: exports.boot,
-  spawn_props() {
-    const len = exports.spawn_props();
-    return decoder
-      .decode(new Uint8Array(memory().buffer, exports.scratch_ptr(), len))
-      .split("\n");
-  },
-  deferred_props() {
-    const len = exports.deferred_props();
-    return decoder
-      .decode(new Uint8Array(memory().buffer, exports.scratch_ptr(), len))
-      .split("\n");
-  },
   state_style_props() {
     const len = exports.state_style_props();
     return decoder
@@ -398,16 +386,18 @@ setApi({
   on_cleanup: exports.on_cleanup,
   run_init: exports.run_init,
   run_updates: exports.run_updates,
-  spawn(parent, spec) {
-    const ptr = copyBytes(spec);
-    const handle = exports.spawn(parent, ptr, spec.length);
-    exports.dealloc(ptr, spec.length);
+  spawn(parent, kind, text) {
+    const bytes = encoder.encode(text ?? "");
+    const ptr = bytes.length ? copyBytes(bytes) : 0;
+    const handle = exports.spawn(parent, kind, ptr, bytes.length);
+    if (bytes.length) exports.dealloc(ptr, bytes.length);
     return handle;
   },
-  spawn_at(parent, index, spec) {
-    const ptr = copyBytes(spec);
-    const handle = exports.spawn_at(parent, index, ptr, spec.length);
-    exports.dealloc(ptr, spec.length);
+  spawn_at(parent, index, kind, text) {
+    const bytes = encoder.encode(text ?? "");
+    const ptr = bytes.length ? copyBytes(bytes) : 0;
+    const handle = exports.spawn_at(parent, index, kind, ptr, bytes.length);
+    if (bytes.length) exports.dealloc(ptr, bytes.length);
     return handle;
   },
   dispose: exports.dispose,

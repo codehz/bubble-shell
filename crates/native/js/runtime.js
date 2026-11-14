@@ -31,39 +31,6 @@ export function setApi(next) {
   api = next;
 }
 
-let spawnProps;
-let deferredProps;
-
-function allowedSpawnProps() {
-  if (!spawnProps) {
-    if (typeof api.spawn_props !== "function") {
-      throw new Error("host does not expose spawn property names");
-    }
-    spawnProps = new Set(api.spawn_props());
-    if (
-      spawnProps.size !== SPEC_PROPS.size ||
-      [...spawnProps].some((name) => !SPEC_PROPS.has(name))
-    ) {
-      throw new Error("host and runtime spawn property schemas differ");
-    }
-  }
-  return spawnProps;
-}
-
-function allowedDeferredProps() {
-  if (!deferredProps) {
-    if (typeof api.deferred_props !== "function") {
-      throw new Error("host does not expose deferred property names");
-    }
-    deferredProps = new Set(api.deferred_props());
-  }
-  return deferredProps;
-}
-
-function allowedNodeProps() {
-  return new Set([...allowedSpawnProps(), ...allowedDeferredProps()]);
-}
-
 export class Dynamic {
   constructor(run) {
     this.run = run;
@@ -73,15 +40,6 @@ export class Dynamic {
 export function dynamic(run) {
   if (typeof run !== "function") throw new Error("dynamic expects a function");
   return new Dynamic(run);
-}
-
-function validateProps(kind, props) {
-  const allowed = allowedNodeProps();
-  for (const key of Object.keys(props)) {
-    if (!allowed.has(key)) {
-      throw new Error(`${kind === 2 ? "Text" : "View"} has no property ${key}`);
-    }
-  }
 }
 
 const signalValues = [undefined];
@@ -268,74 +226,6 @@ function utf8(value) {
   return Uint8Array.from(out);
 }
 
-// BNOD version 3: header (magic + u16 version) + the `NodeDesc` body + TLV.
-// Lengths are not in the body. `id`, `parent`, and `handler` are zero; Rust
-// assigns the handle and parent.
-const SPEC_PROPS = new Set([
-  "fontSize",
-  "radius",
-  "opacity",
-  "flexGrow",
-  "flexShrink",
-  "flexDirection",
-]);
-
-function specBytes(kind, props, text) {
-  const bytes = utf8(text);
-  const buffer = new Uint8Array(57 + bytes.length);
-  buffer[0] = 0x42;
-  buffer[1] = 0x4e;
-  buffer[2] = 0x4f;
-  buffer[3] = 0x44;
-  const view = new DataView(buffer.buffer);
-  view.setUint16(4, 3, true);
-  let offset = 6;
-  view.setUint32(offset, 0, true);
-  offset += 4;
-  view.setUint32(offset, 0, true);
-  offset += 4;
-  view.setUint8(offset, kind);
-  offset += 1;
-  // Overflow, color, display, and visibility are deferred SetProps so static
-  // and dynamic values share one Rust parser. The scroll byte stays 0; direct
-  // Rust NodeDesc callers can still set scroll flags.
-  view.setUint8(offset, 0, true);
-  offset += 1;
-  // Color props keep their descriptor default slots.
-  view.setUint32(offset, 0, true);
-  offset += 4;
-  view.setUint32(offset, 0xffffffff, true);
-  offset += 4;
-  view.setFloat32(offset, props.fontSize ?? 16, true);
-  offset += 4;
-  view.setFloat32(offset, props.radius ?? 0, true);
-  offset += 4;
-  view.setFloat32(offset, props.opacity ?? 1, true);
-  offset += 4;
-  view.setUint32(offset, 0, true);
-  offset += 4;
-  view.setFloat32(offset, props.flexGrow ?? 0, true);
-  offset += 4;
-  view.setFloat32(offset, props.flexShrink ?? 0, true);
-  offset += 4;
-  view.setUint8(offset, directionFlag(props.flexDirection));
-  offset += 1;
-  view.setUint32(offset, bytes.length, true);
-  offset += 4;
-  buffer.set(bytes, offset);
-  offset += bytes.length;
-  view.setUint32(offset, 0, true);
-  return buffer;
-}
-
-function directionFlag(value) {
-  if (value == null || value === "column") return 0;
-  if (value === "row") return 1;
-  if (value === "column-reverse") return 2;
-  if (value === "row-reverse") return 3;
-  throw new Error(`unsupported flexDirection ${value}`);
-}
-
 function cssSides(value, key) {
   if (!Array.isArray(value) || (value.length !== 1 && value.length !== 2 && value.length !== 4)) {
     throw new Error(`${key} must be an array of 1, 2, or 4 lengths`);
@@ -395,13 +285,13 @@ function applyShorthandGroup(handle, group) {
   }
 }
 
-function applyNodeProps(handle, deferredValues, dynamics) {
+function applyNodeProps(handle, values, dynamics) {
   const staticRest = [];
   const groups = [
     [null, null, null],
     [null, null, null],
   ];
-  for (const [key, value] of deferredValues) {
+  for (const [key, value] of values) {
     const rank = shorthandRank(key);
     if (!rank) staticRest.push([key, value]);
     else groups[rank[0]][rank[1]] = { key, value };
@@ -421,30 +311,25 @@ function pack(kind, props, text) {
   props = props ?? {};
   const parentHandle = parent();
   const cursor = cursors[cursors.length - 1];
-  const staticProps = {};
-  const deferredValues = [];
+  const values = [];
   const dynamics = [];
-  const deferred = allowedDeferredProps();
   for (const key of Object.keys(props)) {
-    validateProps(kind, { [key]: true });
     const value = props[key];
     if (value instanceof Dynamic) dynamics.push([key, value.run]);
-    else if (deferred.has(key)) deferredValues.push([key, value]);
-    else staticProps[key] = value;
+    else values.push([key, value]);
   }
-  const spec = specBytes(kind, staticProps, text);
   let handle;
   if (cursor && cursor.parent === parentHandle) {
-    handle = api.spawn_at(parentHandle, cursor.index, spec);
+    handle = api.spawn_at(parentHandle, cursor.index, kind, text);
     if (!handle) throw new Error(api.error() || "spawn_at failed");
     registerChild(parentHandle, handle, cursor.index);
     cursor.index += 1;
   } else {
-    handle = api.spawn(parentHandle, spec);
+    handle = api.spawn(parentHandle, kind, text);
     if (!handle) throw new Error(api.error() || "spawn failed");
     registerChild(parentHandle, handle);
   }
-  applyNodeProps(handle, deferredValues, dynamics);
+  applyNodeProps(handle, values, dynamics);
   return handle;
 }
 

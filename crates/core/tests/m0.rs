@@ -1,5 +1,6 @@
 use bubble_core::{
-    encode, encode_set_prop_color, encode_set_text, validate_bundle_hashes, NodeDesc, Op, Shell, Value,
+    encode, encode_set_prop_color, encode_set_text, spawn_at_ops, spawn_ops,
+    validate_bundle_hashes, NodeDesc, Op, Shell, Value,
 };
 
 fn measure(
@@ -45,24 +46,46 @@ fn demo_ops() -> Vec<Op> {
     scroller.flex_shrink = 1.0;
 
     let column = NodeDesc::view(6, 5);
-    let mut ops = vec![
-        Op::Spawn { desc: header },
-        Op::Spawn { desc: button },
-        Op::Spawn { desc: label },
-        Op::Spawn { desc: scroller },
-        Op::Spawn { desc: column },
-        Op::SetProp { handle: 3, key: "paddingStart".into(), value: Value::Float(12.0) },
-        Op::SetProp { handle: 3, key: "paddingEnd".into(), value: Value::Float(8.0) },
-        Op::SetProp { handle: 3, key: "paddingTop".into(), value: Value::Float(12.0) },
-        Op::SetProp { handle: 3, key: "paddingBottom".into(), value: Value::Float(8.0) },
-    ];
+    let mut ops = spawn_ops(header);
+    ops.extend(spawn_ops(button));
+    ops.extend(spawn_ops(label));
+    ops.extend(spawn_ops(scroller));
+    ops.extend(spawn_ops(column));
+    ops.push(Op::SetProp {
+        handle: 3,
+        key: "paddingStart".into(),
+        value: Value::Float(12.0),
+    });
+    ops.push(Op::SetProp {
+        handle: 3,
+        key: "paddingEnd".into(),
+        value: Value::Float(8.0),
+    });
+    ops.push(Op::SetProp {
+        handle: 3,
+        key: "paddingTop".into(),
+        value: Value::Float(12.0),
+    });
+    ops.push(Op::SetProp {
+        handle: 3,
+        key: "paddingBottom".into(),
+        value: Value::Float(8.0),
+    });
     for index in 0..30 {
         let mut row = NodeDesc::text(7 + index, 6, format!("Row {index:02}"));
         row.font_size = 16.0;
         row.color = 0xffdd_dddd;
-        ops.push(Op::Spawn { desc: row });
-        ops.push(Op::SetProp { handle: (7 + index), key: "paddingEnd".into(), value: Value::Float(4.0) });
-        ops.push(Op::SetProp { handle: (7 + index), key: "paddingBottom".into(), value: Value::Float(4.0) });
+        ops.extend(spawn_ops(row));
+        ops.push(Op::SetProp {
+            handle: (7 + index),
+            key: "paddingEnd".into(),
+            value: Value::Float(4.0),
+        });
+        ops.push(Op::SetProp {
+            handle: (7 + index),
+            key: "paddingBottom".into(),
+            value: Value::Float(4.0),
+        });
     }
     ops
 }
@@ -131,15 +154,13 @@ fn spawn_at_prepends_and_refuses_a_retired_handle() {
     let batch = encode(
         2,
         &[
-            Op::SpawnAt {
-                desc: NodeDesc::text(handle, 6, ""),
-                index: 0,
-            },
-            Op::SetText {
+            spawn_at_ops(NodeDesc::text(handle, 6, ""), 0),
+            vec![Op::SetText {
                 handle,
                 text: "Added 1".into(),
-            },
-        ],
+            }],
+        ]
+        .concat(),
     );
     shell.apply_ops(&batch).unwrap();
     shell.layout(&mut measure).unwrap();
@@ -152,13 +173,7 @@ fn spawn_at_prepends_and_refuses_a_retired_handle() {
         .apply_ops(&encode(3, &[Op::DisposeNode { handle }]))
         .unwrap();
     assert!(shell.text(handle).is_err());
-    let again = encode(
-        4,
-        &[Op::SpawnAt {
-            desc: NodeDesc::text(handle, 6, ""),
-            index: 0,
-        }],
-    );
+    let again = encode(4, &spawn_at_ops(NodeDesc::text(handle, 6, ""), 0));
     assert!(shell.apply_ops(&again).is_err());
 }
 #[test]
@@ -169,15 +184,10 @@ fn move_reorders_and_rejects_a_cycle() {
         .apply_ops(&encode(
             2,
             &[
-                Op::SpawnAt {
-                    desc: NodeDesc::text(first, 6, "First"),
-                    index: 0,
-                },
-                Op::SpawnAt {
-                    desc: NodeDesc::text(first + 1, 6, "Second"),
-                    index: 1,
-                },
-            ],
+                spawn_at_ops(NodeDesc::text(first, 6, "First"), 0),
+                spawn_at_ops(NodeDesc::text(first + 1, 6, "Second"), 1),
+            ]
+            .concat(),
         ))
         .unwrap();
     shell
@@ -213,12 +223,10 @@ fn bind_event_hits_the_node_until_cleared() {
         .apply_ops(&encode(
             2,
             &[
-                Op::SpawnAt {
-                    desc: NodeDesc::text(handle, 6, "bound"),
-                    index: 0,
-                },
-                Op::BindEvent { handle, handler: 9 },
-            ],
+                spawn_at_ops(NodeDesc::text(handle, 6, "bound"), 0),
+                vec![Op::BindEvent { handle, handler: 9 }],
+            ]
+            .concat(),
         ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
@@ -279,7 +287,33 @@ fn scroll_axes_are_independent() {
     shell
         .apply_ops(&encode(
             1,
-            &[Op::Spawn { desc: scroller }, Op::Spawn { desc: lane }, Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(100.0) }, Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(60.0) }, Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(400.0) }, Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(200.0) }, ],
+            &[
+                spawn_ops(scroller),
+                spawn_ops(lane),
+                vec![
+                    Op::SetProp {
+                        handle: 2,
+                        key: "width".into(),
+                        value: Value::Float(100.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "height".into(),
+                        value: Value::Float(60.0),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "width".into(),
+                        value: Value::Float(400.0),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "height".into(),
+                        value: Value::Float(200.0),
+                    },
+                ],
+            ]
+            .concat(),
         ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
@@ -324,14 +358,36 @@ fn scroll_axes_are_independent() {
         .apply_ops(&encode(
             4,
             &[
-                Op::Spawn { desc: vertical_only },
-                Op::SetProp { handle: 4, key: "width".into(), value: Value::Float(100.0) },
-                Op::SetProp { handle: 4, key: "height".into(), value: Value::Float(40.0) },
-            ],
+                spawn_ops(vertical_only),
+                vec![
+                    Op::SetProp {
+                        handle: 4,
+                        key: "width".into(),
+                        value: Value::Float(100.0),
+                    },
+                    Op::SetProp {
+                        handle: 4,
+                        key: "height".into(),
+                        value: Value::Float(40.0),
+                    },
+                ],
+            ]
+            .concat(),
         ))
         .unwrap();
     shell
-        .apply_ops(&encode(5, &[Op::Spawn { desc: tall }, Op::SetProp { handle: 5, key: "height".into(), value: Value::Float(200.0) }, ]))
+        .apply_ops(&encode(
+            5,
+            &[
+                spawn_ops(tall),
+                vec![Op::SetProp {
+                    handle: 5,
+                    key: "height".into(),
+                    value: Value::Float(200.0),
+                }],
+            ]
+            .concat(),
+        ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
     shell
@@ -449,7 +505,6 @@ fn signal_commit_updates_text_and_scrolls() {
     assert!(shell.scroll_of(scroller).unwrap().1 > 0.0);
 }
 
-
 #[test]
 fn layout_props_apply_before_the_first_layout() {
     use bubble_core::{Turn, Value};
@@ -458,15 +513,15 @@ fn layout_props_apply_before_the_first_layout() {
     shell.set_viewport(200.0, 120.0);
     let mut turn = Turn::new();
     let row = turn.spawn(NodeDesc::view(0, 1)).unwrap();
-    let mut first = NodeDesc::view(0, row);
+    let first = NodeDesc::view(0, row);
     let first = turn.spawn(first).unwrap();
     turn.set_prop(first, "width", Value::Float(20.0));
     turn.set_prop(first, "height", Value::Float(20.0));
-    let mut second = NodeDesc::view(0, row);
+    let second = NodeDesc::view(0, row);
     let second = turn.spawn(second).unwrap();
     turn.set_prop(second, "width", Value::Float(20.0));
     turn.set_prop(second, "height", Value::Float(20.0));
-    let mut absolute = NodeDesc::view(0, row);
+    let absolute = NodeDesc::view(0, row);
     let absolute = turn.spawn(absolute).unwrap();
     turn.set_prop(absolute, "width", Value::Float(10.0));
     turn.set_prop(absolute, "height", Value::Float(10.0));
@@ -609,35 +664,32 @@ fn unknown_signals_fail() {
 }
 
 #[test]
-fn node_descriptor_and_spawn_op_roundtrip() {
+fn spawn_descriptor_lowers_to_identity_and_props() {
     let mut node = NodeDesc::text(9, 4, "hello");
     node.scroll_x = true;
     node.scroll_y = true;
     node.direction = 1;
     node.background = 0x1122_3344;
-    node.color = 0xffff_ffff;
     node.font_size = 18.0;
     node.radius = 3.0;
     node.handler = 7;
-    node.height = None;
     node.flex_grow = 1.0;
     node.flex_shrink = 0.5;
-    node.extensions.push(bubble_core::Extension {
-        tag: 7,
-        data: vec![1, 2, 3],
-    });
 
-    let bytes = node.encode();
-    assert_eq!(NodeDesc::decode(&bytes).unwrap(), node);
-    assert!(NodeDesc::decode(&bytes[..bytes.len() - 1]).is_err());
-    let mut unknown_flag = bytes.clone();
-    unknown_flag[15] = 0b100;
-    assert!(NodeDesc::decode(&unknown_flag).is_err());
-
-    let batch = encode(12, &[Op::Spawn { desc: node.clone() }]);
-    let (seq, ops) = bubble_core::decode_ops(&batch).unwrap();
+    let ops = spawn_ops(node);
+    assert!(matches!(
+        &ops[0],
+        Op::Spawn {
+            handle: 9,
+            parent: 4,
+            kind: bubble_core::Kind::Text,
+            text,
+        } if text == "hello"
+    ));
+    let batch = encode(12, &ops);
+    let (seq, decoded) = bubble_core::decode_ops(&batch).unwrap();
     assert_eq!(seq, 12);
-    assert_eq!(ops, vec![Op::Spawn { desc: node }]);
+    assert_eq!(decoded, ops);
 }
 
 #[test]

@@ -15,12 +15,12 @@ use crate::ir::{Kind, NodeDesc};
 use crate::layout::{snap_unit, wrapping_layout, LayoutKey, LayoutRequest, LayoutSnapshot};
 use crate::ops::{decode_ops, Op, Value};
 use crate::props::{image_fit, text_align, Prop};
-use crate::state_style::{StateStylePatch, StateStyles, WHEN_FOCUSED, WHEN_PRESSED};
 use crate::semantics::{
     Role, SemanticsNode, SemanticsSnapshot, ACTION_ACTIVATE, ACTION_FOCUS, ACTION_SCROLL_BACKWARD,
     ACTION_SCROLL_DOWN, ACTION_SCROLL_FORWARD, ACTION_SCROLL_LEFT, ACTION_SCROLL_RIGHT,
     ACTION_SCROLL_UP, ACTION_SET_VALUE,
 };
+use crate::state_style::{StateStylePatch, StateStyles, WHEN_FOCUSED, WHEN_PRESSED};
 use taffy::prelude::*;
 use taffy::style::Overflow;
 use taffy::{compute_leaf_layout, NodeId, TaffyTree};
@@ -640,9 +640,27 @@ impl Shell {
                 } => self.move_node(handle, parent, index)?,
                 Op::BindEvent { handle, handler } => self.node_mut(handle)?.handler = handler,
                 Op::ScrollTo { handle, x, y } => self.scroll_to(handle, x, y)?,
-                Op::Spawn { desc } => self.spawn_desc(desc)?,
-                Op::SpawnAt { desc, index } => {
-                    let parent = desc.parent;
+                Op::Spawn {
+                    handle,
+                    parent,
+                    kind,
+                    text,
+                } => {
+                    let mut desc = NodeDesc::view(handle, parent);
+                    desc.kind = kind;
+                    desc.text = text;
+                    self.spawn_desc(desc)?;
+                }
+                Op::SpawnAt {
+                    handle,
+                    parent,
+                    kind,
+                    text,
+                    index,
+                } => {
+                    let mut desc = NodeDesc::view(handle, parent);
+                    desc.kind = kind;
+                    desc.text = text;
                     self.insert_node(desc, parent, index)?
                 }
                 Op::SpawnGesture {
@@ -882,7 +900,9 @@ impl Shell {
         }
         let mut changed = self.track_press(&input, true);
         self.recognizer.pointer(input);
-        if self.visual.gesture && self.visual.target != 0 && self.recognizer.visual_press_cancelled()
+        if self.visual.gesture
+            && self.visual.target != 0
+            && self.recognizer.visual_press_cancelled()
         {
             changed |= self.clear_press();
         }
@@ -909,7 +929,9 @@ impl Shell {
     pub fn advance_gestures(&mut self, now_ms: f64) {
         self.recognizer.advance(now_ms);
         let mut changed = false;
-        if self.visual.gesture && self.visual.target != 0 && self.recognizer.visual_press_cancelled()
+        if self.visual.gesture
+            && self.visual.target != 0
+            && self.recognizer.visual_press_cancelled()
         {
             changed = self.clear_press();
         }
@@ -942,7 +964,8 @@ impl Shell {
             fit: node.fit,
         };
         let mut patch = StateStylePatch::default();
-        self.state_styles.overlay(id, self.state_bits(id), &mut patch);
+        self.state_styles
+            .overlay(id, self.state_bits(id), &mut patch);
         if let Some(value) = patch.background {
             style.background = value;
         }
@@ -993,7 +1016,11 @@ impl Shell {
                 continue;
             }
             let wants = self.state_styles.pressed_interest(*id);
-            if self.recognizer.click_target(std::slice::from_ref(id)).is_some() {
+            if self
+                .recognizer
+                .click_target(std::slice::from_ref(id))
+                .is_some()
+            {
                 return if wants { *id } else { 0 };
             }
             if wants {
@@ -1049,8 +1076,7 @@ impl Shell {
                 if input.id != self.visual.owner || self.visual.target == 0 {
                     return false;
                 }
-                let distance =
-                    (input.x - self.visual.start_x).hypot(input.y - self.visual.start_y);
+                let distance = (input.x - self.visual.start_x).hypot(input.y - self.visual.start_y);
                 if distance > TAP_SLOP {
                     return self.clear_press();
                 }
@@ -3174,7 +3200,10 @@ impl Shell {
         if clip.is_some() {
             out.push(PaintCmd::PopClip);
         }
-        if id == self.focused && kind != Kind::Field && self.is_focusable(id) && !self.focus_style_taken(id)
+        if id == self.focused
+            && kind != Kind::Field
+            && self.is_focusable(id)
+            && !self.focus_style_taken(id)
         {
             let color = Color::new(0.30, 0.64, 1.0, 0.95);
             let thickness = 2.0;
@@ -3228,9 +3257,7 @@ impl Shell {
             Err(_) => [0.0; 4],
         }
     }
-
 }
-
 
 #[derive(Clone, Copy)]
 struct Bounds {
@@ -3268,8 +3295,16 @@ fn axis_bounds(
     viewport_h: f32,
 ) -> Bounds {
     Bounds {
-        x0: if overflow_x == Overflow::Visible { 0.0 } else { x },
-        y0: if overflow_y == Overflow::Visible { 0.0 } else { y },
+        x0: if overflow_x == Overflow::Visible {
+            0.0
+        } else {
+            x
+        },
+        y0: if overflow_y == Overflow::Visible {
+            0.0
+        } else {
+            y
+        },
         x1: if overflow_x == Overflow::Visible {
             viewport_w
         } else {
@@ -3296,16 +3331,7 @@ fn paint_clip(
     if overflow_x == Overflow::Visible && overflow_y == Overflow::Visible {
         return None;
     }
-    let bounds = axis_bounds(
-        overflow_x,
-        overflow_y,
-        x,
-        y,
-        w,
-        h,
-        viewport_w,
-        viewport_h,
-    );
+    let bounds = axis_bounds(overflow_x, overflow_y, x, y, w, h, viewport_w, viewport_h);
     Some((
         bounds.x0,
         bounds.y0,
@@ -3587,7 +3613,6 @@ fn overscroll_chains(value: &Value) -> Result<bool, String> {
         .as_bool()
         .map_err(|_| "overscroll must be a bool".into())
 }
-
 
 fn caret_step(value: &str, offset: u32, forward: bool) -> u32 {
     let mut seen = 0u32;

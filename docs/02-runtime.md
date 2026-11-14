@@ -93,7 +93,7 @@ assets/
 ### 编码原则
 
 - 二进制、小端、长度前缀；每批次带字符串表，避免重复字符串。
-- 批次头：magic `BSOP`、version、seq、opCount、stringTableLen、payloadLen。
+- 批次头：magic `BSOP`、version（当前 4）、seq、opCount、stringTableLen、payloadLen。
 - 值使用 tagged union：null / bool / i64 / f64 / string / array / map / handle / color / dimension。
 - 不传 JSON；热路径不分配临时对象。
 - 每帧一个 arena，双缓冲；生产端按 `(handle, key)` 合并重复 `SetProp`。
@@ -102,15 +102,15 @@ assets/
 ### Handle 分配
 
 - handle 是 u32，0 保留；脚本线程在实例作用域内单调分配。
-- 动态节点由脚本分配 handle 后发送 `Spawn`，载荷带完整 `BNOD` 描述符；Rust 校验后插入树。
+- 动态节点由脚本请求创建，`Spawn` / `SpawnAt` 只携带 `handle`、`parent`、`kind` 和初始文本；Rust 校验后插入树，随后按序应用 `SetProp`。
 - 节点只由函数组件首次执行时的 `Spawn` / `SpawnAt` 创建；`Show` / `For` / `Index` / `Switch` 只移动、插入或销毁。函数组件没有复用的模板注册表，也不预编译子树。
 
 ### Op 列表
 
 | Op | 载荷 | 说明 |
 |---|---|---|
-| `Spawn` | `BNOD` 描述符 | 动态节点；`id`/`parent` 由脚本填写，Rust 校验 handle |
-| `SpawnAt` | `BNOD` 描述符 + index | 在指定子索引插入；fragment 锚点使用 |
+| `Spawn` | handle, parent, kind, text | 动态节点；handle 由 Rust 分配，初始文本随创建下发 |
+| `SpawnAt` | handle, parent, kind, text, index | 在指定子索引插入；fragment 锚点使用 |
 | `DisposeNode` | handle | 销毁子树 |
 | `InsertNode` | handle, parent, index | 插入已存在节点 |
 | `MoveNode` | handle, parent, index | 移动节点 |
@@ -131,19 +131,18 @@ assets/
 
 当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`、`Focus`、`SetEditingValue`，以及手势声明 op 和状态样式 op。`TextField`（kind 4）的编辑状态在 UI 线程，由 `EditSession` 持有 UTF-16 文档位置、方向性选区、独立组合区、`revision` 与撤销历史；`BSED` v2 每批向脚本投递有序 delta 和最终快照。iOS `UITextInput`、Android `InputConnection`、Web 隐藏 textarea 已接入文本编辑。语义树由节点属性派生并经 `bubble_semantics` / wasm `semantics` 输出 JSON；iOS `UIAccessibility`、Android `AccessibilityNodeProvider` 与 Web ARIA 覆盖层读取同一快照。其余 op（含 `InsertNode`、动画、显式 `SetSemantics`）随后续里程碑。
 
-节点描述为 `BNOD` v3：固定字段后跟 `u32` 长度的 TLV 扩展块。`Spawn` 载荷复用同一 body。长度不在描述符里。滚动描述符的单个标志字节仍是位掩码：bit 0 为纵向滚动，bit 1 为横向，其余位保留且解码时拒绝。直接构造 `NodeDesc` 的 Rust 调用方继续使用该字节。`flexDirection` 在描述符里是一个字节：0 column、1 row、2 column-reverse、3 row-reverse。`flexShrink` 默认 0。
+节点创建不再携带描述符：`Spawn` / `SpawnAt` 只有身份和初始文本，其余属性一律是 `SetProp`。`NodeDesc` 保留为 Rust 侧的直接调用构造器，`Turn::spawn` 会把它降级为 `Spawn` 加属性 op；wire 上不存在按类型布局的定长体。滚动、布局和绘制属性因此只有一条解析路径。
 
-属性分两类：
+属性与虚拟子节点：
 
 - 手势是虚拟子节点：`TapGesture`、`DoubleTapGesture`、`LongPressGesture`、`PanGesture`、`TransformGesture`。没有 `View onPress`。事件名为 `onTap` / `onTapStart` / `onTapEnd` / `onTapCancel`、`onDoubleTap*`、`onLongPress` / `onLongPressEnd` / `onLongPressCancel`、`onPanStart` / `onPanUpdate` / `onPanEnd` / `onPanCancel`、`onTransformStart` / `onTransformUpdate` / `onTransformEnd` / `onTransformCancel`。Transform 用 `mode`（字符串或字符串数组：`pan` / `pinch` / `rotate`）。`direction` 是方向字符串数组。`captureAxis="none"|"x"|"y"|"both"` 把该轴滚动让给这条手势。
 - 状态样式也是虚拟子节点：`<StateStyle when="pressed" opacity={0.7} />`。`when` 必填，按空白切分后只接受 `pressed` 与 `focused`，多个 token 为 AND；`enabled` 默认 true；可覆盖的绘制属性只有 `backgroundColor`、`color`、`opacity`、`radius`、`textAlign`、`fit`，其他 key 一律报错。声明只作用于最近的实际父节点，不继承、不选中后代、不创建盒子、不命中、不进入语义树。同目标的多条匹配声明按虚拟源码顺序覆盖，后者胜出；`null` 移除该项 patch。匹配的 `focused` 声明接管默认焦点框（空 patch 也算），`pressed` 反馈由 UI 线程在首指按下、移出 `TAP_SLOP`、抬起、宿主取消、第二指按下或手势胜出时更新。`View`、`Text`、`TextField`、`Image` 都接受直接子 `StateStyle`；叶子节点不接受其他子内容，条件开关请用 `enabled`/`when` 的 Dynamic 值。
-- `SPAWN_PROPS`：`fontSize`、`radius`、`opacity`、`flexGrow`、`flexShrink`、`flexDirection`。
-- `DEFERRED_PROPS`：`backgroundColor`、`color`、`lineHeight`、`textAlign`、`fontWeight`、`width`、`height`、`minWidth`、`minHeight`、`maxWidth`、`maxHeight`、`flexBasis`、`padding`、`margin`、`gap`、`rowGap`、`columnGap`、`alignItems`、`alignSelf`、`alignContent`、`justifyContent`、`flexWrap`、`position`、`inset`、`aspectRatio`、`src`、`fit`、`overscrollX`、`overscrollY`、`multiline`、`secure`、`maxLength`、`keyboard`、`autofill`、`role`、`label`、`disabled`、`hidden`、`focusable`、`modal`、`checked`、`selected`、`expanded`、`overflow`、`overflowX`、`overflowY`、`display`、`visibility`。
+- 属性只有一个入口：`SetProp`。`Prop::parse` 是名称的唯一权威；静态值、动态绑定、简写展开和直接 Rust 调用都走同一条解析路径。`padding` / `margin` / `inset` 数组由 JS 展开为边属性，`gap` 先于 `rowGap` / `columnGap`，`overflow` 先于两轴。
 - 无障碍属性：`role`（`button`、`link`、`textbox`、`checkbox`、`heading`、`dialog` 等）、`label`、`disabled`、`hidden`（仅语义隐藏，不裁切，也不改变布局、绘制、命中或焦点）、`focusable`、`modal`（焦点陷阱）、`checked`、`selected`、`expanded`。`Text`、`Image`、`TextField` 分别派生 text/image/textbox 角色；`TextField` 的语义值在 `secure` 时为空。可滚动容器即使没有角色或标签也会进入语义树，并输出对应方向的滚动 action 位。绘制上的隐藏用 `visibility`、`display` 或 `overflow`。
 
 手势事件以 `BSGE` v1 传输，start/update/end/cancel 按序投递。内部 slot 0 是声明销毁确认：排在该声明的终结事件之后，不调用应用回调；JS 收到确认后才释放 handler，因此在事件回调中销毁声明也能收到 cancel。胜出的手势只产生一次 end 或 cancel，双指中任一配对触点离开后，剩余触点不恢复单指识别。
 
-`color` / `backgroundColor` 在 spawn 描述符里保留默认槽，但作者传入的值一律作为紧随 `Spawn` 的 `SetProp` 下发，由 Rust 统一解析：数字仍按 `0xAARRGGBB`（alpha 在高字节），字符串按 CSS 颜色语法。支持命名色、`transparent`、`#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa`、`rgb()`/`rgba()`、`hsl()`/`hsla()`、`hwb()`、`lab()`、`lch()`、`oklab()`、`oklch()`，以及 `color()` 的 `srgb`、`srgb-linear`、`display-p3`、`a98-rgb`、`prophoto-rgb`、`rec2020`、`xyz`、`xyz-d50`、`xyz-d65` 空间；逗号与空格/斜杠语法都接受。`currentColor`、相对颜色、`color-mix()`、系统色与 CSS 变量不支持——这些依赖级联或计算样式，请在脚本里用 `computed()` 求值。所有颜色归一为扩展非线性 sRGB 交给宿主：支持广色域的宿主保留越界分量，只画 sRGB 的宿主自行裁剪。
+`color` / `backgroundColor` 一律作为 `SetProp` 下发，由 Rust 统一解析：数字按 `0xAARRGGBB`（alpha 在高字节），字符串按 CSS 颜色语法。支持命名色、`transparent`、`#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa`、`rgb()`/`rgba()`、`hsl()`/`hsla()`、`hwb()`、`lab()`、`lch()`、`oklab()`、`oklch()`，以及 `color()` 的 `srgb`、`srgb-linear`、`display-p3`、`a98-rgb`、`prophoto-rgb`、`rec2020`、`xyz`、`xyz-d50`、`xyz-d65` 空间；逗号与空格/斜杠语法都接受。`currentColor`、相对颜色、`color-mix()`、系统色与 CSS 变量不支持——这些依赖级联或计算样式，请在脚本里用 `computed()` 求值。所有颜色归一为扩展非线性 sRGB 交给宿主：支持广色域的宿主保留越界分量，只画 sRGB 的宿主自行裁剪。
 
 `overflow` / `overflowX` / `overflowY` 各自取值 `"visible"`、`"hidden"` 或 `"scroll"`，两轴独立。`"scroll"` 在该轴裁切并可滚动；`"hidden"` 在该轴裁切且不可滚动；`"visible"` 不裁切该轴，内容在视口内保持无界。裁切矩形是 padding box（当前没有 border，即节点外框），复用已有 `PushClip` / `PopClip`，不新增绘制命令。作者对象里的简写 `overflow` 先作用于两轴，再由已声明的 `overflowX` / `overflowY` 覆盖对应轴，与对象键顺序无关。简写是动态绑定时，已声明的轴并入同一条绑定：简写信号变化会先重算简写，再重算这些轴，轴覆盖保持优先；未声明的轴不会被恢复。简写是静态值或省略时，动态轴仍是各自的绑定，只更新该轴。节点创建之后的显式 `setProp` 不加入该绑定，保持调用顺序；下一次作者绑定重跑会按简写然后已声明的轴再次写回。`display` 为 `"flex"`（默认）或 `"none"`；`"none"` 将整棵子树排除出布局、绘制、命中、焦点和语义 action。`visibility` 为 `"visible"`（默认）或 `"hidden"`；`"hidden"` 不绘制、不命中、不聚焦、不发布语义 action，但保留布局占位，后代不能覆盖为可见。动态改为 `display="none"` 或 `visibility="hidden"` 时，清除该子树内的焦点，并取消其中活动的和待决的手势。`flexDirection` 为 `"column"`（默认）、`"row"`、`"column-reverse"` 或 `"row-reverse"`。`flexShrink` 默认 0。`flexBasis` 默认 auto，`alignSelf` 默认 auto，`flexWrap` 默认 `"nowrap"`，`alignContent` 默认 `"flex-start"`。长度是数字（pt）或 `"50%"` 字符串；宽高、min/max、flexBasis 的百分比相对父级对应轴，padding、margin、inset 的百分比相对父级宽度。`gap` 的百分比按该节点自身对应轴的内容区解析。`gap` 先写两轴，`rowGap` / `columnGap` 再覆盖，规则与 overflow 简写相同。`overscrollX` / `overscrollY` 为布尔：`true`（默认）把剩余增量交给外层，`false` 在当前容器截断。`padding` / `margin` / `inset` 按 1、2 或 4 个数，4 个数为上、end、下、start。单边是 `start` / `end`，没有 RTL 时 start 为左。两边尺寸都已确定时忽略 `aspectRatio`。显式 min 覆盖 scroll 和 `flexGrow` 使用的 min 0。
 

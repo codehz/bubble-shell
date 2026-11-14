@@ -15,8 +15,8 @@ use std::collections::VecDeque;
 use bubble_core::{
     decode_layout, encode_edit_events, encode_events, encode_paint, encode_set_text,
     validate_bundle_hashes, A11yAction, ComputationKind, EditCommand, EditEvent, EditMenuAction,
-    GestureEvent, GestureKind, Key, LayoutRequest, NodeDesc, Op, PointerAction, PointerInput,
-    Sched, Shell, Turn, Value, DEFERRED_PROPS, SPAWN_PROPS, STATE_STYLE_PROPS,
+    GestureEvent, GestureKind, Key, Kind, LayoutRequest, NodeDesc, Op, PointerAction, PointerInput,
+    Sched, Shell, Turn, Value, STATE_STYLE_PROPS,
 };
 
 thread_local! {
@@ -1039,19 +1039,6 @@ pub extern "C" fn scratch_len() -> u32 {
     SCRATCH.with(|slot| slot.borrow().len() as u32)
 }
 
-/// Newline-separated creation-time property names. The JS runtime validates
-/// node props against this canonical list.
-#[no_mangle]
-pub extern "C" fn spawn_props() -> u32 {
-    store_scratch(SPAWN_PROPS.join("\n").into_bytes())
-}
-
-/// Newline-separated properties applied as `SetProp` right after `Spawn`.
-#[no_mangle]
-pub extern "C" fn deferred_props() -> u32 {
-    store_scratch(DEFERRED_PROPS.join("\n").into_bytes())
-}
-
 /// Newline-separated paint properties a state style declaration may override.
 #[no_mangle]
 pub extern "C" fn state_style_props() -> u32 {
@@ -1210,20 +1197,28 @@ fn scheduled(init: bool) -> i32 {
     }
 }
 
-/// `ptr/len` is a `BNOD` version 1 descriptor. The handle is allocated by Rust.
-fn read_spawn(parent: u32, ptr: *const u8, len: u32) -> Result<NodeDesc, String> {
-    if ptr.is_null() || len == 0 {
-        return Err("spawn descriptor is empty".into());
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
-    let mut desc = NodeDesc::decode(bytes)?;
-    desc.parent = parent;
+fn spawn_desc(parent: u32, kind: u32, ptr: *const u8, len: u32) -> Result<NodeDesc, String> {
+    let kind = Kind::from_u8(kind as u8)?;
+    let text = if len == 0 {
+        String::new()
+    } else {
+        if ptr.is_null() {
+            return Err("spawn text is null".into());
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+        std::str::from_utf8(bytes)
+            .map_err(|_| "spawn text is not utf-8".to_string())?
+            .to_owned()
+    };
+    let mut desc = NodeDesc::view(0, parent);
+    desc.kind = kind;
+    desc.text = text;
     Ok(desc)
 }
 
 #[no_mangle]
-pub extern "C" fn spawn(parent: u32, ptr: *const u8, len: u32) -> u32 {
-    let desc = match read_spawn(parent, ptr, len) {
+pub extern "C" fn spawn(parent: u32, kind: u32, ptr: *const u8, len: u32) -> u32 {
+    let desc = match spawn_desc(parent, kind, ptr, len) {
         Ok(desc) => desc,
         Err(err) => {
             set_error(err);
@@ -1240,8 +1235,8 @@ pub extern "C" fn spawn(parent: u32, ptr: *const u8, len: u32) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn spawn_at(parent: u32, index: u32, ptr: *const u8, len: u32) -> u32 {
-    let desc = match read_spawn(parent, ptr, len) {
+pub extern "C" fn spawn_at(parent: u32, index: u32, kind: u32, ptr: *const u8, len: u32) -> u32 {
+    let desc = match spawn_desc(parent, kind, ptr, len) {
         Ok(desc) => desc,
         Err(err) => {
             set_error(err);

@@ -1,11 +1,11 @@
-//! `BSOP` version 3. Little-endian batch with a string table.
+//! `BSOP` version 4. Little-endian batch with a string table.
 //! `Turn` coalesces repeated `SetText` / `SetProp` before encoding.
 //! Applied batches still run in order.
 
 use std::io::{Cursor, Read};
 
 use crate::color::Color;
-use crate::ir::{NodeDesc, NODE_VERSION};
+use crate::ir::{Kind, NodeDesc};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -101,13 +101,20 @@ pub enum Op {
         x: f32,
         y: f32,
     },
-    /// Full descriptor for a dynamic node. Appended under `desc.parent`.
+    /// Node creation. The handle is allocated by `Turn`; `text` is the initial
+    /// content for text and field nodes.
     Spawn {
-        desc: NodeDesc,
+        handle: u32,
+        parent: u32,
+        kind: Kind,
+        text: String,
     },
-    /// Full descriptor inserted at `index` under `desc.parent`.
+    /// Node creation at `index`; used by fragment anchors.
     SpawnAt {
-        desc: NodeDesc,
+        handle: u32,
+        parent: u32,
+        kind: Kind,
+        text: String,
         index: u32,
     },
     /// Virtual gesture declaration attached to `target`; `index` is its
@@ -197,6 +204,105 @@ pub fn encode_set_prop_color(seq: u32, handle: u32, key: &str, rgba: u32) -> Vec
     )
 }
 
+/// Ops that create a node from a full descriptor: `Spawn` carries identity and
+/// text, non-default fields follow as `SetProp`, and a handler becomes
+/// `BindEvent`.
+pub fn spawn_ops(desc: NodeDesc) -> Vec<Op> {
+    let handle = desc.id;
+    let mut ops = vec![Op::Spawn {
+        handle,
+        parent: desc.parent,
+        kind: desc.kind,
+        text: desc.text.clone(),
+    }];
+    push_desc_props(&mut ops, handle, &desc);
+    ops
+}
+
+pub fn spawn_at_ops(desc: NodeDesc, index: u32) -> Vec<Op> {
+    let handle = desc.id;
+    let mut ops = vec![Op::SpawnAt {
+        handle,
+        parent: desc.parent,
+        kind: desc.kind,
+        text: desc.text.clone(),
+        index,
+    }];
+    push_desc_props(&mut ops, handle, &desc);
+    ops
+}
+
+fn push_desc_props(ops: &mut Vec<Op>, handle: u32, desc: &NodeDesc) {
+    let default = NodeDesc::view(0, 0);
+    let mut prop = |key: &str, value: Value| {
+        ops.push(Op::SetProp {
+            handle,
+            key: key.into(),
+            value,
+        });
+    };
+    if desc.background != default.background {
+        prop("backgroundColor", Value::Int(desc.background as i64));
+    }
+    if desc.color != default.color {
+        prop("color", Value::Int(desc.color as i64));
+    }
+    if desc.font_size != default.font_size {
+        prop("fontSize", Value::Float(desc.font_size as f64));
+    }
+    if desc.radius != default.radius {
+        prop("radius", Value::Float(desc.radius as f64));
+    }
+    if desc.opacity != default.opacity {
+        prop("opacity", Value::Float(desc.opacity as f64));
+    }
+    if desc.flex_grow != default.flex_grow {
+        prop("flexGrow", Value::Float(desc.flex_grow as f64));
+    }
+    if desc.flex_shrink != default.flex_shrink {
+        prop("flexShrink", Value::Float(desc.flex_shrink as f64));
+    }
+    if desc.direction != default.direction {
+        prop(
+            "flexDirection",
+            Value::String(direction_name(desc.direction).into()),
+        );
+    }
+    if desc.scroll_x {
+        prop("overflowX", Value::String("scroll".into()));
+    }
+    if desc.scroll_y {
+        prop("overflowY", Value::String("scroll".into()));
+    }
+    if let Some(width) = desc.width {
+        prop("width", Value::Float(width as f64));
+    }
+    if let Some(height) = desc.height {
+        prop("height", Value::Float(height as f64));
+    }
+    if desc.padding != default.padding {
+        prop("paddingStart", Value::Float(desc.padding[0] as f64));
+        prop("paddingEnd", Value::Float(desc.padding[1] as f64));
+        prop("paddingTop", Value::Float(desc.padding[2] as f64));
+        prop("paddingBottom", Value::Float(desc.padding[3] as f64));
+    }
+    if desc.handler != 0 {
+        ops.push(Op::BindEvent {
+            handle,
+            handler: desc.handler,
+        });
+    }
+}
+
+fn direction_name(direction: u8) -> &'static str {
+    match direction {
+        1 => "row",
+        2 => "column-reverse",
+        3 => "row-reverse",
+        _ => "column",
+    }
+}
+
 /// One value payload: tag then payload, with strings interned.
 fn write_value(payload: &mut Vec<u8>, value: &Value, intern: &mut impl FnMut(&str) -> u32) {
     match value {
@@ -280,13 +386,32 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.extend_from_slice(&x.to_le_bytes());
                 payload.extend_from_slice(&y.to_le_bytes());
             }
-            Op::Spawn { desc } => {
+            Op::Spawn {
+                handle,
+                parent,
+                kind,
+                text,
+            } => {
+                let text_id = intern(text);
                 payload.push(8);
-                desc.write_body(&mut payload);
+                payload.extend_from_slice(&handle.to_le_bytes());
+                payload.extend_from_slice(&parent.to_le_bytes());
+                payload.push(*kind as u8);
+                payload.extend_from_slice(&text_id.to_le_bytes());
             }
-            Op::SpawnAt { desc, index } => {
+            Op::SpawnAt {
+                handle,
+                parent,
+                kind,
+                text,
+                index,
+            } => {
+                let text_id = intern(text);
                 payload.push(9);
-                desc.write_body(&mut payload);
+                payload.extend_from_slice(&handle.to_le_bytes());
+                payload.extend_from_slice(&parent.to_le_bytes());
+                payload.push(*kind as u8);
+                payload.extend_from_slice(&text_id.to_le_bytes());
                 payload.extend_from_slice(&index.to_le_bytes());
             }
             Op::SpawnGesture {
@@ -400,7 +525,7 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
 
     let mut out = Vec::new();
     out.extend_from_slice(b"BSOP");
-    out.extend_from_slice(&3u16.to_le_bytes());
+    out.extend_from_slice(&4u16.to_le_bytes());
     out.extend_from_slice(&seq.to_le_bytes());
     out.extend_from_slice(&(ops.len() as u32).to_le_bytes());
     out.extend_from_slice(&(table.len() as u32).to_le_bytes());
@@ -419,7 +544,7 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
         return Err("bad op magic".into());
     }
     let version = read_u16(&mut cur)?;
-    if version != 3 {
+    if version != 4 {
         return Err(format!("unsupported op version {version}"));
     }
     let seq = read_u32(&mut cur)?;
@@ -482,13 +607,40 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                 x: read_f32(&mut payload_cur)?,
                 y: read_f32(&mut payload_cur)?,
             }),
-            8 => ops.push(Op::Spawn {
-                desc: NodeDesc::read_body(&mut payload_cur, NODE_VERSION)?,
-            }),
-            9 => ops.push(Op::SpawnAt {
-                desc: NodeDesc::read_body(&mut payload_cur, NODE_VERSION)?,
-                index: read_u32(&mut payload_cur)?,
-            }),
+            8 => {
+                let handle = read_u32(&mut payload_cur)?;
+                let parent = read_u32(&mut payload_cur)?;
+                let kind = Kind::from_u8(read_u8(&mut payload_cur)?)?;
+                let text_id = read_u32(&mut payload_cur)? as usize;
+                let text = strings
+                    .get(text_id)
+                    .ok_or("spawn text out of range")?
+                    .clone();
+                ops.push(Op::Spawn {
+                    handle,
+                    parent,
+                    kind,
+                    text,
+                });
+            }
+            9 => {
+                let handle = read_u32(&mut payload_cur)?;
+                let parent = read_u32(&mut payload_cur)?;
+                let kind = Kind::from_u8(read_u8(&mut payload_cur)?)?;
+                let text_id = read_u32(&mut payload_cur)? as usize;
+                let text = strings
+                    .get(text_id)
+                    .ok_or("spawn text out of range")?
+                    .clone();
+                let index = read_u32(&mut payload_cur)?;
+                ops.push(Op::SpawnAt {
+                    handle,
+                    parent,
+                    kind,
+                    text,
+                    index,
+                });
+            }
             11 => {
                 let gesture = read_u32(&mut payload_cur)?;
                 let target = read_u32(&mut payload_cur)?;
@@ -596,7 +748,12 @@ fn read_value(cur: &mut Cursor<&[u8]>, strings: &[String]) -> Result<Value, Stri
         3 => Value::Float(read_f64(cur)?),
         4 => {
             let value_id = read_u32(cur)? as usize;
-            Value::String(strings.get(value_id).ok_or("value string out of range")?.clone())
+            Value::String(
+                strings
+                    .get(value_id)
+                    .ok_or("value string out of range")?
+                    .clone(),
+            )
         }
         other => return Err(format!("unsupported prop value tag {other}")),
     })

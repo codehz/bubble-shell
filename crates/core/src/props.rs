@@ -1,18 +1,15 @@
 //! Canonical node property names.
 //!
-//! `SPAWN_PROPS` is the set a `BNOD` descriptor may carry; the JS runtime
-//! fetches it from the host so creation-time validation cannot drift from the
-//! Rust decoder. Every other authored style, including lengths, is applied as
-//! `SetProp` immediately after `Spawn`. `padding`, `margin`, and `inset`
-//! arrays are split into edge properties by the JS runtime. The 4-number form
-//! is top, end, bottom, start. `gap` is applied before `rowGap` / `columnGap`,
-//! and `overflow` before its axes, independent of object key order. A dynamic
-//! shorthand shares one binding with the authored axes and reapplies them after
-//! every shorthand change. A later explicit `setProp` keeps call order until
-//! that binding runs again. The descriptor scroll byte remains for direct Rust
-//! callers.
-//!
-//! `SET_PROPS` is the set `Shell::set_prop` accepts at runtime.
+//! `Prop::parse` is the single authority for the property names `Shell` accepts.
+//! Node creation sends only identity and text; every authored property is a
+//! `SetProp` value and goes through the same parser whether it is static or
+//! dynamic. `padding`, `margin`, and `inset` arrays are split into edge
+//! properties by the JS runtime. The 4-number form is top, end, bottom, start.
+//! `gap` is applied before `rowGap` / `columnGap`, and `overflow` before its
+//! axes, independent of object key order. A dynamic shorthand shares one
+//! binding with the authored axes and reapplies them after every shorthand
+//! change. A later explicit `setProp` keeps call order until that binding runs
+//! again.
 //!
 //! `STATE_STYLE_PROPS` is the paint-only subset a `StateStyle` declaration may
 //! override while a node is pressed or focused. Layout properties stay on the
@@ -193,131 +190,3 @@ impl Prop {
         })
     }
 }
-
-/// Properties carried by the `BNOD` descriptor.
-pub const SPAWN_PROPS: &[&str] = &[
-    "fontSize",
-    "radius",
-    "opacity",
-    "flexGrow",
-    "flexShrink",
-    "flexDirection",
-];
-
-/// Properties applied with `SetProp` immediately after `Spawn`.
-pub const DEFERRED_PROPS: &[&str] = &[
-    "backgroundColor",
-    "color",
-    "lineHeight",
-    "textAlign",
-    "fontWeight",
-    "width",
-    "height",
-    "minWidth",
-    "minHeight",
-    "maxWidth",
-    "maxHeight",
-    "flexBasis",
-    "padding",
-    "margin",
-    "gap",
-    "rowGap",
-    "columnGap",
-    "alignItems",
-    "alignSelf",
-    "alignContent",
-    "justifyContent",
-    "flexWrap",
-    "position",
-    "inset",
-    "aspectRatio",
-    "src",
-    "fit",
-    "overscrollX",
-    "overscrollY",
-    "multiline",
-    "secure",
-    "maxLength",
-    "keyboard",
-    "autofill",
-    "role",
-    "label",
-    "disabled",
-    "hidden",
-    "focusable",
-    "modal",
-    "checked",
-    "selected",
-    "expanded",
-    "overflow",
-    "overflowX",
-    "overflowY",
-    "display",
-    "visibility",
-];
-
-pub const SET_PROPS: &[&str] = &[
-    "color",
-    "backgroundColor",
-    "radius",
-    "opacity",
-    "fontSize",
-    "paddingStart",
-    "paddingEnd",
-    "paddingTop",
-    "paddingBottom",
-    "width",
-    "height",
-    "minWidth",
-    "minHeight",
-    "maxWidth",
-    "maxHeight",
-    "flexBasis",
-    "flexGrow",
-    "flexShrink",
-    "overflow",
-    "overflowX",
-    "overflowY",
-    "flexDirection",
-    "lineHeight",
-    "textAlign",
-    "fontWeight",
-    "marginStart",
-    "marginEnd",
-    "marginTop",
-    "marginBottom",
-    "gap",
-    "rowGap",
-    "columnGap",
-    "alignItems",
-    "alignSelf",
-    "alignContent",
-    "justifyContent",
-    "flexWrap",
-    "position",
-    "top",
-    "end",
-    "bottom",
-    "start",
-    "aspectRatio",
-    "src",
-    "fit",
-    "overscrollX",
-    "overscrollY",
-    "multiline",
-    "secure",
-    "maxLength",
-    "keyboard",
-    "autofill",
-    "role",
-    "label",
-    "disabled",
-    "hidden",
-    "focusable",
-    "modal",
-    "checked",
-    "selected",
-    "expanded",
-    "display",
-    "visibility",
-];

@@ -10,8 +10,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bubble_core::{
-    validate_bundle_hashes, ComputationKind, GestureKind, NodeDesc, Op, Sched, Turn, Value,
-    DEFERRED_PROPS, SPAWN_PROPS, STATE_STYLE_PROPS,
+    validate_bundle_hashes, ComputationKind, GestureKind, Kind, NodeDesc, Op, Sched, Turn, Value,
+    STATE_STYLE_PROPS,
 };
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{
@@ -256,7 +256,8 @@ impl Session {
 
     fn emit(&mut self, name: &str, payload: &str) -> Result<(), String> {
         let Some(vm) = self.vm.as_ref() else {
-            self.early_events.push((name.to_string(), payload.to_string()));
+            self.early_events
+                .push((name.to_string(), payload.to_string()));
             return Ok(());
         };
         host_emit(vm, name, payload)
@@ -646,11 +647,6 @@ fn value_string(ctx: &Ctx, value: JsValue) -> String {
 fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
     let api = Object::new(ctx.clone())?;
     api.set("boot", Function::new(ctx.clone(), api_boot)?)?;
-    api.set("spawn_props", Function::new(ctx.clone(), api_spawn_props)?)?;
-    api.set(
-        "deferred_props",
-        Function::new(ctx.clone(), api_deferred_props)?,
-    )?;
     api.set("error", Function::new(ctx.clone(), api_error)?)?;
     api.set(
         "signal_alloc",
@@ -729,8 +725,14 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
     api.set("request", Function::new(ctx.clone(), api_request)?)?;
     api.set("storage_get", Function::new(ctx.clone(), api_storage_get)?)?;
     api.set("storage_set", Function::new(ctx.clone(), api_storage_set)?)?;
-    api.set("storage_remove", Function::new(ctx.clone(), api_storage_remove)?)?;
-    api.set("storage_keys", Function::new(ctx.clone(), api_storage_keys)?)?;
+    api.set(
+        "storage_remove",
+        Function::new(ctx.clone(), api_storage_remove)?,
+    )?;
+    api.set(
+        "storage_keys",
+        Function::new(ctx.clone(), api_storage_keys)?,
+    )?;
     api.set("schedule", Function::new(ctx.clone(), api_schedule)?)?;
     api.set("cancel", Function::new(ctx.clone(), api_cancel)?)?;
     ctx.globals().set("__bubble", api)?;
@@ -783,22 +785,6 @@ fn api_boot() -> i32 {
 
 fn api_error() -> String {
     ERROR.with(|slot| slot.borrow().clone())
-}
-
-fn api_spawn_props(ctx: Ctx) -> rquickjs::Result<Array> {
-    let array = Array::new(ctx)?;
-    for (index, name) in SPAWN_PROPS.iter().enumerate() {
-        array.set(index, *name)?;
-    }
-    Ok(array)
-}
-
-fn api_deferred_props(ctx: Ctx) -> rquickjs::Result<Array> {
-    let array = Array::new(ctx)?;
-    for (index, name) in DEFERRED_PROPS.iter().enumerate() {
-        array.set(index, *name)?;
-    }
-    Ok(array)
 }
 
 fn api_state_style_props(ctx: Ctx) -> rquickjs::Result<Array> {
@@ -924,21 +910,21 @@ impl Sched for JsHost<'_> {
     }
 }
 
-fn read_spawn(parent: f64, spec: TypedArray<'_, u8>) -> Result<NodeDesc, String> {
-    let bytes = unsafe { spec.as_slice() };
-    let mut desc = NodeDesc::decode(bytes)?;
-    desc.parent = parent as u32;
-    Ok(desc)
+fn read_kind(kind: f64) -> Result<Kind, String> {
+    Kind::from_u8(kind as u8)
 }
 
-fn api_spawn(parent: f64, spec: TypedArray<'_, u8>) -> u32 {
-    let desc = match read_spawn(parent, spec) {
-        Ok(desc) => desc,
+fn api_spawn(parent: f64, kind: f64, text: String) -> u32 {
+    let kind = match read_kind(kind) {
+        Ok(kind) => kind,
         Err(err) => {
             set_api_error(err);
             return 0;
         }
     };
+    let mut desc = NodeDesc::view(0, parent as u32);
+    desc.kind = kind;
+    desc.text = text;
     match with_turn(|turn| turn.spawn(desc)) {
         Ok(handle) => handle,
         Err(err) => {
@@ -948,14 +934,17 @@ fn api_spawn(parent: f64, spec: TypedArray<'_, u8>) -> u32 {
     }
 }
 
-fn api_spawn_at(parent: f64, index: f64, spec: TypedArray<'_, u8>) -> u32 {
-    let desc = match read_spawn(parent, spec) {
-        Ok(desc) => desc,
+fn api_spawn_at(parent: f64, index: f64, kind: f64, text: String) -> u32 {
+    let kind = match read_kind(kind) {
+        Ok(kind) => kind,
         Err(err) => {
             set_api_error(err);
             return 0;
         }
     };
+    let mut desc = NodeDesc::view(0, parent as u32);
+    desc.kind = kind;
+    desc.text = text;
     match with_turn(|turn| turn.spawn_at(desc, index as u32)) {
         Ok(handle) => handle,
         Err(err) => {

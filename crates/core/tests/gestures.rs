@@ -1,7 +1,8 @@
 //! Consumer-visible gesture and scroll-negotiation behavior.
 
 use bubble_core::{
-    encode, encode_events, GestureEvent, NodeDesc, Op, PointerAction, PointerInput, Shell, Value,
+    encode, encode_events, spawn_ops, GestureEvent, NodeDesc, Op, PointerAction, PointerInput,
+    Shell, Value,
 };
 
 fn measure(
@@ -37,26 +38,37 @@ fn input(action: PointerAction, x: f32, y: f32, time_ms: f64) -> PointerInput {
 fn tap_shell() -> Shell {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
-    let mut view = NodeDesc::view(2, 1);
+    let view = NodeDesc::view(2, 1);
     shell
         .apply_ops(&encode(
             1,
             &[
-                Op::Spawn { desc: view },
-                Op::SpawnGesture {
-                    gesture: 10,
-                    target: 2,
-                    kind: 1,
-                    index: 0,
-                },
-                Op::BindGestureEvent {
-                    gesture: 10,
-                    slot: 4,
-                    handler: 77,
-                },
-                Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(200.0) },
-                Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(200.0) },
-            ],
+                spawn_ops(view),
+                vec![
+                    Op::SpawnGesture {
+                        gesture: 10,
+                        target: 2,
+                        kind: 1,
+                        index: 0,
+                    },
+                    Op::BindGestureEvent {
+                        gesture: 10,
+                        slot: 4,
+                        handler: 77,
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "width".into(),
+                        value: Value::Float(200.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "height".into(),
+                        value: Value::Float(200.0),
+                    },
+                ],
+            ]
+            .concat(),
         ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
@@ -193,19 +205,60 @@ fn nested_scroll_consumes_inner_then_outer_and_contain_truncates() {
         .apply_ops(&encode(
             1,
             &[
-                Op::Spawn { desc: outer },
-                Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(100.0) },
-                Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(100.0) },
-                Op::Spawn { desc: inner },
-                Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(100.0) },
-                Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(50.0) },
-                Op::Spawn { desc: inner_content },
-                Op::SetProp { handle: 4, key: "width".into(), value: Value::Float(100.0) },
-                Op::SetProp { handle: 4, key: "height".into(), value: Value::Float(80.0) },
-                Op::Spawn { desc: spacer },
-                Op::SetProp { handle: 5, key: "width".into(), value: Value::Float(100.0) },
-                Op::SetProp { handle: 5, key: "height".into(), value: Value::Float(300.0) },
-            ],
+                spawn_ops(outer),
+                vec![
+                    Op::SetProp {
+                        handle: 2,
+                        key: "width".into(),
+                        value: Value::Float(100.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "height".into(),
+                        value: Value::Float(100.0),
+                    },
+                ],
+                spawn_ops(inner),
+                vec![
+                    Op::SetProp {
+                        handle: 3,
+                        key: "width".into(),
+                        value: Value::Float(100.0),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "height".into(),
+                        value: Value::Float(50.0),
+                    },
+                ],
+                spawn_ops(inner_content),
+                vec![
+                    Op::SetProp {
+                        handle: 4,
+                        key: "width".into(),
+                        value: Value::Float(100.0),
+                    },
+                    Op::SetProp {
+                        handle: 4,
+                        key: "height".into(),
+                        value: Value::Float(80.0),
+                    },
+                ],
+                spawn_ops(spacer),
+                vec![
+                    Op::SetProp {
+                        handle: 5,
+                        key: "width".into(),
+                        value: Value::Float(100.0),
+                    },
+                    Op::SetProp {
+                        handle: 5,
+                        key: "height".into(),
+                        value: Value::Float(300.0),
+                    },
+                ],
+            ]
+            .concat(),
         ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
@@ -247,19 +300,60 @@ fn reverse_scroll_starts_at_the_deepest_container() {
         .apply_ops(&encode(
             1,
             &[
-                Op::Spawn { desc: outer },
-                Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(100.0) },
-                Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(100.0) },
-                Op::Spawn { desc: inner },
-                Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(100.0) },
-                Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(50.0) },
-                Op::Spawn { desc: content },
-                Op::SetProp { handle: 4, key: "width".into(), value: Value::Float(100.0) },
-                Op::SetProp { handle: 4, key: "height".into(), value: Value::Float(80.0) },
-                Op::Spawn { desc: spacer },
-                Op::SetProp { handle: 5, key: "width".into(), value: Value::Float(100.0) },
-                Op::SetProp { handle: 5, key: "height".into(), value: Value::Float(300.0) },
-            ],
+                spawn_ops(outer),
+                vec![
+                    Op::SetProp {
+                        handle: 2,
+                        key: "width".into(),
+                        value: Value::Float(100.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "height".into(),
+                        value: Value::Float(100.0),
+                    },
+                ],
+                spawn_ops(inner),
+                vec![
+                    Op::SetProp {
+                        handle: 3,
+                        key: "width".into(),
+                        value: Value::Float(100.0),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "height".into(),
+                        value: Value::Float(50.0),
+                    },
+                ],
+                spawn_ops(content),
+                vec![
+                    Op::SetProp {
+                        handle: 4,
+                        key: "width".into(),
+                        value: Value::Float(100.0),
+                    },
+                    Op::SetProp {
+                        handle: 4,
+                        key: "height".into(),
+                        value: Value::Float(80.0),
+                    },
+                ],
+                spawn_ops(spacer),
+                vec![
+                    Op::SetProp {
+                        handle: 5,
+                        key: "width".into(),
+                        value: Value::Float(100.0),
+                    },
+                    Op::SetProp {
+                        handle: 5,
+                        key: "height".into(),
+                        value: Value::Float(300.0),
+                    },
+                ],
+            ]
+            .concat(),
         ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
@@ -475,40 +569,51 @@ fn a_second_finger_without_a_transform_cancels_the_started_pan() {
 fn a_child_tap_fires_immediately_despite_an_ancestor_double_tap() {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
-    let mut outer = NodeDesc::view(2, 1);
+    let outer = NodeDesc::view(2, 1);
     let mut child = NodeDesc::view(3, 2);
     child.flex_shrink = 0.0;
     shell
         .apply_ops(&encode(
             1,
             &[
-                Op::Spawn { desc: outer },
-                Op::Spawn { desc: child },
-                Op::SpawnGesture {
-                    gesture: 16,
-                    target: 3,
-                    kind: 1,
-                    index: 0,
-                },
-                Op::BindGestureEvent {
-                    gesture: 16,
-                    slot: 4,
-                    handler: 1,
-                },
-                Op::SpawnGesture {
-                    gesture: 17,
-                    target: 2,
-                    kind: 2,
-                    index: 0,
-                },
-                Op::BindGestureEvent {
-                    gesture: 17,
-                    slot: 5,
-                    handler: 2,
-                },
-                Op::SetProp { handle: 3, key: "width".into(), value: Value::Float(100.0) },
-                Op::SetProp { handle: 3, key: "height".into(), value: Value::Float(100.0) },
-            ],
+                spawn_ops(outer),
+                spawn_ops(child),
+                vec![
+                    Op::SpawnGesture {
+                        gesture: 16,
+                        target: 3,
+                        kind: 1,
+                        index: 0,
+                    },
+                    Op::BindGestureEvent {
+                        gesture: 16,
+                        slot: 4,
+                        handler: 1,
+                    },
+                    Op::SpawnGesture {
+                        gesture: 17,
+                        target: 2,
+                        kind: 2,
+                        index: 0,
+                    },
+                    Op::BindGestureEvent {
+                        gesture: 17,
+                        slot: 5,
+                        handler: 2,
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "width".into(),
+                        value: Value::Float(100.0),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "height".into(),
+                        value: Value::Float(100.0),
+                    },
+                ],
+            ]
+            .concat(),
         ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
@@ -599,9 +704,27 @@ fn slot_count(events: &[GestureEvent], gesture: u32, slot: u8) -> usize {
 fn phase_pad() -> Shell {
     let mut shell = Shell::blank().unwrap();
     shell.set_viewport(200.0, 200.0);
-    let mut view = NodeDesc::view(2, 1);
+    let view = NodeDesc::view(2, 1);
     shell
-        .apply_ops(&encode(1, &[Op::Spawn { desc: view }, Op::SetProp { handle: 2, key: "width".into(), value: Value::Float(200.0) }, Op::SetProp { handle: 2, key: "height".into(), value: Value::Float(200.0) }, ]))
+        .apply_ops(&encode(
+            1,
+            &[
+                spawn_ops(view),
+                vec![
+                    Op::SetProp {
+                        handle: 2,
+                        key: "width".into(),
+                        value: Value::Float(200.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "height".into(),
+                        value: Value::Float(200.0),
+                    },
+                ],
+            ]
+            .concat(),
+        ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
     shell

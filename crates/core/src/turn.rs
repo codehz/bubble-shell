@@ -94,7 +94,9 @@ impl Turn {
     pub fn spawn(&mut self, mut desc: NodeDesc) -> Result<u32, String> {
         let handle = self.allocate_handle()?;
         desc.id = handle;
-        self.push(Op::Spawn { desc });
+        for op in crate::ops::spawn_ops(desc) {
+            self.push(op);
+        }
         Ok(handle)
     }
 
@@ -102,7 +104,9 @@ impl Turn {
     pub fn spawn_at(&mut self, mut desc: NodeDesc, index: u32) -> Result<u32, String> {
         let handle = self.allocate_handle()?;
         desc.id = handle;
-        self.push(Op::SpawnAt { desc, index });
+        for op in crate::ops::spawn_at_ops(desc, index) {
+            self.push(op);
+        }
         Ok(handle)
     }
 

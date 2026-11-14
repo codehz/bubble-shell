@@ -1,6 +1,4 @@
-use bubble_core::{
-    encode, EditCommand, EditError, Kind, NodeDesc, Op, Shell, Value, DEFERRED_PROPS,
-};
+use bubble_core::{encode, EditCommand, EditError, Kind, NodeDesc, Op, Shell, Value};
 
 fn field(shell: &mut Shell, text: &str) -> u32 {
     let mut desc = NodeDesc::view(0, 1);
@@ -224,7 +222,6 @@ fn max_length_counts_utf16_and_secure_paint_masks() {
         .iter()
         .any(|cmd| matches!(cmd, bubble_core::PaintCmd::Text { text, .. } if text == "••"));
     assert!(masked);
-    assert!(DEFERRED_PROPS.contains(&"maxLength"));
 }
 
 #[test]
