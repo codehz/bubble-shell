@@ -1,9 +1,7 @@
-import { readFileSync } from "node:fs";
 import { registerHooks } from "node:module";
-import assert from "node:assert/strict";
-import test from "node:test";
-import { setApi } from "./runtime.js";
-import { layoutSnapshot } from "../../sdk/web/src/textlayout.js";
+import { dispatchGestureEvents, setApi } from "../../crates/native/js/runtime.js";
+import { entryUrl, fixture as bundledApp, wasmBytes } from "./fixtures.mjs";
+import { layoutSnapshot } from "./src/textlayout.js";
 
 // Fixture bundles import the host modules by specifier; map them like the
 // page's import map does.
@@ -11,7 +9,7 @@ registerHooks({
   resolve(specifier, context, next) {
     if (specifier === "bubble-shell" || specifier === "bubble:rt") {
       return {
-        url: new URL("./runtime.js", import.meta.url).href,
+        url: new URL("../../crates/native/js/runtime.js", import.meta.url).href,
         shortCircuit: true,
       };
     }
@@ -19,13 +17,14 @@ registerHooks({
   },
 });
 
-const wasmBytes = readFileSync(new URL("./bubble.wasm", import.meta.url));
-const manifest = readFileSync(new URL("./fixtures/slot.json", import.meta.url));
-const main = readFileSync(new URL("./fixtures/slot.js", import.meta.url));
+const fixture = process.argv[2] ?? "counter";
+const wasm = wasmBytes();
+const { manifest, entry: main } = bundledApp(fixture);
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
-const { instance } = await WebAssembly.instantiate(wasmBytes, {
+const started = performance.now();
+const { instance } = await WebAssembly.instantiate(wasm, {
   env: {
     host_measure(textPtr, textLen, fontSize, lineHeight, weight, mode, avail, outPtr) {
       const text = decoder.decode(new Uint8Array(memory().buffer, textPtr, textLen));
@@ -93,7 +92,7 @@ function packFile(path, data) {
   return packed;
 }
 
-const files = packFile("slot.js", main);
+const files = packFile(`${fixture}.js`, main);
 const manifestPtr = copyBytes(manifest);
 const filesPtr = copyBytes(files);
 if (exports.validate(manifestPtr, manifest.length, filesPtr, files.length) !== 0) {
@@ -143,6 +142,20 @@ setApi({
     return code;
   },
   bind_event: exports.bind_event,
+  spawn_gesture: exports.spawn_gesture,
+  set_gesture_prop(handle, key, tag, number, text) {
+    const keyBytes = encoder.encode(key);
+    const textBytes = tag === 4 ? encoder.encode(text) : new Uint8Array(0);
+    const keyPtr = copyBytes(keyBytes);
+    const textPtr = textBytes.length ? copyBytes(textBytes) : 0;
+    const code = exports.set_gesture_prop(handle, keyPtr, keyBytes.length, tag, number, textPtr, textBytes.length);
+    exports.dealloc(keyPtr, keyBytes.length);
+    if (textBytes.length) exports.dealloc(textPtr, textBytes.length);
+    return code;
+  },
+  bind_gesture_event: exports.bind_gesture_event,
+  dispose_gesture: exports.dispose_gesture,
+  move_gesture: exports.move_gesture,
   create_var(...args) {
     return exports.create_var(...args);
   },
@@ -171,18 +184,21 @@ setApi({
   },
   move_style_decl: exports.move_style_decl,
   dispose_style_decl: exports.dispose_style_decl,
+  visual_pointer: exports.visual_pointer,
   pointer: exports.pointer,
   tick: exports.tick,
+  take_gesture_events: exports.take_gesture_events,
   queue_text: exports.queue_text,
   commit: exports.commit,
   layout: exports.layout,
   error,
   prepare() {
-    exports.set_viewport(320, 480);
+    exports.set_viewport(320, 180);
   },
+
 });
 
-await import(new URL("./fixtures/slot.js", import.meta.url));
+await import(entryUrl(fixture));
 
 function paintList() {
   const len = exports.paint();
@@ -264,64 +280,71 @@ function argb(color) {
   const channel = (value) => Math.round(Math.min(1, Math.max(0, value)) * 255);
   return (((channel(color.a) << 24) | (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b)) >>> 0);
 }
-
-const cmds = paintList();
-const texts = cmds.filter((cmd) => cmd.tag === 2);
-// Card background is #1b1e27; three Card instances paint three rects.
-const cards = cmds
-  .filter((cmd) => cmd.tag === 1 && argb(cmd.color) === 0xff1b1e27)
-  .sort((a, b) => a.y - b.y);
-
-function cardOf(textCmd, index) {
-  const card = cards[index];
-  return textCmd.y >= card.y && textCmd.y < card.y + card.h;
+function textOf(cmds, value) {
+  const found = cmds.find((cmd) => cmd.tag === 2 && cmd.text === value);
+  if (!found) throw new Error(`missing text ${value}`);
+  return found;
 }
 
-function textsOf(value) {
-  return texts.filter((cmd) => cmd.text === value);
-}
+const first = paintList();
+const firstFrameMs = performance.now() - started;
 
-test("children render inside the component's slot, not at the call site", () => {
-  // Card 1: header slot thunk + forwarded children + tail.
-  const head = textsOf("head");
-  const body = textsOf("body");
-  const tails = textsOf("tail");
-  assert.equal(head.length, 1, "header thunk renders exactly once");
-  assert.equal(body.length, 1, "forwarded children render exactly once");
-  assert.equal(tails.length, 3, "each Card renders its own tail");
-  assert.ok(cardOf(head[0], 0), "header lands in card 1");
-  assert.ok(cardOf(body[0], 0), "children land in card 1, not after all cards");
-  assert.ok(head[0].y < body[0].y, "slot sits before children in authored order");
-  assert.ok(body[0].y < tails[0].y, "children render before the card's own tail");
-});
-
-test("named slot fallback covers a missing thunk", () => {
-  // Card 2 and Panel's Card both omit the header prop.
-  const fallbacks = textsOf("no header");
-  assert.equal(fallbacks.length, 2);
-  assert.ok(cardOf(fallbacks[0], 1), "fallback renders in card 2's slot position");
-  assert.ok(cardOf(fallbacks[1], 2), "fallback renders in card 3's slot position");
-});
-
-test("control flow inside forwarded children keys and renders per item", () => {
-  const one = textsOf("item one");
-  const two = textsOf("item two");
-  assert.equal(one.length, 1);
-  assert.equal(two.length, 1);
-  assert.ok(cardOf(one[0], 1) && cardOf(two[0], 1));
-  assert.ok(one[0].y < two[0].y);
-});
-
-test("forwarding chains keep passing children through", () => {
-  const chained = textsOf("chained");
-  assert.equal(chained.length, 1);
-  assert.ok(cardOf(chained[0], 2), "Panel's children land inside Card's slot");
-  assert.ok(chained[0].y < textsOf("tail")[2].y);
-});
-
-test("slot thunks never leak as stringified text", () => {
-  for (const cmd of texts) {
-    assert.ok(!cmd.text.includes("undefined"), `leaked: ${cmd.text}`);
-    assert.ok(!cmd.text.includes("=>"), `leaked function text: ${cmd.text}`);
+function pumpGestures() {
+  let len = exports.take_gesture_events();
+  while (len > 0) {
+    dispatchGestureEvents(new Uint8Array(memory().buffer, exports.scratch_ptr(), len).slice());
+    len = exports.take_gesture_events();
   }
-});
+}
+
+function sendPointer(action, id, x, y, time) {
+  if (exports.pointer(action, id, x, y, time, 0, action === 2 || action === 3 ? 0 : 1) !== 0) {
+    throw new Error(error() || "pointer failed");
+  }
+  pumpGestures();
+}
+
+if (fixture === "counter") {
+  const countText = textOf(first, "Count: 0");
+  if (argb(countText.color) !== 0xffffffff) throw new Error("CSS string text color was not applied");
+  const button = first.find((cmd) => cmd.tag === 1 && argb(cmd.color) === 0xff3b82f6);
+  if (!button) throw new Error("increment button was not painted");
+  const x = button.x + button.w / 2;
+  const y = button.y + button.h / 2;
+  sendPointer(0, 1, x, y, 0);
+  sendPointer(2, 1, x, y, 20);
+  textOf(paintList(), "Count: 1");
+
+  const before = textOf(paintList(), "Item 1");
+  const scrolled = exports.scroll_wheel(before.x + 4, before.y + 4, 0, 80);
+  if (!scrolled) throw new Error("wheel did not scroll");
+  if (exports.layout() !== 0) throw new Error(error() || "layout failed");
+  const after = textOf(paintList(), "Item 1");
+  if (!(after.y < before.y)) throw new Error(`Item 1 did not move (${before.y} -> ${after.y})`);
+} else if (fixture === "gestures") {
+  const pad = first.find((cmd) => cmd.tag === 1 && argb(cmd.color) === 0xff3b82f6);
+  if (!pad) throw new Error("gesture pad was not painted");
+  const px = pad.x + pad.w / 2;
+  const py = pad.y + pad.h / 2;
+  sendPointer(0, 2, px, py, 100);
+  sendPointer(2, 2, px, py, 120);
+  const status = paintList()
+    .filter((cmd) => cmd.tag === 2)
+    .find((cmd) => cmd.text === "tapped");
+  if (!status) throw new Error("tap was not recorded in the status text");
+} else {
+  throw new Error(`unknown fixture ${fixture}`);
+}
+
+const samples = [];
+for (let frame = 0; frame < 60; frame += 1) {
+  const mark = performance.now();
+  if (exports.layout() !== 0) throw new Error(error() || "layout failed");
+  exports.paint();
+  samples.push(performance.now() - mark);
+}
+samples.sort((a, b) => a - b);
+const p95 = samples[Math.ceil(samples.length * 0.95) - 1];
+if (firstFrameMs >= 400) throw new Error(`first frame ${firstFrameMs.toFixed(1)} ms`);
+if (p95 >= 16.7) throw new Error(`frame p95 ${p95.toFixed(2)} ms`);
+console.log(`${fixture}: first frame ${firstFrameMs.toFixed(1)} ms, paint p95 ${p95.toFixed(2)} ms`);

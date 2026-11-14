@@ -1,6 +1,6 @@
 # 08 · 共享变量与样式声明升级计划
 
-状态：实现中。阶段 1（`expr.rs` 引擎 + VarTable + 四个状态源 + `ViewStyle`/`TextStyle` 组件与程序化 when/patch，`StateStyle` 整体移除）、阶段 2（JS 显式变量、`SetVar`、settle 事件、`bind` signal）、阶段 3（AnimSpec、tick 积分、双模写入、transform patch）与阶段 4（gesture 与 scroll 源）已落地。本文不引入任何新的验证工具或设备矩阵；所有验证仍限于 `cargo test --workspace`、`cargo check --workspace`、`node --test examples/web/*.test.mjs` 与手动 demo 冒烟。
+状态：实现中。阶段 1（`expr.rs` 引擎 + VarTable + 四个状态源 + `ViewStyle`/`TextStyle` 组件与程序化 when/patch，`StateStyle` 整体移除）、阶段 2（JS 显式变量、`SetVar`、settle 事件、`bind` signal）、阶段 3（AnimSpec、tick 积分、双模写入、transform patch）与阶段 4（gesture 与 scroll 源）已落地。本文不引入任何新的验证工具或设备矩阵；所有验证仍限于 `cargo test --workspace`、`cargo check --workspace`、`node --test sdk/web/*.test.mjs` 与手动 demo 冒烟。
 
 实现落点：`crates/core/src/state_style.rs`（重写为声明表与求值）、`crates/core/src/props.rs`（`STATE_STYLE_PROPS` 按组件拆分）、`crates/core/src/shell.rs`（状态源采样、绘制合并、事件批次）、`crates/core/src/ops.rs` / `turn.rs`（新 op 与批次压缩）、`crates/core/src/expr.rs`（新：表达式引擎）、`crates/compiler/src/lib.rs`（JSX 属性表达式降级与组件属性白名单）、`crates/native/js/runtime.js`（JS 侧变量对象）、三端 ABI 不变（复用 `bubble_tick` / `bubble_frame`）。
 

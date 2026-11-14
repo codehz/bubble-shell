@@ -25,13 +25,13 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> String {
-    "usage: bubble bundle <entries...> --out <dir> [--id <id>] [--dev]\n       bubble dev <entry> [--port <port>] [--root <dir>]".into()
+    "usage: bubble bundle <entries...> --out <dir> [--id <id>] [--dev]\n       bubble dev <entry> --root <dir> [--port <port>]".into()
 }
 
 fn dev_command(args: &[String]) -> Result<(), String> {
     let mut entry = None;
     let mut port = 4173u16;
-    let mut root = PathBuf::from("examples/web");
+    let mut root = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -43,7 +43,7 @@ fn dev_command(args: &[String]) -> Result<(), String> {
             "--root" => {
                 index += 1;
                 let value = args.get(index).ok_or("--root needs a directory")?;
-                root = PathBuf::from(value);
+                root = Some(PathBuf::from(value));
             }
             other if other.starts_with("--") => {
                 return Err(format!("unknown option {other}"));
@@ -58,6 +58,7 @@ fn dev_command(args: &[String]) -> Result<(), String> {
         index += 1;
     }
     let entry = entry.ok_or_else(usage)?;
+    let root = root.ok_or("--root is required: bubble dev serves static files from it")?;
     bubble_cli::dev::run(bubble_cli::dev::DevOptions { entry, root, port })
 }
 

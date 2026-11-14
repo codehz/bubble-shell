@@ -16,5 +16,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "bubble-shell"
 include(":bubble")
-include(":demo")
-project(":demo").projectDir = file("../../examples/android/app")

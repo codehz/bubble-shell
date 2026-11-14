@@ -12,7 +12,7 @@
 | 3 | 驱动层接 C ABI（`bubble-ffi`）：被测面就是 iOS/Android 宿主实际嵌入的函数集。选择器基于 `bubble_semantics` JSON 实现，零新增 ABI。C ABI 是 thread-local 全局绑定 → 场景串行，可接受 |
 | 4 | 首批覆盖全部 fixture：counter、editing、gestures、focus、media、slot 各一个 headless 场景 |
 | 5 | `testID` 全链路：compiler → props → core → semantics → 选择器 `id:` |
-| 6 | 独立测试 fixture 放 `crates/testing/apps/`（TSX）；`examples/` fixtures 保持不动，后续单独转为纯演示 |
+| 6 | 独立测试 fixture 放 `crates/testing/apps/`（TSX）；`examples/` 已整体删除（2026-11-14），演示 app 后续以独立项目重建 |
 | 7 | 脚本格式：行式文本（`tap id:next` / `expect Count: 1` / `#` 注释），仿 nsh `script.txt` |
 | 8 | 删除 eval 后的孤儿模拟器测试代码一并删：`examples/ios/UITests*`、`examples/android/app/src/androidTest` |
 
@@ -110,7 +110,7 @@ visible off
 ## 验证（MVP 预算内）
 
 - `cargo test --workspace`：新套件 + 其余 crate 测试，目标 <10s、离线、无设备。风险点：进程内 rolldown 构建耗时——用 `LazyLock` 复用、开发档产物、实现时实测；超预算则改为 build.rs 构建产物缓存。
-- `node --test examples/web/*.test.mjs`：不动。
+- `node --test sdk/web/*.test.mjs`：单测随 `examples/web` 一起迁到 `sdk/web/`。
 - 手动 smoke 流程不变（模拟器自动化入口随 eval 删除，属已拍板范围）。
 
 ## 阶段划分（每步跑 `cargo test --workspace`）
@@ -124,5 +124,5 @@ visible off
 
 - 并行多 session（驱动层接 native 内部 Rust API）：出现场景数超时再做。
 - 脚本 DSL 命令集扩充、nsh compat 式 API 冻结记录（`nsh-compat` 仓库模式）。
-- `examples/` fixtures 转纯演示、演示与测试 app 分叉后的维护策略。
+- 已拍板（2026-11-14）：`examples/` 整体删除；演示与测试 app 不再双份，fixture 只保留 `crates/testing/apps/`，演示 app 重建时为独立项目。
 - 设备/模拟器自动化、性能门槛等原延后项不变。

@@ -51,6 +51,6 @@
 - **阶段**: MVP 优先
 - **构建工具**: `bubble bundle` / `bubble dev`（Oxc + rolldown 单 ESM）
 - **活跃计划**: 共享变量与样式声明升级（[plans/shared-variables.md](plans/shared-variables.md)）
-- **验收**: 核心测试 `cargo test --workspace` + Web 单测 `node --test examples/web/*.test.mjs`
+- **验收**: 核心测试 `cargo test --workspace` + Web 单测 `node --test sdk/web/*.test.mjs`
 
 实体设备、真实读屏软件、性能门槛与故障演练进入 post-MVP backlog。

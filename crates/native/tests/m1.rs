@@ -97,19 +97,9 @@ fn eval(source: &str) -> String {
 }
 
 fn load_fixture(name: &str) {
-    let (manifest, entry): (&str, &[u8]) = match name {
-        "counter" => (
-            include_str!("../../../examples/web/fixtures/counter.json"),
-            include_bytes!("../../../examples/web/fixtures/counter.js"),
-        ),
-        "editing" => (
-            include_str!("../../../examples/web/fixtures/editing.json"),
-            include_bytes!("../../../examples/web/fixtures/editing.js"),
-        ),
-        other => panic!("unknown fixture {other}"),
-    };
-    let manifest = c(manifest);
-    let code = bubble_load(manifest.as_ptr(), entry.as_ptr(), entry.len() as u32);
+    let app = bubble_testing::bundle::app(name).unwrap_or_else(|err| panic!("{name}: {err}"));
+    let manifest = c(&app.manifest);
+    let code = bubble_load(manifest.as_ptr(), app.entry.as_ptr(), app.entry.len() as u32);
     assert_eq!(code, 0, "{}", error());
 }
 

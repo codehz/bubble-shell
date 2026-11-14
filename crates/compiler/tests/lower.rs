@@ -307,7 +307,25 @@ fn emits_a_source_map_on_request() {
 
 #[test]
 fn compiles_the_counter_fixture() {
-    let source = include_str!("../../../examples/app/fixtures/counter.tsx");
+    let source = r#"
+import { mount, signal, Text, View, TapGesture } from "bubble-shell";
+const count = signal(0);
+function Row(props) {
+  return <Text>{props.label}</Text>;
+}
+function Counter() {
+  return (
+    <View>
+      <Text>Count: {count()}</Text>
+      <View onTap={() => count.update((value) => value + 1)}>
+        <Row label="Item 1" />
+        <Row label="Item 2" />
+      </View>
+    </View>
+  );
+}
+mount(Counter);
+"#;
     let code = compile("counter.tsx", source);
     assert!(code.contains("function Counter()"), "{code}");
     assert!(code.contains("mount(Counter)"), "{code}");

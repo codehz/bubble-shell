@@ -62,8 +62,8 @@
 
 ## 结论
 
-阶段 A-F 已实现。验收以 `cargo test --workspace` 和 `node --test examples/web/*.test.mjs` 为准。
+阶段 A-F 已实现。验收以 `cargo test --workspace` 和 `node --test sdk/web/*.test.mjs` 为准。
 
-现有 `editing-web/android/ios` 模拟器 harness 可选运行，不作为 MVP 门槛。视觉选区手柄拖动、实体设备与厂商键盘差异进入 post-MVP backlog。
+模拟器 harness 已随 `examples/` 删除，不作为 MVP 门槛。视觉选区手柄拖动、实体设备与厂商键盘差异进入 post-MVP backlog。
 
 三端 IME 适配迁移完成，统一使用编辑事务语义。

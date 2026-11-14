@@ -64,7 +64,7 @@
 
 ## 结论
 
-已实现并完成文档切换。验收以 `cargo test --workspace` 和 `node --test examples/web/*.test.mjs` 为准；模拟器 harness 保留为可选回归入口，实体设备和厂商键盘差异进入 post-MVP backlog。
+已实现并完成文档切换。验收以 `cargo test --workspace` 和 `node --test sdk/web/*.test.mjs` 为准；模拟器 harness 已随 `examples/` 删除，实体设备和厂商键盘差异进入 post-MVP backlog。
 
 公开类型：`TapGesture`、`DoubleTapGesture`、`LongPressGesture`、`PanGesture`、`TransformGesture`。
 

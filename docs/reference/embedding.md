@@ -162,9 +162,9 @@ EditSession {
 
 覆盖能力：键盘类型、autofill、密码、多行、maxlength、输入过滤、撤销/重做。三端行为差异记录在测试矩阵中。
 
-演示入口按职责拆分：`examples/build-fixtures.sh` 调用 `bubble bundle` 编译 `examples/app/fixtures/*.tsx`，生成 `examples/web/fixtures/<name>.{js,json}` 与按需的 `assets/`；Web 用 `?fixture=counter|editing|gestures` 选择，Android 用 `bubble_fixture` intent extra，iOS 用 `BUBBLE_FIXTURE` 环境变量。原生桥只实现一次，设备演示只选择对应 bundle，不复制入口。
+fixture 只有一份：`crates/testing/apps/*.tsx`，`bubble bundle` 把它编译成 `<name>.{js,json}`——Rust 测试用 `bubble-testing` 在进程内生成，wasm smoke 用 `node sdk/web/m0-smoke.mjs <fixture>` 按需生成到 `target/`。演示宿主已从仓库删除；重建时以 workspace crate 形式接入，Web 用 `?fixture=counter|editing|gestures` 选择，Android 用 `bubble_fixture` intent extra，iOS 用 `BUBBLE_FIXTURE` 环境变量。原生桥只实现一次，设备演示只选择对应 bundle，不复制入口。
 
-当前接入：Web 隐藏 `textarea` 把 `beforeinput` / composition 映射为事务命令（commit/compose/delete/replace/select/undo/redo，`examples/web/ime.js`），宿主按快照的 session 提交并回读选区同步代理，含 `historyUndo` / `historyRedo`。在字段上按下并拖动会改选区，不再交给手势；抬起不把插入符折回落点。选区手柄由核心给出几何并由宿主绘制；拖动手柄保持另一端锚点。右键菜单调用核心 `edit_menu` 执行剪切、复制、粘贴和全选，密码字段不复制。iOS `UITextInput` 的 `insertText` / `deleteBackward` / `replace` / `setMarkedText` / `unmarkText` 通过 `bubble_edit_snapshot` 读取 session，再走 commit/compose/replace/select/batch，标记文本内部选区不再固定到末尾。Android `InputConnection` 绑定创建时的 `EditSession`，每次读写校验 session；`commitText` / `setComposingText` 走范围事务并应用 `newCursorPosition`，支持内部组合选区、`setComposingRegion`、UTF-16 与代码点两种 `deleteSurroundingText`、嵌套 batch edit、`getTextBefore/After`、`getSelectedText`、`getExtractedText` 和 `CursorAnchorInfo`。连接关闭或字段切换后旧 session 写入被拒绝，Kotlin 不再维护第二份 composition 状态。iOS `UITextInput` 覆盖插入、退格、UTF-16 选区、标记文本（`setMarkedText` / `unmarkText`）和选区矩形；⌘Z / ⇧⌘Z 走同一撤销栈。标记文本内部的选中范围仍固定在组合末尾。点按 `focus_at` 聚焦并把插入符落到最近的 UTF-16 边界。聚焦字段在 layout 后绘制选区与 1px 光标。撤销按字段保留最近 100 步；脚本 `SetEditingValue` 成功后清空该字段的撤销栈。`field_flags` 的 bit0 多行、bit1 密码，bits 8..15 为键盘种类：1 number、2 email、3 url、4 phone。bits 16..23 为 `autofill`：1 username、2 password、3 newPassword、4 email、5 phone、6 oneTimeCode。
+当前接入：Web 隐藏 `textarea` 把 `beforeinput` / composition 映射为事务命令（commit/compose/delete/replace/select/undo/redo，`sdk/web/src/ime.js`），宿主按快照的 session 提交并回读选区同步代理，含 `historyUndo` / `historyRedo`。在字段上按下并拖动会改选区，不再交给手势；抬起不把插入符折回落点。选区手柄由核心给出几何并由宿主绘制；拖动手柄保持另一端锚点。右键菜单调用核心 `edit_menu` 执行剪切、复制、粘贴和全选，密码字段不复制。iOS `UITextInput` 的 `insertText` / `deleteBackward` / `replace` / `setMarkedText` / `unmarkText` 通过 `bubble_edit_snapshot` 读取 session，再走 commit/compose/replace/select/batch，标记文本内部选区不再固定到末尾。Android `InputConnection` 绑定创建时的 `EditSession`，每次读写校验 session；`commitText` / `setComposingText` 走范围事务并应用 `newCursorPosition`，支持内部组合选区、`setComposingRegion`、UTF-16 与代码点两种 `deleteSurroundingText`、嵌套 batch edit、`getTextBefore/After`、`getSelectedText`、`getExtractedText` 和 `CursorAnchorInfo`。连接关闭或字段切换后旧 session 写入被拒绝，Kotlin 不再维护第二份 composition 状态。iOS `UITextInput` 覆盖插入、退格、UTF-16 选区、标记文本（`setMarkedText` / `unmarkText`）和选区矩形；⌘Z / ⇧⌘Z 走同一撤销栈。标记文本内部的选中范围仍固定在组合末尾。点按 `focus_at` 聚焦并把插入符落到最近的 UTF-16 边界。聚焦字段在 layout 后绘制选区与 1px 光标。撤销按字段保留最近 100 步；脚本 `SetEditingValue` 成功后清空该字段的撤销栈。`field_flags` 的 bit0 多行、bit1 密码，bits 8..15 为键盘种类：1 number、2 email、3 url、4 phone。bits 16..23 为 `autofill`：1 username、2 password、3 newPassword、4 email、5 phone、6 oneTimeCode。
 
 Web 宿主从 `runtime.js`（即 `bubble-shell` 模块）具名导入 `setApi`、`dispatchGestureEvents` 和 `dispatchEditEvents`；应用 bundle 通过 import map 把 `bubble-shell` / `bubble:rt` 解析到同一文件。编辑事件由 `dispatchEditEvents` 解码并调用字段的 `onChange`。隐藏 `textarea` 通过 `inputMode` 与 `autocomplete` 配置键盘和自动填充，不写入只读的 `type` 属性；密码遮罩由核心绘制。
 
@@ -187,10 +187,10 @@ Web 宿主从 `runtime.js`（即 `bubble-shell` 模块）具名导入 `setApi`�
 
 ```sh
 cargo test --workspace
-node --test examples/web/*.test.mjs
+node --test sdk/web/*.test.mjs
 ```
 
-现有模拟器 harness（`editing-web`、`editing-android`、`editing-ios`）可选运行，不作为 MVP 门槛。实体设备、厂商键盘与真实读屏器实测属于 post-MVP backlog。
+模拟器 harness 已随 `examples/` 删除，不作为 MVP 门槛。实体设备、厂商键盘与真实读屏器实测属于 post-MVP backlog。
 
 ## 6. 更新平面
 

@@ -13,16 +13,16 @@ MVP 是一个可运行、可交互的演示，不是验收程序。MVP 完成前
 - Web：主线程一份 WASM + JS 回放 `PaintCmd`；无 Worker。
 - Native：QuickJS、C ABI、事件循环、超时/内存限制；iOS CoreGraphics、Android Canvas painter；宿主能力桥与生命周期。
 - 输入：现有手势、编辑事务、焦点与语义桥实现保持可用。
-- 示例 fixture：`counter`、`editing`、`gestures`、`focus`。
+- fixture：`counter`、`editing`、`gestures`、`focus`（`crates/testing/apps/`）。
 
 ### MVP 验收
 
 - `cargo test --workspace` 通过，离线、无需设备，目标 10 秒内。
 - `cargo check --workspace` 通过。
-- `node --test examples/web/*.test.mjs` 通过。
-- Web 页面手动 smoke：渲染、点击、滚动、文本框输入、焦点移动各一次。
-- `bubble dev` 下修改组件文本，页面更新且计数状态保留（Web）。
-- iOS/Android 模拟器启动同一 fixture，完成点击、滚动、一次文本输入。
+- `node --test sdk/web/*.test.mjs` 通过。
+- wasm 手动 smoke：`node sdk/web/m0-smoke.mjs counter|gestures`（渲染、点击、滚动、手势各一次）。
+- `bubble dev` 下修改组件文本，宿主页面更新且计数状态保留。
+- iOS/Android 宿主 app（以 workspace crate 形式重建，见 AGENTS.md）启动同一 fixture，完成点击、滚动、一次文本输入。
 - 离线回归入口：`cargo test -p bubble-testing`（headless 驱动 + 声明脚本，无需设备），不是 MVP 发布门槛。
 
 ### 明确不属于 MVP 验收
@@ -72,7 +72,7 @@ MVP 内：
 
 - 核心行为由 `cargo test --workspace` 覆盖。
 - Web 交互与键盘路由由 Node 单测覆盖。
-- iOS/Android 模拟器保留基础启动与手势/编辑 harness，作为可选回归。
+- 模拟器 harness 已随 `examples/` 删除，不作为回归入口。
 - 不新增可访问性验收套件，不要求真实读屏软件或实体设备。
 
 延后：
