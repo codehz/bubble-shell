@@ -50,7 +50,7 @@ tasks.register<Exec>("bundleFixtures") {
         "examples/app/fixtures/editing.tsx",
         "examples/app/fixtures/focus.tsx",
         "examples/app/fixtures/media.tsx",
-        "examples/app/gestures.js",
+        "examples/app/fixtures/gestures.tsx",
         "--out", fixtures.absolutePath,
     )
 }

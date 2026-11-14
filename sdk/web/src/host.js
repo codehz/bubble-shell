@@ -1059,7 +1059,9 @@ if (dev) {
   await import(`${dev.bundle}?v=${Date.now()}`);
 } else {
   await checkBundle();
-  await import(`./fixtures/${fixture}.js`);
+  // Relative to the page, not this module: the fixtures live next to
+  // index.html, not under sdk/web/src.
+  await import(new URL(`./fixtures/${fixture}.js`, document.baseURI).href);
 }
 paint();
 const firstFrameMs = performance.now() - started;

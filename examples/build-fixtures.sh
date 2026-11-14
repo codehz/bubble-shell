@@ -12,7 +12,7 @@ cargo run -q -p bubble-cli -- bundle \
   examples/app/fixtures/focus.tsx \
   examples/app/fixtures/media.tsx \
   examples/app/fixtures/slot.tsx \
-  examples/app/gestures.js \
+  examples/app/fixtures/gestures.tsx \
   --out "$OUT"
 
 # The runtime has one source of truth; Web serves the same file the native

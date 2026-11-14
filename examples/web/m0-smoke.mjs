@@ -194,7 +194,7 @@ setApi({
   layout: exports.layout,
   error,
   prepare() {
-    exports.set_viewport(320, 220);
+    exports.set_viewport(320, 640);
   },
 
 });
@@ -329,15 +329,11 @@ if (fixture === "counter") {
   const py = pad.y + pad.h / 2;
   sendPointer(0, 2, px, py, 100);
   sendPointer(2, 2, px, py, 120);
-  const status = paintList()
+  const log = paintList()
     .filter((cmd) => cmd.tag === 2)
     .map((cmd) => cmd.text)
-    .find((text) => text.startsWith("{"));
-  if (!status) throw new Error("gesture status was not painted");
-  const events = JSON.parse(status).events ?? [];
-  if (!events.some((event) => event.name === "tap" && event.type === "tap")) {
-    throw new Error(`tap was not recorded: ${status}`);
-  }
+    .find((text) => text.includes("tap → tap"));
+  if (!log) throw new Error("tap was not recorded in the gesture log");
 } else {
   throw new Error(`unknown fixture ${fixture}`);
 }
