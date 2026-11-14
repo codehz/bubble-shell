@@ -6,9 +6,11 @@
 //! syntax to exactly these ops.
 
 use bubble_core::{
-    encode, encode_set_prop_color, spawn_ops, wrapping_layout, Color, Kind, LayoutRequest, NodeDesc,
-    Op, PaintCmd, PointerAction, PointerInput, ProgramBuilder, Shell, Value, VarEvent, OP_AND,
-    OP_GT, OP_NOT, SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED,
+    encode, encode_set_prop_color, spawn_ops, wrapping_layout, AnimChoice, AnimSpec, Color,
+    EASE_LINEAR, Kind,
+    LayoutRequest, NodeDesc, Op, PaintCmd, PointerAction, PointerInput, ProgramBuilder, Shell,
+    Value, VarEvent, OP_AND, OP_GT, OP_NOT, SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED,
+    SOURCE_NONE, SOURCE_PRESSED,
 };
 
 const BLUE: u32 = 0xff25_63eb;
@@ -120,6 +122,7 @@ fn source_var(var: u32, source: u8, target: u32) -> Vec<Op> {
             var,
             source,
             initial: Value::Null,
+            anim: None,
         },
         Op::BindVar { var, target },
     ]
@@ -532,6 +535,7 @@ fn script_writes_an_unlinked_variable() {
         var: 1,
         source: SOURCE_NONE,
         initial: Value::Float(0.0),
+        anim: None,
     }]);
     ops.extend(decl(
         1,
@@ -690,6 +694,7 @@ fn var_shell() -> Shell {
         var: 1,
         source: SOURCE_NONE,
         initial: Value::Bool(false),
+        anim: None,
     });
     ops.extend(decl(1, 2, 1, 0, program(load(1))));
     ops.push(paint_op(1, "backgroundColor", Value::Int(GREEN as i64)));
@@ -707,6 +712,7 @@ fn script_var_write_drives_declaration_paint() {
         .apply_ops(&encode(2, &[Op::SetVar {
             var: 1,
             value: Value::Bool(true),
+            anim: AnimChoice::Default,
         }]))
         .unwrap();
     shell.layout(&mut measure).unwrap();
@@ -716,6 +722,7 @@ fn script_var_write_drives_declaration_paint() {
         .apply_ops(&encode(3, &[Op::SetVar {
             var: 1,
             value: Value::Bool(false),
+            anim: AnimChoice::Default,
         }]))
         .unwrap();
     shell.layout(&mut measure).unwrap();
@@ -729,6 +736,7 @@ fn script_var_write_rejects_source_variable() {
         .apply_ops(&encode(2, &[Op::SetVar {
             var: 1,
             value: Value::Bool(true),
+            anim: AnimChoice::Default,
         }]))
         .unwrap_err();
     assert!(err.contains("state source"), "{err}");
@@ -744,6 +752,7 @@ fn script_var_write_unknown_var_fails() {
         .apply_ops(&encode(1, &[Op::SetVar {
             var: 9,
             value: Value::Bool(true),
+            anim: AnimChoice::Default,
         }]))
         .unwrap_err();
     assert!(err.contains("unknown var"), "{err}");
@@ -759,6 +768,7 @@ fn settle_var_emits_one_event_per_request() {
                 Op::SetVar {
                     var: 1,
                     value: Value::Bool(true),
+                    anim: AnimChoice::Default,
                 },
                 Op::SettleVar { var: 1 },
             ],
@@ -775,4 +785,214 @@ fn settle_var_unknown_var_fails() {
         .apply_ops(&encode(1, &[Op::SettleVar { var: 9 }]))
         .unwrap_err();
     assert!(err.contains("unknown var"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// Stage 3: variable animation
+// ---------------------------------------------------------------------------
+
+/// A Num script variable with a 100 ms linear tween plus a declaration that
+/// patches green while the value exceeds 0.5.
+fn tween_shell() -> Shell {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 200.0);
+    let mut ops = button(2, BLUE);
+    ops.push(Op::CreateVar {
+        var: 1,
+        source: SOURCE_NONE,
+        initial: Value::Float(0.0),
+        anim: Some(AnimSpec::Tween {
+            duration_ms: 100.0,
+            easing: EASE_LINEAR,
+        }),
+    });
+    ops.extend(decl(
+        1,
+        2,
+        1,
+        0,
+        program(|builder| {
+            builder.load(1).const_num(0.5).op(OP_GT);
+        }),
+    ));
+    ops.push(paint_op(1, "backgroundColor", Value::Int(GREEN as i64)));
+    shell.apply_ops(&encode(1, &ops)).unwrap();
+    shell.layout(&mut measure).unwrap();
+    shell
+}
+
+#[test]
+fn tween_write_tracks_the_tick_and_settles() {
+    let mut shell = tween_shell();
+    assert_eq!(fills(&shell), vec![BLUE]);
+
+    shell
+        .apply_ops(&encode(
+            2,
+            &[
+                Op::SetVar {
+                    var: 1,
+                    value: Value::Float(1.0),
+                    anim: AnimChoice::Default,
+                },
+                Op::SettleVar { var: 1 },
+            ],
+        ))
+        .unwrap();
+    shell.layout(&mut measure).unwrap();
+    assert_eq!(fills(&shell), vec![BLUE], "the tween starts at the old value");
+    assert!(shell.take_var_events().is_empty(), "no settle while in flight");
+
+    shell.advance_animations(60.0);
+    shell.layout(&mut measure).unwrap();
+    assert_eq!(fills(&shell), vec![GREEN], "past the midpoint the patch matches");
+
+    shell.advance_animations(160.0);
+    shell.layout(&mut measure).unwrap();
+    assert_eq!(fills(&shell), vec![GREEN]);
+    assert_eq!(
+        shell.take_var_events(),
+        vec![VarEvent { var: 1 }],
+        "convergence settles"
+    );
+    assert!(shell.take_var_events().is_empty());
+}
+
+#[test]
+fn instant_override_lands_immediately() {
+    let mut shell = tween_shell();
+    shell
+        .apply_ops(&encode(2, &[Op::SetVar {
+            var: 1,
+            value: Value::Float(1.0),
+            anim: AnimChoice::Instant,
+        }]))
+        .unwrap();
+    shell.layout(&mut measure).unwrap();
+    assert_eq!(fills(&shell), vec![GREEN], "the per-write override skips the tween");
+
+    shell
+        .apply_ops(&encode(3, &[Op::SetVar {
+            var: 1,
+            value: Value::Float(0.0),
+            anim: AnimChoice::Default,
+        }]))
+        .unwrap();
+    shell.layout(&mut measure).unwrap();
+    assert_eq!(fills(&shell), vec![GREEN], "the default tween restarts from 1.0");
+    shell.advance_animations(60.0);
+    shell.layout(&mut measure).unwrap();
+    assert_eq!(fills(&shell), vec![BLUE], "past the midpoint the patch stops matching");
+}
+
+#[test]
+fn spring_write_converges_and_settles() {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 200.0);
+    let mut ops = button(2, BLUE);
+    ops.push(Op::CreateVar {
+        var: 1,
+        source: SOURCE_NONE,
+        initial: Value::Float(0.0),
+        anim: Some(AnimSpec::Spring {
+            stiffness: 120.0,
+            damping: 12.0,
+        }),
+    });
+    ops.extend(decl(
+        1,
+        2,
+        1,
+        0,
+        program(|builder| {
+            builder.load(1).const_num(0.5).op(OP_GT);
+        }),
+    ));
+    ops.push(paint_op(1, "backgroundColor", Value::Int(GREEN as i64)));
+    shell.apply_ops(&encode(1, &ops)).unwrap();
+    shell.layout(&mut measure).unwrap();
+
+    shell
+        .apply_ops(&encode(
+            2,
+            &[
+                Op::SetVar {
+                    var: 1,
+                    value: Value::Float(1.0),
+                    anim: AnimChoice::Default,
+                },
+                Op::SettleVar { var: 1 },
+            ],
+        ))
+        .unwrap();
+    shell.layout(&mut measure).unwrap();
+    assert!(shell.take_var_events().is_empty(), "no settle while in flight");
+
+    // The spring crosses the midpoint quickly and converges within a second.
+    let mut settled = false;
+    for ms in [16.0, 32.0, 48.0, 64.0, 96.0, 160.0, 320.0, 640.0, 1280.0, 1600.0, 2000.0] {
+        shell.advance_animations(ms);
+        if !shell.take_var_events().is_empty() {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "the spring must converge and settle");
+    shell.layout(&mut measure).unwrap();
+    assert_eq!(fills(&shell), vec![GREEN], "convergence snaps onto the target");
+}
+
+#[test]
+fn transform_patch_moves_the_node_paint() {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 200.0);
+    let mut ops = button(2, BLUE);
+    ops.extend(decl(1, 2, 1, 0, Value::Bool(true)));
+    ops.push(paint_op(1, "translateX", Value::Float(10.0)));
+    ops.push(paint_op(1, "translateY", Value::Float(5.0)));
+    ops.push(paint_op(1, "scale", Value::Float(2.0)));
+    ops.push(paint_op(1, "rotate", Value::Float(0.5)));
+    shell.apply_ops(&encode(1, &ops)).unwrap();
+    shell.layout(&mut measure).unwrap();
+
+    let mut transforms = shell
+        .paint()
+        .iter()
+        .filter_map(|cmd| match cmd {
+            PaintCmd::PushTransform {
+                cx,
+                cy,
+                translate_x,
+                translate_y,
+                scale,
+                rotate,
+            } => Some((*cx, *cy, *translate_x, *translate_y, *scale, *rotate)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    transforms.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    // One transform around the node center; the focus ring shares the node's
+    // transform, so a single push covers the whole subtree.
+    assert_eq!(
+        transforms,
+        vec![(100.0, 100.0, 10.0, 5.0, 2.0, 0.5)]
+    );
+
+    // A unit transform is skipped: no push, no pop, zero cost.
+    let mut ops = vec![paint_op(1, "scale", Value::Float(1.0))];
+    shell.apply_ops(&encode(2, &ops)).unwrap();
+    shell.layout(&mut measure).unwrap();
+    ops = vec![paint_op(1, "translateX", Value::Float(0.0))];
+    shell.apply_ops(&encode(3, &ops)).unwrap();
+    shell.layout(&mut measure).unwrap();
+    ops = vec![paint_op(1, "translateY", Value::Float(0.0))];
+    shell.apply_ops(&encode(4, &ops)).unwrap();
+    shell.layout(&mut measure).unwrap();
+    ops = vec![paint_op(1, "rotate", Value::Float(0.0))];
+    shell.apply_ops(&encode(5, &ops)).unwrap();
+    shell.layout(&mut measure).unwrap();
+    assert!(shell
+        .paint()
+        .iter()
+        .all(|cmd| !matches!(cmd, PaintCmd::PushTransform { .. })));
 }

@@ -22,9 +22,9 @@ use crate::semantics::{
 };
 use crate::expr::ExprValue;
 use crate::state_style::{
-    slot_allowed, slot_of, slot_type, DeclExpr, ResolvedPatch, SlotType, StyleDecls,
-    SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED, VarEvent,
-    VarTable,
+    slot_allowed, slot_of, slot_type, AnimChoice, AnimSpec, AnimState, DeclExpr, ResolvedPatch,
+    SlotType, StyleDecls, SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE,
+    SOURCE_PRESSED, VarEvent, VarTable,
 };
 use taffy::prelude::*;
 use taffy::style::Overflow;
@@ -165,6 +165,10 @@ struct EffectivePaintStyle {
     radius: f32,
     text_align: u8,
     fit: u8,
+    translate_x: f32,
+    translate_y: f32,
+    scale: f32,
+    rotate: f32,
 }
 
 /// Pressed feedback for the current touch. The shell owns it because an edit
@@ -287,6 +291,8 @@ pub struct Shell {
     recognizer: Recognizer,
     vars: VarTable,
     var_events: Vec<VarEvent>,
+    pending_settle: std::collections::HashSet<u32>,
+    now_ms: f64,
     state_styles: StyleDecls,
     visual: VisualPress,
     fields: HashMap<u32, EditSession>,
@@ -481,6 +487,18 @@ pub enum PaintCmd {
         opacity: f32,
     },
     PopOpacity,
+    /// Transform around a center point: translate (logical px), scale
+    /// multiplier, rotate in radians. Applies to the node and its subtree
+    /// until the matching `PopTransform`.
+    PushTransform {
+        cx: f32,
+        cy: f32,
+        translate_x: f32,
+        translate_y: f32,
+        scale: f32,
+        rotate: f32,
+    },
+    PopTransform,
 }
 
 struct FieldGeom {
@@ -575,6 +593,8 @@ impl Shell {
             recognizer: Recognizer::new(),
             vars: VarTable::new(),
             var_events: Vec::new(),
+            pending_settle: std::collections::HashSet::new(),
+            now_ms: 0.0,
             state_styles: StyleDecls::new(),
             visual: VisualPress::default(),
             fields: HashMap::new(),
@@ -715,10 +735,11 @@ impl Shell {
                     var,
                     source,
                     initial,
-                } => self.create_var(var, source, &initial)?,
+                    anim,
+                } => self.create_var(var, source, &initial, anim)?,
                 Op::BindVar { var, target } => self.bind_var(var, target)?,
                 Op::DisposeVar { var } => self.dispose_var(var)?,
-                Op::SetVar { var, value } => self.set_var(var, &value)?,
+                Op::SetVar { var, value, anim } => self.set_var(var, &value, anim)?,
                 Op::SettleVar { var } => self.settle_var(var)?,
                 Op::SpawnStyleDecl {
                     decl,
@@ -913,6 +934,7 @@ impl Shell {
     /// move/up/cancel reuse it. Scroll deltas produced by the recognizer are
     /// applied to the frozen chain immediately, before the host reads paint.
     pub fn pointer(&mut self, mut input: PointerInput) {
+        self.now_ms = input.time_ms;
         if input.action == PointerAction::Down {
             input.path.clear();
             self.hit_path(1, input.x, input.y, &mut input.path);
@@ -949,6 +971,7 @@ impl Shell {
     /// UI-thread timer tick for long press and the double-tap window.
     pub fn advance_gestures(&mut self, now_ms: f64) {
         self.recognizer.advance(now_ms);
+        self.advance_animations(now_ms);
         let mut changed = false;
         if self.visual.gesture
             && self.visual.target != 0
@@ -986,6 +1009,10 @@ impl Shell {
             radius: node.radius,
             text_align: node.text_align,
             fit: node.fit,
+            translate_x: 0.0,
+            translate_y: 0.0,
+            scale: 1.0,
+            rotate: 0.0,
         };
         let mut patch = ResolvedPatch::default();
         self.state_styles.overlay(id, &mut patch);
@@ -1007,20 +1034,39 @@ impl Shell {
         if let Some(value) = patch.fit {
             style.fit = value;
         }
+        if let Some(value) = patch.translate_x {
+            style.translate_x = value;
+        }
+        if let Some(value) = patch.translate_y {
+            style.translate_y = value;
+        }
+        if let Some(value) = patch.scale {
+            style.scale = value;
+        }
+        if let Some(value) = patch.rotate {
+            style.rotate = value;
+        }
         style
     }
 
     /// Create a variable. Script-driven variables take their value from
     /// `initial`; source-driven ones start at the source's zero value and are
-    /// attached to their target node by a later `BindVar`.
-    fn create_var(&mut self, var: u32, source: u8, initial: &Value) -> Result<(), String> {
+    /// attached to their target node by a later `BindVar`. `anim` is the
+    /// per-variable default transition.
+    fn create_var(
+        &mut self,
+        var: u32,
+        source: u8,
+        initial: &Value,
+        anim: Option<AnimSpec>,
+    ) -> Result<(), String> {
         let value = match source {
             SOURCE_NONE => parse_expr_value(initial)
                 .ok_or_else(|| format!("var {var} initial value must be a number, color, or bool"))?,
             SOURCE_PRESSED => ExprValue::Num(0.0),
             _ => ExprValue::Bool(false),
         };
-        self.vars.create(var, source, 0, value)
+        self.vars.create(var, source, 0, value, anim)
     }
 
     /// Attach a variable's source target. Re-samples the source so dependent
@@ -1044,8 +1090,10 @@ impl Shell {
     }
 
     /// Apply one script-driven variable write. Source-linked variables are
-    /// owned by the UI thread, so the script may not write them.
-    fn set_var(&mut self, var: u32, value: &Value) -> Result<(), String> {
+    /// owned by the UI thread, so the script may not write them. `choice`
+    /// picks the transition: the variable's default, an explicit instant
+    /// landing, or a full spec.
+    fn set_var(&mut self, var: u32, value: &Value, choice: AnimChoice) -> Result<(), String> {
         let next = parse_expr_value(value)
             .ok_or_else(|| format!("var {var} value must be a number, color, or bool"))?;
         let Some(var_slot) = self.vars.get_mut(var) else {
@@ -1055,25 +1103,109 @@ impl Shell {
             return Err(format!("var {var} is driven by a state source"));
         }
         if var_slot.value == next {
+            var_slot.anim_state = None;
             return Ok(());
         }
-        var_slot.value = next;
-        for decl in self.state_styles.dependents_of([var]) {
-            self.eval_decl(decl);
+        let spec = match choice {
+            AnimChoice::Default => var_slot.anim.unwrap_or(AnimSpec::Instant),
+            AnimChoice::Instant => AnimSpec::Instant,
+            AnimChoice::Spec(spec) => spec,
+        };
+        // Bool animates instantly, and so does anything the engine cannot
+        // interpolate; only Num and Color transitions actually run.
+        let animatable =
+            matches!(next, ExprValue::Num(_) | ExprValue::Color(_)) && spec != AnimSpec::Instant;
+        if animatable {
+            let from = var_slot.value.clone();
+            var_slot.anim_state = Some(AnimState::new(spec, from, next, self.now_ms));
+        } else {
+            var_slot.anim_state = None;
+            var_slot.value = next;
+            for decl in self.state_styles.dependents_of([var]) {
+                self.eval_decl(decl);
+            }
+            self.paint_dirty.set(true);
+            self.flush_var_settle(var);
         }
-        self.paint_dirty.set(true);
         Ok(())
     }
 
-    /// Record a settle request. Stage 2 has no animation, so the variable has
-    /// already converged by the time the batch applies and the event goes out
-    /// immediately; the animation tick will gate this later.
+    /// Record a settle request. The event goes out when the variable
+    /// converges: immediately for instant writes, at the animation tick for
+    /// in-flight ones.
     fn settle_var(&mut self, var: u32) -> Result<(), String> {
         if self.vars.get(var).is_none() {
             return Err(format!("unknown var {var}"));
         }
-        self.var_events.push(VarEvent { var });
+        if !self.pending_settle.insert(var) {
+            return Ok(());
+        }
+        self.flush_var_settle(var);
         Ok(())
+    }
+
+    /// Emit the settle event if `var` has a pending request and no in-flight
+    /// animation.
+    fn flush_var_settle(&mut self, var: u32) {
+        let converged = self
+            .vars
+            .get(var)
+            .is_some_and(|var| var.anim_state.is_none());
+        if converged && self.pending_settle.remove(&var) {
+            self.var_events.push(VarEvent { var });
+        }
+    }
+
+    /// Integrate in-flight variable transitions at the tick. Changed values
+    /// re-evaluate the declarations that read them; convergence flushes
+    /// pending settle requests.
+    pub fn advance_animations(&mut self, now_ms: f64) {
+        self.now_ms = now_ms;
+        let ids: Vec<u32> = self
+            .vars
+            .all_with_anim()
+            .into_iter()
+            .filter(|id| {
+                self.vars
+                    .get(*id)
+                    .is_some_and(|var| var.anim_state.is_some())
+            })
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let mut changed: Vec<u32> = Vec::new();
+        for id in ids {
+            let Some(var_slot) = self.vars.get_mut(id) else {
+                continue;
+            };
+            let Some(state) = var_slot.anim_state.as_mut() else {
+                continue;
+            };
+            let (next, converged) = state.step(now_ms);
+            if let Some(next) = next {
+                if var_slot.value != next {
+                    var_slot.value = next;
+                    changed.push(id);
+                }
+            }
+            let to = state.to.clone();
+            if converged {
+                var_slot.anim_state = None;
+                if var_slot.value != to {
+                    var_slot.value = to;
+                    changed.push(id);
+                }
+            }
+            self.flush_var_settle(id);
+        }
+        if changed.is_empty() {
+            return;
+        }
+        for decl in self.state_styles.dependents_of(changed) {
+            self.eval_decl(decl);
+        }
+        self.paint_dirty.set(true);
     }
 
     /// Settled-variable events since the last drain, for the script thread.
@@ -3389,6 +3521,20 @@ impl Shell {
         if opacity < 1.0 {
             out.push(PaintCmd::PushOpacity { opacity });
         }
+        if paint.translate_x != 0.0
+            || paint.translate_y != 0.0
+            || paint.scale != 1.0
+            || paint.rotate != 0.0
+        {
+            out.push(PaintCmd::PushTransform {
+                cx: x + w / 2.0,
+                cy: y + h / 2.0,
+                translate_x: paint.translate_x,
+                translate_y: paint.translate_y,
+                scale: paint.scale,
+                rotate: paint.rotate,
+            });
+        }
         if background.is_visible() {
             out.push(PaintCmd::Fill {
                 x,
@@ -3516,6 +3662,13 @@ impl Shell {
                 radius: 0.0,
                 color,
             });
+        }
+        if paint.translate_x != 0.0
+            || paint.translate_y != 0.0
+            || paint.scale != 1.0
+            || paint.rotate != 0.0
+        {
+            out.push(PaintCmd::PopTransform);
         }
         if opacity < 1.0 {
             out.push(PaintCmd::PopOpacity);
@@ -3953,6 +4106,10 @@ fn assign_resolved(mut patch: ResolvedPatch, slot: usize, color: Color, num: f32
         crate::state_style::SLOT_RADIUS => patch.radius = Some(num.max(0.0)),
         crate::state_style::SLOT_TEXT_ALIGN => patch.text_align = Some(num as u8),
         crate::state_style::SLOT_FIT => patch.fit = Some(num as u8),
+        crate::state_style::SLOT_TRANSLATE_X => patch.translate_x = Some(num),
+        crate::state_style::SLOT_TRANSLATE_Y => patch.translate_y = Some(num),
+        crate::state_style::SLOT_SCALE => patch.scale = Some(num),
+        crate::state_style::SLOT_ROTATE => patch.rotate = Some(num),
         _ => {}
     }
     patch

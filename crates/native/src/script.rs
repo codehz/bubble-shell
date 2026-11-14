@@ -10,7 +10,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bubble_core::{
-    validate_bundle_hashes, ComputationKind, GestureKind, Kind, NodeDesc, Op, Sched, Turn, Value,
+    validate_bundle_hashes, AnimChoice, AnimSpec, ComputationKind, GestureKind, Kind, NodeDesc,
+    Op, Sched, Turn, Value,
 };
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{
@@ -1206,7 +1207,7 @@ fn api_move_gesture(handle: f64, target: f64, index: f64) -> i32 {
     }
 }
 
-fn api_create_var(source: f64, initial_tag: f64, initial_number: f64) -> u32 {
+fn api_create_var(source: f64, initial_tag: f64, initial_number: f64, anim: f64, a: f64, b: f64, c: f64) -> u32 {
     let initial = match initial_tag as u32 {
         0 => Value::Null,
         1 => Value::Bool(initial_number != 0.0),
@@ -1217,13 +1218,48 @@ fn api_create_var(source: f64, initial_tag: f64, initial_number: f64) -> u32 {
             return 0;
         }
     };
-    match with_turn(|turn| turn.create_var(source as u8, initial)) {
+    let spec = match anim_spec(anim as u32, a, b, c as u32) {
+        Ok(spec) => spec,
+        Err(err) => {
+            set_api_error(err);
+            return 0;
+        }
+    };
+    match with_turn(|turn| turn.create_var(source as u8, initial, spec)) {
         Ok(var) => var,
         Err(err) => {
             set_api_error(err);
             0
         }
     }
+}
+
+/// Shared wire decoding of an animation spec for the var APIs. `anim` 0 none,
+/// 1 instant, 2 tween (a=duration ms, c=easing code), 3 spring (a=stiffness,
+/// b=damping); matches the runtime's `animParts`.
+fn anim_spec(anim: u32, a: f64, b: f64, c: u32) -> Result<Option<AnimSpec>, String> {
+    Ok(match anim {
+        0 => None,
+        1 => Some(AnimSpec::Instant),
+        2 => Some(AnimSpec::Tween {
+            duration_ms: a as f32,
+            easing: c.min(255) as u8,
+        }),
+        3 => Some(AnimSpec::Spring {
+            stiffness: a as f32,
+            damping: b as f32,
+        }),
+        other => return Err(format!("unknown anim spec code {other}")),
+    })
+}
+
+fn anim_choice(anim: u32, a: f64, b: f64, c: u32) -> Result<AnimChoice, String> {
+    Ok(match anim {
+        0 => AnimChoice::Default,
+        1 => AnimChoice::Instant,
+        2 | 3 => AnimChoice::Spec(anim_spec(anim, a, b, c)?.expect("2 and 3 carry a spec")),
+        other => return Err(format!("unknown anim choice code {other}")),
+    })
 }
 
 fn api_bind_var(var: f64, target: f64) -> i32 {
@@ -1239,7 +1275,7 @@ fn api_bind_var(var: f64, target: f64) -> i32 {
     }
 }
 
-fn api_set_var(var: f64, tag: f64, number: f64) -> i32 {
+fn api_set_var(var: f64, tag: f64, number: f64, anim: f64, a: f64, b: f64, c: f64) -> i32 {
     let value = match tag as u32 {
         0 => Value::Null,
         1 => Value::Bool(number != 0.0),
@@ -1250,8 +1286,15 @@ fn api_set_var(var: f64, tag: f64, number: f64) -> i32 {
             return 1;
         }
     };
+    let choice = match anim_choice(anim as u32, a, b, c as u32) {
+        Ok(choice) => choice,
+        Err(err) => {
+            set_api_error(err);
+            return 1;
+        }
+    };
     match with_turn(|turn| {
-        turn.set_var(var as u32, value);
+        turn.set_var(var as u32, value, choice);
         Ok(())
     }) {
         Ok(()) => 0,

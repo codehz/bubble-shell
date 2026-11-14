@@ -42,7 +42,68 @@ pub(crate) const SLOT_OPACITY: usize = 2;
 pub(crate) const SLOT_RADIUS: usize = 3;
 pub(crate) const SLOT_TEXT_ALIGN: usize = 4;
 pub(crate) const SLOT_FIT: usize = 5;
-pub(crate) const SLOT_COUNT: usize = 6;
+pub(crate) const SLOT_TRANSLATE_X: usize = 6;
+pub(crate) const SLOT_TRANSLATE_Y: usize = 7;
+pub(crate) const SLOT_SCALE: usize = 8;
+pub(crate) const SLOT_ROTATE: usize = 9;
+pub(crate) const SLOT_COUNT: usize = 10;
+
+/// Easing codes for tweens.
+pub const EASE_LINEAR: u8 = 0;
+pub const EASE_IN_OUT: u8 = 1;
+
+/// How one variable transition animates. The animation belongs to the
+/// variable, so styles that read the variable get the motion for free.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AnimSpec {
+    /// Writes land immediately; the value converges the moment it applies.
+    Instant,
+    Tween {
+        duration_ms: f32,
+        easing: u8,
+    },
+    Spring {
+        stiffness: f32,
+        damping: f32,
+    },
+}
+
+/// Wire choice of a write's animation: per-write override or the variable's
+/// default.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AnimChoice {
+    /// Use the variable's default spec; a variable without one lands instantly.
+    Default,
+    /// Per-write override: land immediately even if the variable animates.
+    Instant,
+    /// Per-write override with an explicit spec.
+    Spec(AnimSpec),
+}
+
+/// Easing in `[0, 1] -> [0, 1]`.
+pub fn ease(easing: u8, t: f32) -> f32 {
+    match easing {
+        EASE_IN_OUT => {
+            if t < 0.5 {
+                2.0 * t * t
+            } else {
+                let u = 2.0 * t - 1.0;
+                1.0 - 2.0 * u * u
+            }
+        }
+        _ => t,
+    }
+}
+
+/// Interpolate two values of the same kind. Bool animates instantly; a Bool
+/// spec therefore never starts and the write converges at once.
+pub fn mix_values(from: &ExprValue, to: &ExprValue, t: f32) -> Option<ExprValue> {
+    Some(match (from, to) {
+        (ExprValue::Num(a), ExprValue::Num(b)) => ExprValue::Num(a + (b - a) * t),
+        (ExprValue::Color(a), ExprValue::Color(b)) => ExprValue::Color(a.mix(b, t)),
+        _ => return None,
+    })
+}
 
 /// Slot name to index. Both components share the same property names.
 pub(crate) fn slot_of(key: &str) -> Option<usize> {
@@ -53,6 +114,10 @@ pub(crate) fn slot_of(key: &str) -> Option<usize> {
         "radius" => SLOT_RADIUS,
         "textAlign" => SLOT_TEXT_ALIGN,
         "fit" => SLOT_FIT,
+        "translateX" => SLOT_TRANSLATE_X,
+        "translateY" => SLOT_TRANSLATE_Y,
+        "scale" => SLOT_SCALE,
+        "rotate" => SLOT_ROTATE,
         _ => return None,
     })
 }
@@ -68,6 +133,10 @@ pub(crate) fn slot_allowed(component: u8, slot: usize) -> bool {
         SLOT_RADIUS => "radius",
         SLOT_TEXT_ALIGN => "textAlign",
         SLOT_FIT => "fit",
+        SLOT_TRANSLATE_X => "translateX",
+        SLOT_TRANSLATE_Y => "translateY",
+        SLOT_SCALE => "scale",
+        SLOT_ROTATE => "rotate",
         _ => return false,
     };
     props.contains(&name)
@@ -100,6 +169,92 @@ pub(crate) struct Var {
     pub target: u32,
     /// Declarations that read this variable.
     pub dependents: Vec<u32>,
+    /// Per-variable default spec; `None` writes land instantly.
+    pub anim: Option<AnimSpec>,
+    /// In-flight transition, if the last write started one.
+    pub anim_state: Option<AnimState>,
+}
+
+/// One in-flight transition. Both tweens and springs drive a progress scalar
+/// from 0 toward 1 and interpolate `from -> to` with it, so Num and Color
+/// share the same integrator; spring overshoot extrapolates through `mix`.
+#[derive(Clone, Debug)]
+pub struct AnimState {
+    pub spec: AnimSpec,
+    pub from: ExprValue,
+    pub to: ExprValue,
+    pub start_ms: f64,
+    pub progress: f32,
+    /// Spring velocity in progress units per second.
+    pub velocity: f32,
+    pub last_ms: f64,
+}
+
+/// A progress close enough to 1 (and a small enough velocity) to snap a
+/// spring; bounded so the caller can also clamp far overshoots.
+const SPRING_EPS: f32 = 0.0005;
+const SPRING_VELOCITY_EPS: f32 = 0.002;
+/// Sub-step width for spring integration, in ms.
+const SPRING_STEP_MS: f64 = 8.0;
+
+impl AnimState {
+    pub fn new(spec: AnimSpec, from: ExprValue, to: ExprValue, now_ms: f64) -> Self {
+        Self {
+            spec,
+            from,
+            to,
+            start_ms: now_ms,
+            progress: 0.0,
+            velocity: 0.0,
+            last_ms: now_ms,
+        }
+    }
+
+    /// Advance to `now_ms`. Returns the visible value when it changed plus
+    /// whether the transition converged on `to`.
+    pub fn step(&mut self, now_ms: f64) -> (Option<ExprValue>, bool) {
+        match self.spec {
+            AnimSpec::Instant => (Some(self.to.clone()), true),
+            AnimSpec::Tween { duration_ms, easing } => {
+                let duration = (duration_ms as f64).max(1.0);
+                let t = ((now_ms - self.start_ms) / duration).clamp(0.0, 1.0) as f32;
+                self.progress = ease(easing, t);
+                let converged = t >= 1.0;
+                if converged {
+                    self.progress = 1.0;
+                }
+                (Some(mix_values(&self.from, &self.to, self.progress).unwrap_or_else(|| self.to.clone())), converged)
+            }
+            AnimSpec::Spring { stiffness, damping } => {
+                // Sub-step so a coarse or long tick stays stable.
+                let mut remaining = (now_ms - self.last_ms).max(0.0);
+                self.last_ms = now_ms;
+                let mut x = self.progress;
+                let mut v = self.velocity;
+                while remaining > 0.0 {
+                    let dt = (remaining.min(SPRING_STEP_MS) / 1000.0) as f32;
+                    remaining -= SPRING_STEP_MS;
+                    let acceleration = -stiffness * (x - 1.0) - damping * v;
+                    v += acceleration * dt;
+                    x += v * dt;
+                }
+                self.velocity = v;
+                self.progress = x;
+                let converged =
+                    (1.0 - x).abs() < SPRING_EPS && v.abs() < SPRING_VELOCITY_EPS;
+                if converged {
+                    self.progress = 1.0;
+                    self.velocity = 0.0;
+                }
+                (Some(mix_values(&self.from, &self.to, self.progress).unwrap_or_else(|| self.to.clone())), converged)
+            }
+        }
+    }
+
+    /// The value the variable shows at the current progress.
+    pub fn value(&self) -> ExprValue {
+        mix_values(&self.from, &self.to, self.progress).unwrap_or_else(|| self.to.clone())
+    }
 }
 
 impl Var {
@@ -138,6 +293,7 @@ impl VarTable {
         source: u8,
         target: u32,
         value: ExprValue,
+        anim: Option<AnimSpec>,
     ) -> Result<(), String> {
         if id == 0 || self.retired.contains(&id) || self.get(id).is_some() {
             return Err(format!("var {id} is not free"));
@@ -150,6 +306,8 @@ impl VarTable {
             source,
             target,
             dependents: Vec::new(),
+            anim,
+            anim_state: None,
         });
         Ok(())
     }
@@ -180,6 +338,15 @@ impl VarTable {
             .collect()
     }
 
+    /// Every live variable id, for the animation tick.
+    pub fn all_with_anim(&self) -> Vec<u32> {
+        self.vars
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| slot.as_ref().map(|_| index as u32))
+            .collect()
+    }
+
     /// Variables sourced at a destroyed node; callers dispose them.
     pub fn retire_target(&mut self, target: u32) -> Vec<u32> {
         self.all_with_source()
@@ -207,6 +374,12 @@ pub(crate) struct ResolvedPatch {
     pub radius: Option<f32>,
     pub text_align: Option<u8>,
     pub fit: Option<u8>,
+    /// Paint-side transform components. Translate is in logical px, scale is
+    /// a multiplier, rotate is radians around the node center.
+    pub translate_x: Option<f32>,
+    pub translate_y: Option<f32>,
+    pub scale: Option<f32>,
+    pub rotate: Option<f32>,
 }
 
 impl ResolvedPatch {
@@ -228,6 +401,18 @@ impl ResolvedPatch {
         }
         if other.fit.is_some() {
             self.fit = other.fit;
+        }
+        if other.translate_x.is_some() {
+            self.translate_x = other.translate_x;
+        }
+        if other.translate_y.is_some() {
+            self.translate_y = other.translate_y;
+        }
+        if other.scale.is_some() {
+            self.scale = other.scale;
+        }
+        if other.rotate.is_some() {
+            self.rotate = other.rotate;
         }
     }
 }

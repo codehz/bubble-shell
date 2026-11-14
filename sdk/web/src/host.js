@@ -429,12 +429,12 @@ setApi({
   bind_gesture_event: exports.bind_gesture_event,
   dispose_gesture: exports.dispose_gesture,
   move_gesture: exports.move_gesture,
-  create_var(source, initialTag, initialNumber) {
-    return exports.create_var(source, initialTag, initialNumber);
+  create_var(source, initialTag, initialNumber, anim, animA, animB, animC) {
+    return exports.create_var(source, initialTag, initialNumber, anim, animA, animB, animC);
   },
   bind_var: exports.bind_var,
-  set_var(varId, tag, number) {
-    return exports.set_var(varId, tag, number);
+  set_var(varId, tag, number, anim, animA, animB, animC) {
+    return exports.set_var(varId, tag, number, anim, animA, animB, animC);
   },
   settle_var: exports.settle_var,
   dispose_var: exports.dispose_var,
@@ -603,6 +603,21 @@ function paint() {
         ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
         ctx.restore();
       }
+    } else if (tag === 9) {
+      // Node transform around its center: translate, rotate, scale.
+      const cx = f32();
+      const cy = f32();
+      const translateX = f32();
+      const translateY = f32();
+      const scale = f32();
+      const rotate = f32();
+      ctx.save();
+      ctx.translate(cx + translateX, cy + translateY);
+      ctx.rotate(rotate);
+      ctx.scale(scale, scale);
+      ctx.translate(-cx, -cy);
+    } else if (tag === 10) {
+      ctx.restore();
     } else if (tag === 3) {
       const x = f32();
       const y = f32();

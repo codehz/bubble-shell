@@ -56,8 +56,8 @@ pub use semantics::{
     ACTION_SCROLL_UP, ACTION_SET_VALUE,
 };
 pub use state_style::{
-    encode_var_events, SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE,
-    SOURCE_PRESSED, VarEvent,
+    encode_var_events, AnimChoice, AnimSpec, EASE_LINEAR, SOURCE_DISABLED, SOURCE_EDITING,
+    SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED, VarEvent,
 };
 pub use shell::{A11yAction, EditMenuAction, Key, MenuResult, PaintCmd, ScrollOutcome, Shell};
 pub use turn::Turn;

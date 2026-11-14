@@ -6,6 +6,7 @@
 //! only swaps buffers and encodes a batch; it never mutates the tree.
 
 use crate::reactive::{self, Graph, Kind, Sched};
+use crate::state_style::{AnimChoice, AnimSpec};
 
 use crate::gesture::GestureKind;
 use crate::ir::NodeDesc;
@@ -190,7 +191,12 @@ impl Turn {
     /// `SOURCE_*` codes; `initial` carries the starting value for
     /// script-driven variables. The source target arrives with `bind_var`
     /// once the reference resolves.
-    pub fn create_var(&mut self, source: u8, initial: Value) -> Result<u32, String> {
+    pub fn create_var(
+        &mut self,
+        source: u8,
+        initial: Value,
+        anim: Option<AnimSpec>,
+    ) -> Result<u32, String> {
         let var = self.next_var;
         self.next_var = self
             .next_var
@@ -200,6 +206,7 @@ impl Turn {
             var,
             source,
             initial,
+            anim,
         });
         Ok(var)
     }
@@ -216,8 +223,9 @@ impl Turn {
 
     /// Queue one script-driven variable write. It lands on the UI thread at
     /// the frame boundary and re-evaluates the declarations that read it.
-    pub fn set_var(&mut self, var: u32, value: Value) {
-        self.push(Op::SetVar { var, value });
+    /// `anim` picks the transition; `Default` uses the variable's spec.
+    pub fn set_var(&mut self, var: u32, value: Value, anim: AnimChoice) {
+        self.push(Op::SetVar { var, value, anim });
     }
 
     /// Request a settle event for `var`. With no animation configured the
@@ -358,14 +366,16 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
                 }
             }
         }
-        Op::SetVar { var, value } => {
+        Op::SetVar { var, value, anim } => {
             for item in buf.iter_mut().rev() {
                 match item {
                     Op::SetVar {
                         var: existing,
                         value: slot,
+                        anim: slot_anim,
                     } if existing == var => {
                         *slot = value.clone();
+                        *slot_anim = *anim;
                         return;
                     }
                     Op::SetText { .. }

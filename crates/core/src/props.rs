@@ -18,7 +18,8 @@
 use crate::ops::Value;
 
 /// Paint properties a `ViewStyle` declaration may patch.
-pub const VIEW_STYLE_PROPS: &[&str] = &["backgroundColor", "radius", "opacity", "fit"];
+pub const VIEW_STYLE_PROPS: &[&str] =
+    &["backgroundColor", "radius", "opacity", "fit", "translateX", "translateY", "scale", "rotate"];
 
 /// Paint properties a `TextStyle` declaration may patch.
 pub const TEXT_STYLE_PROPS: &[&str] = &["color", "textAlign"];

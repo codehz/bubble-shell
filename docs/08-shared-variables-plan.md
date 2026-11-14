@@ -1,6 +1,6 @@
 # 08 · 共享变量与样式声明升级计划
 
-状态：实现中。阶段 1（`expr.rs` 引擎 + VarTable + 四个状态源 + `ViewStyle`/`TextStyle` 组件与程序化 when/patch，`StateStyle` 整体移除）与阶段 2（JS 显式变量、`SetVar`、settle 事件、`bind` signal）已落地；阶段 3-4 未开始。本文不引入任何新的验证工具或设备矩阵；所有验证仍限于 `cargo test --workspace`、`cargo check --workspace`、`node --test examples/web/*.test.mjs` 与手动 demo 冒烟。
+状态：实现中。阶段 1（`expr.rs` 引擎 + VarTable + 四个状态源 + `ViewStyle`/`TextStyle` 组件与程序化 when/patch，`StateStyle` 整体移除）、阶段 2（JS 显式变量、`SetVar`、settle 事件、`bind` signal）与阶段 3（AnimSpec、tick 积分、双模写入、transform patch）已落地；阶段 4 未开始。本文不引入任何新的验证工具或设备矩阵；所有验证仍限于 `cargo test --workspace`、`cargo check --workspace`、`node --test examples/web/*.test.mjs` 与手动 demo 冒烟。
 
 实现落点：`crates/core/src/state_style.rs`（重写为声明表与求值）、`crates/core/src/props.rs`（`STATE_STYLE_PROPS` 按组件拆分）、`crates/core/src/shell.rs`（状态源采样、绘制合并、事件批次）、`crates/core/src/ops.rs` / `turn.rs`（新 op 与批次压缩）、`crates/core/src/expr.rs`（新：表达式引擎）、`crates/compiler/src/lib.rs`（JSX 属性表达式降级与组件属性白名单）、`crates/native/js/runtime.js`（JS 侧变量对象）、三端 ABI 不变（复用 `bubble_tick` / `bubble_frame`）。
 
@@ -136,7 +136,9 @@ MIN MAX ABS | EASE(fn, t)                       // 内建函数（EASE 为动画
 | | `radius` | Num |
 | | `opacity` | Num |
 | | `fit` | `SELECT` 于枚举常量 |
-| | `transform` | Num 分量（translateX/Y、scale、rotate） |
+| | `translateX` / `translateY` | Num（逻辑 px，绘制侧应用） |
+| | `scale` | Num（节点中心缩放倍数） |
+| | `rotate` | Num（节点中心弧度） |
 | `TextStyle` | `color` | Color |
 | | `textAlign` | `SELECT` 于枚举常量 |
 
@@ -236,7 +238,7 @@ t.bind(() => someSignal());      // signal 结合：render effect 重跑 → Set
 |---|---|---|
 | 1（MVP 内） | `expr.rs` 引擎 + VarTable + Pressed/Focused/Disabled/Editing 源 + `ViewStyle`/`TextStyle` 组件与程序化 when/patch（含静态折叠）；`StateStyle` 代码、语法、测试全部移除 | 已落地 |
 | 2（MVP 内） | JS 显式变量、`SetVar`、settle 事件、`bind` signal | 已落地：`createVar(0)` + `set`/`bind`/`settle`，回归测试覆盖「写入 → settle」路径 |
-| 3 | 动画系统：AnimSpec、tick 积分、双模写入、transform patch | 同上；demo 冒烟一次按压缩放 |
+| 3（MVP 内） | 动画系统：AnimSpec、tick 积分、双模写入、transform patch | 已落地：`createVar(0, { anim })` + `set(v, { anim })` 双模；tween（linear/easeInOut）与 spring（半隐式欧拉子步进）驱动 0..1 进度统一插值 Num/Color；收敛发 settle；`translateX`/`translateY`/`scale`/`rotate` 走 `PushTransform`/`PopTransform`（tag 9/10），三端绘制器接入 |
 | 4 | 手势源（pan/pinch）与 ScrollOffset 源 | 同上；demo 冒烟一次拖动跟随 |
 
 阶段 1 是替换而非兼容迁移：`crates/core/tests/state_style.rs` 契约测试随机制重写——位集合、字符串 `when`、`enabled`、隐式目标的测试用例删除；保留的是行为契约层断言（同目标按序覆盖、disabled 无按压反馈、focused 声明接管默认焦点框、`TAP_SLOP` 退出），以新语法重写。现有 demo 里的 `<StateStyle>` 用法同步改写为 `createVar` + `ViewStyle`/`TextStyle`。

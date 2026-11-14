@@ -86,6 +86,23 @@ pub fn encode_paint(cmds: &[PaintCmd]) -> Vec<u8> {
                 push_f32(&mut out, *opacity);
             }
             PaintCmd::PopOpacity => out.push(6),
+            PaintCmd::PushTransform {
+                cx,
+                cy,
+                translate_x,
+                translate_y,
+                scale,
+                rotate,
+            } => {
+                out.push(9);
+                push_f32(&mut out, *cx);
+                push_f32(&mut out, *cy);
+                push_f32(&mut out, *translate_x);
+                push_f32(&mut out, *translate_y);
+                push_f32(&mut out, *scale);
+                push_f32(&mut out, *rotate);
+            }
+            PaintCmd::PopTransform => out.push(10),
         }
     }
     out

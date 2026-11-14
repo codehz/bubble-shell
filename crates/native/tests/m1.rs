@@ -10,7 +10,7 @@ use bubble_ffi::{
     bubble_faults, bubble_finish_request, bubble_font_count, bubble_font_epoch, bubble_frame,
     bubble_generation, bubble_last_error, bubble_load, bubble_node_box, bubble_node_text,
     bubble_pointer, bubble_poll_request, bubble_post_eval, bubble_register_font, bubble_scroll,
-    bubble_scroll_y_of, bubble_set_visible, bubble_status,
+    bubble_tick, bubble_scroll_y_of, bubble_set_visible, bubble_status,
 };
 
 // The C ABI owns one process-global shell. Cargo runs tests in one process in
@@ -896,6 +896,63 @@ fn script_vars_set_bind_and_settle() {
     assert_eq!(frame_fills(200.0, 100.0), vec![[0x00, 0xff, 0x00, 0xff]]);
     eval("appStep(() => sigs.count.set(0))");
     assert_eq!(frame_fills(200.0, 100.0), vec![[0xff, 0xff, 0xff, 0xff]]);
+    assert_eq!(bubble_faults(), 0, "{}", error());
+    bubble_destroy();
+}
+
+const SCRIPT_ANIM_APP: &str = r##"
+import * as shell from "bubble-shell";
+
+globalThis.settled = 0;
+
+const viewRef = shell.ref();
+shell.mount(function App() {
+  const t = shell.createVar({
+    value: 0,
+    anim: { type: "tween", duration: 100, easing: "linear" },
+  });
+  globalThis.t = t;
+  t.settle().then(() => { globalThis.settled += 1; });
+  shell.primitive(
+    "View",
+    { ref: viewRef, backgroundColor: "#ffffff", width: 200, height: 100 },
+    () => {
+      shell.primitive("ViewStyle", {
+        target: viewRef,
+        when: true,
+        // The patch value follows the animated variable for free.
+        backgroundColor: ["mix", 0xff0000ff, 0xff00ff00, t],
+      });
+    },
+  );
+});
+
+globalThis.appStep = (fn) => {
+  shell.batch(fn);
+  shell.flush();
+};
+"##;
+
+#[test]
+fn animated_var_drives_paint_and_settles_at_convergence() {
+    let _guard = exclusive();
+    bubble_destroy();
+    assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    try_load_source(SCRIPT_ANIM_APP).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0x00, 0x00, 0xff, 0xff]]);
+
+    // The write starts the tween; the first paint still shows the old value.
+    eval("appStep(() => t.set(1))");
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0x00, 0x00, 0xff, 0xff]]);
+
+    // Mid-tween the patch interpolates; the settle event waits for the end.
+    bubble_tick(50.0);
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0x00, 0x80, 0x80, 0xff]]);
+
+    // Convergence snaps onto the target and reports once.
+    bubble_tick(160.0);
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0x00, 0xff, 0x00, 0xff]]);
+    wait_for("settled", 1, "settle event after the tween converged");
     assert_eq!(bubble_faults(), 0, "{}", error());
     bubble_destroy();
 }

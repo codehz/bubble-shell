@@ -14,9 +14,9 @@ use std::collections::VecDeque;
 
 use bubble_core::{
     decode_layout, encode_edit_events, encode_events, encode_paint, encode_set_text,
-    encode_var_events, validate_bundle_hashes, A11yAction, ComputationKind, EditCommand, EditEvent,
-    EditMenuAction, GestureEvent, GestureKind, Key, Kind, LayoutRequest, NodeDesc, Op,
-    PointerAction, PointerInput, Sched, Shell, Turn, Value, VarEvent,
+    encode_var_events, validate_bundle_hashes, A11yAction, AnimChoice, AnimSpec, ComputationKind,
+    EditCommand, EditEvent, EditMenuAction, GestureEvent, GestureKind, Key, Kind, LayoutRequest,
+    NodeDesc, Op, PointerAction, PointerInput, Sched, Shell, Turn, Value, VarEvent,
 };
 use bubble_core::decode_program;
 
@@ -1483,8 +1483,45 @@ pub extern "C" fn move_gesture(handle: u32, target: u32, index: u32) -> i32 {
     }
 }
 
+/// Shared wire decoding of an animation spec for the var exports.
+fn anim_spec(anim: u32, a: f64, b: f64, c: u32) -> Result<Option<AnimSpec>, String> {
+    Ok(match anim {
+        0 => None,
+        1 => Some(AnimSpec::Instant),
+        2 => Some(AnimSpec::Tween {
+            duration_ms: a as f32,
+            easing: c.min(255) as u8,
+        }),
+        3 => Some(AnimSpec::Spring {
+            stiffness: a as f32,
+            damping: b as f32,
+        }),
+        other => return Err(format!("unknown anim spec code {other}")),
+    })
+}
+
+/// `anim` 0 var default, 1 instant, 2 tween, 3 spring.
+fn anim_choice(anim: u32, a: f64, b: f64, c: u32) -> Result<AnimChoice, String> {
+    Ok(match anim {
+        0 => AnimChoice::Default,
+        1 => AnimChoice::Instant,
+        2 | 3 => AnimChoice::Spec(anim_spec(anim, a, b, c)?.expect("2 and 3 carry a spec")),
+        other => return Err(format!("unknown anim choice code {other}")),
+    })
+}
+
+/// `anim` 0 none, 1 instant, 2 tween (a=duration ms, c=easing code),
+/// 3 spring (a=stiffness, b=damping); matches the runtime's `animParts`.
 #[no_mangle]
-pub extern "C" fn create_var(source: u32, initial_tag: u32, initial_number: f64) -> u32 {
+pub extern "C" fn create_var(
+    source: u32,
+    initial_tag: u32,
+    initial_number: f64,
+    anim: u32,
+    anim_a: f64,
+    anim_b: f64,
+    anim_c: u32,
+) -> u32 {
     let initial = match initial_tag {
         0 => Value::Null,
         1 => Value::Bool(initial_number != 0.0),
@@ -1495,7 +1532,14 @@ pub extern "C" fn create_var(source: u32, initial_tag: u32, initial_number: f64)
             return 0;
         }
     };
-    match with_turn(|turn| turn.create_var(source as u8, initial)) {
+    let spec = match anim_spec(anim, anim_a, anim_b, anim_c) {
+        Ok(spec) => spec,
+        Err(err) => {
+            set_error(err);
+            return 0;
+        }
+    };
+    match with_turn(|turn| turn.create_var(source as u8, initial, spec)) {
         Ok(var) => var,
         Err(err) => {
             set_error(err);
@@ -1519,8 +1563,18 @@ pub extern "C" fn bind_var(var: u32, target: u32) -> i32 {
 }
 
 /// `tag` 0 none, 1 bool, 2 int, 3 float; matches `propParts` on the JS side.
+/// `anim` 0 var default, 1 instant, 2 tween (a=duration ms, c=easing code),
+/// 3 spring (a=stiffness, b=damping); matches the runtime's `animParts`.
 #[no_mangle]
-pub extern "C" fn set_var(var: u32, tag: u32, number: f64) -> i32 {
+pub extern "C" fn set_var(
+    var: u32,
+    tag: u32,
+    number: f64,
+    anim: u32,
+    anim_a: f64,
+    anim_b: f64,
+    anim_c: u32,
+) -> i32 {
     let value = match tag {
         0 => Value::Null,
         1 => Value::Bool(number != 0.0),
@@ -1531,8 +1585,15 @@ pub extern "C" fn set_var(var: u32, tag: u32, number: f64) -> i32 {
             return 1;
         }
     };
+    let choice = match anim_choice(anim, anim_a, anim_b, anim_c) {
+        Ok(choice) => choice,
+        Err(err) => {
+            set_error(err);
+            return 1;
+        }
+    };
     match with_turn(|turn| {
-        turn.set_var(var, value);
+        turn.set_var(var, value, choice);
         Ok(())
     }) {
         Ok(()) => 0,

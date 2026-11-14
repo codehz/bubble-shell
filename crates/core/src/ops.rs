@@ -7,6 +7,7 @@ use std::io::{Cursor, Read};
 use crate::color::Color;
 use crate::expr::{decode_program, Program};
 use crate::ir::{Kind, NodeDesc};
+use crate::state_style::{AnimChoice, AnimSpec};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -164,11 +165,14 @@ pub enum Op {
         cancel: bool,
     },
     /// UI-thread variable. `source` 0 means script-driven; `target` is bound
-    /// by a later `BindVar` op when the reference resolves.
+    /// by a later `BindVar` op when the reference resolves. The trailing anim
+    /// payload is the per-variable default: 0 none, 2 tween (duration f32,
+    /// easing u8), 3 spring (stiffness f32, damping f32).
     CreateVar {
         var: u32,
         source: u8,
         initial: Value,
+        anim: Option<AnimSpec>,
     },
     /// Attach a variable's source target; `target` 0 detaches.
     BindVar {
@@ -179,10 +183,13 @@ pub enum Op {
         var: u32,
     },
     /// Script-driven variable write, applied when the batch lands on the UI
-    /// thread. Writing a source-linked variable is an error.
+    /// thread. Writing a source-linked variable is an error. The trailing
+    /// anim payload chooses the transition: 0 var default, 1 instant, 2
+    /// tween (duration f32, easing u8), 3 spring (stiffness f32, damping f32).
     SetVar {
         var: u32,
         value: Value,
+        anim: AnimChoice,
     },
     /// Ask the shell to emit a settle event for `var` once its pending writes
     /// converge. With no animation configured that is immediate.
@@ -334,6 +341,48 @@ fn direction_name(direction: u8) -> &'static str {
         3 => "row-reverse",
         _ => "column",
     }
+}
+
+/// Animation spec payload: choice byte then parameters. `Instant` is its own
+/// byte so an explicit per-write instant survives a variable default.
+fn push_anim_spec(payload: &mut Vec<u8>, spec: &AnimSpec) {
+    match spec {
+        AnimSpec::Instant => payload.push(1),
+        AnimSpec::Tween { duration_ms, easing } => {
+            payload.push(2);
+            payload.extend_from_slice(&duration_ms.to_le_bytes());
+            payload.push(*easing);
+        }
+        AnimSpec::Spring { stiffness, damping } => {
+            payload.push(3);
+            payload.extend_from_slice(&stiffness.to_le_bytes());
+            payload.extend_from_slice(&damping.to_le_bytes());
+        }
+    }
+}
+
+/// `0` none, `1` instant, `2` tween, `3` spring.
+fn read_anim_spec(cur: &mut Cursor<&[u8]>) -> Result<Option<AnimSpec>, String> {
+    Ok(match read_u8(cur)? {
+        0 => None,
+        code => Some(read_anim_body(cur, code)?),
+    })
+}
+
+/// `1` instant, `2` tween (duration f32, easing u8), `3` spring (f32, f32).
+fn read_anim_body(cur: &mut Cursor<&[u8]>, code: u8) -> Result<AnimSpec, String> {
+    Ok(match code {
+        1 => AnimSpec::Instant,
+        2 => AnimSpec::Tween {
+            duration_ms: read_f32(cur)?,
+            easing: read_u8(cur)?,
+        },
+        3 => AnimSpec::Spring {
+            stiffness: read_f32(cur)?,
+            damping: read_f32(cur)?,
+        },
+        other => return Err(format!("unknown anim spec code {other}")),
+    })
 }
 
 /// One value payload: tag then payload, with strings interned.
@@ -525,11 +574,16 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 var,
                 source,
                 initial,
+                anim,
             } => {
                 payload.push(22);
                 payload.extend_from_slice(&var.to_le_bytes());
                 payload.push(*source);
                 write_value(&mut payload, initial, &mut intern);
+                match anim {
+                    None => payload.push(0),
+                    Some(spec) => push_anim_spec(&mut payload, spec),
+                }
             }
             Op::BindVar { var, target } => {
                 payload.push(23);
@@ -540,10 +594,15 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.push(24);
                 payload.extend_from_slice(&var.to_le_bytes());
             }
-            Op::SetVar { var, value } => {
+            Op::SetVar { var, value, anim } => {
                 payload.push(25);
                 payload.extend_from_slice(&var.to_le_bytes());
                 write_value(&mut payload, value, &mut intern);
+                match anim {
+                    AnimChoice::Default => payload.push(0),
+                    AnimChoice::Instant => payload.push(1),
+                    AnimChoice::Spec(spec) => push_anim_spec(&mut payload, spec),
+                }
             }
             Op::SettleVar { var } => {
                 payload.push(26);
@@ -781,10 +840,12 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                 let var = read_u32(&mut payload_cur)?;
                 let source = read_u8(&mut payload_cur)?;
                 let initial = read_value(&mut payload_cur, &strings)?;
+                let anim = read_anim_spec(&mut payload_cur)?;
                 ops.push(Op::CreateVar {
                     var,
                     source,
                     initial,
+                    anim,
                 });
             }
             23 => ops.push(Op::BindVar {
@@ -797,7 +858,14 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
             25 => {
                 let var = read_u32(&mut payload_cur)?;
                 let value = read_value(&mut payload_cur, &strings)?;
-                ops.push(Op::SetVar { var, value });
+                let choice = read_u8(&mut payload_cur)?;
+                let anim = match choice {
+                    0 => AnimChoice::Default,
+                    1 => AnimChoice::Instant,
+                    2 | 3 => AnimChoice::Spec(read_anim_body(&mut payload_cur, choice)?),
+                    other => return Err(format!("unknown var anim choice {other}")),
+                };
+                ops.push(Op::SetVar { var, value, anim });
             }
             26 => ops.push(Op::SettleVar {
                 var: read_u32(&mut payload_cur)?,

@@ -721,6 +721,32 @@ const SOURCE_CODES = {
 // variable converged.
 const settleWaiters = new Map();
 
+/// Wire encoding of an animation spec. `anim` 0 none, 1 instant, 2 tween
+/// (a=duration ms, c=easing code), 3 spring (a=stiffness, b=damping).
+function animParts(anim) {
+  if (anim == null) return [0, 0, 0, 0];
+  if (anim === "instant") return [1, 0, 0, 0];
+  if (typeof anim !== "object") throw new Error("anim must be a spec object or \"instant\"");
+  if (anim.type === "tween") {
+    if (typeof anim.duration !== "number" || !(anim.duration > 0)) {
+      throw new Error("tween requires a positive duration");
+    }
+    const easing = anim.easing == null || anim.easing === "linear" ? 0 : anim.easing === "easeInOut" ? 1 : null;
+    if (easing == null) throw new Error(`unsupported tween easing ${anim.easing}`);
+    return [2, anim.duration, 0, easing];
+  }
+  if (anim.type === "spring") {
+    if (typeof anim.stiffness !== "number" || !(anim.stiffness > 0)) {
+      throw new Error("spring requires a positive stiffness");
+    }
+    if (typeof anim.damping !== "number" || !(anim.damping >= 0)) {
+      throw new Error("spring requires a non-negative damping");
+    }
+    return [3, anim.stiffness, anim.damping, 0];
+  }
+  throw new Error(`unsupported anim type ${anim.type}`);
+}
+
 // Opcode table for the style expression program; must match crates/core/src/expr.rs.
 const EXPR_OPS = {
   add: 2,
@@ -753,7 +779,7 @@ const ENUM_CODES = {
 };
 
 // Per-component paint whitelists; must match crates/core/src/props.rs.
-const VIEW_STYLE_PROPS = ["backgroundColor", "radius", "opacity", "fit"];
+const VIEW_STYLE_PROPS = ["backgroundColor", "radius", "opacity", "fit", "translateX", "translateY", "scale", "rotate"];
 const TEXT_STYLE_PROPS = ["color", "textAlign"];
 
 export function ref(initial) {
@@ -787,7 +813,8 @@ export function createVar(valueOrOptions, options) {
   const source = (opts && opts.source) ?? "none";
   if (!(source in SOURCE_CODES)) throw new Error(`unknown var source ${source}`);
   const [tag, number] = propParts(initial);
-  const id = api.create_var(SOURCE_CODES[source], tag, number);
+  const [animCode, animA, animB, animC] = animParts(opts && opts.anim);
+  const id = api.create_var(SOURCE_CODES[source], tag, number, animCode, animA, animB, animC);
   if (!id) throw new Error(api.error() || "create_var failed");
   const targetRef = opts && opts.target;
   const target = resolveTarget(targetRef);
@@ -805,9 +832,10 @@ export function createVar(valueOrOptions, options) {
       throw new Error("source-driven variables are written by the UI thread");
     };
   } else {
-    self.set = (value) => {
+    self.set = (value, options) => {
       const [valueTag, valueNumber] = propParts(value);
-      if (api.set_var(id, valueTag, valueNumber) !== 0) {
+      const [animCode, animA, animB, animC] = animParts(options && options.anim);
+      if (api.set_var(id, valueTag, valueNumber, animCode, animA, animB, animC) !== 0) {
         throw new Error(api.error() || "set_var failed");
       }
     };

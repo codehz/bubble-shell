@@ -637,6 +637,16 @@ final class BubbleView: UIView {
             case 6:
                 ctx.restoreGState()
                 alpha = alphas.popLast() ?? 1
+            case 9:
+                // Node transform around its center: translate, rotate, scale.
+                guard let cx = f32(), let cy = f32(), let translateX = f32(), let translateY = f32(), let scale = f32(), let rotate = f32() else { return }
+                ctx.saveGState()
+                ctx.translateBy(x: cx + translateX, y: cy + translateY)
+                ctx.rotate(by: rotate)
+                ctx.scaleBy(x: scale, y: scale)
+                ctx.translateBy(x: -cx, y: -cy)
+            case 10:
+                ctx.restoreGState()
             default:
                 return
             }

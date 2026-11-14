@@ -567,6 +567,21 @@ class BubbleView(context: Context) : View(context) {
                     alpha = opacities.removeLast()
                     canvas.restore()
                 }
+                9 -> {
+                    // Node transform around its center: translate, rotate, scale.
+                    val cx = buffer.float
+                    val cy = buffer.float
+                    val translateX = buffer.float
+                    val translateY = buffer.float
+                    val scale = buffer.float
+                    val rotate = buffer.float
+                    canvas.save()
+                    canvas.translate(cx + translateX, cy + translateY)
+                    canvas.rotate(Math.toDegrees(rotate.toDouble()).toFloat())
+                    canvas.scale(scale, scale)
+                    canvas.translate(-cx, -cy)
+                }
+                10 -> canvas.restore()
                 else -> return
             }
         }
