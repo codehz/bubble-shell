@@ -23,8 +23,7 @@ MVP 是一个可运行、可交互的演示，不是验收程序。MVP 完成前
 - Web 页面手动 smoke：渲染、点击、滚动、文本框输入、焦点移动各一次。
 - `bubble dev` 下修改组件文本，页面更新且计数状态保留（Web）。
 - iOS/Android 模拟器启动同一 fixture，完成点击、滚动、一次文本输入。
-- 现有模拟器 harness 可以作为可选回归入口运行，但不是 MVP 发布门槛：
-  `cargo run -q -p bubble-eval -- gestures-ios|gestures-android|editing-ios|editing-android`。
+- 离线回归入口：`cargo test -p bubble-testing`（headless 驱动 + 声明脚本，无需设备），不是 MVP 发布门槛。
 
 ### 明确不属于 MVP 验收
 

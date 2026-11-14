@@ -7,6 +7,5 @@ members = [
     "crates/bundler",
     "crates/cli",
     "crates/native",
-    "crates/eval",
     "crates/testing",
 ]

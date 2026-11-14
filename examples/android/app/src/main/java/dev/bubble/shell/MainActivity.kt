@@ -2,27 +2,12 @@ package dev.bubble.shell
 
 import android.app.Activity
 import android.os.Bundle
-import android.util.Log
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
 
 class MainActivity : Activity() {
     private lateinit var shell: BubbleView
-    private var frames = 0
-    private var frameMs = 0.0
-    private var last = System.nanoTime()
-    private var phase = 0
-    private var hangFrames = 0
-    private var scrollLogged = false
-    private val started = System.nanoTime()
-    private var gestures = false
-    private var acceptance = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        gestures = intent?.getBooleanExtra("bubble_gestures", false) == true
-        acceptance = intent?.getBooleanExtra("bubble_eval", false) == true
         shell = BubbleView(this)
         val font = assets.open("HostFont.ttf").use { it.readBytes() }
         val devUrl = intent?.getStringExtra("bubble_dev")
@@ -35,89 +20,7 @@ class MainActivity : Activity() {
             val entry = assets.open("fixtures/$fixture.js").readBytes()
             shell.open(filesDir, font, manifest, entry, null)
         }
-        if (acceptance && !gestures) shell.onFrame = { sampleAcceptance() }
         setContentView(shell)
-    }
-
-    private fun sampleAcceptance() {
-        if (isDestroyed) return
-        val now = System.nanoTime()
-        val dt = (now - last) / 1_000_000.0
-        last = now
-        frames += 1
-        if (frames > 5) frameMs += dt
-        when (phase) {
-            0 -> if (frames == 20) {
-                val box = BubbleNative.nodeBox(4)
-                val x = box[0] + box[2] / 2f
-                val y = box[1] + box[3] / 2f
-                BubbleNative.pointer(0, 1, x, y, 0.0, 0, 1)
-                BubbleNative.pointer(2, 1, x, y, 20.0, 0, 0)
-                phase = 1
-            }
-            1 -> if (BubbleNative.nodeText(3) == "Count: 1") {
-                BubbleNative.postEval("while (true) {}")
-                hangFrames = 0
-                phase = 2
-            }
-            2 -> {
-                if (BubbleNative.faults() == 0) hangFrames += 1
-                if (BubbleNative.faults() > 0 && BubbleNative.nodeText(3) == "Count: 0") {
-                    if (!scrollLogged) {
-                        logScrollerRect()
-                        scrollLogged = true
-                    }
-                    if (BubbleNative.scrollYOf(6) >= 40f) {
-                        report()
-                        phase = 3
-                    }
-                }
-            }
-        }
-        if (phase != 3 && now - started > 12_000_000_000L) {
-            report()
-            phase = 3
-        }
-    }
-
-
-    private fun logScrollerRect() {
-        val box = BubbleNative.nodeBox(6)
-        val density = resources.displayMetrics.density
-        val location = IntArray(2)
-        shell.getLocationOnScreen(location)
-        val left = location[0] + shell.paddingLeft + box[0] * density
-        val top = location[1] + shell.paddingTop + box[1] * density
-        val right = location[0] + shell.paddingLeft + (box[0] + box[2]) * density
-        val bottom = location[1] + shell.paddingTop + (box[1] + box[3]) * density
-        Log.i("BUBBLE_EVAL", "BUBBLE_SCROLL ${left.toInt()} ${top.toInt()} ${right.toInt()} ${bottom.toInt()}")
-    }
-
-    private fun report() {
-        val samples = (frames - 5).coerceAtLeast(1)
-        val average = frameMs / samples
-        val text = BubbleNative.nodeText(3)
-        val checks = JSONArray()
-        fun add(name: String, ok: Boolean, detail: String) {
-            checks.put(JSONObject().put("name", name).put("ok", ok).put("detail", detail))
-        }
-        add("remount text", text == "Count: 0", text)
-        add("faults", BubbleNative.faults() > 0, BubbleNative.faults().toString())
-        add("frames during hang", hangFrames >= 10, hangFrames.toString())
-        add("frame budget", average < 20.0, "%.2f".format(average))
-        add("font epoch", BubbleNative.fontEpoch() > 0, BubbleNative.fontEpoch().toString())
-        add("scroll offset", BubbleNative.scrollYOf(6) >= 40f, BubbleNative.scrollYOf(6).toString())
-        add("paint bytes", shell.paintSize() > 16, shell.paintSize().toString())
-        val ok = (0 until checks.length()).all { checks.getJSONObject(it).getBoolean("ok") }
-        val elapsed = (System.nanoTime() - started) / 1_000_000
-        val json = JSONObject()
-            .put("suite", "m1.android")
-            .put("ok", ok)
-            .put("elapsed_ms", elapsed)
-            .put("checks", checks)
-            .toString()
-        File(filesDir, "m1-result.json").writeText(json)
-        Log.i("BUBBLE_EVAL", json)
     }
 
     override fun onDestroy() {

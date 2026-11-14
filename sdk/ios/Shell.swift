@@ -499,20 +499,6 @@ final class BubbleView: UIView {
         traceMoves.removeAll()
     }
 
-    func configureGestureSurface(_ enabled: Bool) {
-        isAccessibilityElement = enabled
-        accessibilityIdentifier = enabled ? "bubble-gesture-surface" : nil
-        if !enabled {
-            accessibilityLabel = nil
-            accessibilityValue = nil
-        }
-    }
-
-    func publishGestureSnapshot(_ json: String) {
-        accessibilityLabel = json
-        accessibilityValue = json
-    }
-
     func refresh() {
         _ = bubble_tick(CACurrentMediaTime() * 1000)
         drainHostCalls()

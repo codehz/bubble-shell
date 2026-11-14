@@ -52,10 +52,6 @@ Prohibited unless the user explicitly approves it for the current task:
 - Verification-only crates, acceptance-report harnesses, fixture matrices, and
   multi-host acceptance suites.
 
-Existing simulator harnesses (`bubble-eval` target commands) are frozen: keep
-them working if cheap, but do not add scenes, checks, matrices, or device-info
-collection.
-
 ## Demo hosts stay clean
 
 `examples/web`, `examples/ios`, and `examples/android` are demos first.

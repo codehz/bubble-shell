@@ -40,7 +40,7 @@
 
 - **Rust 进程内测试**：核心行为、状态不变量、边界与错误路径；确定性、快速、离线。
 - **Node 单测**：Web 的 DOM/输入映射与键盘路由。
-- **模拟器 smoke**：手动启动示例应用，完成一次点击/滚动/输入。现有 `bubble-eval` harness 可选用，不作为发布门槛。
+- **模拟器 smoke**：手动启动示例应用，完成一次点击/滚动/输入。headless 回归用 `cargo test -p bubble-testing`，不作为发布门槛。
 - **回归测试**：只为用户报告或明确需求增加一个行为测试；不复制同一路径，不测 wiring、转发、源码文本或偶然默认值。
 - **禁止**：真实设备/读屏自动化、新增 XCUITest/UiAutomation/Appium 套件、验收报告、截图/golden、fuzz、性能/FPS 门禁、只有验证用途的 crate 或 helper。
 
