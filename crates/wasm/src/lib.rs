@@ -16,8 +16,9 @@ use bubble_core::{
     decode_layout, encode_edit_events, encode_events, encode_paint, encode_set_text,
     validate_bundle_hashes, A11yAction, ComputationKind, EditCommand, EditEvent, EditMenuAction,
     GestureEvent, GestureKind, Key, Kind, LayoutRequest, NodeDesc, Op, PointerAction, PointerInput,
-    Sched, Shell, Turn, Value, STATE_STYLE_PROPS,
+    Sched, Shell, Turn, Value,
 };
+use bubble_core::decode_program;
 
 thread_local! {
     static TURN: RefCell<Option<Turn>> = const { RefCell::new(None) };
@@ -1039,12 +1040,6 @@ pub extern "C" fn scratch_len() -> u32 {
     SCRATCH.with(|slot| slot.borrow().len() as u32)
 }
 
-/// Newline-separated paint properties a state style declaration may override.
-#[no_mangle]
-pub extern "C" fn state_style_props() -> u32 {
-    store_scratch(STATE_STYLE_PROPS.join("\n").into_bytes())
-}
-
 #[no_mangle]
 pub extern "C" fn boot() -> i32 {
     match Shell::blank() {
@@ -1472,9 +1467,19 @@ pub extern "C" fn move_gesture(handle: u32, target: u32, index: u32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn spawn_state_style(target: u32, index: u32) -> u32 {
-    match with_turn(|turn| turn.spawn_state_style(target, index)) {
-        Ok(style) => style,
+pub extern "C" fn create_var(source: u32, initial_tag: u32, initial_number: f64) -> u32 {
+    let initial = match initial_tag {
+        0 => Value::Null,
+        1 => Value::Bool(initial_number != 0.0),
+        2 => Value::Int(initial_number as i64),
+        3 => Value::Float(initial_number),
+        _ => {
+            set_error(format!("unsupported var initial tag {initial_tag}"));
+            return 0;
+        }
+    };
+    match with_turn(|turn| turn.create_var(source as u8, initial)) {
+        Ok(var) => var,
         Err(err) => {
             set_error(err);
             0
@@ -1483,8 +1488,47 @@ pub extern "C" fn spawn_state_style(target: u32, index: u32) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn set_state_style_prop(
-    style: u32,
+pub extern "C" fn bind_var(var: u32, target: u32) -> i32 {
+    match with_turn(|turn| {
+        turn.bind_var(var, target);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dispose_var(var: u32) -> i32 {
+    match with_turn(|turn| {
+        turn.dispose_var(var);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn spawn_style_decl(target: u32, component: u32, index: u32) -> u32 {
+    match with_turn(|turn| turn.spawn_style_decl(target, component as u8, index)) {
+        Ok(decl) => decl,
+        Err(err) => {
+            set_error(err);
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn set_style_prop(
+    decl: u32,
     key_ptr: *const u8,
     key_len: u32,
     tag: u32,
@@ -1494,7 +1538,7 @@ pub extern "C" fn set_state_style_prop(
 ) -> i32 {
     let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
     let Ok(key) = std::str::from_utf8(key_bytes) else {
-        set_error("state style key is not utf-8".into());
+        set_error("style declaration key is not utf-8".into());
         return 1;
     };
     let value = match read_value(tag, number, text_ptr, text_len) {
@@ -1505,7 +1549,7 @@ pub extern "C" fn set_state_style_prop(
         }
     };
     match with_turn(|turn| {
-        turn.set_state_style_prop(style, key, value.clone());
+        turn.set_style_decl_prop(decl, key, value.clone());
         Ok(())
     }) {
         Ok(()) => 0,
@@ -1517,9 +1561,28 @@ pub extern "C" fn set_state_style_prop(
 }
 
 #[no_mangle]
-pub extern "C" fn move_state_style(style: u32, target: u32, index: u32) -> i32 {
+pub extern "C" fn set_style_prop_program(
+    decl: u32,
+    key_ptr: *const u8,
+    key_len: u32,
+    data_ptr: *const u8,
+    data_len: u32,
+) -> i32 {
+    let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
+    let Ok(key) = std::str::from_utf8(key_bytes) else {
+        set_error("style declaration key is not utf-8".into());
+        return 1;
+    };
+    let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len as usize) }.to_vec();
     match with_turn(|turn| {
-        turn.move_state_style(style, target, index);
+        let program = match decode_program(&bytes) {
+            Ok(program) => program,
+            Err(error) => {
+                set_error(error.to_string());
+                return Ok(());
+            }
+        };
+        turn.set_style_decl_prop(decl, key, Value::Program(program));
         Ok(())
     }) {
         Ok(()) => 0,
@@ -1531,9 +1594,23 @@ pub extern "C" fn move_state_style(style: u32, target: u32, index: u32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn dispose_state_style(style: u32) -> i32 {
+pub extern "C" fn move_style_decl(decl: u32, target: u32, index: u32) -> i32 {
     match with_turn(|turn| {
-        turn.dispose_state_style(style);
+        turn.move_style_decl(decl, target, index);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dispose_style_decl(decl: u32) -> i32 {
+    match with_turn(|turn| {
+        turn.dispose_style_decl(decl);
         Ok(())
     }) {
         Ok(()) => 0,

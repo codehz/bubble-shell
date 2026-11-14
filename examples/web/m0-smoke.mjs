@@ -107,12 +107,6 @@ setApi({
   alloc: exports.alloc,
   dealloc: exports.dealloc,
   boot: exports.boot,
-  state_style_props() {
-    const len = exports.state_style_props();
-    return decoder
-      .decode(new Uint8Array(memory().buffer, exports.scratch_ptr(), len))
-      .split("\n");
-  },
   signal_alloc: exports.signal_alloc,
   signal_read: exports.signal_read,
   signal_notify: exports.signal_notify,
@@ -163,19 +157,34 @@ setApi({
   bind_gesture_event: exports.bind_gesture_event,
   dispose_gesture: exports.dispose_gesture,
   move_gesture: exports.move_gesture,
-  spawn_state_style: exports.spawn_state_style,
-  set_state_style_prop(style, key, tag, number, text) {
+  create_var(source, initialTag, initialNumber) {
+    return exports.create_var(source, initialTag, initialNumber);
+  },
+  bind_var: exports.bind_var,
+  dispose_var: exports.dispose_var,
+  spawn_style_decl: exports.spawn_style_decl,
+  set_style_prop(decl, key, tag, number, text) {
     const keyBytes = encoder.encode(key);
     const textBytes = tag === 4 ? encoder.encode(text) : new Uint8Array(0);
     const keyPtr = copyBytes(keyBytes);
     const textPtr = textBytes.length ? copyBytes(textBytes) : 0;
-    const code = exports.set_state_style_prop(style, keyPtr, keyBytes.length, tag, number, textPtr, textBytes.length);
+    const code = exports.set_style_prop(decl, keyPtr, keyBytes.length, tag, number, textPtr, textBytes.length);
     exports.dealloc(keyPtr, keyBytes.length);
     if (textBytes.length) exports.dealloc(textPtr, textBytes.length);
     return code;
   },
-  move_state_style: exports.move_state_style,
-  dispose_state_style: exports.dispose_state_style,
+  set_style_prop_program(decl, key, bytes) {
+    const keyBytes = encoder.encode(key);
+    const data = Uint8Array.from(bytes);
+    const keyPtr = copyBytes(keyBytes);
+    const dataPtr = copyBytes(data);
+    const code = exports.set_style_prop_program(decl, keyPtr, keyBytes.length, dataPtr, data.length);
+    exports.dealloc(keyPtr, keyBytes.length);
+    exports.dealloc(dataPtr, data.length);
+    return code;
+  },
+  move_style_decl: exports.move_style_decl,
+  dispose_style_decl: exports.dispose_style_decl,
   visual_pointer: exports.visual_pointer,
   pointer: exports.pointer,
   tick: exports.tick,

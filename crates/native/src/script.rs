@@ -11,18 +11,17 @@ use std::time::{Duration, Instant};
 
 use bubble_core::{
     validate_bundle_hashes, ComputationKind, GestureKind, Kind, NodeDesc, Op, Sched, Turn, Value,
-    STATE_STYLE_PROPS,
 };
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{
-    Array, Context, Ctx, Function, Module, Object, Runtime, TypedArray, Value as JsValue,
+    Context, Ctx, Function, Module, Object, Runtime, TypedArray, Value as JsValue,
 };
 use serde::Deserialize;
 
 use crate::Shared;
 
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
-const STACK_LIMIT: usize = 256 * 1024;
+const STACK_LIMIT: usize = 512 * 1024;
 const INTERRUPT_MS: u64 = 1000;
 const RUNTIME_JS: &str = include_str!("../js/runtime.js");
 /// Both author-facing and compiler-facing specifiers resolve to this module id,
@@ -702,24 +701,36 @@ fn bind_api(ctx: &Ctx) -> rquickjs::Result<()> {
         Function::new(ctx.clone(), api_move_gesture)?,
     )?;
     api.set(
-        "spawn_state_style",
-        Function::new(ctx.clone(), api_spawn_state_style)?,
+        "create_var",
+        Function::new(ctx.clone(), api_create_var)?,
     )?;
     api.set(
-        "set_state_style_prop",
-        Function::new(ctx.clone(), api_set_state_style_prop)?,
+        "bind_var",
+        Function::new(ctx.clone(), api_bind_var)?,
     )?;
     api.set(
-        "move_state_style",
-        Function::new(ctx.clone(), api_move_state_style)?,
+        "dispose_var",
+        Function::new(ctx.clone(), api_dispose_var)?,
     )?;
     api.set(
-        "dispose_state_style",
-        Function::new(ctx.clone(), api_dispose_state_style)?,
+        "spawn_style_decl",
+        Function::new(ctx.clone(), api_spawn_style_decl)?,
     )?;
     api.set(
-        "state_style_props",
-        Function::new(ctx.clone(), api_state_style_props)?,
+        "set_style_prop",
+        Function::new(ctx.clone(), api_set_style_prop)?,
+    )?;
+    api.set(
+        "set_style_prop_program",
+        Function::new(ctx.clone(), api_set_style_prop_program)?,
+    )?;
+    api.set(
+        "move_style_decl",
+        Function::new(ctx.clone(), api_move_style_decl)?,
+    )?;
+    api.set(
+        "dispose_style_decl",
+        Function::new(ctx.clone(), api_dispose_style_decl)?,
     )?;
     api.set("commit", Function::new(ctx.clone(), api_commit)?)?;
     api.set("request", Function::new(ctx.clone(), api_request)?)?;
@@ -787,14 +798,6 @@ fn api_error() -> String {
     ERROR.with(|slot| slot.borrow().clone())
 }
 
-fn api_state_style_props(ctx: Ctx) -> rquickjs::Result<Array> {
-    let array = Array::new(ctx)?;
-    for (index, name) in STATE_STYLE_PROPS.iter().enumerate() {
-        array.set(index, *name)?;
-    }
-    Ok(array)
-}
-
 fn api_signal_alloc() -> u32 {
     with_turn(|turn| Ok(turn.alloc_signal())).unwrap_or(0)
 }
@@ -833,10 +836,13 @@ fn api_alloc_node(kind: f64) -> u32 {
 }
 
 fn api_mount_node(ctx: Ctx, id: f64) -> i32 {
-    graph_call(&ctx, |turn, host| {
+    let result = graph_call(&ctx, |turn, host| {
         turn.mount_computation(id as u32, host)?;
         note_graph(turn)
-    })
+    });
+    if result != 0 {
+    }
+    result
 }
 
 fn api_dispose_node(ctx: Ctx, id: f64) -> i32 {
@@ -861,10 +867,15 @@ fn api_run_init(ctx: Ctx) -> i32 {
 }
 
 fn api_run_updates(ctx: Ctx) -> i32 {
-    graph_call(&ctx, |turn, host| {
+    let result = graph_call(&ctx, |turn, host| {
         turn.run_scheduled(false, host);
         note_graph(turn)
-    })
+    });
+    if result != 0 {
+        let debug: Result<String, _> = ctx.eval("(globalThis.__bubbleLastError ?? '') + ' @ ' + String(globalThis.__bubbleRunMax) + ' ' + globalThis.__bubbleLastErrorStack");
+        eprintln!("DEBUG run_updates js_error={debug:?}");
+    }
+    result
 }
 
 fn note_graph(turn: &mut Turn) -> Result<(), String> {
@@ -1156,9 +1167,19 @@ fn api_move_gesture(handle: f64, target: f64, index: f64) -> i32 {
     }
 }
 
-fn api_spawn_state_style(target: f64, index: f64) -> u32 {
-    match with_turn(|turn| turn.spawn_state_style(target as u32, index as u32)) {
-        Ok(style) => style,
+fn api_create_var(source: f64, initial_tag: f64, initial_number: f64) -> u32 {
+    let initial = match initial_tag as u32 {
+        0 => Value::Null,
+        1 => Value::Bool(initial_number != 0.0),
+        2 => Value::Int(initial_number as i64),
+        3 => Value::Float(initial_number),
+        other => {
+            set_api_error(format!("unsupported var initial tag {other}"));
+            return 0;
+        }
+    };
+    match with_turn(|turn| turn.create_var(source as u8, initial)) {
+        Ok(var) => var,
         Err(err) => {
             set_api_error(err);
             0
@@ -1166,7 +1187,43 @@ fn api_spawn_state_style(target: f64, index: f64) -> u32 {
     }
 }
 
-fn api_set_state_style_prop(style: f64, key: String, tag: f64, number: f64, text: String) -> i32 {
+fn api_bind_var(var: f64, target: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.bind_var(var as u32, target as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_dispose_var(var: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.dispose_var(var as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_spawn_style_decl(target: f64, component: f64, index: f64) -> u32 {
+    match with_turn(|turn| turn.spawn_style_decl(target as u32, component as u8, index as u32)) {
+        Ok(decl) => decl,
+        Err(err) => {
+            set_api_error(err);
+            0
+        }
+    }
+}
+
+fn api_set_style_prop(decl: f64, key: String, tag: f64, number: f64, text: String) -> i32 {
     let value = match tag as u32 {
         0 => Value::Null,
         1 => Value::Bool(number != 0.0),
@@ -1179,7 +1236,7 @@ fn api_set_state_style_prop(style: f64, key: String, tag: f64, number: f64, text
         }
     };
     match with_turn(|turn| {
-        turn.set_state_style_prop(style as u32, key, value.clone());
+        turn.set_style_decl_prop(decl as u32, key, value.clone());
         Ok(())
     }) {
         Ok(()) => 0,
@@ -1190,9 +1247,33 @@ fn api_set_state_style_prop(style: f64, key: String, tag: f64, number: f64, text
     }
 }
 
-fn api_move_state_style(style: f64, target: f64, index: f64) -> i32 {
+/// Program bytes arrive as a JS array of byte numbers; programs are small.
+fn api_set_style_prop_program(
+    ctx: Ctx,
+    decl: f64,
+    key: String,
+    bytes: rquickjs::Array,
+) -> i32 {
+    let mut data = Vec::with_capacity(bytes.len());
+    for item in bytes.iter::<f64>() {
+        match item {
+            Ok(value) => data.push(value as u8),
+            Err(_) => {
+                set_api_error("style program is not a byte array".into());
+                return 1;
+            }
+        }
+    }
+    let program = match bubble_core::decode_program(&data) {
+        Ok(program) => program,
+        Err(error) => {
+            set_api_error(error.to_string());
+            return 1;
+        }
+    };
+    let _ = ctx;
     match with_turn(|turn| {
-        turn.move_state_style(style as u32, target as u32, index as u32);
+        turn.set_style_decl_prop(decl as u32, key, Value::Program(program));
         Ok(())
     }) {
         Ok(()) => 0,
@@ -1203,9 +1284,22 @@ fn api_move_state_style(style: f64, target: f64, index: f64) -> i32 {
     }
 }
 
-fn api_dispose_state_style(style: f64) -> i32 {
+fn api_move_style_decl(decl: f64, target: f64, index: f64) -> i32 {
     match with_turn(|turn| {
-        turn.dispose_state_style(style as u32);
+        turn.move_style_decl(decl as u32, target as u32, index as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_dispose_style_decl(decl: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.dispose_style_decl(decl as u32);
         Ok(())
     }) {
         Ok(()) => 0,

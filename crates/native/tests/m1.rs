@@ -612,49 +612,40 @@ fn frame_fills(width: f32, height: f32) -> Vec<[u8; 4]> {
     out
 }
 
-const STATE_STYLE_APP: &str = r##"
+const STYLE_DECL_APP: &str = r##"
 import * as shell from "bubble-shell";
 
 shell.mount(function App() {
   const open = shell.signal(false);
-  const green = shell.signal(true);
   const items = shell.signal(["a", "b"]);
-  const blue = shell.signal(true);
-  const tone = shell.signal("#123456");
-  const when = shell.signal("focused");
-  const marker = shell.signal(true);
   const ladder = shell.signal([]);
   const gate = shell.signal(false);
-  globalThis.sigs = { open, green, items, blue, tone, when, marker, ladder, gate };
+  globalThis.sigs = { open, items, ladder, gate };
 
+  const viewRef = shell.ref();
+  const focused = shell.createVar({ source: "focused", target: viewRef });
   const view = shell.primitive(
     "View",
-    { backgroundColor: "#ffffff", role: "button", width: 200, height: 100 },
+    { ref: viewRef, role: "button", backgroundColor: "#ffffff", width: 200, height: 100 },
     () => {
       shell.show(() => open(), null, () => {
-        shell.primitive("StateStyle", { when: "focused", backgroundColor: "#ff0000" });
+        shell.primitive("ViewStyle", {
+          target: viewRef,
+          when: focused,
+          backgroundColor: "#ff0000",
+        });
       });
-      shell.primitive("StateStyle", {
-        when: "focused",
-        enabled: shell.dynamic(() => green()),
-        backgroundColor: "#00ff00",
-      });
-      // The color is chosen when the group is created, so a reorder only moves
-      // the declarations and the authored order decides the winner.
       shell.forEach(() => items(), (item) => item, (read) => {
-        shell.primitive("StateStyle", {
-          when: "focused",
+        shell.primitive("ViewStyle", {
+          target: viewRef,
+          when: true,
           backgroundColor: read() === "a" ? "#0000ff" : "#ffff00",
         });
       });
-      shell.primitive("StateStyle", {
-        when: shell.dynamic(() => when()),
-        enabled: shell.dynamic(() => blue()),
-        backgroundColor: shell.dynamic(() => tone()),
-      });
       shell.indexEach(() => ladder(), (read, index) => {
-        shell.primitive("StateStyle", {
-          when: "focused",
+        shell.primitive("ViewStyle", {
+          target: viewRef,
+          when: true,
           backgroundColor: index === 0 ? "#111111" : "#222222",
         });
       });
@@ -662,24 +653,30 @@ shell.mount(function App() {
         [
           () => gate(),
           () => {
-            shell.primitive("StateStyle", {
-              when: "focused",
+            shell.primitive("ViewStyle", {
+              target: viewRef,
+              when: true,
               backgroundColor: "#333333",
             });
+            // The focused declaration patches nothing: it takes the default
+            // focus ring over while it matches, and closing the arm gives the
+            // ring back without blurring.
+            shell.primitive("TextStyle", { target: viewRef, when: focused });
           },
         ],
       ]);
-      shell.primitive("StateStyle", {
-        when: "focused",
-        enabled: shell.dynamic(() => marker()),
-      });
     },
   );
-  globalThis.appView = view;
+  globalThis.appView = viewRef.current;
 });
 
 globalThis.appFocus = () => {
   shell.focusField(globalThis.appView);
+  shell.flush();
+};
+
+globalThis.appBlur = () => {
+  shell.focusField(0);
   shell.flush();
 };
 
@@ -690,70 +687,33 @@ globalThis.appStep = (fn) => {
 "##;
 
 #[test]
-fn state_style_scopes_keep_authored_order_and_cleanup_bindings() {
+fn style_decl_scopes_keep_authored_order_and_cleanup() {
     const RED: [u8; 4] = [0xff, 0x00, 0x00, 0xff];
     const GREEN: [u8; 4] = [0x00, 0xff, 0x00, 0xff];
     const BLUE: [u8; 4] = [0x00, 0x00, 0xff, 0xff];
     const YELLOW: [u8; 4] = [0xff, 0xff, 0x00, 0xff];
-    const TONE: [u8; 4] = [0x12, 0x34, 0x56, 0xff];
     const RING: [u8; 4] = [77, 163, 255, 242];
-
     let _guard = exclusive();
     bubble_destroy();
     assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
-    try_load_source(STATE_STYLE_APP).unwrap_or_else(|error| panic!("{error}"));
+    try_load_source(STYLE_DECL_APP).unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(frame_fills(200.0, 100.0).len(), 1);
     eval("appFocus()");
-    assert_eq!(frame_fills(200.0, 100.0), vec![TONE]);
 
-    // The Show opens in front of the static declaration: the later one still
-    // wins, so the empty branch cannot append itself to the end.
+    // Later declarations win: the For list's last item paints over the Show
+    // branch's declaration, so an empty branch cannot append itself to the
+    // end when it rebuilds.
     eval("appStep(() => sigs.open.set(true))");
-    assert_eq!(frame_fills(200.0, 100.0), vec![TONE]);
-
-    // With the trailing declaration disabled the list's last group wins, not
-    // the Show's declaration.
-    eval("appStep(() => sigs.blue.set(false))");
-    assert_eq!(frame_fills(200.0, 100.0), vec![YELLOW]);
-    eval("appStep(() => sigs.green.set(false))");
     assert_eq!(frame_fills(200.0, 100.0), vec![YELLOW]);
 
     // Reordering the list reorders its declarations.
     eval("appStep(() => sigs.items.set(['b', 'a']))");
     assert_eq!(frame_fills(200.0, 100.0), vec![BLUE]);
+    eval("appStep(() => sigs.open.set(false))");
     eval("appStep(() => sigs.items.set([]))");
-    assert_eq!(frame_fills(200.0, 100.0), vec![RED]);
-    eval("appStep(() => sigs.green.set(true))");
-    assert_eq!(frame_fills(200.0, 100.0), vec![GREEN]);
-
-    // Dynamic conditions and values apply on the next commit.
-    eval("appStep(() => sigs.when.set('pressed'))");
-    assert_eq!(frame_fills(200.0, 100.0), vec![GREEN]);
-    eval("appStep(() => { sigs.when.set('focused'); sigs.blue.set(true); })");
-    assert_eq!(frame_fills(200.0, 100.0), vec![TONE]);
-    eval("appStep(() => sigs.tone.set(null))");
-    assert_eq!(frame_fills(200.0, 100.0), vec![GREEN]);
-    eval("appStep(() => sigs.tone.set('#abcdef'))");
-    assert_eq!(frame_fills(200.0, 100.0), vec![[0xab, 0xcd, 0xef, 0xff]]);
-
-    // Index keeps one scope per position and Switch keeps one per arm, so a
-    // later declaration still wins over both.
-    eval("appStep(() => { sigs.ladder.set([0, 0]); sigs.blue.set(false); })");
-    assert_eq!(frame_fills(200.0, 100.0), vec![[0x22, 0x22, 0x22, 0xff]]);
-    eval("appStep(() => sigs.gate.set(true))");
-    assert_eq!(frame_fills(200.0, 100.0), vec![[0x33, 0x33, 0x33, 0xff]]);
-    eval("appStep(() => sigs.ladder.set([0]))");
-    assert_eq!(frame_fills(200.0, 100.0), vec![[0x33, 0x33, 0x33, 0xff]]);
-    eval("appStep(() => sigs.gate.set(false))");
-    assert_eq!(frame_fills(200.0, 100.0), vec![[0x11, 0x11, 0x11, 0xff]]);
-    // With the Show's branch left as the only painting declaration, it wins.
-    eval("appStep(() => { sigs.ladder.set([]); sigs.green.set(false); })");
-    assert_eq!(frame_fills(200.0, 100.0), vec![RED]);
-
-    // The trailing empty focused declaration takes the ring over: while it
-    // matches there is no ring, and without any matching declaration the ring
-    // comes back.
-    eval("appStep(() => { sigs.marker.set(false); sigs.blue.set(false); sigs.green.set(false); sigs.open.set(false); sigs.items.set([]); })");
+    // Every list group is disposed; nothing patches the background now, and
+    // the focused declaration went with the closed arm, so the default ring
+    // returns while the node stays focused.
     assert_eq!(
         frame_fills(200.0, 100.0),
         vec![
@@ -764,18 +724,94 @@ fn state_style_scopes_keep_authored_order_and_cleanup_bindings() {
             RING
         ]
     );
-    eval("appStep(() => { sigs.marker.set(true); sigs.blue.set(true); sigs.green.set(true); })");
-    assert_eq!(frame_fills(200.0, 100.0), vec![[0xab, 0xcd, 0xef, 0xff]]);
 
-    // Deleting a list group drops its declaration and its bindings.
-    eval("appStep(() => { sigs.open.set(false); sigs.green.set(false); sigs.blue.set(false); sigs.items.set(['a', 'b']); })");
-    assert_eq!(frame_fills(200.0, 100.0), vec![YELLOW]);
+    // Index keeps one scope per position and Switch keeps one per arm, so a
+    // later declaration still wins over both.
+    eval("appStep(() => sigs.ladder.set([0, 0]))");
+    assert_eq!(
+        frame_fills(200.0, 100.0),
+        vec![
+            [0x22, 0x22, 0x22, 0xff],
+            RING,
+            RING,
+            RING,
+            RING
+        ]
+    );
+    eval("appStep(() => sigs.gate.set(true))");
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0x33, 0x33, 0x33, 0xff]]);
+    eval("appStep(() => sigs.ladder.set([0]))");
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0x33, 0x33, 0x33, 0xff]]);
+    // Closing the arm drops its declarations: the focused declaration goes
+    // with it, so the default ring returns while the node stays focused.
+    eval("appStep(() => sigs.gate.set(false))");
+    assert_eq!(
+        frame_fills(200.0, 100.0),
+        vec![
+            [0x11, 0x11, 0x11, 0xff],
+            RING,
+            RING,
+            RING,
+            RING
+        ]
+    );
+    eval("appStep(() => sigs.ladder.set([]))");
+    assert_eq!(
+        frame_fills(200.0, 100.0),
+        vec![
+            [0xff, 0xff, 0xff, 0xff],
+            RING,
+            RING,
+            RING,
+            RING
+        ]
+    );
+
+    // Deleting a list group drops its declaration; the surviving group still
+    // paints at its authored slot and the ring stays on.
+    eval("appStep(() => sigs.items.set(['a', 'b']))");
+    assert_eq!(
+        frame_fills(200.0, 100.0),
+        vec![
+            YELLOW,
+            RING,
+            RING,
+            RING,
+            RING
+        ]
+    );
     eval("appStep(() => sigs.items.set(['a']))");
-    assert_eq!(frame_fills(200.0, 100.0), vec![BLUE]);
-    eval("appStep(() => sigs.items.set(['a']))");
-    assert_eq!(frame_fills(200.0, 100.0), vec![BLUE]);
+    assert_eq!(
+        frame_fills(200.0, 100.0),
+        vec![
+            BLUE,
+            RING,
+            RING,
+            RING,
+            RING
+        ]
+    );
+    // Reopening the arm rebuilds at its authored slot: its declaration paints
+    // over the list again and the focused declaration takes the ring over.
+    eval("appStep(() => sigs.gate.set(true))");
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0x33, 0x33, 0x33, 0xff]]);
+    eval("appStep(() => sigs.items.set(['a', 'b']))");
+    assert_eq!(frame_fills(200.0, 100.0), vec![[0x33, 0x33, 0x33, 0xff]]);
+    eval("appStep(() => sigs.gate.set(false))");
+    assert_eq!(
+        frame_fills(200.0, 100.0),
+        vec![
+            YELLOW,
+            RING,
+            RING,
+            RING,
+            RING
+        ]
+    );
     assert_eq!(bubble_faults(), 0, "{}", error());
+    bubble_destroy();
 }
+
 
 const GESTURE_ORDER_APP: &str = r##"
 import * as shell from "bubble-shell";

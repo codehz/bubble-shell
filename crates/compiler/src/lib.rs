@@ -34,6 +34,7 @@ const HOT_MODULE: &str = "bubble:hot";
 const RT_PRIMITIVE: &str = "__bubble_rt_primitive";
 const RT_COMPONENT: &str = "__bubble_rt_component";
 const RT_DYNAMIC: &str = "__bubble_rt_dynamic";
+const RT_STYLE_EXPR: &str = "__bubble_rt_styleExpr";
 const RT_SHOW: &str = "__bubble_rt_show";
 const RT_FOR_EACH: &str = "__bubble_rt_forEach";
 const RT_INDEX_EACH: &str = "__bubble_rt_indexEach";
@@ -53,7 +54,8 @@ const PRIMITIVES: &[&str] = &[
     "LongPressGesture",
     "PanGesture",
     "TransformGesture",
-    "StateStyle",
+    "ViewStyle",
+    "TextStyle",
 ];
 
 /// Options for [`compile_module`].
@@ -156,6 +158,7 @@ fn runtime_import<'a>(builder: &AstBuilder<'a>) -> Statement<'a> {
         ("primitive", RT_PRIMITIVE),
         ("component", RT_COMPONENT),
         ("dynamic", RT_DYNAMIC),
+        ("styleExpr", RT_STYLE_EXPR),
         ("show", RT_SHOW),
         ("forEach", RT_FOR_EACH),
         ("indexEach", RT_INDEX_EACH),
@@ -421,6 +424,9 @@ impl<'a> Lower<'a> {
                 self.null(span)
             }
             other => {
+                if other == "ViewStyle" || other == "TextStyle" {
+                    return self.lower_style_element(span, other, attributes, children);
+                }
                 let (props, controls) =
                     self.split_attributes(span, attributes, &control_names(other));
                 debug_assert!(controls.is_empty());
@@ -438,17 +444,12 @@ impl<'a> Lower<'a> {
                             args.push(builder);
                         }
                         self.call(RT_PRIMITIVE, args, span)
-                    } else if other == "StateStyle" {
-                        if has_children(&children) {
-                            self.error(span, "StateStyle does not accept children");
-                        }
-                        self.call(RT_PRIMITIVE, vec![self.string_of(other), props], span)
                     } else if other == "Image" || other == "TextField" {
                         let (styles, rest) = self.split_style_children(children);
                         if has_children(&rest) {
                             self.error(
                                 span,
-                                format!("<{other}> children must be StateStyle"),
+                                format!("<{other}> children must be style declarations"),
                             );
                         }
                         let mut args = vec![self.string_of(other), props];
@@ -730,6 +731,177 @@ impl<'a> Lower<'a> {
         self.call(RT_SWITCH, vec![fallback, arms], span)
     }
 
+    /// Lower a `<ViewStyle>` / `<TextStyle>` declaration. `target` is a plain
+    /// value; every other prop compiles to a style expression tree the runtime
+    /// encodes into a program (or folds to a static value).
+    fn lower_style_element(
+        &mut self,
+        span: Span,
+        tag: &'a str,
+        attributes: ArenaVec<'a, JSXAttributeItem<'a>>,
+        children: ArenaVec<'a, JSXChild<'a>>,
+    ) -> Expression<'a> {
+        if has_children(&children) {
+            self.error(span, format!("<{tag}> does not accept children"));
+        }
+        let (props, controls) = self.split_attributes(span, attributes, &[]);
+        debug_assert!(controls.is_empty());
+        let mut lowered = Vec::new();
+        for (key, value) in props {
+            let lowered_value = if key == "target" {
+                let mut value = value;
+                self.visit_expression(&mut value);
+                value
+            } else {
+                self.style_tree(span, value)
+            };
+            lowered.push((key, lowered_value));
+        }
+        if !lowered.iter().any(|(key, _)| *key == "target") {
+            self.error(span, format!("<{tag}> requires a target prop"));
+        }
+        let props = self.object(span, lowered);
+        self.call(RT_PRIMITIVE, vec![self.string_of(tag), props], span)
+    }
+
+    /// Compile one style declaration expression into a tree value. The
+    /// runtime turns the tree into a stack program; identifiers stay live so
+    /// variable references and plain JS constants both work.
+    fn style_tree(&mut self, span: Span, mut expression: Expression<'a>) -> Expression<'a> {
+        if self.reads_signal(&expression) {
+            self.error(
+                span,
+                "style declaration expressions read signals; declare a variable with createVar and read it instead",
+            );
+            return self.null(span);
+        }
+        self.visit_expression(&mut expression);
+        let tree = self.style_tree_expr(span, expression);
+        self.call(RT_STYLE_EXPR, vec![tree], span)
+    }
+
+    fn style_tree_expr(&mut self, span: Span, expression: Expression<'a>) -> Expression<'a> {
+        match expression {
+            Expression::BooleanLiteral(_) | Expression::NumericLiteral(_)
+            | Expression::StringLiteral(_) | Expression::Identifier(_) => expression,
+            Expression::UnaryExpression(mut unary) => {
+                let UnaryExpression { operator, argument, .. } = unary.take_in(&self.builder);
+                let name = match operator {
+                    UnaryOperator::UnaryNegation => "neg",
+                    UnaryOperator::LogicalNot => "not",
+                    other => {
+                        self.error(span, format!("operator {other:?} is not a style expression"));
+                        return self.null(span);
+                    }
+                };
+                let argument = self.style_tree_expr(span, argument);
+                self.style_op(span, name, vec![argument])
+            }
+            Expression::BinaryExpression(mut binary) => {
+                let BinaryExpression { operator, left, right, .. } = binary.take_in(&self.builder);
+                let name = match operator {
+                    BinaryOperator::Addition => "add",
+                    BinaryOperator::Subtraction => "sub",
+                    BinaryOperator::Multiplication => "mul",
+                    BinaryOperator::Division => "div",
+                    BinaryOperator::LessThan => "lt",
+                    BinaryOperator::LessEqualThan => "le",
+                    BinaryOperator::GreaterThan => "gt",
+                    BinaryOperator::GreaterEqualThan => "ge",
+                    BinaryOperator::Equality | BinaryOperator::StrictEquality => "eq",
+                    BinaryOperator::Inequality | BinaryOperator::StrictInequality => "ne",
+                    other => {
+                        self.error(span, format!("operator {other:?} is not a style expression"));
+                        return self.null(span);
+                    }
+                };
+                let left = self.style_tree_expr(span, left);
+                let right = self.style_tree_expr(span, right);
+                self.style_op(span, name, vec![left, right])
+            }
+            Expression::LogicalExpression(mut logical) => {
+                let LogicalExpression { operator, left, right, .. } =
+                    logical.take_in(&self.builder);
+                let name = match operator {
+                    LogicalOperator::And => "and",
+                    LogicalOperator::Or => "or",
+                    other => {
+                        self.error(span, format!("operator {other:?} is not a style expression"));
+                        return self.null(span);
+                    }
+                };
+                let left = self.style_tree_expr(span, left);
+                let right = self.style_tree_expr(span, right);
+                self.style_op(span, name, vec![left, right])
+            }
+            Expression::ConditionalExpression(mut conditional) => {
+                let ConditionalExpression { test, consequent, alternate, .. } =
+                    conditional.take_in(&self.builder);
+                let test = self.style_tree_expr(span, test);
+                let consequent = self.style_tree_expr(span, consequent);
+                let alternate = self.style_tree_expr(span, alternate);
+                self.style_op(span, "select", vec![test, consequent, alternate])
+            }
+            Expression::ParenthesizedExpression(mut paren) => {
+                let inner = paren.take_in(&self.builder).expression;
+                self.style_tree_expr(span, inner)
+            }
+            Expression::CallExpression(mut call) => {
+                let CallExpression { callee, arguments, .. } = call.take_in(&self.builder);
+                let name = match &callee {
+                    Expression::Identifier(id) => match id.name.as_str() {
+                        "mix" | "lerp" | "clamp" | "min" | "max" | "abs" | "select" => {
+                            self.allocator.alloc_str(id.name.as_str())
+                        }
+                        other => {
+                            self.error(
+                                span,
+                                format!("{other} is not a style expression function"),
+                            );
+                            return self.null(span);
+                        }
+                    },
+                    _ => {
+                        self.error(span, "style expressions only support builtin functions");
+                        return self.null(span);
+                    }
+                };
+                let mut args = Vec::new();
+                for argument in arguments {
+                    let argument = match argument {
+                        Argument::SpreadElement(_) => {
+                            self.error(span, "spread arguments are not style expressions");
+                            return self.null(span);
+                        }
+                        other => match Expression::try_from(other) {
+                            Ok(expression) => expression,
+                            Err(_) => {
+                                self.error(span, "unsupported style expression argument");
+                                return self.null(span);
+                            }
+                        },
+                    };
+                    args.push(self.style_tree_expr(span, argument));
+                }
+                self.style_op(span, name, args)
+            }
+            other => {
+                self.error(other.span(), "style declarations only accept numeric, boolean, color, and variable expressions");
+                self.null(span)
+            }
+        }
+    }
+
+    /// `[name, ...args]` as an array expression.
+    fn style_op(&mut self, span: Span, name: &'a str, args: Vec<Expression<'a>>) -> Expression<'a> {
+        let mut elements = self.ast_vec::<ArrayExpressionElement<'a>>();
+        elements.push(ArrayExpressionElement::from(self.string(name, span)));
+        for arg in args {
+            elements.push(ArrayExpressionElement::from(arg));
+        }
+        Expression::new_array_expression(span, elements, &self.builder)
+    }
+
     /// The single render callback of a control-flow element.
     fn callback(&mut self, span: Span, children: ArenaVec<'a, JSXChild<'a>>) -> Expression<'a> {
         for child in children {
@@ -825,8 +997,8 @@ impl<'a> Lower<'a> {
         self.arrow_block(span, statements)
     }
 
-    /// Split direct `<StateStyle>` children from the rest. Only direct
-    /// children are styles; anything else keeps its normal path.
+    /// Split direct `<ViewStyle>` / `<TextStyle>` children from the rest. Only
+    /// direct children are styles; anything else keeps its normal path.
     fn split_style_children(
         &self,
         children: ArenaVec<'a, JSXChild<'a>>,
@@ -835,7 +1007,7 @@ impl<'a> Lower<'a> {
         let mut rest = self.ast_vec::<JSXChild<'a>>();
         for child in children {
             match child {
-                JSXChild::Element(element) if is_state_style(&element) => {
+                JSXChild::Element(element) if is_style_component(&element) => {
                     styles.push(self.take(element));
                 }
                 other => rest.push(other),
@@ -949,10 +1121,12 @@ fn control_names(tag: &str) -> &'static [&'static str] {
     }
 }
 
-fn is_state_style(element: &JSXElement<'_>) -> bool {
+fn is_style_component(element: &JSXElement<'_>) -> bool {
     match &element.opening_element.name {
-        JSXElementName::Identifier(id) => id.name.as_str() == "StateStyle",
-        JSXElementName::IdentifierReference(id) => id.name.as_str() == "StateStyle",
+        JSXElementName::Identifier(id) => matches!(id.name.as_str(), "ViewStyle" | "TextStyle"),
+        JSXElementName::IdentifierReference(id) => {
+            matches!(id.name.as_str(), "ViewStyle" | "TextStyle")
+        }
         _ => false,
     }
 }

@@ -1,19 +1,25 @@
-import { mount, signal, Text, View, TextField, TapGesture } from "bubble-shell";
+import { mount, signal, Text, View, TextField, TapGesture, ViewStyle, TextStyle, createVar, ref } from "bubble-shell";
 
 function Focus() {
   const opened = signal(false);
   const nested = signal(false);
+  const button = ref();
+  const buttonFocused = createVar({ source: "focused", target: button });
+  const buttonPressed = createVar({ source: "pressed", target: button });
+  const field = ref();
+  const fieldFocused = createVar({ source: "focused", target: field });
   return (
     <View backgroundColor="#111827" flexGrow={1} flexShrink={1} padding={[16, 16, 16, 16]} gap={12}>
       <Text color="#ffffff" fontSize={22}>Modal focus</Text>
-      <View role="button" label="Open dialog" backgroundColor="#2563eb" padding={[12, 12, 12, 12]}>
-        <StateStyle when="focused" backgroundColor="#1d4ed8" />
-        <StateStyle when="pressed" opacity={0.7} />
+      <View ref={button} role="button" label="Open dialog" backgroundColor="#2563eb" padding={[12, 12, 12, 12]}>
+        <ViewStyle target={button} when={buttonFocused} backgroundColor="#1d4ed8" />
+        <ViewStyle target={button} when={buttonPressed > 0} opacity={0.7} />
         <TapGesture onTap={() => opened.update(() => true)} />
         <Text color="#ffffff">Open dialog</Text>
       </View>
-      <TextField label="Background field" value="Background" height={40} color="#ffffff">
-        <StateStyle when="focused" backgroundColor="#e0f2fe" color="#111827" textAlign="right" />
+      <TextField ref={field} label="Background field" value="Background" height={40} color="#ffffff">
+        <ViewStyle target={field} when={fieldFocused} backgroundColor="#e0f2fe" />
+        <TextStyle target={field} when={fieldFocused} color="#111827" textAlign={select(fieldFocused, "right", "left")} />
       </TextField>
       <Show when={opened()}>
         {() => (

@@ -15,8 +15,7 @@ const gestureOrderOfTarget = new Map();
 const gestureBindings = new Map();
 const gestureHandlerIds = new Map();
 const retiredGestureHandlers = new Map();
-const stateStyleOrderOfTarget = new Map();
-const stateStyleBindings = new Map();
+const styleOrderOfTarget = new Map();
 const virtualTargetOf = new Map();
 const virtualScopeOf = new Map();
 const virtualRoots = new Map();
@@ -85,8 +84,7 @@ function resetRenderState() {
   gestureBindings.clear();
   gestureHandlerIds.clear();
   retiredGestureHandlers.clear();
-  stateStyleOrderOfTarget.clear();
-  stateStyleBindings.clear();
+  styleOrderOfTarget.clear();
   virtualTargetOf.clear();
   virtualScopeOf.clear();
   virtualRoots.clear();
@@ -184,6 +182,8 @@ globalThis.__bubbleRun = (id) => {
     return 0;
   } catch (error) {
     bodyError = error;
+    globalThis.__bubbleLastError = String(error && error.message || error);
+    globalThis.__bubbleLastErrorStack = String(error && error.stack || error).slice(0, 1200);
     return -1;
   }
 };
@@ -307,8 +307,16 @@ function pack(kind, props, text) {
   const cursor = cursors[cursors.length - 1];
   const values = [];
   const dynamics = [];
+  let refBinding = null;
   for (const key of Object.keys(props)) {
     const value = props[key];
+    if (key === "ref") {
+      if (typeof value !== "object" || value === null || typeof value.current !== "number") {
+        throw new Error("ref must come from ref()");
+      }
+      refBinding = value;
+      continue;
+    }
     if (value instanceof Dynamic) dynamics.push([key, value.run]);
     else values.push([key, value]);
   }
@@ -322,6 +330,16 @@ function pack(kind, props, text) {
     handle = api.spawn(parentHandle, kind, text);
     if (!handle) throw new Error(api.error() || "spawn failed");
     registerChild(parentHandle, handle);
+  }
+  if (refBinding) {
+    refBinding.current = handle;
+    const pending = refBinding.pending;
+    if (pending) {
+      refBinding.pending = null;
+      for (const varId of pending) {
+        if (api.bind_var(varId, handle) !== 0) throw new Error(api.error() || "bind_var failed");
+      }
+    }
   }
   applyNodeProps(handle, values, dynamics);
   return handle;
@@ -408,8 +426,9 @@ export function registerPrimitive(name, factory) {
 export function primitive(name, props, children, buildStyles) {
   const factory = primitives.get(name);
   if (!factory) throw new Error(`unknown primitive ${name}`);
-  if (leafStyles && name !== "StateStyle") {
-    throw new Error(`${name} cannot be built inside state style children`);
+  const STYLE_COMPONENTS = new Set(["ViewStyle", "TextStyle"]);
+  if (leafStyles && !STYLE_COMPONENTS.has(name)) {
+    throw new Error(`${name} cannot be built inside style declaration children`);
   }
   return factory(props, children, buildStyles);
 }
@@ -569,7 +588,8 @@ registerPrimitive("DoubleTapGesture", doubleTapGesture);
 registerPrimitive("LongPressGesture", longPressGesture);
 registerPrimitive("PanGesture", panGesture);
 registerPrimitive("TransformGesture", transformGesture);
-registerPrimitive("StateStyle", stateStyle);
+registerPrimitive("ViewStyle", viewStyle);
+registerPrimitive("TextStyle", textStyle);
 
 function propParts(value) {
   if (value == null) return [0, 0, ""];
@@ -685,16 +705,290 @@ function disposeGesture(id) {
   if (api.dispose_gesture(id) !== 0) throw new Error(api.error() || "dispose gesture failed");
 }
 
-let stateStyleProps;
+// ---------------------------------------------------------------------------
+// Shared variables and style declarations
+// ---------------------------------------------------------------------------
 
-function allowedStateStyleProps() {
-  if (!stateStyleProps) {
-    if (typeof api.state_style_props !== "function") {
-      throw new Error("host does not expose state style properties");
-    }
-    stateStyleProps = new Set(api.state_style_props());
+const SOURCE_CODES = {
+  none: 0,
+  pressed: 1,
+  focused: 2,
+  disabled: 3,
+  editing: 4,
+};
+
+// Opcode table for the style expression program; must match crates/core/src/expr.rs.
+const EXPR_OPS = {
+  add: 2,
+  sub: 3,
+  mul: 4,
+  div: 5,
+  neg: 6,
+  lt: 7,
+  le: 8,
+  gt: 9,
+  ge: 10,
+  eq: 11,
+  ne: 12,
+  and: 13,
+  or: 14,
+  not: 15,
+  select: 16,
+  mix: 17,
+  lerp: 18,
+  clamp: 19,
+  min: 20,
+  max: 21,
+  abs: 22,
+};
+
+// Enum name tables; the engine carries numeric codes only.
+const ENUM_CODES = {
+  textAlign: { left: 0, center: 1, right: 2 },
+  fit: { contain: 0, cover: 1, fill: 2 },
+};
+
+// Per-component paint whitelists; must match crates/core/src/props.rs.
+const VIEW_STYLE_PROPS = ["backgroundColor", "radius", "opacity", "fit"];
+const TEXT_STYLE_PROPS = ["color", "textAlign"];
+
+export function ref(initial) {
+  return { current: initial ?? 0 };
+}
+
+function resolveTarget(target) {
+  if (target == null) return 0;
+  if (typeof target === "number") return target;
+  if (typeof target === "object" && typeof target.current === "number") return target.current;
+  throw new Error("target must be a ref or a node handle");
+}
+
+/// One UI-thread variable. Source-linked variables are driven by the shell;
+/// unlinked ones start at `value` and are written with `set` / `bind`.
+export function createVar(options) {
+  if (typeof api.create_var !== "function") {
+    throw new Error("host does not expose shared variables");
   }
-  return stateStyleProps;
+  const source = (options && options.source) ?? "none";
+  if (!(source in SOURCE_CODES)) throw new Error(`unknown var source ${source}`);
+  let initial = options && options.value;
+  if (initial == null) initial = 0;
+  const [tag, number] = propParts(initial);
+  const id = api.create_var(SOURCE_CODES[source], tag, number);
+  if (!id) throw new Error(api.error() || "create_var failed");
+  const targetRef = options && options.target;
+  const target = resolveTarget(targetRef);
+  if (target != 0) {
+    if (api.bind_var(id, target) !== 0) throw new Error(api.error() || "bind_var failed");
+  } else if (typeof targetRef === "object" && targetRef !== null) {
+    // The target node does not exist yet: flush the binding when its ref
+    // resolves during spawn.
+    (targetRef.pending ??= []).push(id);
+  }
+  const self = { id, current: target, source };
+  self.set = () => {
+    throw new Error("variable writes arrive in stage 2; use createVar with a source");
+  };
+  return self;
+}
+
+/// Marker wrapper the compiler emits around style declaration expressions.
+export function styleExpr(tree) {
+  return { __bubbleStyleExpr: tree };
+}
+
+/// Encode one expression tree node into program bytes. `enums` maps enum
+/// names for the slot; `colorSlot` makes number leaves numeric colors.
+/// Returns `{ program: Uint8Array }`, or `{ static }` when the tree folded to
+/// a plain value.
+function encodeStyleTree(tree, enums, colorSlot) {
+  const consts = [];
+  const intern = (value) => {
+    const index = consts.findIndex((existing) => {
+      if (existing.tag !== value.tag) return false;
+      if (existing.tag === 4) return existing.text === value.text;
+      return existing.number === value.number;
+    });
+    if (index >= 0) return index;
+    consts.push(value);
+    return consts.length - 1;
+  };
+  const hasVar = { value: false };
+  const code = walk(tree);
+
+  function leaf(value, enumKey) {
+    if (value == null) throw new Error("style expressions do not accept null");
+    if (typeof value === "boolean") return [["c", intern({ tag: 3, number: value ? 1 : 0 })]];
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) throw new Error("style expressions only accept finite numbers");
+      if (colorSlot) {
+        if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+          throw new Error(`numeric color ${value} is not 0xAARRGGBB`);
+        }
+        return [["c", intern({ tag: 2, number: value })]];
+      }
+      return [["c", intern({ tag: 1, number: value })]];
+    }
+    if (typeof value === "string") {
+      if (enumKey) {
+        const table = ENUM_CODES[enumKey];
+        if (!(value in table)) throw new Error(`unsupported ${enumKey} ${value}`);
+        return [["c", intern({ tag: 1, number: table[value] })]];
+      }
+      return [["c", intern({ tag: 4, text: value })]];
+    }
+    if (typeof value === "object" && typeof value.id === "number") {
+      hasVar.value = true;
+      return [["l", value.id]];
+    }
+    throw new Error(`unsupported style expression value ${typeof value}`);
+  }
+
+  function walk(node) {
+    if (!Array.isArray(node)) return leaf(node, null);
+    const [op, ...args] = node;
+    if (!(op in EXPR_OPS)) throw new Error(`unknown style expression ${op}`);
+    const opcode = EXPR_OPS[op];
+    if (op === "neg" || op === "not" || op === "abs") {
+      const inner = walk1(args[0], null);
+      return [...inner, ["o", opcode]];
+    }
+    const binary = op === "add" || op === "sub" || op === "mul" || op === "div"
+      || op === "lt" || op === "le" || op === "gt" || op === "ge"
+      || op === "eq" || op === "ne" || op === "and" || op === "or"
+      || op === "min" || op === "max";
+    if (binary) {
+      const a = walk1(args[0], null);
+      const b = walk1(args[1], null);
+      return [...a, ...b, ["o", opcode]];
+    }
+    if (op === "select") {
+      const cond = walk1(args[0], null);
+      const a = walk1(args[1], enums);
+      const b = walk1(args[2], enums);
+      return [...cond, ...a, ...b, ["o", opcode]];
+    }
+    const ternary = op === "mix" || op === "lerp" || op === "clamp";
+    if (ternary) {
+      const a = walk1(args[0], colorSlot && op === "mix");
+      const b = walk1(args[1], colorSlot && op === "mix");
+      const c = walk1(args[2], null);
+      return [...a, ...b, ...c, ["o", opcode]];
+    }
+    throw new Error(`unknown style expression ${op}`);
+  }
+
+  function walk1(node, enumKey) {
+    if (!Array.isArray(node) && typeof node === "string" && enumKey) return leaf(node, enumKey);
+    if (!Array.isArray(node) && typeof node === "number" && enumKey) {
+      return leaf(node, null);
+    }
+    return Array.isArray(node) ? walk(node) : leaf(node, enumKey);
+  }
+
+  // A tree with no variables and no operations folds to the plain value.
+  if (!hasVar.value && code.length === 1 && code[0][0] === "c") {
+    return { static: constToValue(consts[code[0][1]], enums) };
+  }
+
+  function constToValue(value, enumKey) {
+    if (value.tag === 3) return value.number !== 0;
+    if (value.tag === 4) return value.text;
+    return value.number;
+  }
+
+  function constBytes(value) {
+    const out = [value.tag];
+    if (value.tag === 4) {
+      const bytes = utf8(value.text);
+      out.push(bytes.length & 0xff, (bytes.length >>> 8) & 0xff, (bytes.length >>> 16) & 0xff, (bytes.length >>> 24) & 0xff);
+      out.push(...bytes);
+    } else {
+      // Num consts are f32, Color consts are u32; both little-endian.
+      if (value.tag === 2) {
+        out.push(
+          value.number & 0xff,
+          (value.number >>> 8) & 0xff,
+          (value.number >>> 16) & 0xff,
+          (value.number >>> 24) & 0xff,
+        );
+      } else {
+        const buffer = new ArrayBuffer(4);
+        new Float32Array(buffer)[0] = value.number;
+        out.push(...new Uint8Array(buffer));
+      }
+    }
+    return out;
+  }
+
+  const bytes = [consts.length & 0xff];
+  for (const value of consts) bytes.push(...constBytes(value));
+  bytes.push(code.length & 0xff, (code.length >>> 8) & 0xff);
+  for (const item of code) {
+    if (item[0] === "c") {
+      bytes.push(0, item[1]);
+    } else if (item[0] === "l") {
+      const id = item[1];
+      bytes.push(1, id & 0xff, (id >>> 8) & 0xff, (id >>> 16) & 0xff, (id >>> 24) & 0xff);
+    } else {
+      bytes.push(item[1]);
+    }
+  }
+  return { program: Uint8Array.from(bytes) };
+}
+
+function styleDecl(props, component) {
+  if (typeof api.spawn_style_decl !== "function") {
+    throw new Error("host does not expose style declarations");
+  }
+  props = props ?? {};
+  if (props.target == null) throw new Error("style declarations require a target");
+  const target = resolveTarget(props.target);
+  if (!target) throw new Error("style declarations require a resolved target");
+  const allowed = component === 1 ? VIEW_STYLE_PROPS : TEXT_STYLE_PROPS;
+  for (const key of Object.keys(props)) {
+    if (key === "target" || key === "when") continue;
+    if (!allowed.includes(key)) throw new Error(`this style component has no property ${key}`);
+  }
+  let order = styleOrderOfTarget.get(target);
+  if (!order) {
+    order = [];
+    styleOrderOfTarget.set(target, order);
+  }
+  const id = api.spawn_style_decl(target, component, order.length);
+  if (!id) throw new Error(api.error() || "spawn_style_decl failed");
+  order.push(id);
+  registerVirtual("style", id, target);
+  for (const key of Object.keys(props)) {
+    if (key === "target") continue;
+    const value = props[key];
+    const tree = value && value.__bubbleStyleExpr ? value.__bubbleStyleExpr : value;
+    const enums = key === "textAlign" || key === "fit" ? key : null;
+    const colorSlot =
+      (component === 1 && key === "backgroundColor") || (component === 2 && key === "color");
+    const encoded = encodeStyleTree(tree, enums, colorSlot);
+    if (encoded.static !== undefined) {
+      const [tag, number, text] = propParts(encoded.static);
+      if (api.set_style_prop(id, key, tag, number, text) !== 0) {
+        throw new Error(api.error() || "set_style_prop failed");
+      }
+    } else {
+      // Both hosts take the program bytes as a plain number array; programs
+      // are small after the compiler folds constants.
+      if (api.set_style_prop_program(id, key, Array.from(encoded.program)) !== 0) {
+        throw new Error(api.error() || "set_style_prop_program failed");
+      }
+    }
+  }
+  return id;
+}
+
+function viewStyle(props) {
+  return styleDecl(props, 1);
+}
+
+function textStyle(props) {
+  return styleDecl(props, 2);
 }
 
 // One scope per real UI target: declarations created while building that
@@ -743,52 +1037,27 @@ function unlinkVirtual(key) {
   if (index >= 0) scope.entries.splice(index, 1);
 }
 
-function setStateStyleProp(id, key, value) {
-  const [tag, number, text] = propParts(value);
-  if (api.set_state_style_prop(id, key, tag, number, text) !== 0) {
-    throw new Error(api.error() || "set_state_style_prop failed");
-  }
-}
 
-function bindStateStyleProp(id, key, fn) {
-  let set = stateStyleBindings.get(id);
-  if (!set) {
-    set = new Set();
-    stateStyleBindings.set(id, set);
-  }
-  set.add(addBinding(() => setStateStyleProp(id, key, fn()), null));
-}
-
-function deactivateStateStyleBindings(id) {
-  const set = stateStyleBindings.get(id);
-  if (!set) return;
-  for (const binding of set) {
-    if (api.dispose_node(binding) !== 0) throw new Error(api.error() || "dispose_node failed");
-  }
-  stateStyleBindings.delete(id);
-}
-
-function disposeStateStyle(id) {
+function disposeStyleDecl(id) {
   const key = virtualKey("style", id);
   if (!virtualTargetOf.has(key)) return;
   const target = virtualTargetOf.get(key);
   unlinkVirtual(key);
-  deactivateStateStyleBindings(id);
-  const order = stateStyleOrderOfTarget.get(target);
+  const order = styleOrderOfTarget.get(target);
   if (order) {
     const index = order.indexOf(id);
     if (index >= 0) order.splice(index, 1);
-    if (order.length === 0) stateStyleOrderOfTarget.delete(target);
+    if (order.length === 0) styleOrderOfTarget.delete(target);
   }
-  if (api.dispose_state_style(id) !== 0) {
-    throw new Error(api.error() || "dispose state style failed");
+  if (api.dispose_style_decl(id) !== 0) {
+    throw new Error(api.error() || "dispose style declaration failed");
   }
 }
 
 function disposeVirtual(key) {
   const id = virtualId(key);
   if (key.startsWith("gesture:")) disposeGesture(id);
-  else disposeStateStyle(id);
+  else disposeStyleDecl(id);
 }
 
 // Drop a scope's declarations but keep the scope, so a reopened branch lands
@@ -814,9 +1083,9 @@ function disposeTargetVirtuals(handle) {
   const gestures = gestureOrderOfTarget.get(handle);
   if (gestures) for (const id of [...gestures]) disposeGesture(id);
   gestureOrderOfTarget.delete(handle);
-  const styles = stateStyleOrderOfTarget.get(handle);
-  if (styles) for (const id of [...styles]) disposeStateStyle(id);
-  stateStyleOrderOfTarget.delete(handle);
+  const styles = styleOrderOfTarget.get(handle);
+  if (styles) for (const id of [...styles]) disposeStyleDecl(id);
+  styleOrderOfTarget.delete(handle);
   const root = virtualRoots.get(handle);
   if (root) {
     root.entries.length = 0;
@@ -832,7 +1101,7 @@ function syncVirtualOrders() {
     const styles = [];
     flattenVirtualScope(root, gestures, styles);
     syncOrder(target, gestures, gestureOrderOfTarget, "gesture");
-    syncOrder(target, styles, stateStyleOrderOfTarget, "state style");
+    syncOrder(target, styles, styleOrderOfTarget, "state style");
   }
 }
 
@@ -848,38 +1117,9 @@ function syncOrder(target, desired, orders, label) {
     const code =
       label === "gesture"
         ? api.move_gesture(desired[index], target, index)
-        : api.move_state_style(desired[index], target, index);
+        : api.move_style_decl(desired[index], target, index);
     if (code !== 0) throw new Error(api.error() || `move ${label} failed`);
   }
-}
-
-function stateStyle(props) {
-  if (typeof api.spawn_state_style !== "function") {
-    throw new Error("host does not expose state style declarations");
-  }
-  props = props ?? {};
-  if (props.when == null) throw new Error("StateStyle requires when");
-  const allowed = allowedStateStyleProps();
-  for (const key of Object.keys(props)) {
-    if (key === "when" || key === "enabled") continue;
-    if (!allowed.has(key)) throw new Error(`StateStyle has no property ${key}`);
-  }
-  const target = parent();
-  let order = stateStyleOrderOfTarget.get(target);
-  if (!order) {
-    order = [];
-    stateStyleOrderOfTarget.set(target, order);
-  }
-  const id = api.spawn_state_style(target, order.length);
-  if (!id) throw new Error(api.error() || "spawn_state_style failed");
-  order.push(id);
-  registerVirtual("style", id, target);
-  for (const key of Object.keys(props)) {
-    const value = props[key];
-    if (value instanceof Dynamic) bindStateStyleProp(id, key, value.run);
-    else setStateStyleProp(id, key, value);
-  }
-  return id;
 }
 
 // A leaf primitive's children are style declarations only, and they target
