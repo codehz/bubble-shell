@@ -32,14 +32,25 @@ pub struct DevBuild {
     pub sources: Vec<PathBuf>,
 }
 
+/// Failed development build. Carries the sources the build managed to read so
+/// the `bubble dev` watcher keeps tracking files imported before the failure.
+#[derive(Debug)]
+pub struct DevBuildError {
+    pub message: String,
+    pub sources: Vec<PathBuf>,
+}
+
 /// Build every module of `entry` as a CommonJS factory.
-pub fn build_dev(entry: &Path) -> Result<DevBuild, String> {
-    let entry =
-        std::fs::canonicalize(entry).map_err(|error| format!("{}: {error}", entry.display()))?;
+pub fn build_dev(entry: &Path) -> Result<DevBuild, DevBuildError> {
+    let entry = std::fs::canonicalize(entry)
+        .map_err(|error| DevBuildError { message: format!("{}: {error}", entry.display()), sources: Vec::new() })?;
     let name = entry
         .file_stem()
         .and_then(|stem| stem.to_str())
-        .ok_or_else(|| format!("{}: entry has no file name", entry.display()))?
+        .ok_or_else(|| DevBuildError {
+            message: format!("{}: entry has no file name", entry.display()),
+            sources: Vec::new(),
+        })?
         .to_string();
     let cwd = entry
         .parent()
@@ -63,13 +74,17 @@ pub fn build_dev(entry: &Path) -> Result<DevBuild, String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|error| format!("tokio runtime: {error}"))?;
+        .map_err(|error| DevBuildError { message: format!("tokio runtime: {error}"), sources: Vec::new() })?;
     let mut bundler = Bundler::with_plugins(options, vec![BubblePlugin::new_shared(plugin)])
-        .map_err(|error| format!("{error:?}"))?;
+        .map_err(|error| DevBuildError { message: format!("{error:?}"), sources: Vec::new() })?;
     let generated = match runtime.block_on(bundler.generate()) {
         Ok(generated) => generated,
         Err(error) => {
-            return Err(state.take_error().unwrap_or_else(|| format!("{error:?}")));
+            let sources = state.sources.lock().unwrap().clone();
+            return Err(DevBuildError {
+                message: state.take_error().unwrap_or_else(|| format!("{error:?}")),
+                sources,
+            });
         }
     };
 
@@ -86,8 +101,10 @@ pub fn build_dev(entry: &Path) -> Result<DevBuild, String> {
             });
         }
     }
-    let entry_id =
-        entry_id.ok_or_else(|| format!("{}: bundler produced no entry chunk", entry.display()))?;
+    let entry_id = entry_id.ok_or_else(|| DevBuildError {
+        message: format!("{}: bundler produced no entry chunk", entry.display()),
+        sources: Vec::new(),
+    })?;
     let assets = std::mem::take(&mut *state.assets.lock().unwrap()).into_assets();
     let sources = state.sources.lock().unwrap().clone();
     Ok(DevBuild {

@@ -1,6 +1,6 @@
 //! `bubble dev`: build CommonJS module factories and push hot updates.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -65,14 +65,12 @@ pub struct DevOptions {
 
 #[derive(Default)]
 struct Shared {
-    entry: PathBuf,
     bundle: String,
     chunks: HashMap<String, String>,
     assets: HashMap<String, Vec<u8>>,
     sources: Vec<PathBuf>,
     clients: Vec<Arc<Mutex<TcpStream>>>,
     failed: bool,
-    native_stamp: Vec<(PathBuf, Option<SystemTime>, u64)>,
     native_body: String,
 }
 
@@ -82,9 +80,9 @@ pub fn run(options: DevOptions) -> Result<(), String> {
     let sdk = web_sdk()?;
     let wasm = wasm_shell()?;
 
-    let initial = build_dev(&entry)?;
+    let initial = build_dev(&entry).map_err(|error| error.message)?;
+    let native_body = native_json(&entry)?;
     let shared = Arc::new(Mutex::new(Shared {
-        entry: entry.clone(),
         bundle: render_dev_bundle(&initial),
         chunks: initial
             .chunks
@@ -95,8 +93,7 @@ pub fn run(options: DevOptions) -> Result<(), String> {
         sources: initial.sources.clone(),
         clients: Vec::new(),
         failed: false,
-        native_stamp: Vec::new(),
-        native_body: String::new(),
+        native_body,
     }));
 
     let listener = TcpListener::bind(("127.0.0.1", options.port))
@@ -132,11 +129,20 @@ fn asset_map(assets: &[bubble_bundler::BundledAsset]) -> HashMap<String, Vec<u8>
 
 fn spawn_watcher(shared: Arc<Mutex<Shared>>, entry: PathBuf) {
     thread::spawn(move || {
-        let mut stamps = stamps_of(&shared.lock().unwrap().sources);
+        // Watched files accumulate across rebuilds: a failed build may have
+        // already imported new files, and they must still trigger a rebuild.
+        let mut known: BTreeSet<PathBuf> = shared
+            .lock()
+            .unwrap()
+            .sources
+            .iter()
+            .cloned()
+            .chain(std::iter::once(entry.clone()))
+            .collect();
+        let mut stamps = stamps_known(&known);
         loop {
             thread::sleep(Duration::from_millis(150));
-            let sources = shared.lock().unwrap().sources.clone();
-            let next = stamps_of(&sources);
+            let next = stamps_known(&known);
             if next == stamps {
                 continue;
             }
@@ -186,6 +192,10 @@ fn spawn_watcher(shared: Arc<Mutex<Shared>>, entry: PathBuf) {
                             .collect();
                         was_failed
                     };
+                    match native_json(&entry) {
+                        Ok(body) => shared.lock().unwrap().native_body = body,
+                        Err(error) => eprintln!("native bundle failed:\n{error}"),
+                    }
                     match message {
                         Message::Update(chunks) => broadcast(&shared, &update_json(&chunks)),
                         Message::Reload => broadcast(&shared, &reload_json()),
@@ -193,14 +203,17 @@ fn spawn_watcher(shared: Arc<Mutex<Shared>>, entry: PathBuf) {
                         Message::None => {}
                     }
                     println!("rebuilt {} module(s)", build.chunks.len());
+                    known.extend(build.sources);
+                    stamps = stamps_known(&known);
                 }
                 Err(error) => {
-                    eprintln!("build failed:\n{error}");
+                    eprintln!("build failed:\n{}", error.message);
                     shared.lock().unwrap().failed = true;
-                    broadcast(&shared, &error_json(&error));
+                    broadcast(&shared, &error_json(&error.message));
+                    known.extend(error.sources);
+                    stamps = stamps_known(&known);
                 }
             }
-            stamps = stamps_of(&shared.lock().unwrap().sources);
         }
     });
 }
@@ -210,6 +223,10 @@ enum Message {
     None,
     Reload,
     Update(Vec<DevChunk>),
+}
+
+fn stamps_known(known: &BTreeSet<PathBuf>) -> Vec<(PathBuf, Option<SystemTime>, u64)> {
+    stamps_of(&known.iter().cloned().collect::<Vec<_>>())
 }
 
 fn stamps_of(sources: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>, u64)> {
@@ -279,41 +296,25 @@ fn write_text_frame(stream: &mut TcpStream, text: &str) -> std::io::Result<()> {
 }
 
 fn serve_native(stream: &mut TcpStream, shared: &Arc<Mutex<Shared>>) -> std::io::Result<()> {
-    let (entry, sources) = {
-        let state = shared.lock().unwrap();
-        (state.entry.clone(), state.sources.clone())
-    };
-    let stamp = stamps_of(&sources);
-    {
-        let state = shared.lock().unwrap();
-        if state.native_stamp == stamp && !state.native_body.is_empty() {
-            return respond(
-                stream,
-                200,
-                "application/json",
-                state.native_body.as_bytes(),
-            );
-        }
+    // The watcher prebuilds the release bundle; requests never trigger a build.
+    let body = shared.lock().unwrap().native_body.clone();
+    if body.is_empty() {
+        return respond(stream, 500, "text/plain", b"native bundle not ready");
     }
-    let bundled = match bundle_entry(&BundleOptions {
-        entry,
+    respond(stream, 200, "application/json", body.as_bytes())
+}
+
+fn native_json(entry: &Path) -> Result<String, String> {
+    let bundled = bundle_entry(&BundleOptions {
+        entry: entry.to_path_buf(),
         source_map: false,
-    }) {
-        Ok(bundled) => bundled,
-        Err(error) => return respond(stream, 500, "text/plain", error.as_bytes()),
-    };
+    })?;
     let manifest = release_manifest(None, &bundled.name, &bundled.code, &bundled.assets);
-    let body = serde_json::json!({
+    Ok(serde_json::json!({
         "manifest": manifest,
         "entry": bundled.code,
     })
-    .to_string();
-    {
-        let mut state = shared.lock().unwrap();
-        state.native_stamp = stamp;
-        state.native_body = body.clone();
-    }
-    respond(stream, 200, "application/json", body.as_bytes())
+    .to_string())
 }
 
 fn handle_connection(
