@@ -60,7 +60,6 @@ pub fn release_manifest(
 
 pub struct DevOptions {
     pub entry: PathBuf,
-    pub root: PathBuf,
     pub port: u16,
 }
 
@@ -80,8 +79,8 @@ struct Shared {
 pub fn run(options: DevOptions) -> Result<(), String> {
     let entry = std::fs::canonicalize(&options.entry)
         .map_err(|error| format!("{}: {error}", options.entry.display()))?;
-    let root = std::fs::canonicalize(&options.root)
-        .map_err(|error| format!("{}: {error}", options.root.display()))?;
+    let sdk = web_sdk()?;
+    let wasm = wasm_shell()?;
 
     let initial = build_dev(&entry)?;
     let shared = Arc::new(Mutex::new(Shared {
@@ -115,9 +114,10 @@ pub fn run(options: DevOptions) -> Result<(), String> {
             continue;
         };
         let shared = shared.clone();
-        let root = root.clone();
+        let sdk = sdk.clone();
+        let wasm = wasm.clone();
         thread::spawn(move || {
-            let _ = handle_connection(stream, &shared, &root);
+            let _ = handle_connection(stream, &shared, &sdk, &wasm);
         });
     }
     Ok(())
@@ -319,7 +319,8 @@ fn serve_native(stream: &mut TcpStream, shared: &Arc<Mutex<Shared>>) -> std::io:
 fn handle_connection(
     mut stream: TcpStream,
     shared: &Arc<Mutex<Shared>>,
-    root: &Path,
+    sdk: &Path,
+    wasm: &Path,
 ) -> std::io::Result<()> {
     let request = read_request(&mut stream)?;
     let Some(line) = request.lines().next() else {
@@ -379,7 +380,7 @@ fn handle_connection(
             None => respond(&mut stream, 404, "text/plain", b"asset not found"),
         };
     }
-    serve_file(&mut stream, root, path)
+    serve_static(&mut stream, sdk, wasm, path)
 }
 
 const DEV_PAGE: &str = r#"<!doctype html>
@@ -507,43 +508,48 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-fn sdk_web(root: &Path) -> Option<std::path::PathBuf> {
-    let mut dir = root.to_path_buf();
-    loop {
-        let candidate = dir.join("sdk/web");
-        if candidate.is_dir() {
-            return std::fs::canonicalize(candidate).ok();
-        }
-        if !dir.pop() {
-            return None;
-        }
-    }
+/// Web host modules and the wasm shell belong to this toolchain, not the app.
+/// Paths are fixed at compile time so `bubble dev` does not take a project root.
+fn toolchain_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn serve_file(stream: &mut TcpStream, root: &Path, path: &str) -> std::io::Result<()> {
-    let relative = path.trim_start_matches('/');
-    if relative.split('/').any(|part| part == "..") {
-        return respond(stream, 403, "text/plain", b"forbidden");
+fn require_toolchain(path: PathBuf, hint: &str) -> Result<PathBuf, String> {
+    std::fs::canonicalize(&path).map_err(|_| format!("{hint} ({})", path.display()))
+}
+
+fn web_sdk() -> Result<PathBuf, String> {
+    require_toolchain(toolchain_root().join("sdk/web/src"), "web sdk not found")
+}
+
+fn wasm_shell() -> Result<PathBuf, String> {
+    require_toolchain(
+        toolchain_root().join("target/wasm32-unknown-unknown/release/bubble_wasm.wasm"),
+        "wasm shell not found; cargo build -p bubble-wasm --target wasm32-unknown-unknown --release",
+    )
+}
+
+const SDK_MODULES: &[&str] = &["host.js", "a11y.js", "ime.js", "textlayout.js"];
+
+fn static_path(sdk: &Path, wasm: &Path, url_path: &str) -> Option<PathBuf> {
+    if url_path == "/bubble.wasm" {
+        return Some(wasm.to_path_buf());
     }
-    let mut candidate = root.join(relative);
-    if !candidate.is_file() {
-        if let Some(sdk) = sdk_web(root) {
-            let alt = sdk.join(relative);
-            if alt.is_file() {
-                candidate = alt;
-            }
-        }
-    }
-    let Ok(canonical) = std::fs::canonicalize(&candidate) else {
+    let name = url_path.strip_prefix("/src/")?;
+    SDK_MODULES.contains(&name).then(|| sdk.join(name))
+}
+
+fn serve_static(
+    stream: &mut TcpStream,
+    sdk: &Path,
+    wasm: &Path,
+    url_path: &str,
+) -> std::io::Result<()> {
+    let Some(file) = static_path(sdk, wasm, url_path) else {
         return respond(stream, 404, "text/plain", b"not found");
     };
-    let allowed = canonical.starts_with(root)
-        || sdk_web(root).is_some_and(|sdk| canonical.starts_with(&sdk));
-    if !allowed || !canonical.is_file() {
-        return respond(stream, 404, "text/plain", b"not found");
-    }
-    match std::fs::read(&canonical) {
-        Ok(bytes) => respond(stream, 200, mime_for(relative), &bytes),
+    match std::fs::read(&file) {
+        Ok(bytes) => respond(stream, 200, mime_for(url_path), &bytes),
         Err(_) => respond(stream, 404, "text/plain", b"not found"),
     }
 }
@@ -583,5 +589,25 @@ fn mime_for(path: &str) -> &'static str {
         "webp" => "image/webp",
         "css" => "text/css; charset=utf-8",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{static_path, toolchain_root};
+
+    #[test]
+    fn web_host_comes_from_the_toolchain_sdk() {
+        let sdk = std::fs::canonicalize(toolchain_root().join("sdk/web/src")).unwrap();
+        let wasm = std::path::PathBuf::from("bubble_wasm.wasm");
+        let host = static_path(&sdk, &wasm, "/src/host.js").unwrap();
+        let text = std::fs::read_to_string(host).unwrap();
+        assert!(text.contains("from \"./a11y.js\""));
+        assert!(static_path(&sdk, &wasm, "/src/../host.js").is_none());
+        assert!(static_path(&sdk, &wasm, "/sdk.js").is_none());
+        assert_eq!(
+            static_path(&sdk, &wasm, "/bubble.wasm").as_deref(),
+            Some(wasm.as_path())
+        );
     }
 }

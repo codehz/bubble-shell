@@ -65,7 +65,7 @@ Native HMR 延后；当前 native 开发重新打包并重启。
 新增 `bubble` CLI：
 
 - `bubble bundle <entry>`: 生产构建，输出 `<name>.json` + `<name>.js` + `assets/`
-- `bubble dev`: Web 开发服务器，支持 HMR
+- `bubble dev <entry>`: Web 开发服务器，支持 HMR。页面用的 `sdk/web/src` 与 release `bubble_wasm.wasm` 由编译期工具链路径提供，不接受项目根目录参数。
 
 fixture 继续使用多入口；不引入应用配置目录。
 
