@@ -6,10 +6,9 @@
 //! applied in that order, so a later matching declaration wins. Conditions are
 //! a set of state bits ANDed together.
 
-use std::collections::{HashMap, HashSet};
-
 use crate::color::Color;
 use crate::ops::Value;
+use crate::ordered::OrderedDecls;
 use crate::props::{image_fit, text_align};
 
 /// Condition bit: the first eligible pointer is down on the target.
@@ -111,50 +110,37 @@ pub(crate) struct StateStyleDecl {
 
 /// Declarations plus per-target order. Ids are independent of node handles.
 pub(crate) struct StateStyles {
-    decls: Vec<Option<StateStyleDecl>>,
-    order: HashMap<u32, Vec<u32>>,
-    retired: HashSet<u32>,
+    ordered: OrderedDecls<StateStyleDecl>,
 }
 
 impl StateStyles {
     pub fn new() -> Self {
         Self {
-            decls: Vec::new(),
-            order: HashMap::new(),
-            retired: HashSet::new(),
+            ordered: OrderedDecls::new(),
         }
     }
 
     pub fn decl(&self, id: u32) -> Option<&StateStyleDecl> {
-        self.decls.get(id as usize).and_then(Option::as_ref)
+        self.ordered.decl(id)
     }
 
     fn decl_mut(&mut self, id: u32) -> Option<&mut StateStyleDecl> {
-        self.decls.get_mut(id as usize).and_then(Option::as_mut)
+        self.ordered.decl_mut(id)
     }
 
     pub fn spawn(&mut self, id: u32, target: u32, index: u32) -> Result<(), String> {
-        if id == 0 || self.retired.contains(&id) || self.decl(id).is_some() {
-            return Err(format!("state style {id} is not free"));
-        }
-        let list = self.order.entry(target).or_default();
-        if index as usize > list.len() {
-            return Err(format!(
-                "state style index {index} past {} declarations",
-                list.len()
-            ));
-        }
-        list.insert(index as usize, id);
-        if self.decls.len() <= id as usize {
-            self.decls.resize_with(id as usize + 1, || None);
-        }
-        self.decls[id as usize] = Some(StateStyleDecl {
+        self.ordered.insert(
+            id,
             target,
-            when: 0,
-            enabled: true,
-            patch: StateStylePatch::default(),
-        });
-        Ok(())
+            index,
+            "state style",
+            StateStyleDecl {
+                target,
+                when: 0,
+                enabled: true,
+                patch: StateStylePatch::default(),
+            },
+        )
     }
 
     /// Apply one property. The value is parsed before the declaration changes.
@@ -176,28 +162,8 @@ impl StateStyles {
             .decl(id)
             .ok_or_else(|| format!("unknown state style {id}"))?
             .target;
-        let len = self.order.get(&target).map_or(0, |list| list.len() as u32);
-        let held = old_target == target
-            && self
-                .order
-                .get(&target)
-                .is_some_and(|list| list.contains(&id));
-        let capacity = len - u32::from(held);
-        if index > capacity {
-            return Err(format!(
-                "state style index {index} past {capacity} declarations"
-            ));
-        }
-        if let Some(list) = self.order.get_mut(&old_target) {
-            list.retain(|existing| *existing != id);
-            if list.is_empty() {
-                self.order.remove(&old_target);
-            }
-        }
-        self.order
-            .entry(target)
-            .or_default()
-            .insert(index as usize, id);
+        self.ordered
+            .move_decl(id, old_target, target, index, "state style")?;
         if let Some(decl) = self.decl_mut(id) {
             decl.target = target;
         }
@@ -209,29 +175,18 @@ impl StateStyles {
             .decl(id)
             .ok_or_else(|| format!("unknown state style {id}"))?
             .target;
-        if let Some(list) = self.order.get_mut(&target) {
-            list.retain(|existing| *existing != id);
-            if list.is_empty() {
-                self.order.remove(&target);
-            }
-        }
-        self.decls[id as usize] = None;
-        self.retired.insert(id);
+        self.ordered.remove(id, target);
         Ok(())
     }
 
     /// Drop every declaration attached to a destroyed node.
     pub fn target_disposed(&mut self, target: u32) {
-        let ids = self.order.remove(&target).unwrap_or_default();
-        for id in ids {
-            self.decls[id as usize] = None;
-            self.retired.insert(id);
-        }
+        self.ordered.retire_target(target);
     }
 
     /// Merge the enabled declarations on `target` that fully match `state`.
     pub fn overlay(&self, target: u32, state: u8, out: &mut StateStylePatch) {
-        let Some(ids) = self.order.get(&target) else {
+        let Some(ids) = self.ordered.ids(target) else {
             return;
         };
         for id in ids {
@@ -247,7 +202,7 @@ impl StateStyles {
     /// Whether a declaration that reacts to a bit of `state` currently matches.
     /// Used to decide whether the default focus ring is taken over.
     pub fn matching(&self, target: u32, bit: u8, state: u8) -> bool {
-        let Some(ids) = self.order.get(&target) else {
+        let Some(ids) = self.ordered.ids(target) else {
             return false;
         };
         ids.iter().any(|id| {
@@ -260,7 +215,7 @@ impl StateStyles {
     /// Whether `target` still wants pressed feedback: any enabled declaration
     /// with the pressed bit, whether or not the other conditions hold.
     pub fn pressed_interest(&self, target: u32) -> bool {
-        let Some(ids) = self.order.get(&target) else {
+        let Some(ids) = self.ordered.ids(target) else {
             return false;
         };
         ids.iter().any(|id| {

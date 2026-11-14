@@ -13,6 +13,7 @@ mod ir;
 mod layout;
 mod manifest;
 mod ops;
+mod ordered;
 mod paint;
 mod props;
 mod reactive;

@@ -777,4 +777,65 @@ fn state_style_scopes_keep_authored_order_and_cleanup_bindings() {
     assert_eq!(bubble_faults(), 0, "{}", error());
 }
 
+const GESTURE_ORDER_APP: &str = r##"
+import * as shell from "bubble-shell";
+
+shell.mount(function App() {
+  const open = shell.signal(false);
+  globalThis.branchOpen = open;
+  globalThis.hits = [];
+  shell.primitive(
+    "View",
+    { backgroundColor: "#ffffff", width: 100, height: 100, role: "button" },
+    () => {
+      shell.show(() => open(), null, () => {
+        shell.primitive("TapGesture", {
+          onTap: () => globalThis.hits.push("branch"),
+        });
+      });
+      shell.primitive("TapGesture", {
+        onTap: () => globalThis.hits.push("static"),
+      });
+    },
+  );
+  globalThis.step = (fn) => {
+    shell.batch(fn);
+    shell.flush();
+  };
+});
+"##;
+
+/// Dispatch one tap and wait until a gesture handler has run `expected` times.
+fn tap_and_wait(x: f32, y: f32, expected: usize) -> String {
+    assert_eq!(bubble_pointer(0, 1, x, y, 0.0, 0, 1), 0, "{}", error());
+    assert_eq!(bubble_pointer(2, 1, x, y, 20.0, 0, 0), 0, "{}", error());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let hits = eval("globalThis.hits.join(',')");
+        if hits.split(',').filter(|hit| !hit.is_empty()).count() >= expected {
+            return hits;
+        }
+        assert!(Instant::now() < deadline, "tap handler did not run: {hits}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn gesture_scopes_keep_authored_order_across_branch_rebuild() {
+    let _guard = exclusive();
+    bubble_destroy();
+    assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    try_load_source(GESTURE_ORDER_APP).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(frame_fills(100.0, 100.0).len(), 1);
+
+    // Two tap declarations share the view. The later declaration wins, and a
+    // rebuilt Show branch must return to its authored slot, not append itself.
+    assert_eq!(tap_and_wait(50.0, 50.0, 1), "static");
+    eval("step(() => branchOpen.set(true))");
+    assert_eq!(tap_and_wait(50.0, 50.0, 2), "static,static");
+    eval("step(() => branchOpen.set(false))");
+    assert_eq!(tap_and_wait(50.0, 50.0, 3), "static,static,static");
+    bubble_destroy();
+}
+
 

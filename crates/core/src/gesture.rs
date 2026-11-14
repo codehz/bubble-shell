@@ -9,6 +9,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ops::Value;
+use crate::ordered::OrderedDecls;
 
 /// Maximum movement that still counts as a tap.
 pub const TAP_SLOP: f32 = 10.0;
@@ -333,9 +334,7 @@ struct Sequence {
 
 /// Pointer declarations plus the one live touch sequence.
 pub struct Recognizer {
-    decls: Vec<Option<GestureDecl>>,
-    order: HashMap<u32, Vec<u32>>,
-    retired: HashSet<u32>,
+    ordered: OrderedDecls<GestureDecl>,
     sequence: Option<Sequence>,
     pending_tap: Option<PendingTap>,
     next_sequence: u32,
@@ -354,9 +353,7 @@ impl Default for Recognizer {
 impl Recognizer {
     pub fn new() -> Self {
         Self {
-            decls: Vec::new(),
-            order: HashMap::new(),
-            retired: HashSet::new(),
+            ordered: OrderedDecls::new(),
             sequence: None,
             pending_tap: None,
             next_sequence: 0,
@@ -374,38 +371,29 @@ impl Recognizer {
         kind: GestureKind,
         index: u32,
     ) -> Result<(), String> {
-        if id == 0 || self.retired.contains(&id) || self.decl(id).is_some() {
-            return Err(format!("gesture {id} is not free"));
-        }
-        let list = self.order.entry(target).or_default();
-        if index as usize > list.len() {
-            return Err(format!(
-                "gesture index {index} past {} declarations",
-                list.len()
-            ));
-        }
-        list.insert(index as usize, id);
-        if self.decls.len() <= id as usize {
-            self.decls.resize_with(id as usize + 1, || None);
-        }
-        self.decls[id as usize] = Some(GestureDecl {
+        self.ordered.insert(
             id,
             target,
-            kind,
-            config: GestureConfig::defaults(kind),
-            version: 1,
-            events: [0; 10],
-        });
-        Ok(())
+            index,
+            "gesture",
+            GestureDecl {
+                id,
+                target,
+                kind,
+                config: GestureConfig::defaults(kind),
+                version: 1,
+                events: [0; 10],
+            },
+        )
     }
 
     pub fn decl(&self, id: u32) -> Option<&GestureDecl> {
-        self.decls.get(id as usize).and_then(Option::as_ref)
+        self.ordered.decl(id)
     }
 
     /// Whether `target` has a tap declaration with an `onTap` handler.
     pub fn has_tap(&self, target: u32) -> bool {
-        self.order.get(&target).is_some_and(|ids| {
+        self.ordered.ids(target).is_some_and(|ids| {
             ids.iter().any(|id| {
                 self.decl(*id)
                     .is_some_and(|decl| decl.kind == GestureKind::Tap && decl.has_handler(SLOT_TAP))
@@ -417,7 +405,7 @@ impl Recognizer {
     /// uses it to decide which node owns pressed feedback; routing is
     /// unchanged.
     pub(crate) fn click_target(&self, path: &[u32]) -> Option<u32> {
-        tap_family(&self.order, &self.decls, path).map(|family| family.target)
+        tap_family(&self.ordered.order, &self.ordered.decls, path).map(|family| family.target)
     }
 
     /// Whether the live sequence already gave up on the tap: none is live, or
@@ -431,7 +419,7 @@ impl Recognizer {
 
     /// Synthesize a successful tap for keyboard or screen-reader activation.
     pub fn activate(&mut self, target: u32, x: f32, y: f32, time_ms: f64) -> bool {
-        let Some(ids) = self.order.get(&target) else {
+        let Some(ids) = self.ordered.ids(target) else {
             return false;
         };
         let Some(id) = ids.iter().copied().find(|id| {
@@ -442,7 +430,7 @@ impl Recognizer {
         };
         self.next_sequence = self.next_sequence.wrapping_add(1);
         let sequence = self.next_sequence;
-        let decls = &self.decls;
+        let decls = &self.ordered.decls;
         push_event(
             &mut self.events,
             decls,
@@ -461,9 +449,8 @@ impl Recognizer {
 
     pub fn set_prop(&mut self, id: u32, key: &str, value: &Value) -> Result<(), String> {
         let decl = self
-            .decls
-            .get_mut(id as usize)
-            .and_then(Option::as_mut)
+            .ordered
+            .decl_mut(id)
             .ok_or_else(|| format!("unknown gesture {id}"))?;
         let kind = decl.kind;
         decl.version = decl.version.wrapping_add(1);
@@ -495,9 +482,8 @@ impl Recognizer {
 
     pub fn bind(&mut self, id: u32, slot: u8, handler: u32) -> Result<(), String> {
         let decl = self
-            .decls
-            .get_mut(id as usize)
-            .and_then(Option::as_mut)
+            .ordered
+            .decl_mut(id)
             .ok_or_else(|| format!("unknown gesture {id}"))?;
         if !decl.kind.allows_slot(slot) {
             return Err(format!("gesture {:?} has no event slot {slot}", decl.kind));
@@ -511,19 +497,8 @@ impl Recognizer {
             .decl(id)
             .ok_or_else(|| format!("unknown gesture {id}"))?
             .target;
-        if let Some(list) = self.order.get_mut(&old_target) {
-            list.retain(|existing| *existing != id);
-        }
-        {
-            let list = self.order.entry(target).or_default();
-            if index as usize > list.len() {
-                return Err(format!(
-                    "gesture index {index} past {} declarations",
-                    list.len()
-                ));
-            }
-            list.insert(index as usize, id);
-        }
+        self.ordered
+            .move_decl(id, old_target, target, index, "gesture")?;
         if old_target != target {
             if self
                 .pending_tap
@@ -533,7 +508,7 @@ impl Recognizer {
                 self.pending_tap = None;
             }
             self.cancel_decl(id, REASON_DISPOSED);
-            if let Some(decl) = self.decls.get_mut(id as usize).and_then(Option::as_mut) {
+            if let Some(decl) = self.ordered.decl_mut(id) {
                 decl.target = target;
             }
         }
@@ -553,16 +528,7 @@ impl Recognizer {
             .ok_or_else(|| format!("unknown gesture {id}"))?
             .target;
         self.cancel_decl(id, REASON_DISPOSED);
-        if let Some(list) = self.order.get_mut(&target) {
-            list.retain(|existing| *existing != id);
-            if list.is_empty() {
-                self.order.remove(&target);
-            }
-        }
-        if self.decls.len() > id as usize {
-            self.decls[id as usize] = None;
-        }
-        self.retired.insert(id);
+        self.ordered.remove(id, target);
         // `push_event` drops handler 0, so the acknowledgement is queued
         // directly and stays behind any cancel from `cancel_decl`.
         let time_ms = self.sequence.as_ref().map(|seq| seq.last_t).unwrap_or(0.0);
@@ -577,7 +543,7 @@ impl Recognizer {
 
     /// Drop every declaration attached to a destroyed node.
     pub fn target_disposed(&mut self, target: u32) {
-        let ids: Vec<u32> = self.order.get(&target).cloned().unwrap_or_default();
+        let ids: Vec<u32> = self.ordered.order.get(&target).cloned().unwrap_or_default();
         for id in ids {
             let before = self.events.len();
             let _ = self.dispose(id);
@@ -588,7 +554,7 @@ impl Recognizer {
                 event.reason = REASON_TARGET_DISPOSED;
             }
         }
-        self.order.remove(&target);
+        self.ordered.order.remove(&target);
     }
 
     /// Drop the live sequence or pending tap that depends on `target`.
@@ -609,15 +575,13 @@ impl Recognizer {
                     .as_ref()
                     .is_some_and(|pending| pending.target == target)
                 || seq.transform_decl.is_some_and(|id| {
-                    self.decls
-                        .get(id as usize)
-                        .and_then(Option::as_ref)
+                    self.ordered
+                        .decl(id)
                         .is_some_and(|decl| decl.target == target)
                 })
                 || seq.cands.iter().any(|cand| {
-                    self.decls
-                        .get(cand.decl as usize)
-                        .and_then(Option::as_ref)
+                    self.ordered
+                        .decl(cand.decl)
                         .is_some_and(|decl| decl.target == target)
                 })
         } else {
@@ -696,7 +660,11 @@ impl Recognizer {
         let Some(seq) = &mut self.sequence else {
             return;
         };
-        let Self { decls, events, .. } = self;
+        let Self {
+            ordered: OrderedDecls { decls, .. },
+            events,
+            ..
+        } = self;
         let mut accepts = Vec::new();
         for (index, cand) in seq.cands.iter().enumerate() {
             if cand.kind != GestureKind::LongPress || cand.state != CandState::Pending {
@@ -777,13 +745,13 @@ impl Recognizer {
         self.next_sequence = self.next_sequence.wrapping_add(1);
         let sequence = self.next_sequence;
         let Self {
-            decls,
-            order,
+            ordered,
             sequence: slot,
             pending_tap,
             events,
             ..
         } = self;
+        let OrderedDecls { decls, order, .. } = ordered;
         let mut cands = Vec::new();
         for target in &input.path {
             let Some(ids) = order.get(target) else {
@@ -894,12 +862,12 @@ impl Recognizer {
 
     fn begin_second(&mut self, input: PointerInput) {
         let Self {
-            decls,
-            order,
+            ordered,
             sequence,
             events,
             ..
         } = self;
+        let OrderedDecls { decls, order, .. } = ordered;
         let Some(seq) = sequence.as_mut() else {
             return;
         };
@@ -1047,7 +1015,7 @@ impl Recognizer {
 
     fn evaluate_single(&mut self, time_ms: f64) {
         let Self {
-            decls,
+            ordered: OrderedDecls { decls, .. },
             sequence,
             events,
             trace_on,
@@ -1236,7 +1204,7 @@ impl Recognizer {
 
     fn evaluate_transform(&mut self, time_ms: f64) {
         let Self {
-            decls,
+            ordered: OrderedDecls { decls, .. },
             sequence,
             events,
             ..
@@ -1332,7 +1300,7 @@ impl Recognizer {
 
     fn scroll_step(&mut self, time_ms: f64) {
         let Self {
-            decls,
+            ordered: OrderedDecls { decls, .. },
             sequence,
             scroll_out,
             trace_on,
@@ -1431,7 +1399,7 @@ impl Recognizer {
 
     fn update_transform(&mut self, time_ms: f64) {
         let Self {
-            decls,
+            ordered: OrderedDecls { decls, .. },
             sequence,
             events,
             ..
@@ -1495,7 +1463,7 @@ impl Recognizer {
 
     fn up(&mut self, input: PointerInput) {
         let Self {
-            decls,
+            ordered: OrderedDecls { decls, .. },
             sequence,
             events,
             ..
@@ -1578,7 +1546,7 @@ impl Recognizer {
 
     fn finish_single(&mut self, time_ms: f64, x: f32, y: f32) {
         let Self {
-            decls,
+            ordered: OrderedDecls { decls, .. },
             sequence,
             events,
             pending_tap,
@@ -1703,7 +1671,7 @@ impl Recognizer {
 
     fn end_transform(&mut self, time_ms: f64) {
         let Self {
-            decls,
+            ordered: OrderedDecls { decls, .. },
             sequence,
             events,
             ..
@@ -1756,7 +1724,7 @@ impl Recognizer {
 
     fn fail_tap(&mut self, reason: u8, time_ms: f64, x: f32, y: f32) {
         let Self {
-            decls,
+            ordered: OrderedDecls { decls, .. },
             sequence,
             events,
             ..
@@ -1798,7 +1766,7 @@ impl Recognizer {
 
     fn cancel_decl(&mut self, id: u32, reason: u8) {
         let Self {
-            decls,
+            ordered: OrderedDecls { decls, .. },
             sequence,
             events,
             ..
@@ -1891,7 +1859,7 @@ impl Recognizer {
             let target = self.decl(id).map(|decl| decl.target).unwrap_or(0);
             emit_for(
                 &mut self.events,
-                &self.decls,
+                &self.ordered.decls,
                 id,
                 SLOT_CANCEL,
                 seq.id,
@@ -1906,7 +1874,7 @@ impl Recognizer {
             if let Some(id) = seq.tap.as_ref().and_then(|family| family.tap) {
                 emit_for(
                     &mut self.events,
-                    &self.decls,
+                    &self.ordered.decls,
                     id,
                     SLOT_PRESS_CANCEL,
                     seq.id,
@@ -1922,7 +1890,7 @@ impl Recognizer {
 
     fn update_reservation(&mut self) {
         let Self {
-            decls,
+            ordered: OrderedDecls { decls, .. },
             sequence,
             scroll_out,
             trace_on,

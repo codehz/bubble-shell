@@ -11,19 +11,16 @@ const collectors = [];
 let nextHandler = 1;
 const gestureHandlers = new Map();
 const fieldHandlers = new Map();
-const gesturesOfTarget = new Map();
 const gestureOrderOfTarget = new Map();
-const gestureParentOf = new Map();
 const gestureBindings = new Map();
 const gestureHandlerIds = new Map();
 const retiredGestureHandlers = new Map();
-const gestureOwners = new Map();
-const stateStyleTargetOf = new Map();
-const stateStyleScopeOf = new Map();
 const stateStyleOrderOfTarget = new Map();
 const stateStyleBindings = new Map();
-const stateStyleRoots = new Map();
-let currentStyleScope = null;
+const virtualTargetOf = new Map();
+const virtualScopeOf = new Map();
+const virtualRoots = new Map();
+let currentVirtualScope = null;
 let leafStyles = false;
 const encoder = typeof TextEncoder === "function" ? new TextEncoder() : null;
 
@@ -84,21 +81,18 @@ function resetRenderState() {
   nextHandler = 1;
   gestureHandlers.clear();
   fieldHandlers.clear();
-  gesturesOfTarget.clear();
   gestureOrderOfTarget.clear();
-  gestureParentOf.clear();
   gestureBindings.clear();
   gestureHandlerIds.clear();
   retiredGestureHandlers.clear();
-  gestureOwners.clear();
-  stateStyleTargetOf.clear();
-  stateStyleScopeOf.clear();
   stateStyleOrderOfTarget.clear();
   stateStyleBindings.clear();
-  stateStyleRoots.clear();
+  virtualTargetOf.clear();
+  virtualScopeOf.clear();
+  virtualRoots.clear();
   leafStyles = false;
-  currentStyleScope = newStyleScope(1, null);
-  stateStyleRoots.set(1, currentStyleScope);
+  currentVirtualScope = newVirtualScope(1, null);
+  virtualRoots.set(1, currentVirtualScope);
   bodyError = null;
 }
 
@@ -335,14 +329,14 @@ function pack(kind, props, text) {
 
 export function view(props, build) {
   const handle = pack(1, props, "");
-  const scope = currentStyleScope;
-  currentStyleScope = rootStyleScope(handle);
+  const scope = currentVirtualScope;
+  currentVirtualScope = rootVirtualScope(handle);
   parents.push(handle);
   try {
     build();
   } finally {
     parents.pop();
-    currentStyleScope = scope;
+    currentVirtualScope = scope;
   }
   return handle;
 }
@@ -501,19 +495,7 @@ function registerGesture(target, kind) {
   const id = api.spawn_gesture(target, kind, index);
   if (!id) throw new Error(api.error() || "spawn_gesture failed");
   order.push(id);
-  let list = gesturesOfTarget.get(target);
-  if (!list) {
-    list = [];
-    gesturesOfTarget.set(target, list);
-  }
-  list.push(id);
-  gestureParentOf.set(id, target);
-  gestureOwners.set(id, collectors[collectors.length - 1] ?? null);
-  // Nested If/Each branches can target the same surviving ancestor; every
-  // such scope must be able to dispose the declaration it created.
-  for (const collector of collectors) {
-    if (collector.parent === target) collector.gestures.push(id);
-  }
+  registerVirtual("gesture", id, target);
   return { id };
 }
 
@@ -671,11 +653,21 @@ function deactivateGestureBindings(id) {
   gestureBindings.delete(id);
 }
 
+// Gesture ids and state style ids are independent spaces that both start at 1,
+// so the unified bookkeeping keys them by kind.
+function virtualKey(kind, id) {
+  return `${kind}:${id}`;
+}
+
+function virtualId(key) {
+  return Number(key.slice(key.indexOf(":") + 1));
+}
+
 function disposeGesture(id) {
-  if (!gestureParentOf.has(id)) return;
-  const target = gestureParentOf.get(id);
-  gestureParentOf.delete(id);
-  gestureOwners.delete(id);
+  const key = virtualKey("gesture", id);
+  if (!virtualTargetOf.has(key)) return;
+  const target = virtualTargetOf.get(key);
+  unlinkVirtual(key);
   deactivateGestureBindings(id);
   const handlers = gestureHandlerIds.get(id);
   if (handlers) {
@@ -688,21 +680,9 @@ function disposeGesture(id) {
   if (order) {
     const index = order.indexOf(id);
     if (index >= 0) order.splice(index, 1);
-  }
-  const list = gesturesOfTarget.get(target);
-  if (list) {
-    const index = list.indexOf(id);
-    if (index >= 0) list.splice(index, 1);
+    if (order.length === 0) gestureOrderOfTarget.delete(target);
   }
   if (api.dispose_gesture(id) !== 0) throw new Error(api.error() || "dispose gesture failed");
-}
-
-function disposeTargetGestures(handle) {
-  const list = gesturesOfTarget.get(handle);
-  if (!list) return;
-  for (const id of [...list]) disposeGesture(id);
-  gesturesOfTarget.delete(handle);
-  gestureOrderOfTarget.delete(handle);
 }
 
 let stateStyleProps;
@@ -719,28 +699,48 @@ function allowedStateStyleProps() {
 
 // One scope per real UI target: declarations created while building that
 // target land in its root scope, and every control-flow node keeps a stable
-// child scope so authored order survives an empty branch.
-function newStyleScope(target, parentScope) {
+// child scope so authored order survives an empty branch. Gestures and state
+// styles share the tree; each kind keeps its own per-target order for the
+// wire.
+function newVirtualScope(target, parentScope) {
   return { target, parent: parentScope, entries: [] };
 }
 
-function rootStyleScope(target) {
-  let scope = stateStyleRoots.get(target);
+function rootVirtualScope(target) {
+  let scope = virtualRoots.get(target);
   if (!scope) {
-    scope = newStyleScope(target, null);
-    stateStyleRoots.set(target, scope);
+    scope = newVirtualScope(target, null);
+    virtualRoots.set(target, scope);
   }
   return scope;
 }
 
-function flattenStyleScope(scope, out) {
+function flattenVirtualScope(scope, gestures, styles) {
   for (const entry of scope.entries) {
-    if (typeof entry === "number") {
-      if (stateStyleTargetOf.has(entry)) out.push(entry);
+    if (typeof entry === "string") {
+      const id = virtualId(entry);
+      if (entry.startsWith("gesture:")) gestures.push(id);
+      else styles.push(id);
     } else {
-      flattenStyleScope(entry, out);
+      flattenVirtualScope(entry, gestures, styles);
     }
   }
+}
+
+function registerVirtual(kind, id, target) {
+  const scope = currentVirtualScope;
+  const key = virtualKey(kind, id);
+  virtualTargetOf.set(key, target);
+  virtualScopeOf.set(key, scope);
+  scope.entries.push(key);
+}
+
+function unlinkVirtual(key) {
+  const scope = virtualScopeOf.get(key);
+  virtualScopeOf.delete(key);
+  if (!scope) return;
+  const index = scope.entries.indexOf(key);
+  if (index >= 0) scope.entries.splice(index, 1);
 }
 
 function setStateStyleProp(id, key, value) {
@@ -769,38 +769,40 @@ function deactivateStateStyleBindings(id) {
 }
 
 function disposeStateStyle(id) {
-  if (!stateStyleTargetOf.has(id)) return;
-  const target = stateStyleTargetOf.get(id);
-  stateStyleTargetOf.delete(id);
+  const key = virtualKey("style", id);
+  if (!virtualTargetOf.has(key)) return;
+  const target = virtualTargetOf.get(key);
+  unlinkVirtual(key);
   deactivateStateStyleBindings(id);
-  const scope = stateStyleScopeOf.get(id);
-  stateStyleScopeOf.delete(id);
-  if (scope) {
-    const index = scope.entries.indexOf(id);
-    if (index >= 0) scope.entries.splice(index, 1);
-  }
   const order = stateStyleOrderOfTarget.get(target);
   if (order) {
     const index = order.indexOf(id);
     if (index >= 0) order.splice(index, 1);
+    if (order.length === 0) stateStyleOrderOfTarget.delete(target);
   }
   if (api.dispose_state_style(id) !== 0) {
     throw new Error(api.error() || "dispose state style failed");
   }
 }
 
+function disposeVirtual(key) {
+  const id = virtualId(key);
+  if (key.startsWith("gesture:")) disposeGesture(id);
+  else disposeStateStyle(id);
+}
+
 // Drop a scope's declarations but keep the scope, so a reopened branch lands
 // back in its authored slot.
-function resetStyleScope(scope) {
+function resetVirtualScope(scope) {
   for (const entry of [...scope.entries]) {
-    if (typeof entry === "number") disposeStateStyle(entry);
-    else disposeStyleScope(entry);
+    if (typeof entry === "string") disposeVirtual(entry);
+    else resetVirtualScope(entry);
   }
   scope.entries.length = 0;
 }
 
-function disposeStyleScope(scope) {
-  resetStyleScope(scope);
+function disposeVirtualScope(scope) {
+  resetVirtualScope(scope);
   const parent = scope.parent;
   scope.parent = null;
   if (!parent) return;
@@ -808,35 +810,46 @@ function disposeStyleScope(scope) {
   if (index >= 0) parent.entries.splice(index, 1);
 }
 
-function disposeTargetStyles(handle) {
-  const order = stateStyleOrderOfTarget.get(handle);
-  if (order) for (const id of [...order]) disposeStateStyle(id);
+function disposeTargetVirtuals(handle) {
+  const gestures = gestureOrderOfTarget.get(handle);
+  if (gestures) for (const id of [...gestures]) disposeGesture(id);
+  gestureOrderOfTarget.delete(handle);
+  const styles = stateStyleOrderOfTarget.get(handle);
+  if (styles) for (const id of [...styles]) disposeStateStyle(id);
   stateStyleOrderOfTarget.delete(handle);
-  const root = stateStyleRoots.get(handle);
+  const root = virtualRoots.get(handle);
   if (root) {
     root.entries.length = 0;
-    stateStyleRoots.delete(handle);
+    virtualRoots.delete(handle);
   }
 }
 
 // Flatten every target's virtual order and move only the declarations that
 // disagree with it. `index` is the final position after removal.
-function syncStyleOrders() {
-  for (const [target, root] of stateStyleRoots) {
-    const order = stateStyleOrderOfTarget.get(target);
-    if (!order || order.length === 0) continue;
-    const desired = [];
-    flattenStyleScope(root, desired);
-    for (let index = 0; index < desired.length; index += 1) {
-      if (order[index] === desired[index]) continue;
-      const from = order.indexOf(desired[index]);
-      if (from < 0) continue;
-      order.splice(from, 1);
-      order.splice(index, 0, desired[index]);
-      if (api.move_state_style(desired[index], target, index) !== 0) {
-        throw new Error(api.error() || "move state style failed");
-      }
-    }
+function syncVirtualOrders() {
+  for (const [target, root] of virtualRoots) {
+    const gestures = [];
+    const styles = [];
+    flattenVirtualScope(root, gestures, styles);
+    syncOrder(target, gestures, gestureOrderOfTarget, "gesture");
+    syncOrder(target, styles, stateStyleOrderOfTarget, "state style");
+  }
+}
+
+function syncOrder(target, desired, orders, label) {
+  const order = orders.get(target);
+  if (!order || order.length === 0) return;
+  for (let index = 0; index < desired.length; index += 1) {
+    if (order[index] === desired[index]) continue;
+    const from = order.indexOf(desired[index]);
+    if (from < 0) continue;
+    order.splice(from, 1);
+    order.splice(index, 0, desired[index]);
+    const code =
+      label === "gesture"
+        ? api.move_gesture(desired[index], target, index)
+        : api.move_state_style(desired[index], target, index);
+    if (code !== 0) throw new Error(api.error() || `move ${label} failed`);
   }
 }
 
@@ -860,10 +873,7 @@ function stateStyle(props) {
   const id = api.spawn_state_style(target, order.length);
   if (!id) throw new Error(api.error() || "spawn_state_style failed");
   order.push(id);
-  stateStyleTargetOf.set(id, target);
-  const scope = currentStyleScope;
-  stateStyleScopeOf.set(id, scope);
-  scope.entries.push(id);
+  registerVirtual("style", id, target);
   for (const key of Object.keys(props)) {
     const value = props[key];
     if (value instanceof Dynamic) bindStateStyleProp(id, key, value.run);
@@ -876,9 +886,9 @@ function stateStyle(props) {
 // the leaf itself.
 function buildLeafStyles(handle, buildStyles) {
   if (typeof buildStyles !== "function") return;
-  const scope = currentStyleScope;
+  const scope = currentVirtualScope;
   const leaf = leafStyles;
-  currentStyleScope = rootStyleScope(handle);
+  currentVirtualScope = rootVirtualScope(handle);
   leafStyles = true;
   parents.push(handle);
   try {
@@ -886,14 +896,13 @@ function buildLeafStyles(handle, buildStyles) {
   } finally {
     parents.pop();
     leafStyles = leaf;
-    currentStyleScope = scope;
+    currentVirtualScope = scope;
   }
 }
 
 function disposeHandle(handle) {
   if (handle === 1) return;
-  disposeTargetStyles(handle);
-  disposeTargetGestures(handle);
+  disposeTargetVirtuals(handle);
   deactivateHandleBindings(handle);
   const owned = handlersOfNode.get(handle);
   if (owned) {
@@ -942,19 +951,19 @@ function anchorIndex(parentHandle, anchor) {
 }
 
 function renderAt(parentHandle, index, build, scope) {
-  const collector = { parent: parentHandle, handles: [], gestures: [] };
-  const outer = currentStyleScope;
+  const collector = { parent: parentHandle, handles: [] };
+  const outer = currentVirtualScope;
   collectors.push(collector);
   cursors.push({ parent: parentHandle, index });
   parents.push(parentHandle);
-  if (scope) currentStyleScope = scope;
+  if (scope) currentVirtualScope = scope;
   try {
     build();
   } finally {
     parents.pop();
     cursors.pop();
     collectors.pop();
-    currentStyleScope = outer;
+    currentVirtualScope = outer;
   }
   return collector;
 }
@@ -963,41 +972,15 @@ function createAnchor() {
   return pack(1, { width: 0, height: 0, flexGrow: 0, flexShrink: 0, position: "absolute" }, "");
 }
 
+// Reopening a branch leaves its declarations in the scope slot they occupied
+// before, so authored order does not depend on when the branch was rebuilt.
 function replaceBranch(parentHandle, anchor, branch, build, scope) {
-  const anchors = new Map();
-  for (const gesture of branch.gestures) {
-    const target = gestureParentOf.get(gesture);
-    const list = gestureOrderOfTarget.get(target);
-    const index = list ? list.indexOf(gesture) : -1;
-    if (index >= 0) anchors.set(target, Math.min(anchors.get(target) ?? index, index));
-  }
   for (const handle of branch.handles) disposeHandle(handle);
-  for (const gesture of branch.gestures) disposeGesture(gesture);
-  resetStyleScope(scope);
-  const next = { parent: parentHandle, handles: [], gestures: [] };
+  resetVirtualScope(scope);
+  const next = { parent: parentHandle, handles: [] };
   if (typeof build === "function") {
     const created = renderAt(parentHandle, anchorIndex(parentHandle, anchor), build, scope);
     next.handles = created.handles;
-    next.gestures = created.gestures;
-  }
-  for (const [target, at] of anchors) {
-    const list = gestureOrderOfTarget.get(target);
-    if (!list) continue;
-    const created = [...new Set(next.gestures)].filter(
-      (gesture) => gestureParentOf.get(gesture) === target,
-    );
-    for (let offset = 0; offset < created.length; offset += 1) {
-      const gesture = created[offset];
-      const from = list.indexOf(gesture);
-      if (from < 0) continue;
-      const to = Math.min(at + offset, list.length - 1);
-      if (from === to) continue;
-      list.splice(from, 1);
-      list.splice(to, 0, gesture);
-      if (api.move_gesture(gesture, target, to) !== 0) {
-        throw new Error(api.error() || "move gesture failed");
-      }
-    }
   }
   return next;
 }
@@ -1007,9 +990,9 @@ export function show(whenFn, fallback, render) {
   if (typeof render !== "function") throw new Error("Show requires a render function");
   const parentHandle = parent();
   const anchor = createAnchor();
-  const scope = newStyleScope(parentHandle, currentStyleScope);
-  currentStyleScope.entries.push(scope);
-  let branch = { parent: parentHandle, handles: [], gestures: [] };
+  const scope = newVirtualScope(parentHandle, currentVirtualScope);
+  currentVirtualScope.entries.push(scope);
+  let branch = { parent: parentHandle, handles: [] };
   let open = false;
   const read = () => whenFn();
   addBinding(() => {
@@ -1033,14 +1016,13 @@ export function forEach(items, by, render) {
   const itemsFn = typeof items === "function" ? items : () => items;
   const parentHandle = parent();
   const anchor = createAnchor();
-  const scope = newStyleScope(parentHandle, currentStyleScope);
-  currentStyleScope.entries.push(scope);
+  const scope = newVirtualScope(parentHandle, currentVirtualScope);
+  currentVirtualScope.entries.push(scope);
   const groups = new Map();
   const live = new Map();
   const disposeGroup = (entry) => {
     for (const handle of entry.handles) disposeHandle(handle);
-    for (const gesture of entry.gestures) disposeGesture(gesture);
-    if (entry.scope) disposeStyleScope(entry.scope);
+    if (entry.scope) disposeVirtualScope(entry.scope);
   };
   addBinding(() => {
     const list = itemsFn() ?? [];
@@ -1057,7 +1039,6 @@ export function forEach(items, by, render) {
       }
     }
     let cursor = anchorIndex(parentHandle, anchor);
-    const rank = new Map();
     for (const entry of next) {
       live.set(entry.key, entry.item);
       let group = groups.get(entry.key);
@@ -1067,7 +1048,7 @@ export function forEach(items, by, render) {
           itemsFn();
           return live.get(key);
         };
-        const groupScope = newStyleScope(parentHandle, scope);
+        const groupScope = newVirtualScope(parentHandle, scope);
         scope.entries.push(groupScope);
         group = renderAt(parentHandle, cursor, () => render(read, entry.index), groupScope);
         group.scope = groupScope;
@@ -1079,14 +1060,12 @@ export function forEach(items, by, render) {
           cursor += 1;
         }
       }
-      rank.set(group, rank.size);
     }
     scope.entries.length = 0;
     for (const entry of next) {
       const group = groups.get(entry.key);
       if (group && group.scope) scope.entries.push(group.scope);
     }
-    reorderScopedGestures(rank);
   }, anchor);
   return anchor;
 }
@@ -1096,13 +1075,12 @@ export function indexEach(items, render) {
   const itemsFn = typeof items === "function" ? items : () => items;
   const parentHandle = parent();
   const anchor = createAnchor();
-  const scope = newStyleScope(parentHandle, currentStyleScope);
-  currentStyleScope.entries.push(scope);
+  const scope = newVirtualScope(parentHandle, currentVirtualScope);
+  currentVirtualScope.entries.push(scope);
   const groups = new Map();
   const disposeGroup = (entry) => {
     for (const handle of entry.handles) disposeHandle(handle);
-    for (const gesture of entry.gestures) disposeGesture(gesture);
-    if (entry.scope) disposeStyleScope(entry.scope);
+    if (entry.scope) disposeVirtualScope(entry.scope);
   };
   addBinding(() => {
     const list = itemsFn() ?? [];
@@ -1113,13 +1091,12 @@ export function indexEach(items, render) {
       }
     }
     let cursor = anchorIndex(parentHandle, anchor);
-    const rank = new Map();
     for (let index = 0; index < list.length; index += 1) {
       let group = groups.get(index);
       if (group === undefined) {
         const at = index;
         const read = () => (itemsFn() ?? [])[at];
-        const groupScope = newStyleScope(parentHandle, scope);
+        const groupScope = newVirtualScope(parentHandle, scope);
         scope.entries.push(groupScope);
         group = renderAt(parentHandle, cursor, () => render(read, at), groupScope);
         group.scope = groupScope;
@@ -1131,13 +1108,11 @@ export function indexEach(items, render) {
           cursor += 1;
         }
       }
-      rank.set(group, rank.size);
     }
     scope.entries.length = 0;
     for (const group of groups.values()) {
       if (group.scope) scope.entries.push(group.scope);
     }
-    reorderScopedGestures(rank);
   }, anchor);
   return anchor;
 }
@@ -1146,9 +1121,9 @@ export function switchFlow(fallback, arms) {
   if (!Array.isArray(arms)) throw new Error("Switch requires matches");
   const parentHandle = parent();
   const anchor = createAnchor();
-  const scope = newStyleScope(parentHandle, currentStyleScope);
-  currentStyleScope.entries.push(scope);
-  let branch = { parent: parentHandle, handles: [], gestures: [] };
+  const scope = newVirtualScope(parentHandle, currentVirtualScope);
+  currentVirtualScope.entries.push(scope);
+  let branch = { parent: parentHandle, handles: [] };
   let active = -2;
   addBinding(() => {
     let chosen = -1;
@@ -1174,45 +1149,13 @@ export function switchFlow(fallback, arms) {
   return anchor;
 }
 
-// A reordered Each keeps each group's declarations together but places the
-// groups in virtual child order for the next touch sequence.
-function reorderScopedGestures(rank) {
-  if (rank.size < 2) return;
-  for (const [target, list] of gestureOrderOfTarget) {
-    const slots = [];
-    for (let index = 0; index < list.length; index += 1) {
-      const owner = gestureOwners.get(list[index]);
-      if (owner && rank.has(owner)) slots.push(index);
-    }
-    if (slots.length < 2) continue;
-    const ids = slots.map((slot) => list[slot]);
-    ids.sort((a, b) => {
-      const ownerA = gestureOwners.get(a);
-      const ownerB = gestureOwners.get(b);
-      const rankA = rank.get(ownerA);
-      const rankB = rank.get(ownerB);
-      if (rankA !== rankB) return rankA - rankB;
-      return ownerA.gestures.indexOf(a) - ownerB.gestures.indexOf(b);
-    });
-    for (let index = 0; index < slots.length; index += 1) {
-      const gesture = ids[index];
-      if (list[slots[index]] !== gesture) {
-        if (api.move_gesture(gesture, target, slots[index]) !== 0) {
-          throw new Error(api.error() || "move gesture failed");
-        }
-      }
-      list[slots[index]] = gesture;
-    }
-  }
-}
-
 export function flush() {
   if (bodyError) {
     const error = bodyError;
     bodyError = null;
     throw error;
   }
-  syncStyleOrders();
+  syncVirtualOrders();
   if (api.commit() === 0 && api.error()) throw new Error(api.error());
   if (typeof api.layout === "function" && api.layout() !== 0) throw new Error(api.error() || "layout failed");
 }
