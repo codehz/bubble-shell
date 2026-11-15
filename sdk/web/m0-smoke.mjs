@@ -102,9 +102,6 @@ exports.dealloc(manifestPtr, manifest.length);
 exports.dealloc(filesPtr, files.length);
 
 setApi({
-  memory: exports.memory,
-  alloc: exports.alloc,
-  dealloc: exports.dealloc,
   boot: exports.boot,
   signal_alloc: exports.signal_alloc,
   signal_read: exports.signal_read,
@@ -188,7 +185,13 @@ setApi({
   pointer: exports.pointer,
   tick: exports.tick,
   take_gesture_events: exports.take_gesture_events,
-  queue_text: exports.queue_text,
+  queue_text(handle, text) {
+    const bytes = encoder.encode(text ?? "");
+    const ptr = bytes.length ? copyBytes(bytes) : 0;
+    const code = exports.queue_text(handle, ptr, bytes.length);
+    if (bytes.length) exports.dealloc(ptr, bytes.length);
+    return code;
+  },
   commit: exports.commit,
   layout: exports.layout,
   error,

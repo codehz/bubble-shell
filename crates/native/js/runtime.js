@@ -690,15 +690,7 @@ function bind(handle, fn) {
 }
 
 function writeText(handle, value) {
-  if (typeof api.queue_text_utf8 === "function") {
-    if (api.queue_text_utf8(handle, value) !== 0) throw new Error(api.error() || "text failed");
-    return;
-  }
-  const bytes = utf8(value);
-  const ptr = api.alloc(bytes.length);
-  new Uint8Array(api.memory.buffer, ptr, bytes.length).set(bytes);
-  api.queue_text(handle, ptr, bytes.length);
-  api.dealloc(ptr, bytes.length);
+  if (api.queue_text(handle, value) !== 0) throw new Error(api.error() || "text failed");
 }
 
 function deactivateGestureBindings(id) {

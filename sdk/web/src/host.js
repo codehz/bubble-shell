@@ -367,9 +367,6 @@ async function checkBundle() {
 
 
 setApi({
-  memory: exports.memory,
-  alloc: exports.alloc,
-  dealloc: exports.dealloc,
   boot: exports.boot,
   signal_alloc: exports.signal_alloc,
   signal_read: exports.signal_read,
@@ -466,7 +463,13 @@ setApi({
   gesture_pending: exports.gesture_pending,
   take_gesture_events: exports.take_gesture_events,
   take_var_events: exports.take_var_events,
-  queue_text: exports.queue_text,
+  queue_text(handle, text) {
+    const bytes = encoder.encode(text ?? "");
+    const ptr = bytes.length ? copyBytes(bytes) : 0;
+    const code = exports.queue_text(handle, ptr, bytes.length);
+    if (bytes.length) exports.dealloc(ptr, bytes.length);
+    return code;
+  },
   commit: exports.commit,
   // Layout after a committed batch must also repaint: programmatic focus and
   // dynamic state styles change paint without any pointer sample.

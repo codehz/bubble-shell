@@ -794,7 +794,7 @@ fn bind_api(ctx: &Context) -> Result<(), RuntimeError> {
     ctx.define_function(&api, "set_prop", 5, |_: &mut Scope<'_>, handle: f64, key: String, tag: f64, number: f64, text: String| {
         Ok(api_set_prop(handle, key, tag, number, text))
     })?;
-    ctx.define_function(&api, "queue_text_utf8", 2, |_: &mut Scope<'_>, handle: f64, text: String| {
+    ctx.define_function(&api, "queue_text", 2, |_: &mut Scope<'_>, handle: f64, text: String| {
         Ok(api_queue_text(handle, text))
     })?;
     ctx.define_function(&api, "bind_event", 2, |_: &mut Scope<'_>, handle: f64, handler: f64| {
