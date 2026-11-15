@@ -62,6 +62,27 @@ function writeSignal(id, value, equals) {
   signalValues[id] = value;
   const code = api.signal_notify(id);
   if (code !== 0) throw new Error(api.error() || "signal write failed");
+  scheduleFlush();
+}
+
+// Writes that happen outside an event batch (async completions, timers) still
+// queue ops in the shell; commit them on the next microtask or they never
+// paint. Batch-driven entry points flush themselves and skip the schedule.
+let flushScheduled = false;
+function scheduleFlush() {
+  if (flushScheduled || batchDepth > 0) return;
+  flushScheduled = true;
+  queueMicrotask(() => {
+    flushScheduled = false;
+    if (batchDepth > 0) return;
+    try {
+      flush();
+    } catch (error) {
+      globalThis.__bubbleLastError = String(error && error.message || error);
+      globalThis.__bubbleLastErrorStack = String(error && error.stack || error).slice(0, 1200);
+      console.error(error);
+    }
+  });
 }
 
 // `bubble dev` seeds these values so a remount keeps signal state. Signals
@@ -150,8 +171,11 @@ export function cleanup(fn) {
   if (api.on_cleanup(id) !== 0) fn();
 }
 
+let batchDepth = 0;
+
 export function batch(fn) {
   const previous = bodyFn;
+  batchDepth += 1;
   bodyFn = fn;
   try {
     if (api.run_updates() !== 0) throw new Error(api.error() || "batch failed");
@@ -162,6 +186,7 @@ export function batch(fn) {
     }
   } finally {
     bodyFn = previous;
+    batchDepth -= 1;
   }
 }
 
