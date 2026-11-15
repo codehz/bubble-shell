@@ -26,7 +26,7 @@ use bubble_core::{
     call_host_layout, check_edit_session, encode_edit_events, encode_events, encode_paint,
     encode_var_events, read_abi_utf8, wrapping_layout, A11yAction, EditCommand, EditEvent,
     EditMenuAction, GestureEvent, Key, LayoutRequest, LayoutSnapshot, PointerAction, PointerInput,
-    Shell, VarEvent,
+    SessionId, Shell, VarEvent,
 };
 
 use script::Cmd;
@@ -255,10 +255,7 @@ fn drain_pending(shared: &Shared) -> Result<(), String> {
             .pending
             .lock()
             .map_err(|_| "op queue poisoned".to_string())?;
-        let mut shell = shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let mut shell = lock_or(&shared.shell, "tree lock poisoned")?;
         if reset {
             *shell = Shell::blank()?;
         }
@@ -504,11 +501,7 @@ pub extern "C" fn bubble_load(
                 .lock()
                 .map_err(|_| "op queue poisoned".to_string())?;
             pending.clear();
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
+            let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
             *shell = Shell::blank()?;
             engine.shared.reset.store(false, Ordering::SeqCst);
         }
@@ -542,11 +535,7 @@ pub extern "C" fn bubble_frame(
         if let Ok(mut viewport) = engine.shared.viewport.lock() {
             *viewport = (width, height);
         }
-        let mut shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         shell.set_viewport(width, height);
         let host = &engine.shared.host;
         shell.compute_layout(
@@ -594,11 +583,7 @@ pub extern "C" fn bubble_pointer(
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
+            let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
             shell.pointer(PointerInput::from_abi(
                 action,
                 id,
@@ -635,11 +620,7 @@ pub extern "C" fn bubble_visual_pointer(
             PointerAction::parse(action).ok_or_else(|| format!("bad pointer action {action}"))?;
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let mut shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         shell.visual_pointer(PointerInput::from_abi(
             action,
             id,
@@ -661,15 +642,35 @@ pub extern "C" fn bubble_tick(shell: *mut BubbleShell, time_ms: f64) -> i32 {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
+            let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
             shell.advance_gestures(time_ms);
             shell.take_gesture_events()
         };
         send_events(&engine.shared, events);
+        Ok(())
+    });
+    finish(shell, result)
+}
+
+fn lock_or<'a, T>(mutex: &'a Mutex<T>, err: &str) -> Result<std::sync::MutexGuard<'a, T>, String> {
+    mutex.lock().map_err(|_| err.to_string())
+}
+
+fn edit_op(
+    shell: *mut BubbleShell,
+    session: u64,
+    op: impl FnOnce(&mut Shell, SessionId) -> Result<(), String>,
+) -> i32 {
+    let result = catch(|| {
+        let eng = engine(shell)?;
+        drain_pending(&eng.shared)?;
+        let edits = {
+            let mut sh = lock_or(&eng.shared.shell, "tree lock poisoned")?;
+            let sid = check_edit_session(&sh, session)?;
+            op(&mut sh, sid)?;
+            sh.take_edit_events()
+        };
+        send_edits(&eng.shared, edits);
         Ok(())
     });
     finish(shell, result)
@@ -693,11 +694,7 @@ pub extern "C" fn bubble_edit(
         let text = read_abi_utf8(text, text_len, "edit text")?;
         let command = EditCommand::parse(action, text, a, b)?;
         let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
+            let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
             if action == 0 {
                 shell.focus(a)?;
             } else if let Some(command) = command {
@@ -715,45 +712,13 @@ pub extern "C" fn bubble_edit(
 /// `bubble_edit_batch_end`.
 #[no_mangle]
 pub extern "C" fn bubble_edit_batch_begin(shell: *mut BubbleShell, session: u64) -> i32 {
-    let result = catch(|| {
-        let engine = engine(shell)?;
-        drain_pending(&engine.shared)?;
-        let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
-            check_edit_session(&shell, session)?;
-            shell.begin_edit_batch()?;
-            shell.take_edit_events()
-        };
-        send_edits(&engine.shared, events);
-        Ok(())
-    });
-    finish(shell, result)
+    edit_op(shell, session, |sh, _sid| sh.begin_edit_batch())
 }
 
 /// Close one batch level. The outermost level emits one delta event.
 #[no_mangle]
 pub extern "C" fn bubble_edit_batch_end(shell: *mut BubbleShell, session: u64) -> i32 {
-    let result = catch(|| {
-        let engine = engine(shell)?;
-        drain_pending(&engine.shared)?;
-        let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
-            check_edit_session(&shell, session)?;
-            shell.end_edit_batch()?;
-            shell.take_edit_events()
-        };
-        send_edits(&engine.shared, events);
-        Ok(())
-    });
-    finish(shell, result)
+    edit_op(shell, session, |sh, _sid| sh.end_edit_batch())
 }
 
 /// Read the focused editing snapshot. `comp_end` is `u32::MAX` when no
@@ -773,11 +738,7 @@ pub extern "C" fn bubble_edit_snapshot(
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let state = {
-            let shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
+            let shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
             shell.focused_state()?
         };
         unsafe {
@@ -827,11 +788,7 @@ pub extern "C" fn bubble_edit_replace(
         drain_pending(&engine.shared)?;
         let text = read_abi_utf8(text, text_len, "edit text")?;
         let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
+            let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
             check_edit_session(&shell, session)?;
             shell.replace_with_cursor(start, end, &text, new_cursor_position, composing != 0)?;
             shell.take_edit_events()
@@ -850,24 +807,13 @@ pub extern "C" fn bubble_edit_commit(
     text_len: u32,
     new_cursor_position: i32,
 ) -> i32 {
-    let result = catch(|| {
-        let engine = engine(shell)?;
-        drain_pending(&engine.shared)?;
-        let text = read_abi_utf8(text, text_len, "edit text")?;
-        let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
-            check_edit_session(&shell, session)?;
-            shell.commit_text(&text, new_cursor_position)?;
-            shell.take_edit_events()
-        };
-        send_edits(&engine.shared, events);
-        Ok(())
-    });
-    finish(shell, result)
+    let text = match catch(|| read_abi_utf8(text, text_len, "edit text")) {
+        Ok(text) => text,
+        Err(err) => return finish(shell, Err(err)),
+    };
+    edit_op(shell, session, move |sh, _sid| {
+        sh.commit_text(&text, new_cursor_position)
+    })
 }
 
 #[no_mangle]
@@ -878,66 +824,23 @@ pub extern "C" fn bubble_edit_compose(
     text_len: u32,
     new_cursor_position: i32,
 ) -> i32 {
-    let result = catch(|| {
-        let engine = engine(shell)?;
-        drain_pending(&engine.shared)?;
-        let text = read_abi_utf8(text, text_len, "edit text")?;
-        let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
-            check_edit_session(&shell, session)?;
-            shell.compose_text(&text, new_cursor_position)?;
-            shell.take_edit_events()
-        };
-        send_edits(&engine.shared, events);
-        Ok(())
-    });
-    finish(shell, result)
+    let text = match catch(|| read_abi_utf8(text, text_len, "edit text")) {
+        Ok(text) => text,
+        Err(err) => return finish(shell, Err(err)),
+    };
+    edit_op(shell, session, move |sh, _sid| {
+        sh.compose_text(&text, new_cursor_position)
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn bubble_edit_undo(shell: *mut BubbleShell, session: u64) -> i32 {
-    let result = catch(|| {
-        let engine = engine(shell)?;
-        drain_pending(&engine.shared)?;
-        let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
-            check_edit_session(&shell, session)?;
-            shell.edit(EditCommand::Undo)?;
-            shell.take_edit_events()
-        };
-        send_edits(&engine.shared, events);
-        Ok(())
-    });
-    finish(shell, result)
+    edit_op(shell, session, |sh, _sid| sh.edit(EditCommand::Undo))
 }
 
 #[no_mangle]
 pub extern "C" fn bubble_edit_redo(shell: *mut BubbleShell, session: u64) -> i32 {
-    let result = catch(|| {
-        let engine = engine(shell)?;
-        drain_pending(&engine.shared)?;
-        let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
-            check_edit_session(&shell, session)?;
-            shell.edit(EditCommand::Redo)?;
-            shell.take_edit_events()
-        };
-        send_edits(&engine.shared, events);
-        Ok(())
-    });
-    finish(shell, result)
+    edit_op(shell, session, |sh, _sid| sh.edit(EditCommand::Redo))
 }
 
 /// Delete UTF-16 units around the focused selection.
@@ -948,23 +851,9 @@ pub extern "C" fn bubble_edit_delete_surrounding(
     before: u32,
     after: u32,
 ) -> i32 {
-    let result = catch(|| {
-        let engine = engine(shell)?;
-        drain_pending(&engine.shared)?;
-        let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
-            check_edit_session(&shell, session)?;
-            shell.delete_surrounding(before, after)?;
-            shell.take_edit_events()
-        };
-        send_edits(&engine.shared, events);
-        Ok(())
-    });
-    finish(shell, result)
+    edit_op(shell, session, |sh, _sid| {
+        sh.delete_surrounding(before, after)
+    })
 }
 
 /// Delete code points around the focused selection.
@@ -975,23 +864,9 @@ pub extern "C" fn bubble_edit_delete_surrounding_code_points(
     before: u32,
     after: u32,
 ) -> i32 {
-    let result = catch(|| {
-        let engine = engine(shell)?;
-        drain_pending(&engine.shared)?;
-        let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
-            check_edit_session(&shell, session)?;
-            shell.delete_surrounding_code_points(before, after)?;
-            shell.take_edit_events()
-        };
-        send_edits(&engine.shared, events);
-        Ok(())
-    });
-    finish(shell, result)
+    edit_op(shell, session, |sh, _sid| {
+        sh.delete_surrounding_code_points(before, after)
+    })
 }
 
 #[no_mangle]
@@ -1001,44 +876,14 @@ pub extern "C" fn bubble_edit_set_composition(
     start: u32,
     end: u32,
 ) -> i32 {
-    let result = catch(|| {
-        let engine = engine(shell)?;
-        drain_pending(&engine.shared)?;
-        let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
-            check_edit_session(&shell, session)?;
-            shell.set_composition_region(start, end)?;
-            shell.take_edit_events()
-        };
-        send_edits(&engine.shared, events);
-        Ok(())
-    });
-    finish(shell, result)
+    edit_op(shell, session, |sh, _sid| {
+        sh.set_composition_region(start, end)
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn bubble_edit_finish_composition(shell: *mut BubbleShell, session: u64) -> i32 {
-    let result = catch(|| {
-        let engine = engine(shell)?;
-        drain_pending(&engine.shared)?;
-        let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
-            check_edit_session(&shell, session)?;
-            shell.finish_composition()?;
-            shell.take_edit_events()
-        };
-        send_edits(&engine.shared, events);
-        Ok(())
-    });
-    finish(shell, result)
+    edit_op(shell, session, |sh, _sid| sh.finish_composition())
 }
 
 #[no_mangle]
@@ -1048,26 +893,12 @@ pub extern "C" fn bubble_edit_select(
     anchor: u32,
     active: u32,
 ) -> i32 {
-    let result = catch(|| {
-        let engine = engine(shell)?;
-        drain_pending(&engine.shared)?;
-        let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
-            check_edit_session(&shell, session)?;
-            shell.edit(EditCommand::SetSelection {
-                start: anchor,
-                end: active,
-            })?;
-            shell.take_edit_events()
-        };
-        send_edits(&engine.shared, events);
-        Ok(())
-    });
-    finish(shell, result)
+    edit_op(shell, session, |sh, _sid| {
+        sh.edit(EditCommand::SetSelection {
+            start: anchor,
+            end: active,
+        })
+    })
 }
 
 /// Abort any open edit batch without committing it.
@@ -1077,11 +908,7 @@ pub extern "C" fn bubble_edit_batch_abort(shell: *mut BubbleShell, session: u64)
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
+            let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
             if shell
                 .focused_state()
                 .is_ok_and(|state| state.session.get() == session)
@@ -1105,11 +932,7 @@ pub extern "C" fn bubble_key(shell: *mut BubbleShell, action: u32, time_ms: f64)
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let (handled, events) = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
+            let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
             let handled = shell.key(key, time_ms);
             (handled, shell.take_gesture_events())
         };
@@ -1130,11 +953,7 @@ pub extern "C" fn bubble_key(shell: *mut BubbleShell, action: u32, time_ms: f64)
 pub extern "C" fn bubble_semantics(shell: *mut BubbleShell, buf: *mut c_char, cap: u32) -> i32 {
     copy_text(shell, buf, cap, |engine| {
         drain_pending(&engine.shared)?;
-        let shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         Ok(shell.semantics_json())
     })
 }
@@ -1159,11 +978,7 @@ pub extern "C" fn bubble_a11y_action(
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
+            let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
             shell.a11y_action(handle, action)?;
             (shell.take_edit_events(), shell.take_gesture_events())
         };
@@ -1193,11 +1008,7 @@ pub extern "C" fn bubble_edit_menu(
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let (menu, events) = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
+            let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
             let menu = shell.edit_menu(action, &clipboard)?;
             (menu, shell.take_edit_events())
         };
@@ -1234,11 +1045,7 @@ pub extern "C" fn bubble_selection_handles(
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let mut shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         let host = &engine.shared.host;
         shell.refresh_caret(&mut |req| field_layout(host, req))?;
         let handles = shell.selection_handles();
@@ -1282,11 +1089,7 @@ pub extern "C" fn bubble_field_at(shell: *mut BubbleShell, x: f32, y: f32) -> u3
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         Ok(shell.field_at(x, y))
     });
     result.unwrap_or(0)
@@ -1299,11 +1102,7 @@ pub extern "C" fn bubble_focus_at(shell: *mut BubbleShell, x: f32, y: f32) -> u3
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
-            let mut shell = engine
-                .shared
-                .shell
-                .lock()
-                .map_err(|_| "tree lock poisoned".to_string())?;
+            let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
             let host = &engine.shared.host;
             let handle = shell.focus_point_with(x, y, &mut |req| field_layout(host, req))?;
             let events = shell.take_edit_events();
@@ -1327,11 +1126,7 @@ pub extern "C" fn bubble_caret(
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let mut shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         let host = &engine.shared.host;
         shell.refresh_caret(&mut |req| field_layout(host, req))?;
         let Some((cx, cy, cw, ch)) = shell.caret_box() else {
@@ -1360,11 +1155,7 @@ pub extern "C" fn bubble_field_flags(shell: *mut BubbleShell, handle: u32) -> u3
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         shell.field_flags(handle)
     });
     result.unwrap_or(0)
@@ -1375,11 +1166,7 @@ pub extern "C" fn bubble_focused(shell: *mut BubbleShell) -> u32 {
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         Ok(shell.focused())
     });
     result.unwrap_or(0)
@@ -1397,11 +1184,7 @@ pub extern "C" fn bubble_selection(
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         let handle = shell.focused();
         if handle == 0 {
             return Err("no focused field".into());
@@ -1496,11 +1279,7 @@ pub extern "C" fn bubble_unit_at(shell: *mut BubbleShell, x: f32, y: f32, unit: 
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         let host = &engine.shared.host;
         let Some(offset) = shell.unit_at_with(x, y, &mut |req| field_layout(host, req))? else {
             return Err("no focused field".into());
@@ -1525,11 +1304,7 @@ pub extern "C" fn bubble_caret_at(
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         let host = &engine.shared.host;
         let Some((cx, cy, cw, ch)) =
             shell.caret_rect_at_with(unit, &mut |req| field_layout(host, req))?
@@ -1560,11 +1335,7 @@ pub extern "C" fn bubble_selection_count(shell: *mut BubbleShell) -> u32 {
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let mut shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         let host = &engine.shared.host;
         shell.refresh_caret(&mut |req| field_layout(host, req))?;
         Ok(shell.selection_rects().len() as u32)
@@ -1584,11 +1355,7 @@ pub extern "C" fn bubble_selection_rect(
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let mut shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         let host = &engine.shared.host;
         shell.refresh_caret(&mut |req| field_layout(host, req))?;
         let rect = shell
@@ -1620,11 +1387,7 @@ pub extern "C" fn bubble_scroll(shell: *mut BubbleShell, x: f32, y: f32, dx: f32
     let _ = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let mut shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         shell.scroll_wheel(x, y, dx, dy);
         Ok(())
     });
@@ -1635,11 +1398,7 @@ pub extern "C" fn bubble_set_gesture_trace(shell: *mut BubbleShell, enabled: i32
     let _ = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let mut shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         shell.set_gesture_trace(enabled != 0);
         Ok(())
     });
@@ -1654,11 +1413,7 @@ pub extern "C" fn bubble_take_gesture_trace(
 ) -> i32 {
     copy_text(shell, buf, cap, |engine| {
         drain_pending(&engine.shared)?;
-        let mut shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         Ok(shell.take_gesture_trace().join("\n"))
     })
 }
@@ -1735,11 +1490,7 @@ pub extern "C" fn bubble_node_text(
 ) -> i32 {
     copy_text(shell, buf, cap, |engine| {
         drain_pending(&engine.shared)?;
-        let shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         shell.text(handle).map(|text| text.to_owned())
     })
 }
@@ -1756,11 +1507,7 @@ pub extern "C" fn bubble_node_box(
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let shell = engine
-            .shared
-            .shell
-            .lock()
-            .map_err(|_| "tree lock poisoned".to_string())?;
+        let shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         let (nx, ny, nw, nh) = shell.node_box(handle)?;
         unsafe {
             if !x.is_null() {
