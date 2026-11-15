@@ -92,14 +92,12 @@ export function PanDemo() {
               minDistance={5}
               onPanStart={(e) => {
                 "worklet";
-                panX.value = 0;
-                panY.value = 0;
                 scheduleOnJS(status.set, "panning");
               }}
               onPanUpdate={(e) => {
                 "worklet";
-                panX.value = e.translationX;
-                panY.value = e.translationY;
+                panX.value += e.deltaX;
+                panY.value += e.deltaY;
               }}
               onPanEnd={(e) => {
                 "worklet";
