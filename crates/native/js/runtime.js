@@ -1296,9 +1296,10 @@ function disposeHandle(handle) {
 
 function moveHandle(handle, parentHandle, index) {
   const oldParent = parentOf.get(handle);
+  const old = oldParent !== undefined ? childrenOf.get(oldParent) : undefined;
+  const position = old ? old.indexOf(handle) : -1;
+  if (oldParent === parentHandle && position === index) return;
   if (oldParent !== undefined) {
-    const old = childrenOf.get(oldParent);
-    const position = old ? old.indexOf(handle) : -1;
     if (position >= 0) old.splice(position, 1);
   }
   let list = childrenOf.get(parentHandle);
@@ -1408,7 +1409,16 @@ export function forEach(items, by, render) {
         live.delete(groupKey);
       }
     }
-    let cursor = anchorIndex(parentHandle, anchor);
+    // Existing groups sit directly before the anchor. Their target index is a
+    // final position (anchor's index minus every handle still to be placed),
+    // while new groups insert at the running block end; sharing one cursor is
+    // only valid if existing handles move to that final index.
+    let existingHandles = 0;
+    for (const entry of next) {
+      const placed = groups.get(entry.key);
+      if (placed !== undefined) existingHandles += placed.handles.length;
+    }
+    let cursor = anchorIndex(parentHandle, anchor) - existingHandles;
     for (const entry of next) {
       live.set(entry.key, entry.item);
       let group = groups.get(entry.key);
@@ -1460,7 +1470,14 @@ export function indexEach(items, render) {
         groups.delete(index);
       }
     }
-    let cursor = anchorIndex(parentHandle, anchor);
+    // Same final-position cursor math as forEach: existing groups sit directly
+    // before the anchor, so their move target is the anchor's index minus the
+    // handles still to be placed.
+    let existingHandles = 0;
+    for (const group of groups.values()) {
+      if (group.scope) existingHandles += group.handles.length;
+    }
+    let cursor = anchorIndex(parentHandle, anchor) - existingHandles;
     for (let index = 0; index < list.length; index += 1) {
       let group = groups.get(index);
       if (group === undefined) {
