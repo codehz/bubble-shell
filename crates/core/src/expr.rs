@@ -107,6 +107,64 @@ fn err<T>(message: impl Into<String>) -> Result<T, ProgramError> {
     Err(ProgramError(message.into()))
 }
 
+/// Per-opcode stack and type rule. One table is the reference for arity and
+/// result types: `result_type` validates against it, so the static check and
+/// the runtime instruction set cannot silently diverge when opcodes change.
+/// `eval` keeps per-opcode compute arms but must mirror each entry's pops.
+#[derive(Clone, Copy)]
+struct OpSpec {
+    what: &'static str,
+    /// Stack inputs consumed, in pop order.
+    pops: u8,
+    /// Cross-operand type rule.
+    rule: OpRule,
+}
+
+#[derive(Clone, Copy)]
+enum OpRule {
+    /// Every pop must be `operand`; pushes `result`.
+    Fixed { operand: Type, result: Type },
+    /// Two pops of the same type; pushes bool (EQ, NE).
+    Equality,
+    /// Two same-type branch pops under a bool condition; pushes the branch
+    /// type (SELECT).
+    Branches,
+    /// A numeric t over two same-type number-or-color pops; pushes their type
+    /// (MIX).
+    Mix,
+}
+
+const OP_SPECS: &[OpSpec] = &[
+    OpSpec { what: "arithmetic", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_ADD
+    OpSpec { what: "arithmetic", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_SUB
+    OpSpec { what: "arithmetic", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_MUL
+    OpSpec { what: "arithmetic", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_DIV
+    OpSpec { what: "neg", pops: 1, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_NEG
+    OpSpec { what: "comparison", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::B } }, // OP_LT
+    OpSpec { what: "comparison", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::B } }, // OP_LE
+    OpSpec { what: "comparison", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::B } }, // OP_GT
+    OpSpec { what: "comparison", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::B } }, // OP_GE
+    OpSpec { what: "equality", pops: 2, rule: OpRule::Equality }, // OP_EQ
+    OpSpec { what: "equality", pops: 2, rule: OpRule::Equality }, // OP_NE
+    OpSpec { what: "logical", pops: 2, rule: OpRule::Fixed { operand: Type::B, result: Type::B } }, // OP_AND
+    OpSpec { what: "logical", pops: 2, rule: OpRule::Fixed { operand: Type::B, result: Type::B } }, // OP_OR
+    OpSpec { what: "not", pops: 1, rule: OpRule::Fixed { operand: Type::B, result: Type::B } }, // OP_NOT
+    OpSpec { what: "select", pops: 3, rule: OpRule::Branches }, // OP_SELECT
+    OpSpec { what: "mix", pops: 3, rule: OpRule::Mix }, // OP_MIX
+    OpSpec { what: "lerp", pops: 3, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_LERP
+    OpSpec { what: "lerp", pops: 3, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_CLAMP
+    OpSpec { what: "min", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_MIN
+    OpSpec { what: "min", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_MAX
+    OpSpec { what: "neg", pops: 1, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_ABS
+];
+
+/// Opcodes `OP_ADD..=OP_MAX` are contiguous and table order matches.
+fn op_spec(op: u8) -> Result<&'static OpSpec, ProgramError> {
+    OP_SPECS
+        .get(op.wrapping_sub(OP_ADD) as usize)
+        .ok_or_else(|| ProgramError(format!("unknown program opcode {op}")))
+}
+
 impl Program {
     /// Validate constants and instruction stream. Callers then prove the
     /// slot type with [`Self::result_type`], passing the types of the
@@ -195,13 +253,10 @@ impl Program {
             stack.push(kind);
             Ok(())
         };
-        let pop = |stack: &mut Vec<Type>, what: &str| -> Result<Type, ProgramError> {
-            stack
-                .pop()
-                .ok_or_else(|| ProgramError(format!("{what} underflows the stack")))
-        };
         let pop_as = |stack: &mut Vec<Type>, want: Type, what: &str| -> Result<(), ProgramError> {
-            let got = pop(stack, what)?;
+            let got = stack
+                .pop()
+                .ok_or_else(|| ProgramError(format!("{what} underflows the stack")))?;
             if got != want {
                 return err(format!("{what} expects {want:?}, got {got:?}"));
             }
@@ -226,69 +281,67 @@ impl Program {
                     pop_as(&mut stack, Type::N, "ease")?;
                     push(&mut stack, Type::N)?;
                 }
-                Instr::Op(op) => match *op {
-                    OP_ADD | OP_SUB | OP_MUL | OP_DIV => {
-                        pop_as(&mut stack, Type::N, "arithmetic")?;
-                        pop_as(&mut stack, Type::N, "arithmetic")?;
-                        push(&mut stack, Type::N)?;
+                Instr::Op(op) => {
+                    let spec = op_spec(*op)?;
+                    let mut popped: Vec<Type> = Vec::with_capacity(spec.pops as usize);
+                    for _ in 0..spec.pops {
+                        let got = stack
+                            .pop()
+                            .ok_or_else(|| ProgramError(format!("{} underflows the stack", spec.what)))?;
+                        popped.push(got);
                     }
-                    OP_NEG | OP_ABS => {
-                        pop_as(&mut stack, Type::N, "neg")?;
-                        push(&mut stack, Type::N)?;
-                    }
-                    OP_LT | OP_LE | OP_GT | OP_GE => {
-                        pop_as(&mut stack, Type::N, "comparison")?;
-                        pop_as(&mut stack, Type::N, "comparison")?;
-                        push(&mut stack, Type::B)?;
-                    }
-                    OP_EQ | OP_NE => {
-                        let a = pop(&mut stack, "equality")?;
-                        let b = pop(&mut stack, "equality")?;
-                        if a != b {
-                            return err("equality compares different types");
+                    match spec.rule {
+                        OpRule::Fixed { operand, result } => {
+                            for got in &popped {
+                                if *got != operand {
+                                    return err(format!(
+                                        "{} expects {operand:?}, got {got:?}",
+                                        spec.what
+                                    ));
+                                }
+                            }
+                            stack.push(result);
                         }
-                        push(&mut stack, Type::B)?;
-                    }
-                    OP_AND | OP_OR => {
-                        pop_as(&mut stack, Type::B, "logical")?;
-                        pop_as(&mut stack, Type::B, "logical")?;
-                        push(&mut stack, Type::B)?;
-                    }
-                    OP_NOT => {
-                        pop_as(&mut stack, Type::B, "not")?;
-                        push(&mut stack, Type::B)?;
-                    }
-                    OP_SELECT => {
-                        let b = pop(&mut stack, "select")?;
-                        let a = pop(&mut stack, "select")?;
-                        pop_as(&mut stack, Type::B, "select")?;
-                        if a != b {
-                            return err("select branches have different types");
+                        OpRule::Equality => {
+                            if popped[0] != popped[1] {
+                                return err("equality compares different types");
+                            }
+                            stack.push(Type::B);
                         }
-                        push(&mut stack, a)?;
-                    }
-                    OP_MIX => {
-                        pop_as(&mut stack, Type::N, "mix")?;
-                        let b = pop(&mut stack, "mix")?;
-                        let a = pop(&mut stack, "mix")?;
-                        if a != b || (a != Type::N && a != Type::C) {
-                            return err("mix interpolates two numbers or two colors");
+                        OpRule::Branches => {
+                            // Pop order: branch b, branch a, condition.
+                            if popped[2] != Type::B {
+                                return err(format!(
+                                    "{} expects {:?}, got {:?}",
+                                    spec.what,
+                                    Type::B,
+                                    popped[2]
+                                ));
+                            }
+                            if popped[0] != popped[1] {
+                                return err("select branches have different types");
+                            }
+                            stack.push(popped[1]);
                         }
-                        push(&mut stack, a)?;
+                        OpRule::Mix => {
+                            // Pop order: t, b, a.
+                            if popped[0] != Type::N {
+                                return err(format!(
+                                    "{} expects {:?}, got {:?}",
+                                    spec.what,
+                                    Type::N,
+                                    popped[0]
+                                ));
+                            }
+                            if popped[1] != popped[2]
+                                || (popped[1] != Type::N && popped[1] != Type::C)
+                            {
+                                return err("mix interpolates two numbers or two colors");
+                            }
+                            stack.push(popped[2]);
+                        }
                     }
-                    OP_LERP | OP_CLAMP => {
-                        pop_as(&mut stack, Type::N, "lerp")?;
-                        pop_as(&mut stack, Type::N, "lerp")?;
-                        pop_as(&mut stack, Type::N, "lerp")?;
-                        push(&mut stack, Type::N)?;
-                    }
-                    OP_MIN | OP_MAX => {
-                        pop_as(&mut stack, Type::N, "min")?;
-                        pop_as(&mut stack, Type::N, "min")?;
-                        push(&mut stack, Type::N)?;
-                    }
-                    other => return err(format!("unknown program opcode {other}")),
-                },
+                }
             }
         }
         if stack.len() != 1 {
