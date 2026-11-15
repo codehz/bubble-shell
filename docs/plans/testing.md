@@ -47,7 +47,7 @@ crates/testing/
 ```
 
 - 依赖：`bubble-ffi`、`bubble-bundler`、`sha2`。全部本地，离线。
-- 串行：C ABI 是 thread-local 绑定，`cargo test` 天然逐用例执行；帧泵线程用现有 `bubble_bind(id)` 模式（参照 eval `frame_detached`）。
+- 并行：每个 `Session` 持有自己的 `BubbleShell` 指针，帧泵线程把同一指针传给 `bubble_tick` / `bubble_frame`。
 - fixture 构建：`bubble_bundler::bundle_entry` 进程内调用，`LazyLock` 每 app 构建一次（rolldown/oxc 均为本地 Rust 依赖）。构建模式用开发档，产物喂 `bubble_load`。
 - manifest：程序化生成（schema/id/version/minRuntime/platforms/entry/files[{path,sha256,size}]/assets/占位签名），sha256 由 `sha2` 计算，与 `counter.json` 字段一致。
 
@@ -66,8 +66,8 @@ assert_eq!(app.text_of(id("label"))?, "Count: 1");
 ```
 
 要点：
-- `Session` 内部保存 shell id；步骤调用后泵帧（`bubble_frame`）驱动布局/手势推进。
-- 每次 create 前 `bubble_destroy()`（现状语义），进程内同一时刻一个活动 shell。
+- `Session` 内部保存 `BubbleShell` 指针；步骤调用后泵帧（`bubble_frame`）驱动布局/手势推进。
+- `Drop` 销毁该指针。进程内可以同时存在多个 shell。
 - 断言失败即测试失败（fail-fast），消息带 semantics 快照摘录，替代旧 `SuiteReport`。
 
 ### testID 链路（唯一动核心/编译器的改动）

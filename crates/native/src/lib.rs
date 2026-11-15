@@ -1,10 +1,10 @@
 //! C ABI around one QuickJS script thread and one retained tree per shell.
 //!
-//! Several shells may exist. `bubble_create` binds the new shell on this
-//! thread; `bubble_bind` selects another. `bubble_frame`, hit testing, and
-//! scrolling run on the caller thread and use the bound shell.
-//! Script evaluation does not. The script thread only produces op batches;
-//! the caller/frame thread owns the `Shell` and applies pending batches.
+//! `bubble_create` returns an opaque pointer. Every other call takes that
+//! pointer; shells share no process-wide binding. The host must not destroy a
+//! shell while another call on it is running. `bubble_frame`, hit testing, and
+//! scrolling run on the caller thread. Script evaluation does not: the script
+//! thread only produces op batches, and the caller applies them.
 //! A one-second interrupt rebuilds that shell's context and remounts its bundle.
 
 // These are C ABI exports: foreign callers cannot express Rust's `unsafe`
@@ -13,15 +13,14 @@
 
 mod script;
 
-use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::path::PathBuf;
 
 use bubble_core::{
     decode_layout, encode_edit_events, encode_events, encode_paint, encode_var_events,
@@ -124,7 +123,12 @@ impl Shared {
     fn bind_storage(&self, manifest: &str) {
         let id = serde_json::from_str::<serde_json::Value>(manifest)
             .ok()
-            .and_then(|value| value.get("id").and_then(|id| id.as_str()).map(str::to_string))
+            .and_then(|value| {
+                value
+                    .get("id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_string)
+            })
             .filter(|id| !id.is_empty())
             .unwrap_or_else(|| "default".into());
         if let Ok(mut slot) = self.storage_id.lock() {
@@ -168,41 +172,28 @@ impl Shared {
     }
 }
 
-struct Engine {
+/// Opaque shell. The host passes this pointer to every call and must not
+/// destroy it while another call on it is running. Shells share no state.
+pub struct BubbleShell {
     shared: Arc<Shared>,
     tx: Sender<Cmd>,
     thread: Mutex<Option<JoinHandle<()>>>,
+    /// Borrowed by `bubble_last_error` until the next fallible call or destroy.
+    last_error: Mutex<Option<CString>>,
 }
 
-struct Engines {
-    next: i32,
-    by_id: HashMap<i32, Engine>,
-}
-
-static ENGINES: LazyLock<Mutex<Engines>> = LazyLock::new(|| {
-    Mutex::new(Engines {
-        next: 1,
-        by_id: HashMap::new(),
-    })
-});
-static ERROR_C: Mutex<Option<CString>> = Mutex::new(None);
-
-thread_local! {
-    static CURRENT: Cell<i32> = const { Cell::new(0) };
-}
-
-fn engine() -> Result<EngineRef, String> {
-    let id = CURRENT.get();
-    if id == 0 {
-        return Err("shell is not created".into());
+fn shell_ref<'a>(shell: *mut BubbleShell) -> Result<&'a BubbleShell, String> {
+    if shell.is_null() {
+        return Err("shell is null".into());
     }
-    let guard = ENGINES
-        .lock()
-        .map_err(|_| "engine lock poisoned".to_string())?;
-    let engine = guard.by_id.get(&id).ok_or("shell is not created")?;
+    Ok(unsafe { &*shell })
+}
+
+fn engine(shell: *mut BubbleShell) -> Result<EngineRef, String> {
+    let shell = shell_ref(shell)?;
     Ok(EngineRef {
-        shared: Arc::clone(&engine.shared),
-        tx: engine.tx.clone(),
+        shared: Arc::clone(&shell.shared),
+        tx: shell.tx.clone(),
     })
 }
 
@@ -211,9 +202,39 @@ struct EngineRef {
     tx: Sender<Cmd>,
 }
 
-fn store_error(message: &str) {
-    if let Ok(mut slot) = ERROR_C.lock() {
+fn store_error(shell: *mut BubbleShell, message: &str) {
+    let Ok(shell) = shell_ref(shell) else {
+        return;
+    };
+    shell.shared.set_error(message);
+    if let Ok(mut slot) = shell.last_error.lock() {
         *slot = CString::new(message.replace('\0', " ")).ok();
+    }
+}
+
+fn owned_error(message: &str) -> *mut c_char {
+    CString::new(message.replace('\0', " "))
+        .unwrap_or_else(|_| CString::new("invalid error").expect("static error"))
+        .into_raw()
+}
+
+fn finish(shell: *mut BubbleShell, result: Result<(), String>) -> i32 {
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            store_error(shell, &err);
+            1
+        }
+    }
+}
+
+fn finish_error(shell: *mut BubbleShell, result: Result<(), String>) -> *mut c_char {
+    match result {
+        Ok(()) => std::ptr::null_mut(),
+        Err(err) => {
+            store_error(shell, &err);
+            owned_error(&err)
+        }
     }
 }
 
@@ -303,7 +324,7 @@ fn send_vars(shared: &Shared, events: Vec<VarEvent>) {
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
+pub extern "C" fn bubble_create(host: *const BubbleHost) -> *mut BubbleShell {
     let result = catch(|| {
         let (measure, layout, ctx) = unsafe {
             if host.is_null() {
@@ -347,50 +368,24 @@ pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
         if let Ok(mut slot) = shared.commands.lock() {
             *slot = Some(tx.clone());
         }
-        let mut engines = ENGINES
-            .lock()
-            .map_err(|_| "engine lock poisoned".to_string())?;
-        let id = engines.next;
-        engines.next = engines.next.saturating_add(1);
-        engines.by_id.insert(
-            id,
-            Engine {
-                shared,
-                tx,
-                thread: Mutex::new(Some(thread)),
-            },
-        );
-        drop(engines);
-        CURRENT.set(id);
-        Ok(())
+        Ok(Box::into_raw(Box::new(BubbleShell {
+            shared,
+            tx,
+            thread: Mutex::new(Some(thread)),
+            last_error: Mutex::new(None),
+        })))
     });
-    finish(result)
-}
-
-/// Select `id` for later calls on this thread. Returns 0, or -1 when missing.
-#[no_mangle]
-pub extern "C" fn bubble_bind(id: i32) -> i32 {
-    let Ok(guard) = ENGINES.lock() else {
-        return -1;
-    };
-    if !guard.by_id.contains_key(&id) {
-        return -1;
+    match result {
+        Ok(shell) => shell,
+        Err(_) => std::ptr::null_mut(),
     }
-    CURRENT.set(id);
-    0
-}
-
-/// Id bound on this thread, or 0.
-#[no_mangle]
-pub extern "C" fn bubble_current() -> i32 {
-    CURRENT.get()
 }
 
 /// JSON value read by `host.params` on the next load of the bound shell.
 #[no_mangle]
-pub extern "C" fn bubble_set_params(json: *const c_char) -> i32 {
+pub extern "C" fn bubble_set_params(shell: *mut BubbleShell, json: *const c_char) -> *mut c_char {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         let json = cstr(json)?;
         serde_json::from_str::<serde_json::Value>(&json).map_err(|err| err.to_string())?;
         let mut slot = engine
@@ -401,14 +396,17 @@ pub extern "C" fn bubble_set_params(json: *const c_char) -> i32 {
         *slot = json;
         Ok(())
     });
-    finish(result)
+    finish_error(shell, result)
 }
 
 /// Directory for `bubble.storage.<manifest id>.json`. Null keeps storage in memory.
 #[no_mangle]
-pub extern "C" fn bubble_set_storage_dir(path: *const c_char) -> i32 {
+pub extern "C" fn bubble_set_storage_dir(
+    shell: *mut BubbleShell,
+    path: *const c_char,
+) -> *mut c_char {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         let dir = if path.is_null() {
             None
         } else {
@@ -427,7 +425,7 @@ pub extern "C" fn bubble_set_storage_dir(path: *const c_char) -> i32 {
         *slot = dir;
         Ok(())
     });
-    finish(result)
+    finish_error(shell, result)
 }
 
 fn storage_file(dir: &std::path::Path, id: &str) -> PathBuf {
@@ -446,9 +444,13 @@ fn storage_file(dir: &std::path::Path, id: &str) -> PathBuf {
 
 /// Deliver `payload` JSON to `host.on(name)` listeners. Kept until a bundle is listening.
 #[no_mangle]
-pub extern "C" fn bubble_send(name: *const c_char, payload: *const c_char) -> i32 {
+pub extern "C" fn bubble_send(
+    shell: *mut BubbleShell,
+    name: *const c_char,
+    payload: *const c_char,
+) -> *mut c_char {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         let name = cstr(name)?;
         let payload = if payload.is_null() {
             "null".to_string()
@@ -462,36 +464,33 @@ pub extern "C" fn bubble_send(name: *const c_char, payload: *const c_char) -> i3
             .map_err(|_| "script thread is gone".to_string())?;
         Ok(())
     });
-    finish(result)
+    finish_error(shell, result)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_destroy() {
-    let id = CURRENT.get();
-    if id == 0 {
+pub extern "C" fn bubble_destroy(shell: *mut BubbleShell) {
+    if shell.is_null() {
         return;
     }
-    let taken = ENGINES.lock().ok().and_then(|mut slot| slot.by_id.remove(&id));
-    CURRENT.set(0);
-    if let Some(engine) = taken {
-        script::stop(&engine.shared);
-        let _ = engine.tx.send(Cmd::Shutdown);
-        if let Ok(mut thread) = engine.thread.lock() {
-            if let Some(thread) = thread.take() {
-                let _ = thread.join();
-            }
-        }
+    let shell = unsafe { Box::from_raw(shell) };
+    script::stop(&shell.shared);
+    let _ = shell.tx.send(Cmd::Shutdown);
+    let thread = shell.thread.lock().ok().and_then(|mut guard| guard.take());
+    drop(shell);
+    if let Some(thread) = thread {
+        let _ = thread.join();
     }
 }
 
 #[no_mangle]
 pub extern "C" fn bubble_load(
+    shell: *mut BubbleShell,
     manifest_json: *const c_char,
     entry: *const u8,
     entry_len: u32,
-) -> i32 {
+) -> *mut c_char {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         let manifest = cstr(manifest_json)?;
         if entry.is_null() && entry_len != 0 {
             return Err("entry pointer is null".into());
@@ -525,18 +524,19 @@ pub extern "C" fn bubble_load(
             .recv()
             .map_err(|_| "script thread dropped the load".to_string())?
     });
-    finish(result)
+    finish_error(shell, result)
 }
 
 #[no_mangle]
 pub extern "C" fn bubble_frame(
+    shell: *mut BubbleShell,
     width: f32,
     height: f32,
     paint: *mut *const u8,
     paint_len: *mut u32,
 ) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         if let Ok(mut viewport) = engine.shared.viewport.lock() {
             *viewport = (width, height);
@@ -570,7 +570,7 @@ pub extern "C" fn bubble_frame(
         }
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 /// One normalized pointer sample. `action` 0 down, 1 move, 2 up, 3 cancel.
@@ -578,6 +578,7 @@ pub extern "C" fn bubble_frame(
 /// button. Time is the host's monotonic clock in milliseconds.
 #[no_mangle]
 pub extern "C" fn bubble_pointer(
+    shell: *mut BubbleShell,
     action: u32,
     id: u32,
     x: f32,
@@ -589,7 +590,7 @@ pub extern "C" fn bubble_pointer(
     let result = catch(|| {
         let action =
             PointerAction::parse(action).ok_or_else(|| format!("bad pointer action {action}"))?;
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
             let mut shell = engine
@@ -612,7 +613,7 @@ pub extern "C" fn bubble_pointer(
         send_events(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 /// Pressed feedback only: no recognition, no tap, no scroll. Editing hosts use
@@ -620,6 +621,7 @@ pub extern "C" fn bubble_pointer(
 /// never fed to both entry points.
 #[no_mangle]
 pub extern "C" fn bubble_visual_pointer(
+    shell: *mut BubbleShell,
     action: u32,
     id: u32,
     x: f32,
@@ -631,7 +633,7 @@ pub extern "C" fn bubble_visual_pointer(
     let result = catch(|| {
         let action =
             PointerAction::parse(action).ok_or_else(|| format!("bad pointer action {action}"))?;
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let mut shell = engine
             .shared
@@ -650,14 +652,14 @@ pub extern "C" fn bubble_visual_pointer(
         });
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 /// UI-thread timer tick for long press and the double-tap window.
 #[no_mangle]
-pub extern "C" fn bubble_tick(time_ms: f64) -> i32 {
+pub extern "C" fn bubble_tick(shell: *mut BubbleShell, time_ms: f64) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
             let mut shell = engine
@@ -671,16 +673,23 @@ pub extern "C" fn bubble_tick(time_ms: f64) -> i32 {
         send_events(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 /// Mutate the focused field, or focus one. `action` 0 focuses `a` (`0` blurs).
 /// 1 inserts UTF-8 text. 2 backspace. 3 delete forward. 4 sets the UTF-16
 /// selection to `a`..`b`. 5 starts composition. 6 updates it. 7 ends it.
 #[no_mangle]
-pub extern "C" fn bubble_edit(action: u32, text: *const u8, text_len: u32, a: u32, b: u32) -> i32 {
+pub extern "C" fn bubble_edit(
+    shell: *mut BubbleShell,
+    action: u32,
+    text: *const u8,
+    text_len: u32,
+    a: u32,
+    b: u32,
+) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let bytes = if text.is_null() || text_len == 0 {
             Vec::new()
@@ -717,15 +726,15 @@ pub extern "C" fn bubble_edit(action: u32, text: *const u8, text_len: u32, a: u3
         send_edits(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 /// Open a nested edit batch on the focused field. Events are published by
 /// `bubble_edit_batch_end`.
 #[no_mangle]
-pub extern "C" fn bubble_edit_batch_begin(session: u64) -> i32 {
+pub extern "C" fn bubble_edit_batch_begin(shell: *mut BubbleShell, session: u64) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
             let mut shell = engine
@@ -740,14 +749,14 @@ pub extern "C" fn bubble_edit_batch_begin(session: u64) -> i32 {
         send_edits(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 /// Close one batch level. The outermost level emits one delta event.
 #[no_mangle]
-pub extern "C" fn bubble_edit_batch_end(session: u64) -> i32 {
+pub extern "C" fn bubble_edit_batch_end(shell: *mut BubbleShell, session: u64) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
             let mut shell = engine
@@ -762,13 +771,14 @@ pub extern "C" fn bubble_edit_batch_end(session: u64) -> i32 {
         send_edits(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 /// Read the focused editing snapshot. `comp_end` is `u32::MAX` when no
 /// composition range is active; `composing` is 0 or 1.
 #[no_mangle]
 pub extern "C" fn bubble_edit_snapshot(
+    shell: *mut BubbleShell,
     session: *mut u64,
     revision: *mut u64,
     anchor: *mut u32,
@@ -778,7 +788,7 @@ pub extern "C" fn bubble_edit_snapshot(
     composing: *mut u32,
 ) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let state = {
             let shell = engine
@@ -814,7 +824,7 @@ pub extern "C" fn bubble_edit_snapshot(
         }
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 fn check_edit_session(shell: &Shell, session: u64) -> Result<(), String> {
@@ -838,6 +848,7 @@ fn read_utf8(text: *const u8, len: u32) -> Result<String, String> {
 /// `newCursorPosition`. `composing` 1 keeps/starts composition.
 #[no_mangle]
 pub extern "C" fn bubble_edit_replace(
+    shell: *mut BubbleShell,
     session: u64,
     start: u32,
     end: u32,
@@ -847,7 +858,7 @@ pub extern "C" fn bubble_edit_replace(
     composing: u32,
 ) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let text = read_utf8(text, text_len)?;
         let events = {
@@ -863,18 +874,19 @@ pub extern "C" fn bubble_edit_replace(
         send_edits(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 #[no_mangle]
 pub extern "C" fn bubble_edit_commit(
+    shell: *mut BubbleShell,
     session: u64,
     text: *const u8,
     text_len: u32,
     new_cursor_position: i32,
 ) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let text = read_utf8(text, text_len)?;
         let events = {
@@ -890,18 +902,19 @@ pub extern "C" fn bubble_edit_commit(
         send_edits(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 #[no_mangle]
 pub extern "C" fn bubble_edit_compose(
+    shell: *mut BubbleShell,
     session: u64,
     text: *const u8,
     text_len: u32,
     new_cursor_position: i32,
 ) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let text = read_utf8(text, text_len)?;
         let events = {
@@ -917,13 +930,13 @@ pub extern "C" fn bubble_edit_compose(
         send_edits(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_edit_undo(session: u64) -> i32 {
+pub extern "C" fn bubble_edit_undo(shell: *mut BubbleShell, session: u64) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
             let mut shell = engine
@@ -938,13 +951,13 @@ pub extern "C" fn bubble_edit_undo(session: u64) -> i32 {
         send_edits(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_edit_redo(session: u64) -> i32 {
+pub extern "C" fn bubble_edit_redo(shell: *mut BubbleShell, session: u64) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
             let mut shell = engine
@@ -959,14 +972,19 @@ pub extern "C" fn bubble_edit_redo(session: u64) -> i32 {
         send_edits(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 /// Delete UTF-16 units around the focused selection.
 #[no_mangle]
-pub extern "C" fn bubble_edit_delete_surrounding(session: u64, before: u32, after: u32) -> i32 {
+pub extern "C" fn bubble_edit_delete_surrounding(
+    shell: *mut BubbleShell,
+    session: u64,
+    before: u32,
+    after: u32,
+) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
             let mut shell = engine
@@ -981,18 +999,19 @@ pub extern "C" fn bubble_edit_delete_surrounding(session: u64, before: u32, afte
         send_edits(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 /// Delete code points around the focused selection.
 #[no_mangle]
 pub extern "C" fn bubble_edit_delete_surrounding_code_points(
+    shell: *mut BubbleShell,
     session: u64,
     before: u32,
     after: u32,
 ) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
             let mut shell = engine
@@ -1007,13 +1026,18 @@ pub extern "C" fn bubble_edit_delete_surrounding_code_points(
         send_edits(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_edit_set_composition(session: u64, start: u32, end: u32) -> i32 {
+pub extern "C" fn bubble_edit_set_composition(
+    shell: *mut BubbleShell,
+    session: u64,
+    start: u32,
+    end: u32,
+) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
             let mut shell = engine
@@ -1028,13 +1052,13 @@ pub extern "C" fn bubble_edit_set_composition(session: u64, start: u32, end: u32
         send_edits(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_edit_finish_composition(session: u64) -> i32 {
+pub extern "C" fn bubble_edit_finish_composition(shell: *mut BubbleShell, session: u64) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
             let mut shell = engine
@@ -1049,13 +1073,18 @@ pub extern "C" fn bubble_edit_finish_composition(session: u64) -> i32 {
         send_edits(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_edit_select(session: u64, anchor: u32, active: u32) -> i32 {
+pub extern "C" fn bubble_edit_select(
+    shell: *mut BubbleShell,
+    session: u64,
+    anchor: u32,
+    active: u32,
+) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
             let mut shell = engine
@@ -1073,14 +1102,14 @@ pub extern "C" fn bubble_edit_select(session: u64, anchor: u32, active: u32) -> 
         send_edits(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 /// Abort any open edit batch without committing it.
 #[no_mangle]
-pub extern "C" fn bubble_edit_batch_abort(session: u64) -> i32 {
+pub extern "C" fn bubble_edit_batch_abort(shell: *mut BubbleShell, session: u64) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
             let mut shell = engine
@@ -1099,16 +1128,16 @@ pub extern "C" fn bubble_edit_batch_abort(session: u64) -> i32 {
         send_edits(&engine.shared, events);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 /// UI-thread keyboard intent. Actions: 0 Tab, 1 Shift+Tab, 2 Enter, 3 Space,
 /// 4 Escape, 5 Left, 6 Right, 7 Home, 8 End. Returns 1 handled, 0 not, -1 error.
 #[no_mangle]
-pub extern "C" fn bubble_key(action: u32, time_ms: f64) -> i32 {
+pub extern "C" fn bubble_key(shell: *mut BubbleShell, action: u32, time_ms: f64) -> i32 {
     let result = catch(|| {
         let key = Key::parse(action).ok_or_else(|| format!("bad key action {action}"))?;
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let (handled, events) = {
             let mut shell = engine
@@ -1125,7 +1154,7 @@ pub extern "C" fn bubble_key(action: u32, time_ms: f64) -> i32 {
     match result {
         Ok(handled) => i32::from(handled),
         Err(err) => {
-            store_error(&err);
+            store_error(shell, &err);
             -1
         }
     }
@@ -1133,8 +1162,8 @@ pub extern "C" fn bubble_key(action: u32, time_ms: f64) -> i32 {
 
 /// Accessibility semantics snapshot as UTF-8 JSON.
 #[no_mangle]
-pub extern "C" fn bubble_semantics(buf: *mut c_char, cap: u32) -> i32 {
-    copy_text(buf, cap, |engine| {
+pub extern "C" fn bubble_semantics(shell: *mut BubbleShell, buf: *mut c_char, cap: u32) -> i32 {
+    copy_text(shell, buf, cap, |engine| {
         drain_pending(&engine.shared)?;
         let shell = engine
             .shared
@@ -1149,6 +1178,7 @@ pub extern "C" fn bubble_semantics(buf: *mut c_char, cap: u32) -> i32 {
 /// 3/4 forward/backward, 5/6 left/right, 7/8 up/down.
 #[no_mangle]
 pub extern "C" fn bubble_a11y_action(
+    shell: *mut BubbleShell,
     handle: u32,
     action: u32,
     text: *const u8,
@@ -1161,7 +1191,7 @@ pub extern "C" fn bubble_a11y_action(
             A11yAction::SetValue(_) => A11yAction::SetValue(read_utf8(text, text_len)?),
             other => other,
         };
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
             let mut shell = engine
@@ -1176,7 +1206,7 @@ pub extern "C" fn bubble_a11y_action(
         send_events(&engine.shared, events.1);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 /// Edit menu command. `action` 0 cut, 1 copy, 2 paste, 3 select all. The
@@ -1184,6 +1214,7 @@ pub extern "C" fn bubble_a11y_action(
 /// Returns 1 changed, 0 unchanged, -1 error.
 #[no_mangle]
 pub extern "C" fn bubble_edit_menu(
+    shell: *mut BubbleShell,
     action: u32,
     clip: *const u8,
     clip_len: u32,
@@ -1194,7 +1225,7 @@ pub extern "C" fn bubble_edit_menu(
         let action =
             EditMenuAction::parse(action).ok_or_else(|| format!("bad menu action {action}"))?;
         let clipboard = read_utf8(clip, clip_len)?;
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let (menu, events) = {
             let mut shell = engine
@@ -1216,7 +1247,7 @@ pub extern "C" fn bubble_edit_menu(
     match result {
         Ok(changed) => i32::from(changed),
         Err(err) => {
-            store_error(&err);
+            store_error(shell, &err);
             -1
         }
     }
@@ -1225,6 +1256,7 @@ pub extern "C" fn bubble_edit_menu(
 /// Start and end selection handles. Returns 0 when a range is selected.
 #[no_mangle]
 pub extern "C" fn bubble_selection_handles(
+    shell: *mut BubbleShell,
     start_x: *mut f32,
     start_y: *mut f32,
     start_w: *mut f32,
@@ -1235,7 +1267,7 @@ pub extern "C" fn bubble_selection_handles(
     end_h: *mut f32,
 ) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let mut shell = engine
             .shared
@@ -1276,14 +1308,14 @@ pub extern "C" fn bubble_selection_handles(
         }
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 /// Deepest text field under the point, or `0`.
 #[no_mangle]
-pub extern "C" fn bubble_field_at(x: f32, y: f32) -> u32 {
+pub extern "C" fn bubble_field_at(shell: *mut BubbleShell, x: f32, y: f32) -> u32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let shell = engine
             .shared
@@ -1297,9 +1329,9 @@ pub extern "C" fn bubble_field_at(x: f32, y: f32) -> u32 {
 
 /// Focus the field under the point and place the caret. Returns the handle, or 0.
 #[no_mangle]
-pub extern "C" fn bubble_focus_at(x: f32, y: f32) -> u32 {
+pub extern "C" fn bubble_focus_at(shell: *mut BubbleShell, x: f32, y: f32) -> u32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let events = {
             let mut shell = engine
@@ -1320,9 +1352,15 @@ pub extern "C" fn bubble_focus_at(x: f32, y: f32) -> u32 {
 
 /// Focused caret: x, y, width, height. Returns 0 when a field is focused.
 #[no_mangle]
-pub extern "C" fn bubble_caret(x: *mut f32, y: *mut f32, w: *mut f32, h: *mut f32) -> i32 {
+pub extern "C" fn bubble_caret(
+    shell: *mut BubbleShell,
+    x: *mut f32,
+    y: *mut f32,
+    w: *mut f32,
+    h: *mut f32,
+) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let mut shell = engine
             .shared
@@ -1348,14 +1386,14 @@ pub extern "C" fn bubble_caret(x: *mut f32, y: *mut f32, w: *mut f32, h: *mut f3
         }
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 /// `bit0` multiline, `bit1` secure, bits 8..15 keyboard kind.
 #[no_mangle]
-pub extern "C" fn bubble_field_flags(handle: u32) -> u32 {
+pub extern "C" fn bubble_field_flags(shell: *mut BubbleShell, handle: u32) -> u32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let shell = engine
             .shared
@@ -1368,9 +1406,9 @@ pub extern "C" fn bubble_field_flags(handle: u32) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_focused() -> u32 {
+pub extern "C" fn bubble_focused(shell: *mut BubbleShell) -> u32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let shell = engine
             .shared
@@ -1385,13 +1423,14 @@ pub extern "C" fn bubble_focused() -> u32 {
 /// UTF-16 selection of the focused field. `mark_end` is `u32::MAX` when not composing.
 #[no_mangle]
 pub extern "C" fn bubble_selection(
+    shell: *mut BubbleShell,
     start: *mut u32,
     end: *mut u32,
     mark_start: *mut u32,
     mark_end: *mut u32,
 ) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let shell = engine
             .shared
@@ -1420,7 +1459,7 @@ pub extern "C" fn bubble_selection(
         }
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 fn host_measure(
@@ -1501,9 +1540,9 @@ fn field_layout(host: &HostFns, req: &LayoutRequest<'_>) -> Result<LayoutSnapsho
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_unit_at(x: f32, y: f32, unit: *mut u32) -> i32 {
+pub extern "C" fn bubble_unit_at(shell: *mut BubbleShell, x: f32, y: f32, unit: *mut u32) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let shell = engine
             .shared
@@ -1519,11 +1558,12 @@ pub extern "C" fn bubble_unit_at(x: f32, y: f32, unit: *mut u32) -> i32 {
         }
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 #[no_mangle]
 pub extern "C" fn bubble_caret_at(
+    shell: *mut BubbleShell,
     unit: u32,
     x: *mut f32,
     y: *mut f32,
@@ -1531,7 +1571,7 @@ pub extern "C" fn bubble_caret_at(
     h: *mut f32,
 ) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let shell = engine
             .shared
@@ -1560,13 +1600,13 @@ pub extern "C" fn bubble_caret_at(
         }
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_selection_count() -> u32 {
+pub extern "C" fn bubble_selection_count(shell: *mut BubbleShell) -> u32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let mut shell = engine
             .shared
@@ -1582,6 +1622,7 @@ pub extern "C" fn bubble_selection_count() -> u32 {
 
 #[no_mangle]
 pub extern "C" fn bubble_selection_rect(
+    shell: *mut BubbleShell,
     index: u32,
     x: *mut f32,
     y: *mut f32,
@@ -1589,7 +1630,7 @@ pub extern "C" fn bubble_selection_rect(
     h: *mut f32,
 ) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let mut shell = engine
             .shared
@@ -1619,13 +1660,13 @@ pub extern "C" fn bubble_selection_rect(
         }
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_scroll(x: f32, y: f32, dx: f32, dy: f32) {
+pub extern "C" fn bubble_scroll(shell: *mut BubbleShell, x: f32, y: f32, dx: f32, dy: f32) {
     let _ = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let mut shell = engine
             .shared
@@ -1638,9 +1679,9 @@ pub extern "C" fn bubble_scroll(x: f32, y: f32, dx: f32, dy: f32) {
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_set_gesture_trace(enabled: i32) {
+pub extern "C" fn bubble_set_gesture_trace(shell: *mut BubbleShell, enabled: i32) {
     let _ = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let mut shell = engine
             .shared
@@ -1654,8 +1695,12 @@ pub extern "C" fn bubble_set_gesture_trace(enabled: i32) {
 
 /// Newline-separated trace lines. Empty when tracing is off.
 #[no_mangle]
-pub extern "C" fn bubble_take_gesture_trace(buf: *mut c_char, cap: u32) -> i32 {
-    copy_text(buf, cap, |engine| {
+pub extern "C" fn bubble_take_gesture_trace(
+    shell: *mut BubbleShell,
+    buf: *mut c_char,
+    cap: u32,
+) -> i32 {
+    copy_text(shell, buf, cap, |engine| {
         drain_pending(&engine.shared)?;
         let mut shell = engine
             .shared
@@ -1667,8 +1712,8 @@ pub extern "C" fn bubble_take_gesture_trace(buf: *mut c_char, cap: u32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_set_visible(visible: i32) {
-    if let Ok(engine) = engine() {
+pub extern "C" fn bubble_set_visible(shell: *mut BubbleShell, visible: i32) {
+    if let Ok(engine) = engine(shell) {
         engine.shared.visible.store(visible != 0, Ordering::Relaxed);
         if visible == 0 {
             if let Ok(mut shell) = engine.shared.shell.lock() {
@@ -1682,9 +1727,14 @@ pub extern "C" fn bubble_set_visible(visible: i32) {
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_register_font(family: *const c_char, data: *const u8, len: u32) {
+pub extern "C" fn bubble_register_font(
+    shell: *mut BubbleShell,
+    family: *const c_char,
+    data: *const u8,
+    len: u32,
+) {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         let family = cstr(family)?;
         if data.is_null() && len != 0 {
             return Err("font pointer is null".into());
@@ -1699,19 +1749,19 @@ pub extern "C" fn bubble_register_font(family: *const c_char, data: *const u8, l
         engine.shared.epoch.fetch_add(1, Ordering::Relaxed);
         Ok(())
     });
-    let _ = finish(result);
+    let _ = finish(shell, result);
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_font_epoch() -> u32 {
-    engine()
+pub extern "C" fn bubble_font_epoch(shell: *mut BubbleShell) -> u32 {
+    engine(shell)
         .map(|engine| engine.shared.epoch.load(Ordering::Relaxed))
         .unwrap_or(0)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_font_count() -> u32 {
-    engine()
+pub extern "C" fn bubble_font_count(shell: *mut BubbleShell) -> u32 {
+    engine(shell)
         .ok()
         .and_then(|engine| {
             engine
@@ -1725,8 +1775,13 @@ pub extern "C" fn bubble_font_count() -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_node_text(handle: u32, buf: *mut c_char, cap: u32) -> i32 {
-    copy_text(buf, cap, |engine| {
+pub extern "C" fn bubble_node_text(
+    shell: *mut BubbleShell,
+    handle: u32,
+    buf: *mut c_char,
+    cap: u32,
+) -> i32 {
+    copy_text(shell, buf, cap, |engine| {
         drain_pending(&engine.shared)?;
         let shell = engine
             .shared
@@ -1739,6 +1794,7 @@ pub extern "C" fn bubble_node_text(handle: u32, buf: *mut c_char, cap: u32) -> i
 
 #[no_mangle]
 pub extern "C" fn bubble_node_box(
+    shell: *mut BubbleShell,
     handle: u32,
     x: *mut f32,
     y: *mut f32,
@@ -1746,7 +1802,7 @@ pub extern "C" fn bubble_node_box(
     h: *mut f32,
 ) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let shell = engine
             .shared
@@ -1770,30 +1826,35 @@ pub extern "C" fn bubble_node_box(
         }
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_scroll_x_of(handle: u32) -> f32 {
-    scroll_of(handle).map_or(f32::NAN, |(x, _)| x)
+pub extern "C" fn bubble_scroll_x_of(shell: *mut BubbleShell, handle: u32) -> f32 {
+    scroll_of(shell, handle).map_or(f32::NAN, |(x, _)| x)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_scroll_y_of(handle: u32) -> f32 {
-    scroll_of(handle).map_or(f32::NAN, |(_, y)| y)
+pub extern "C" fn bubble_scroll_y_of(shell: *mut BubbleShell, handle: u32) -> f32 {
+    scroll_of(shell, handle).map_or(f32::NAN, |(_, y)| y)
 }
 
-fn scroll_of(handle: u32) -> Option<(f32, f32)> {
-    let engine = engine().ok()?;
+fn scroll_of(shell: *mut BubbleShell, handle: u32) -> Option<(f32, f32)> {
+    let engine = engine(shell).ok()?;
     drain_pending(&engine.shared).ok()?;
     let shell = engine.shared.shell.lock().ok()?;
     shell.scroll_of(handle).ok()
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_eval(source: *const c_char, buf: *mut c_char, cap: u32) -> i32 {
+pub extern "C" fn bubble_eval(
+    shell: *mut BubbleShell,
+    source: *const c_char,
+    buf: *mut c_char,
+    cap: u32,
+) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         let source = cstr(source)?;
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
         engine
@@ -1809,13 +1870,13 @@ pub extern "C" fn bubble_eval(source: *const c_char, buf: *mut c_char, cap: u32)
         write_buf(buf, cap, &text);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_post_eval(source: *const c_char) {
+pub extern "C" fn bubble_post_eval(shell: *mut BubbleShell, source: *const c_char) {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         let source = cstr(source)?;
         engine
             .tx
@@ -1823,26 +1884,26 @@ pub extern "C" fn bubble_post_eval(source: *const c_char) {
             .map_err(|_| "script thread is gone".to_string())?;
         Ok(())
     });
-    let _ = finish(result);
+    let _ = finish(shell, result);
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_generation() -> u32 {
-    engine()
+pub extern "C" fn bubble_generation(shell: *mut BubbleShell) -> u32 {
+    engine(shell)
         .map(|engine| engine.shared.generation.load(Ordering::Relaxed))
         .unwrap_or(0)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_faults() -> u32 {
-    engine()
+pub extern "C" fn bubble_faults(shell: *mut BubbleShell) -> u32 {
+    engine(shell)
         .map(|engine| engine.shared.faults.load(Ordering::Relaxed))
         .unwrap_or(0)
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_status(buf: *mut c_char, cap: u32) -> i32 {
-    copy_text(buf, cap, |engine| {
+pub extern "C" fn bubble_status(shell: *mut BubbleShell, buf: *mut c_char, cap: u32) -> i32 {
+    copy_text(shell, buf, cap, |engine| {
         engine
             .shared
             .status
@@ -1853,24 +1914,39 @@ pub extern "C" fn bubble_status(buf: *mut c_char, cap: u32) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_last_error() -> *const c_char {
-    ERROR_C
-        .lock()
-        .ok()
-        .and_then(|slot| slot.as_ref().map(|text| text.as_ptr()))
-        .unwrap_or(std::ptr::null())
+pub extern "C" fn bubble_string_free(s: *mut c_char) {
+    if !s.is_null() {
+        drop(unsafe { CString::from_raw(s) });
+    }
+}
+
+/// Borrowed last error for an int-returning call, or null.
+/// Invalidated by the next fallible call on `shell` and by `bubble_destroy`.
+#[no_mangle]
+pub extern "C" fn bubble_last_error(shell: *mut BubbleShell) -> *const c_char {
+    let Ok(shell) = shell_ref(shell) else {
+        return std::ptr::null();
+    };
+    match shell.last_error.lock() {
+        Ok(slot) => slot
+            .as_ref()
+            .map(|text| text.as_ptr())
+            .unwrap_or(std::ptr::null()),
+        Err(_) => std::ptr::null(),
+    }
 }
 
 /// Returns 1 when the loaded bundle has registered a back handler, 0 otherwise.
 #[no_mangle]
-pub extern "C" fn bubble_has_back_handler() -> i32 {
-    engine()
+pub extern "C" fn bubble_has_back_handler(shell: *mut BubbleShell) -> i32 {
+    engine(shell)
         .map(|engine| engine.shared.has_back_handler.load(Ordering::Relaxed) as i32)
         .unwrap_or(0)
 }
 
 #[no_mangle]
 pub extern "C" fn bubble_poll_request(
+    shell: *mut BubbleShell,
     id: *mut u32,
     method: *mut c_char,
     method_cap: u32,
@@ -1878,7 +1954,7 @@ pub extern "C" fn bubble_poll_request(
     params_cap: u32,
 ) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         let mut queue = engine
             .shared
             .requests
@@ -1897,16 +1973,21 @@ pub extern "C" fn bubble_poll_request(
     match result {
         Ok(code) => code,
         Err(err) => {
-            store_error(&err);
+            store_error(shell, &err);
             -1
         }
     }
 }
 
 #[no_mangle]
-pub extern "C" fn bubble_finish_request(id: u32, ok: i32, result: *const c_char) {
+pub extern "C" fn bubble_finish_request(
+    shell: *mut BubbleShell,
+    id: u32,
+    ok: i32,
+    result: *const c_char,
+) {
     let settled = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         let payload = if result.is_null() {
             String::new()
         } else {
@@ -1922,7 +2003,7 @@ pub extern "C" fn bubble_finish_request(id: u32, ok: i32, result: *const c_char)
             .map_err(|_| "script thread is gone".to_string())?;
         Ok(())
     });
-    let _ = finish(settled);
+    let _ = finish(shell, settled);
 }
 
 #[repr(C)]
@@ -1930,19 +2011,6 @@ pub struct BubbleHost {
     pub measure: Option<MeasureFn>,
     pub ctx: *mut c_void,
     pub layout: Option<LayoutFn>,
-}
-
-fn finish(result: Result<(), String>) -> i32 {
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            store_error(&err);
-            if let Ok(engine) = engine() {
-                engine.shared.set_error(&err);
-            }
-            1
-        }
-    }
 }
 
 fn cstr(ptr: *const c_char) -> Result<String, String> {
@@ -1968,17 +2036,18 @@ fn write_buf(buf: *mut c_char, cap: u32, text: &str) {
 }
 
 fn copy_text(
+    shell: *mut BubbleShell,
     buf: *mut c_char,
     cap: u32,
     body: impl FnOnce(EngineRef) -> Result<String, String>,
 ) -> i32 {
     let result = catch(|| {
-        let engine = engine()?;
+        let engine = engine(shell)?;
         let text = body(engine)?;
         write_buf(buf, cap, &text);
         Ok(())
     });
-    finish(result)
+    finish(shell, result)
 }
 
 fn fallback_measure(text: &str, font_size: f32, line_height: f32) -> (f32, f32) {
@@ -2055,30 +2124,33 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_create<'a>(
         env: JNIEnv<'a>,
         _class: JClass<'a>,
-    ) -> jint {
+    ) -> jlong {
         if let Ok(vm) = env.get_java_vm() {
             let _ = VM.set(vm);
         }
-        super::bubble_create(ptr::null())
+        super::bubble_create(ptr::null()) as jlong
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_destroy<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
     ) {
-        super::bubble_destroy();
+        super::bubble_destroy(shell as *mut super::BubbleShell);
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_pollRequest<'a>(
         env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
     ) -> JString<'a> {
         let mut id = 0u32;
         let mut method = vec![0u8; 128];
         let mut params = vec![0u8; 8192];
         let code = super::bubble_poll_request(
+            shell as *mut super::BubbleShell,
             &mut id,
             method.as_mut_ptr().cast(),
             method.len() as u32,
@@ -2091,13 +2163,15 @@ mod android {
         let method = cstr_lossy(&method);
         let params = cstr_lossy(&params);
         let body = serde_json::json!([id, method, params]).to_string();
-        env.new_string(body).unwrap_or_else(|_| JObject::null().into())
+        env.new_string(body)
+            .unwrap_or_else(|_| JObject::null().into())
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_finishRequest<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         id: jint,
         ok: jint,
         result: JString<'a>,
@@ -2106,49 +2180,78 @@ mod android {
             return;
         };
         let result = super::CString_from(&result.to_string_lossy());
-        super::bubble_finish_request(id as u32, ok, result.as_ptr());
+        super::bubble_finish_request(
+            shell as *mut super::BubbleShell,
+            id as u32,
+            ok,
+            result.as_ptr(),
+        );
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_setStorageDir<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         path: JString<'a>,
-    ) -> jint {
+    ) -> JString<'a> {
         let Ok(path) = env.get_string(&path) else {
-            return 1;
+            return env
+                .new_string("storage path is not a string")
+                .unwrap_or_else(|_| JObject::null().into());
         };
         let path = super::CString_from(&path.to_string_lossy());
-        super::bubble_set_storage_dir(path.as_ptr())
+        let err = super::bubble_set_storage_dir(shell as *mut super::BubbleShell, path.as_ptr());
+        jni_error(&mut env, err)
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_load<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         manifest: JString<'a>,
         entry: JByteArray<'a>,
-    ) -> jint {
+    ) -> JString<'a> {
         let Ok(manifest) = env.get_string(&manifest) else {
-            return 1;
+            return env
+                .new_string("manifest is not a string")
+                .unwrap_or_else(|_| JObject::null().into());
         };
         let manifest = super::CString_from(&manifest.to_string_lossy());
         let Ok(bytes) = env.convert_byte_array(entry) else {
-            return 1;
+            return env
+                .new_string("entry is not a byte array")
+                .unwrap_or_else(|_| JObject::null().into());
         };
-        super::bubble_load(manifest.as_ptr(), bytes.as_ptr().cast(), bytes.len() as u32)
+        let err = super::bubble_load(
+            shell as *mut super::BubbleShell,
+            manifest.as_ptr(),
+            bytes.as_ptr().cast(),
+            bytes.len() as u32,
+        );
+        jni_error(&mut env, err)
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_frame<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         width: jfloat,
         height: jfloat,
     ) -> JByteArray<'a> {
         let mut ptr = ptr::null();
         let mut len = 0u32;
-        if super::bubble_frame(width, height, &mut ptr, &mut len) != 0 || ptr.is_null() {
+        if super::bubble_frame(
+            shell as *mut super::BubbleShell,
+            width,
+            height,
+            &mut ptr,
+            &mut len,
+        ) != 0
+            || ptr.is_null()
+        {
             return env
                 .new_byte_array(0)
                 .unwrap_or_else(|_| JObject::null().into());
@@ -2164,6 +2267,7 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_pointer(
         _env: JNIEnv,
         _class: JClass,
+        shell: jlong,
         action: jint,
         id: jint,
         x: jfloat,
@@ -2173,6 +2277,7 @@ mod android {
         buttons: jint,
     ) -> jint {
         super::bubble_pointer(
+            shell as *mut super::BubbleShell,
             action as u32,
             id as u32,
             x,
@@ -2187,6 +2292,7 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_visualPointer(
         _env: JNIEnv,
         _class: JClass,
+        shell: jlong,
         action: jint,
         id: jint,
         x: jfloat,
@@ -2196,6 +2302,7 @@ mod android {
         buttons: jint,
     ) -> jint {
         super::bubble_visual_pointer(
+            shell as *mut super::BubbleShell,
             action as u32,
             id as u32,
             x,
@@ -2210,27 +2317,30 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_tick(
         _env: JNIEnv,
         _class: JClass,
+        shell: jlong,
         time_ms: jni::sys::jdouble,
     ) -> jint {
-        super::bubble_tick(time_ms)
+        super::bubble_tick(shell as *mut super::BubbleShell, time_ms)
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_scroll<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         x: jfloat,
         y: jfloat,
         dx: jfloat,
         dy: jfloat,
     ) {
-        super::bubble_scroll(x, y, dx, dy);
+        super::bubble_scroll(shell as *mut super::BubbleShell, x, y, dx, dy);
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_edit<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         action: jint,
         text: JByteArray<'a>,
         a: jint,
@@ -2238,6 +2348,7 @@ mod android {
     ) -> jint {
         let bytes = env.convert_byte_array(text).unwrap_or_default();
         super::bubble_edit(
+            shell as *mut super::BubbleShell,
             action as u32,
             bytes.as_ptr(),
             bytes.len() as u32,
@@ -2250,38 +2361,43 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editBatchBegin<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         session: jlong,
     ) -> jint {
-        super::bubble_edit_batch_begin(session as u64)
+        super::bubble_edit_batch_begin(shell as *mut super::BubbleShell, session as u64)
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editBatchEnd<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         session: jlong,
     ) -> jint {
-        super::bubble_edit_batch_end(session as u64)
+        super::bubble_edit_batch_end(shell as *mut super::BubbleShell, session as u64)
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editBatchAbort<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         session: jlong,
     ) -> jint {
-        super::bubble_edit_batch_abort(session as u64)
+        super::bubble_edit_batch_abort(shell as *mut super::BubbleShell, session as u64)
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editSnapshot<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
     ) -> jni::objects::JLongArray<'a> {
         let (mut session, mut revision) = (0u64, 0u64);
         let (mut anchor, mut active) = (0u32, 0u32);
         let (mut comp_start, mut comp_end, mut composing) = (0u32, 0u32, 0u32);
         let code = super::bubble_edit_snapshot(
+            shell as *mut super::BubbleShell,
             &mut session,
             &mut revision,
             &mut anchor,
@@ -2311,12 +2427,14 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editCommit<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         session: jlong,
         text: JByteArray<'a>,
         new_cursor_position: jint,
     ) -> jint {
         let bytes = env.convert_byte_array(text).unwrap_or_default();
         super::bubble_edit_commit(
+            shell as *mut super::BubbleShell,
             session as u64,
             bytes.as_ptr(),
             bytes.len() as u32,
@@ -2328,12 +2446,14 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editCompose<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         session: jlong,
         text: JByteArray<'a>,
         new_cursor_position: jint,
     ) -> jint {
         let bytes = env.convert_byte_array(text).unwrap_or_default();
         super::bubble_edit_compose(
+            shell as *mut super::BubbleShell,
             session as u64,
             bytes.as_ptr(),
             bytes.len() as u32,
@@ -2345,29 +2465,37 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editUndo<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         session: jlong,
     ) -> jint {
-        super::bubble_edit_undo(session as u64)
+        super::bubble_edit_undo(shell as *mut super::BubbleShell, session as u64)
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editRedo<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         session: jlong,
     ) -> jint {
-        super::bubble_edit_redo(session as u64)
+        super::bubble_edit_redo(shell as *mut super::BubbleShell, session as u64)
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editDeleteSurrounding<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         session: jlong,
         before: jint,
         after: jint,
     ) -> jint {
-        super::bubble_edit_delete_surrounding(session as u64, before as u32, after as u32)
+        super::bubble_edit_delete_surrounding(
+            shell as *mut super::BubbleShell,
+            session as u64,
+            before as u32,
+            after as u32,
+        )
     }
 
     #[no_mangle]
@@ -2376,11 +2504,13 @@ mod android {
     >(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         session: jlong,
         before: jint,
         after: jint,
     ) -> jint {
         super::bubble_edit_delete_surrounding_code_points(
+            shell as *mut super::BubbleShell,
             session as u64,
             before as u32,
             after as u32,
@@ -2391,42 +2521,56 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editSetComposition<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         session: jlong,
         start: jint,
         end: jint,
     ) -> jint {
-        super::bubble_edit_set_composition(session as u64, start as u32, end as u32)
+        super::bubble_edit_set_composition(
+            shell as *mut super::BubbleShell,
+            session as u64,
+            start as u32,
+            end as u32,
+        )
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editFinishComposition<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         session: jlong,
     ) -> jint {
-        super::bubble_edit_finish_composition(session as u64)
+        super::bubble_edit_finish_composition(shell as *mut super::BubbleShell, session as u64)
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editSelect<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         session: jlong,
         anchor: jint,
         active: jint,
     ) -> jint {
-        super::bubble_edit_select(session as u64, anchor as u32, active as u32)
+        super::bubble_edit_select(
+            shell as *mut super::BubbleShell,
+            session as u64,
+            anchor as u32,
+            active as u32,
+        )
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_unitAt<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         x: jfloat,
         y: jfloat,
     ) -> jint {
         let mut unit = u32::MAX;
-        if super::bubble_unit_at(x, y, &mut unit) == 0 {
+        if super::bubble_unit_at(shell as *mut super::BubbleShell, x, y, &mut unit) == 0 {
             unit as jint
         } else {
             -1
@@ -2437,62 +2581,69 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_fieldAt<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         x: jfloat,
         y: jfloat,
     ) -> jint {
-        super::bubble_field_at(x, y) as jint
+        super::bubble_field_at(shell as *mut super::BubbleShell, x, y) as jint
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_focusAt<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         x: jfloat,
         y: jfloat,
     ) -> jint {
-        super::bubble_focus_at(x, y) as jint
+        super::bubble_focus_at(shell as *mut super::BubbleShell, x, y) as jint
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_fieldFlags<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         handle: jint,
     ) -> jint {
-        super::bubble_field_flags(handle as u32) as jint
+        super::bubble_field_flags(shell as *mut super::BubbleShell, handle as u32) as jint
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_scrollXOf<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         handle: jint,
     ) -> jfloat {
-        super::bubble_scroll_x_of(handle as u32)
+        super::bubble_scroll_x_of(shell as *mut super::BubbleShell, handle as u32)
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_scrollYOf<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         handle: jint,
     ) -> jfloat {
-        super::bubble_scroll_y_of(handle as u32)
+        super::bubble_scroll_y_of(shell as *mut super::BubbleShell, handle as u32)
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_setVisible<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         visible: jint,
     ) {
-        super::bubble_set_visible(visible);
+        super::bubble_set_visible(shell as *mut super::BubbleShell, visible);
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_registerFont<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         family: JString<'a>,
         data: JByteArray<'a>,
     ) {
@@ -2503,17 +2654,28 @@ mod android {
         let Ok(bytes) = env.convert_byte_array(data) else {
             return;
         };
-        super::bubble_register_font(family.as_ptr(), bytes.as_ptr().cast(), bytes.len() as u32);
+        super::bubble_register_font(
+            shell as *mut super::BubbleShell,
+            family.as_ptr(),
+            bytes.as_ptr().cast(),
+            bytes.len() as u32,
+        );
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_nodeText<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         handle: jint,
     ) -> JString<'a> {
         let mut buf = [0 as std::os::raw::c_char; 65536];
-        let code = super::bubble_node_text(handle as u32, buf.as_mut_ptr(), buf.len() as u32);
+        let code = super::bubble_node_text(
+            shell as *mut super::BubbleShell,
+            handle as u32,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+        );
         let text = if code == 0 {
             unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
                 .to_string_lossy()
@@ -2529,19 +2691,25 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_key<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         action: jint,
         time_ms: jni::sys::jdouble,
     ) -> jint {
-        super::bubble_key(action as u32, time_ms)
+        super::bubble_key(shell as *mut super::BubbleShell, action as u32, time_ms)
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_semantics<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
     ) -> JString<'a> {
         let mut buf = vec![0 as std::os::raw::c_char; 262144];
-        let code = super::bubble_semantics(buf.as_mut_ptr(), buf.len() as u32);
+        let code = super::bubble_semantics(
+            shell as *mut super::BubbleShell,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+        );
         let text = if code == 0 {
             unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
                 .to_string_lossy()
@@ -2557,6 +2725,7 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_a11yAction<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         handle: jint,
         action: jint,
         text: JString<'a>,
@@ -2566,6 +2735,7 @@ mod android {
         };
         let bytes = text.to_string_lossy();
         super::bubble_a11y_action(
+            shell as *mut super::BubbleShell,
             handle as u32,
             action as u32,
             bytes.as_ptr(),
@@ -2577,6 +2747,7 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_editMenu<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         action: jint,
         clip: JString<'a>,
     ) -> JString<'a> {
@@ -2586,6 +2757,7 @@ mod android {
         let bytes = clip.to_string_lossy();
         let mut out = vec![0 as std::os::raw::c_char; 65536];
         let _ = super::bubble_edit_menu(
+            shell as *mut super::BubbleShell,
             action as u32,
             bytes.as_ptr(),
             bytes.len() as u32,
@@ -2603,11 +2775,20 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_selectionHandles<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
     ) -> jni::objects::JFloatArray<'a> {
         let (mut sx, mut sy, mut sw, mut sh) = (0.0f32, 0.0, 0.0, 0.0);
         let (mut ex, mut ey, mut ew, mut eh) = (0.0f32, 0.0, 0.0, 0.0);
         let array = if super::bubble_selection_handles(
-            &mut sx, &mut sy, &mut sw, &mut sh, &mut ex, &mut ey, &mut ew, &mut eh,
+            shell as *mut super::BubbleShell,
+            &mut sx,
+            &mut sy,
+            &mut sw,
+            &mut sh,
+            &mut ex,
+            &mut ey,
+            &mut ew,
+            &mut eh,
         ) == 0
         {
             let array = env.new_float_array(8).expect("float array");
@@ -2623,21 +2804,28 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_focused<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
     ) -> jint {
-        super::bubble_focused() as jint
+        super::bubble_focused(shell as *mut super::BubbleShell) as jint
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_focusedText<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
     ) -> JString<'a> {
         let mut buf = vec![0 as std::os::raw::c_char; 65536];
-        let handle = super::bubble_focused();
+        let handle = super::bubble_focused(shell as *mut super::BubbleShell);
         let text = if handle == 0 {
             String::new()
         } else {
-            let _ = super::bubble_node_text(handle, buf.as_mut_ptr(), buf.len() as u32);
+            let _ = super::bubble_node_text(
+                shell as *mut super::BubbleShell,
+                handle,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+            );
             unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
                 .to_string_lossy()
                 .into_owned()
@@ -2650,9 +2838,16 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_selection<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
     ) -> jni::objects::JIntArray<'a> {
         let (mut start, mut end, mut mark_start, mut mark_end) = (0u32, 0, 0, 0);
-        let _ = super::bubble_selection(&mut start, &mut end, &mut mark_start, &mut mark_end);
+        let _ = super::bubble_selection(
+            shell as *mut super::BubbleShell,
+            &mut start,
+            &mut end,
+            &mut mark_start,
+            &mut mark_end,
+        );
         let array = env.new_int_array(4).expect("int array");
         let _ = env.set_int_array_region(
             &array,
@@ -2666,9 +2861,17 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_caret<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
     ) -> jni::objects::JFloatArray<'a> {
         let (mut x, mut y, mut w, mut h) = (0.0f32, 0.0, 0.0, 0.0);
-        let array = if super::bubble_caret(&mut x, &mut y, &mut w, &mut h) == 0 {
+        let array = if super::bubble_caret(
+            shell as *mut super::BubbleShell,
+            &mut x,
+            &mut y,
+            &mut w,
+            &mut h,
+        ) == 0
+        {
             let array = env.new_float_array(4).expect("float array");
             let _ = env.set_float_array_region(&array, 0, &[x, y, w, h]);
             array
@@ -2681,10 +2884,18 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_nodeBox<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         handle: jint,
     ) -> jni::objects::JFloatArray<'a> {
         let (mut x, mut y, mut w, mut h) = (0.0f32, 0.0, 0.0, 0.0);
-        let _ = super::bubble_node_box(handle as u32, &mut x, &mut y, &mut w, &mut h);
+        let _ = super::bubble_node_box(
+            shell as *mut super::BubbleShell,
+            handle as u32,
+            &mut x,
+            &mut y,
+            &mut w,
+            &mut h,
+        );
         let array = env.new_float_array(4).expect("float array");
         let _ = env.set_float_array_region(&array, 0, &[x, y, w, h]);
         array
@@ -2694,64 +2905,97 @@ mod android {
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_postEval<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         source: JString<'a>,
     ) {
         let Ok(source) = env.get_string(&source) else {
             return;
         };
         let source = super::CString_from(&source.to_string_lossy());
-        super::bubble_post_eval(source.as_ptr());
+        super::bubble_post_eval(shell as *mut super::BubbleShell, source.as_ptr());
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_faults<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
     ) -> jint {
-        super::bubble_faults() as jint
+        super::bubble_faults(shell as *mut super::BubbleShell) as jint
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_generation<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
     ) -> jint {
-        super::bubble_generation() as jint
+        super::bubble_generation(shell as *mut super::BubbleShell) as jint
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_fontEpoch<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
     ) -> jint {
-        super::bubble_font_epoch() as jint
+        super::bubble_font_epoch(shell as *mut super::BubbleShell) as jint
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_hasBackHandler<'a>(
         _env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
     ) -> jint {
-        super::bubble_has_back_handler()
+        super::bubble_has_back_handler(shell as *mut super::BubbleShell)
     }
 
     #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_send<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
+        shell: jlong,
         name: JString<'a>,
         payload: JString<'a>,
-    ) -> jint {
-        let Ok(name) = env.get_string(&name) else { return -1 };
-        let Ok(payload) = env.get_string(&payload) else { return -1 };
+    ) -> JString<'a> {
+        let Ok(name) = env.get_string(&name) else {
+            return env
+                .new_string("event name is not a string")
+                .unwrap_or_else(|_| JObject::null().into());
+        };
+        let Ok(payload) = env.get_string(&payload) else {
+            return env
+                .new_string("event payload is not a string")
+                .unwrap_or_else(|_| JObject::null().into());
+        };
         let name = super::CString_from(&name.to_string_lossy());
         let payload = super::CString_from(&payload.to_string_lossy());
-        super::bubble_send(name.as_ptr(), payload.as_ptr())
+        let err = super::bubble_send(
+            shell as *mut super::BubbleShell,
+            name.as_ptr(),
+            payload.as_ptr(),
+        );
+        jni_error(&mut env, err)
     }
 
+    fn jni_error<'a>(env: &mut JNIEnv<'a>, err: *mut std::os::raw::c_char) -> JString<'a> {
+        if err.is_null() {
+            return JObject::null().into();
+        }
+        let text = unsafe { std::ffi::CStr::from_ptr(err) }
+            .to_string_lossy()
+            .into_owned();
+        super::bubble_string_free(err);
+        env.new_string(text)
+            .unwrap_or_else(|_| JObject::null().into())
+    }
 
     fn cstr_lossy(bytes: &[u8]) -> String {
-        let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+        let end = bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(bytes.len());
         String::from_utf8_lossy(&bytes[..end]).into_owned()
     }
 

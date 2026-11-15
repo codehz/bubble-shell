@@ -61,6 +61,7 @@ class BubbleView(context: Context) : View(context) {
     private var accessibilityFocus = 0
     private var semanticSnapshot = ""
     private var selectionDrag: Pair<Int, Int>? = null
+    private var handle = 0L
     private var engine = false
     private var devUrl: String? = null
     private var devStamp = ""
@@ -90,30 +91,32 @@ class BubbleView(context: Context) : View(context) {
 
     fun open(storageDir: File, font: ByteArray, manifest: String?, entry: ByteArray?, devUrl: String?) {
         if (!engine) {
-            check(BubbleNative.create() == 0)
+            handle = BubbleNative.create()
+            check(handle != 0L)
             engine = true
         }
-        BubbleNative.setStorageDir(storageDir.absolutePath)
-        BubbleNative.registerFont("HostFont", font)
+        BubbleNative.setStorageDir(handle, storageDir.absolutePath)
+        BubbleNative.registerFont(handle, "HostFont", font)
         val file = File(context.cacheDir, "HostFont.ttf")
         file.writeBytes(font)
         setHostTypeface(Typeface.createFromFile(file))
         this.devUrl = devUrl
         if (devUrl == null && manifest != null && entry != null) {
-            check(BubbleNative.load(manifest, entry) == 0)
+            BubbleNative.load(handle, manifest, entry)?.let { error(it) }
         }
     }
 
     fun destroyEngine() {
         if (!engine) return
         Choreographer.getInstance().removeFrameCallback(frameCallback)
-        BubbleNative.destroy()
+        BubbleNative.destroy(handle)
+        handle = 0L
         engine = false
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        if (engine) BubbleNative.setVisible(1)
+        if (engine) BubbleNative.setVisible(handle, 1)
         Choreographer.getInstance().postFrameCallback(frameCallback)
     }
 
@@ -121,10 +124,10 @@ class BubbleView(context: Context) : View(context) {
         super.onWindowVisibilityChanged(visibility)
         if (!engine) return
         if (visibility == VISIBLE) {
-            BubbleNative.setVisible(1)
+            BubbleNative.setVisible(handle, 1)
         } else {
             cancelActivePointers(SystemClock.uptimeMillis().toDouble())
-            BubbleNative.setVisible(0)
+            BubbleNative.setVisible(handle, 0)
         }
     }
 
@@ -144,7 +147,7 @@ class BubbleView(context: Context) : View(context) {
                 if (stamp == devStamp) return@Thread
                 post {
                     devStamp = stamp
-                    BubbleNative.load(manifest, entry.toByteArray())
+                    BubbleNative.load(handle, manifest, entry.toByteArray())
                 }
             } catch (_: Exception) {
             } finally {
@@ -156,17 +159,17 @@ class BubbleView(context: Context) : View(context) {
     fun paintSize(): Int = paintBytes.size
 
     fun refresh() {
-        BubbleNative.tick(SystemClock.uptimeMillis().toDouble())
-        drainHostCalls(context)
+        BubbleNative.tick(handle, SystemClock.uptimeMillis().toDouble())
+        drainHostCalls(context, handle)
         val size = contentSize()
-        paintBytes = BubbleNative.frame(size[0], size[1])
+        paintBytes = BubbleNative.frame(handle, size[0], size[1])
         updateSemantics()
         updateInputSession()
         invalidate()
     }
 
     private fun updateSemantics() {
-        val raw = BubbleNative.semantics()
+        val raw = BubbleNative.semantics(handle, )
         if (raw == semanticSnapshot) return
         semanticSnapshot = raw
         val previousFocus = semanticNodes.entries.firstOrNull { it.value.optBoolean("focused") }?.key
@@ -330,12 +333,12 @@ class BubbleView(context: Context) : View(context) {
             val node = semanticNodes[virtualViewId] ?: return false
             when (action) {
                 AccessibilityNodeInfo.ACTION_CLICK -> {
-                    if (BubbleNative.a11yAction(virtualViewId, 1, "") != 0) return false
+                    if (BubbleNative.a11yAction(handle, virtualViewId, 1, "") != 0) return false
                     afterA11yAction()
                     return true
                 }
                 AccessibilityNodeInfo.ACTION_FOCUS -> {
-                    if (BubbleNative.a11yAction(virtualViewId, 0, "") != 0) return false
+                    if (BubbleNative.a11yAction(handle, virtualViewId, 0, "") != 0) return false
                     afterA11yAction()
                     return true
                 }
@@ -360,7 +363,7 @@ class BubbleView(context: Context) : View(context) {
                     val text = arguments?.getCharSequence(
                         AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
                     )?.toString() ?: return false
-                    if (BubbleNative.a11yAction(virtualViewId, 2, text) != 0) return false
+                    if (BubbleNative.a11yAction(handle, virtualViewId, 2, text) != 0) return false
                     afterA11yAction()
                     return true
                 }
@@ -379,7 +382,7 @@ class BubbleView(context: Context) : View(context) {
                         ACTION_SCROLL_UP_ID -> 7
                         else -> 8
                     }
-                    if (BubbleNative.a11yAction(virtualViewId, scroll, "") != 0) return false
+                    if (BubbleNative.a11yAction(handle, virtualViewId, scroll, "") != 0) return false
                     afterA11yAction()
                     return true
                 }
@@ -406,7 +409,7 @@ class BubbleView(context: Context) : View(context) {
             android.view.KeyEvent.KEYCODE_MOVE_END -> 8
             else -> return super.onKeyDown(keyCode, event)
         }
-        val handled = BubbleNative.key(action, SystemClock.uptimeMillis().toDouble())
+        val handled = BubbleNative.key(handle, action, SystemClock.uptimeMillis().toDouble())
         if (handled > 0) {
             afterKey()
             return true
@@ -429,7 +432,7 @@ class BubbleView(context: Context) : View(context) {
         if (session == 0L) {
             imm.hideSoftInputFromWindow(windowToken, 0)
         } else {
-            val flags = BubbleNative.fieldFlags(BubbleNative.focused())
+            val flags = BubbleNative.fieldFlags(handle, BubbleNative.focused(handle, ))
             editorType = editorType(flags)
             autofillHints = autofillHints(flags)
             setAutofillHints(*autofillHints)
@@ -589,7 +592,7 @@ class BubbleView(context: Context) : View(context) {
     }
 
     private fun drawSelectionHandles(canvas: Canvas) {
-        val handles = BubbleNative.selectionHandles()
+        val handles = BubbleNative.selectionHandles(handle, )
         if (handles.size < 8) return
         fill.style = Paint.Style.FILL
         fill.color = Color.argb(242, 77, 163, 255)
@@ -603,7 +606,7 @@ class BubbleView(context: Context) : View(context) {
     private fun sendPointer(action: Int, index: Int, event: MotionEvent) {
         val id = event.getPointerId(index)
         if (action == 2 || action == 3) activePointers.remove(id) else activePointers.add(id)
-        BubbleNative.pointer(
+        BubbleNative.pointer(handle, 
             action,
             id,
             localX(event.getX(index)),
@@ -618,7 +621,7 @@ class BubbleView(context: Context) : View(context) {
     private fun sendVisualPointer(action: Int, index: Int, event: MotionEvent) {
         val id = event.getPointerId(index)
         if (action == 2 || action == 3) activePointers.remove(id) else activePointers.add(id)
-        BubbleNative.visualPointer(
+        BubbleNative.visualPointer(handle, 
             action,
             id,
             localX(event.getX(index)),
@@ -652,7 +655,7 @@ class BubbleView(context: Context) : View(context) {
         private set
 
     private fun editSnapshot(): EditSnapshot? {
-        val raw = BubbleNative.editSnapshot()
+        val raw = BubbleNative.editSnapshot(handle, )
         if (raw.size < 7) return null
         return EditSnapshot(
             session = raw[0],
@@ -666,7 +669,7 @@ class BubbleView(context: Context) : View(context) {
     }
 
     private fun publishCursor() {
-        val caret = BubbleNative.caret()
+        val caret = BubbleNative.caret(handle, )
         if (caret.size < 4) return
         val snapshot = editSnapshot() ?: return
         val density = resources.displayMetrics.density
@@ -718,7 +721,7 @@ class BubbleView(context: Context) : View(context) {
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
                 val snapshot = current() ?: return false
                 return wrote(
-                    BubbleNative.editCommit(
+                    BubbleNative.editCommit(handle, 
                         snapshot.session,
                         bytes(text),
                         newCursorPosition,
@@ -729,7 +732,7 @@ class BubbleView(context: Context) : View(context) {
             override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
                 val snapshot = current() ?: return false
                 return wrote(
-                    BubbleNative.editCompose(
+                    BubbleNative.editCompose(handle, 
                         snapshot.session,
                         bytes(text),
                         newCursorPosition,
@@ -740,18 +743,18 @@ class BubbleView(context: Context) : View(context) {
             override fun finishComposingText(): Boolean {
                 val snapshot = current() ?: return false
                 if (!snapshot.composing) return true
-                return wrote(BubbleNative.editFinishComposition(snapshot.session))
+                return wrote(BubbleNative.editFinishComposition(handle, snapshot.session))
             }
 
             override fun setComposingRegion(start: Int, end: Int): Boolean {
                 val snapshot = current() ?: return false
-                return wrote(BubbleNative.editSetComposition(snapshot.session, start, end))
+                return wrote(BubbleNative.editSetComposition(handle, snapshot.session, start, end))
             }
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
                 val snapshot = current() ?: return false
                 return wrote(
-                    BubbleNative.editDeleteSurrounding(
+                    BubbleNative.editDeleteSurrounding(handle, 
                         snapshot.session,
                         beforeLength.coerceAtLeast(0),
                         afterLength.coerceAtLeast(0),
@@ -765,7 +768,7 @@ class BubbleView(context: Context) : View(context) {
             ): Boolean {
                 val snapshot = current() ?: return false
                 return wrote(
-                    BubbleNative.editDeleteSurroundingCodePoints(
+                    BubbleNative.editDeleteSurroundingCodePoints(handle, 
                         snapshot.session,
                         beforeLength.coerceAtLeast(0),
                         afterLength.coerceAtLeast(0),
@@ -775,7 +778,7 @@ class BubbleView(context: Context) : View(context) {
 
             override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence {
                 val snapshot = current() ?: return ""
-                val value = BubbleNative.focusedText()
+                val value = BubbleNative.focusedText(handle, )
                 val cursor = snapshot.active.coerceIn(0, value.length)
                 val from = if (n < 0) 0 else (cursor - n).coerceAtLeast(0)
                 return value.substring(from, cursor)
@@ -783,7 +786,7 @@ class BubbleView(context: Context) : View(context) {
 
             override fun getTextAfterCursor(n: Int, flags: Int): CharSequence {
                 val snapshot = current() ?: return ""
-                val value = BubbleNative.focusedText()
+                val value = BubbleNative.focusedText(handle, )
                 val cursor = snapshot.active.coerceIn(0, value.length)
                 val to = if (n < 0) value.length else (cursor + n).coerceAtMost(value.length)
                 return value.substring(cursor, to)
@@ -791,7 +794,7 @@ class BubbleView(context: Context) : View(context) {
 
             override fun getSelectedText(flags: Int): CharSequence? {
                 val snapshot = current() ?: return null
-                val value = BubbleNative.focusedText()
+                val value = BubbleNative.focusedText(handle, )
                 val start = snapshot.start.coerceIn(0, value.length)
                 val end = snapshot.end.coerceIn(0, value.length)
                 if (start == end) return null
@@ -800,12 +803,12 @@ class BubbleView(context: Context) : View(context) {
 
             override fun setSelection(start: Int, end: Int): Boolean {
                 val snapshot = current() ?: return false
-                return wrote(BubbleNative.editSelect(snapshot.session, start, end))
+                return wrote(BubbleNative.editSelect(handle, snapshot.session, start, end))
             }
 
             override fun beginBatchEdit(): Boolean {
                 val snapshot = current() ?: return false
-                if (BubbleNative.editBatchBegin(snapshot.session) != 0) return false
+                if (BubbleNative.editBatchBegin(handle, snapshot.session) != 0) return false
                 batchDepth += 1
                 return true
             }
@@ -814,11 +817,11 @@ class BubbleView(context: Context) : View(context) {
                 if (batchDepth == 0) return false
                 val snapshot = current()
                 if (snapshot == null) {
-                    BubbleNative.editBatchAbort(expectedSession)
+                    BubbleNative.editBatchAbort(handle, expectedSession)
                     batchDepth = 0
                     return false
                 }
-                if (BubbleNative.editBatchEnd(snapshot.session) != 0) return false
+                if (BubbleNative.editBatchEnd(handle, snapshot.session) != 0) return false
                 batchDepth -= 1
                 if (batchDepth == 0) {
                     refresh()
@@ -830,7 +833,7 @@ class BubbleView(context: Context) : View(context) {
             override fun closeConnection() {
                 closed = true
                 if (batchDepth > 0) {
-                    BubbleNative.editBatchAbort(expectedSession)
+                    BubbleNative.editBatchAbort(handle, expectedSession)
                     batchDepth = 0
                 }
                 super.closeConnection()
@@ -841,7 +844,7 @@ class BubbleView(context: Context) : View(context) {
                 flags: Int,
             ): android.view.inputmethod.ExtractedText? {
                 val snapshot = current() ?: return null
-                val value = BubbleNative.focusedText()
+                val value = BubbleNative.focusedText(handle, )
                 val extracted = android.view.inputmethod.ExtractedText()
                 extracted.text = value
                 extracted.startOffset = 0
@@ -869,7 +872,7 @@ class BubbleView(context: Context) : View(context) {
                     else -> null
                 }
                 if (keyAction != null) {
-                    val handled = BubbleNative.key(keyAction, event.eventTime.toDouble())
+                    val handled = BubbleNative.key(handle, keyAction, event.eventTime.toDouble())
                     if (handled > 0) {
                         afterKey()
                         return true
@@ -879,16 +882,16 @@ class BubbleView(context: Context) : View(context) {
                 return when (event.keyCode) {
                     android.view.KeyEvent.KEYCODE_DEL -> {
                         if (snapshot.hasComposition || snapshot.start != snapshot.end) {
-                            wrote(BubbleNative.editCommit(snapshot.session, ByteArray(0), 1))
+                            wrote(BubbleNative.editCommit(handle, snapshot.session, ByteArray(0), 1))
                         } else {
-                            wrote(BubbleNative.editDeleteSurrounding(snapshot.session, 1, 0))
+                            wrote(BubbleNative.editDeleteSurrounding(handle, snapshot.session, 1, 0))
                         }
                     }
                     android.view.KeyEvent.KEYCODE_FORWARD_DEL -> {
                         if (snapshot.hasComposition || snapshot.start != snapshot.end) {
-                            wrote(BubbleNative.editCommit(snapshot.session, ByteArray(0), 1))
+                            wrote(BubbleNative.editCommit(handle, snapshot.session, ByteArray(0), 1))
                         } else {
-                            wrote(BubbleNative.editDeleteSurrounding(snapshot.session, 0, 1))
+                            wrote(BubbleNative.editDeleteSurrounding(handle, snapshot.session, 0, 1))
                         }
                     }
                     else -> super.sendKeyEvent(event)
@@ -908,7 +911,7 @@ class BubbleView(context: Context) : View(context) {
         val ids = activePointers.toList()
         activePointers.clear()
         for (id in ids) {
-            BubbleNative.pointer(3, id, 0f, 0f, timeMs, 0, 0)
+            BubbleNative.pointer(handle, 3, id, 0f, 0f, timeMs, 0, 0)
         }
         refresh()
     }
@@ -929,12 +932,12 @@ class BubbleView(context: Context) : View(context) {
             MotionEvent.ACTION_DOWN -> {
                 val x = localX(event.x)
                 val y = localY(event.y)
-                val handles = BubbleNative.selectionHandles()
+                val handles = BubbleNative.selectionHandles(handle, )
                 if (handles.size >= 8) {
                     val startHit = hypot(x - (handles[0] + handles[2] / 2), y - (handles[1] + handles[3] / 2)) <= 16f
                     val endHit = hypot(x - (handles[4] + handles[6] / 2), y - (handles[5] + handles[7] / 2)) <= 16f
                     if (startHit || endHit) {
-                        val selection = BubbleNative.selection()
+                        val selection = BubbleNative.selection(handle, )
                         if (selection.size >= 2) {
                             val anchor = if (startHit) selection[1] else selection[0]
                             selectionDrag = event.getPointerId(0) to anchor
@@ -951,17 +954,17 @@ class BubbleView(context: Context) : View(context) {
                 val dragId = if (drag != null && drag.first == event.getPointerId(0)) drag.first else -1
                 if (drag != null && dragId >= 0) {
                     sendVisualPointer(1, event.actionIndex, event)
-                    val unit = BubbleNative.unitAt(localX(event.x), localY(event.y))
+                    val unit = BubbleNative.unitAt(handle, localX(event.x), localY(event.y))
                     val snapshot = editSnapshot()
                     if (unit >= 0 && snapshot != null) {
-                        BubbleNative.editSelect(snapshot.session, drag.second, unit)
+                        BubbleNative.editSelect(handle, snapshot.session, drag.second, unit)
                     }
                 }
                 for (index in 0 until event.pointerCount) {
                     val id = event.getPointerId(index)
                     if (id == dragId) continue
                     if (!activePointers.contains(id)) continue
-                    BubbleNative.pointer(
+                    BubbleNative.pointer(handle, 
                         1,
                         id,
                         localX(event.getX(index)),
@@ -988,7 +991,7 @@ class BubbleView(context: Context) : View(context) {
                     return true
                 }
                 sendPointer(2, event.actionIndex, event)
-                val handle = BubbleNative.focusAt(localX(event.x), localY(event.y))
+                val handle = BubbleNative.focusAt(handle, localX(event.x), localY(event.y))
                 if (handle != 0) {
                     refresh()
                     importantForAutofill = IMPORTANT_FOR_AUTOFILL_YES

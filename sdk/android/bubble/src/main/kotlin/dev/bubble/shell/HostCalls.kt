@@ -11,9 +11,9 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
-internal fun drainHostCalls(context: Context) {
+internal fun drainHostCalls(context: Context, handle: Long) {
     while (true) {
-        val raw = BubbleNative.pollRequest() ?: return
+        val raw = BubbleNative.pollRequest(handle, ) ?: return
         val row = JSONArray(raw)
         val id = row.getInt(0)
         val method = row.getString(1)
@@ -30,13 +30,13 @@ internal fun drainHostCalls(context: Context) {
                         connection.outputStream.use { it.write(body.toByteArray()) }
                     }
                     val text = connection.inputStream.bufferedReader().readText()
-                    BubbleNative.finishRequest(
+                    BubbleNative.finishRequest(handle, 
                         id,
                         1,
                         JSONObject().put("status", connection.responseCode).put("text", text).toString(),
                     )
                 } catch (error: Exception) {
-                    BubbleNative.finishRequest(id, 0, error.message ?: "fetch failed")
+                    BubbleNative.finishRequest(handle, id, 0, error.message ?: "fetch failed")
                 }
             }.start()
             continue
@@ -63,13 +63,13 @@ internal fun drainHostCalls(context: Context) {
                     "null"
                 }
                 else -> {
-                    BubbleNative.finishRequest(id, 0, "no host handler for $method")
+                    BubbleNative.finishRequest(handle, id, 0, "no host handler for $method")
                     continue
                 }
             }
-            BubbleNative.finishRequest(id, 1, result)
+            BubbleNative.finishRequest(handle, id, 1, result)
         } catch (error: Exception) {
-            BubbleNative.finishRequest(id, 0, error.message ?: "host call failed")
+            BubbleNative.finishRequest(handle, id, 0, error.message ?: "host call failed")
         }
     }
 }

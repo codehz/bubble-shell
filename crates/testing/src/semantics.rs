@@ -5,13 +5,13 @@
 
 use bubble_core::SemanticsSnapshot;
 
-/// Fetch the current semantics snapshot of the bound shell.
-pub fn snapshot() -> Result<SemanticsSnapshot, String> {
+/// Fetch the current semantics snapshot of `shell`.
+pub fn snapshot(shell: *mut bubble_ffi::BubbleShell) -> Result<SemanticsSnapshot, String> {
     // Counter-style fixtures with a few hundred nodes stay well under 256 KiB.
     let mut buf = vec![0 as libc_char; 256 * 1024];
-    let code = unsafe { bubble_ffi::bubble_semantics(buf.as_mut_ptr(), buf.len() as u32) };
+    let code = unsafe { bubble_ffi::bubble_semantics(shell, buf.as_mut_ptr(), buf.len() as u32) };
     if code < 0 {
-        return Err(last_error());
+        return Err(last_error(shell));
     }
     let text = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
         .to_string_lossy()
@@ -71,9 +71,9 @@ pub fn present(snapshot: &SemanticsSnapshot, text: &str) -> bool {
     by_text(snapshot, text).is_some()
 }
 
-fn last_error() -> String {
+fn last_error(shell: *mut bubble_ffi::BubbleShell) -> String {
     unsafe {
-        let ptr = bubble_ffi::bubble_last_error();
+        let ptr = bubble_ffi::bubble_last_error(shell);
         if ptr.is_null() {
             return String::new();
         }

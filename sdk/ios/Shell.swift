@@ -3,116 +3,116 @@ import CoreText
 import UIKit
 
 @_silgen_name("bubble_create")
-func bubble_create(_ host: UnsafePointer<BubbleHost>?) -> Int32
+func bubble_create(_ host: UnsafePointer<BubbleHost>?) -> OpaquePointer?
 @_silgen_name("bubble_destroy")
-func bubble_destroy()
+func bubble_destroy(_ shell: OpaquePointer?)
 @_silgen_name("bubble_load")
-func bubble_load(_ manifest: UnsafePointer<CChar>?, _ entry: UnsafePointer<UInt8>?, _ entryLen: UInt32) -> Int32
+func bubble_load(_ shell: OpaquePointer?, _ manifest: UnsafePointer<CChar>?, _ entry: UnsafePointer<UInt8>?, _ entryLen: UInt32) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("bubble_set_storage_dir")
-func bubble_set_storage_dir(_ path: UnsafePointer<CChar>?) -> Int32
+func bubble_set_storage_dir(_ shell: OpaquePointer?, _ path: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("bubble_poll_request")
-func bubble_poll_request(_ id: UnsafeMutablePointer<UInt32>?, _ method: UnsafeMutablePointer<CChar>?, _ methodCap: UInt32, _ params: UnsafeMutablePointer<CChar>?, _ paramsCap: UInt32) -> Int32
+func bubble_poll_request(_ shell: OpaquePointer?, _ id: UnsafeMutablePointer<UInt32>?, _ method: UnsafeMutablePointer<CChar>?, _ methodCap: UInt32, _ params: UnsafeMutablePointer<CChar>?, _ paramsCap: UInt32) -> Int32
 @_silgen_name("bubble_finish_request")
-func bubble_finish_request(_ id: UInt32, _ ok: Int32, _ result: UnsafePointer<CChar>?)
+func bubble_finish_request(_ shell: OpaquePointer?, _ id: UInt32, _ ok: Int32, _ result: UnsafePointer<CChar>?)
 @_silgen_name("bubble_frame")
-func bubble_frame(_ width: Float, _ height: Float, _ paint: UnsafeMutablePointer<UnsafePointer<UInt8>?>?, _ paintLen: UnsafeMutablePointer<UInt32>?) -> Int32
+func bubble_frame(_ shell: OpaquePointer?, _ width: Float, _ height: Float, _ paint: UnsafeMutablePointer<UnsafePointer<UInt8>?>?, _ paintLen: UnsafeMutablePointer<UInt32>?) -> Int32
 @_silgen_name("bubble_pointer")
-func bubble_pointer(_ action: UInt32, _ id: UInt32, _ x: Float, _ y: Float, _ timeMs: Double, _ pointerKind: UInt32, _ buttons: UInt32) -> Int32
+func bubble_pointer(_ shell: OpaquePointer?, _ action: UInt32, _ id: UInt32, _ x: Float, _ y: Float, _ timeMs: Double, _ pointerKind: UInt32, _ buttons: UInt32) -> Int32
 @_silgen_name("bubble_edit")
-func bubble_edit(_ action: UInt32, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ a: UInt32, _ b: UInt32) -> Int32
+func bubble_edit(_ shell: OpaquePointer?, _ action: UInt32, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ a: UInt32, _ b: UInt32) -> Int32
 @_silgen_name("bubble_edit_snapshot")
-func bubble_edit_snapshot(_ session: UnsafeMutablePointer<UInt64>?, _ revision: UnsafeMutablePointer<UInt64>?, _ anchor: UnsafeMutablePointer<UInt32>?, _ active: UnsafeMutablePointer<UInt32>?, _ compStart: UnsafeMutablePointer<UInt32>?, _ compEnd: UnsafeMutablePointer<UInt32>?, _ composing: UnsafeMutablePointer<UInt32>?) -> Int32
+func bubble_edit_snapshot(_ shell: OpaquePointer?, _ session: UnsafeMutablePointer<UInt64>?, _ revision: UnsafeMutablePointer<UInt64>?, _ anchor: UnsafeMutablePointer<UInt32>?, _ active: UnsafeMutablePointer<UInt32>?, _ compStart: UnsafeMutablePointer<UInt32>?, _ compEnd: UnsafeMutablePointer<UInt32>?, _ composing: UnsafeMutablePointer<UInt32>?) -> Int32
 @_silgen_name("bubble_edit_commit")
-func bubble_edit_commit(_ session: UInt64, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ newCursorPosition: Int32) -> Int32
+func bubble_edit_commit(_ shell: OpaquePointer?, _ session: UInt64, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ newCursorPosition: Int32) -> Int32
 @_silgen_name("bubble_edit_compose")
-func bubble_edit_compose(_ session: UInt64, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ newCursorPosition: Int32) -> Int32
+func bubble_edit_compose(_ shell: OpaquePointer?, _ session: UInt64, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ newCursorPosition: Int32) -> Int32
 @_silgen_name("bubble_edit_replace")
-func bubble_edit_replace(_ session: UInt64, _ start: UInt32, _ end: UInt32, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ newCursorPosition: Int32, _ composing: UInt32) -> Int32
+func bubble_edit_replace(_ shell: OpaquePointer?, _ session: UInt64, _ start: UInt32, _ end: UInt32, _ text: UnsafePointer<UInt8>?, _ textLen: UInt32, _ newCursorPosition: Int32, _ composing: UInt32) -> Int32
 @_silgen_name("bubble_edit_select")
-func bubble_edit_select(_ session: UInt64, _ anchor: UInt32, _ active: UInt32) -> Int32
+func bubble_edit_select(_ shell: OpaquePointer?, _ session: UInt64, _ anchor: UInt32, _ active: UInt32) -> Int32
 @_silgen_name("bubble_edit_set_composition")
-func bubble_edit_set_composition(_ session: UInt64, _ start: UInt32, _ end: UInt32) -> Int32
+func bubble_edit_set_composition(_ shell: OpaquePointer?, _ session: UInt64, _ start: UInt32, _ end: UInt32) -> Int32
 @_silgen_name("bubble_edit_finish_composition")
-func bubble_edit_finish_composition(_ session: UInt64) -> Int32
+func bubble_edit_finish_composition(_ shell: OpaquePointer?, _ session: UInt64) -> Int32
 @_silgen_name("bubble_edit_delete_surrounding")
-func bubble_edit_delete_surrounding(_ session: UInt64, _ before: UInt32, _ after: UInt32) -> Int32
+func bubble_edit_delete_surrounding(_ shell: OpaquePointer?, _ session: UInt64, _ before: UInt32, _ after: UInt32) -> Int32
 @_silgen_name("bubble_edit_delete_surrounding_code_points")
-func bubble_edit_delete_surrounding_code_points(_ session: UInt64, _ before: UInt32, _ after: UInt32) -> Int32
+func bubble_edit_delete_surrounding_code_points(_ shell: OpaquePointer?, _ session: UInt64, _ before: UInt32, _ after: UInt32) -> Int32
 @_silgen_name("bubble_edit_undo")
-func bubble_edit_undo(_ session: UInt64) -> Int32
+func bubble_edit_undo(_ shell: OpaquePointer?, _ session: UInt64) -> Int32
 @_silgen_name("bubble_edit_redo")
-func bubble_edit_redo(_ session: UInt64) -> Int32
+func bubble_edit_redo(_ shell: OpaquePointer?, _ session: UInt64) -> Int32
 @_silgen_name("bubble_edit_batch_begin")
-func bubble_edit_batch_begin(_ session: UInt64) -> Int32
+func bubble_edit_batch_begin(_ shell: OpaquePointer?, _ session: UInt64) -> Int32
 @_silgen_name("bubble_edit_batch_end")
-func bubble_edit_batch_end(_ session: UInt64) -> Int32
+func bubble_edit_batch_end(_ shell: OpaquePointer?, _ session: UInt64) -> Int32
 @_silgen_name("bubble_edit_batch_abort")
-func bubble_edit_batch_abort(_ session: UInt64) -> Int32
+func bubble_edit_batch_abort(_ shell: OpaquePointer?, _ session: UInt64) -> Int32
 @_silgen_name("bubble_field_at")
-func bubble_field_at(_ x: Float, _ y: Float) -> UInt32
+func bubble_field_at(_ shell: OpaquePointer?, _ x: Float, _ y: Float) -> UInt32
 @_silgen_name("bubble_focus_at")
-func bubble_focus_at(_ x: Float, _ y: Float) -> UInt32
+func bubble_focus_at(_ shell: OpaquePointer?, _ x: Float, _ y: Float) -> UInt32
 @_silgen_name("bubble_field_flags")
-func bubble_field_flags(_ handle: UInt32) -> UInt32
+func bubble_field_flags(_ shell: OpaquePointer?, _ handle: UInt32) -> UInt32
 @_silgen_name("bubble_focused")
-func bubble_focused() -> UInt32
+func bubble_focused(_ shell: OpaquePointer?) -> UInt32
 @_silgen_name("bubble_key")
-func bubble_key(_ action: UInt32, _ timeMs: Double) -> Int32
+func bubble_key(_ shell: OpaquePointer?, _ action: UInt32, _ timeMs: Double) -> Int32
 @_silgen_name("bubble_semantics")
-func bubble_semantics(_ buf: UnsafeMutablePointer<CChar>?, _ cap: UInt32) -> Int32
+func bubble_semantics(_ shell: OpaquePointer?, _ buf: UnsafeMutablePointer<CChar>?, _ cap: UInt32) -> Int32
 @_silgen_name("bubble_a11y_action")
-func bubble_a11y_action(_ handle: UInt32, _ action: UInt32, _ text: UnsafePointer<UInt8>?, _ len: UInt32) -> Int32
+func bubble_a11y_action(_ shell: OpaquePointer?, _ handle: UInt32, _ action: UInt32, _ text: UnsafePointer<UInt8>?, _ len: UInt32) -> Int32
 @_silgen_name("bubble_edit_menu")
-func bubble_edit_menu(_ action: UInt32, _ clip: UnsafePointer<UInt8>?, _ clipLen: UInt32, _ out: UnsafeMutablePointer<CChar>?, _ outCap: UInt32) -> Int32
+func bubble_edit_menu(_ shell: OpaquePointer?, _ action: UInt32, _ clip: UnsafePointer<UInt8>?, _ clipLen: UInt32, _ out: UnsafeMutablePointer<CChar>?, _ outCap: UInt32) -> Int32
 @_silgen_name("bubble_selection_handles")
-func bubble_selection_handles(
+func bubble_selection_handles(_ shell: OpaquePointer?, 
     _ sx: UnsafeMutablePointer<Float>?, _ sy: UnsafeMutablePointer<Float>?,
     _ sw: UnsafeMutablePointer<Float>?, _ sh: UnsafeMutablePointer<Float>?,
     _ ex: UnsafeMutablePointer<Float>?, _ ey: UnsafeMutablePointer<Float>?,
     _ ew: UnsafeMutablePointer<Float>?, _ eh: UnsafeMutablePointer<Float>?
 ) -> Int32
 @_silgen_name("bubble_selection")
-func bubble_selection(_ start: UnsafeMutablePointer<UInt32>?, _ end: UnsafeMutablePointer<UInt32>?, _ markStart: UnsafeMutablePointer<UInt32>?, _ markEnd: UnsafeMutablePointer<UInt32>?) -> Int32
+func bubble_selection(_ shell: OpaquePointer?, _ start: UnsafeMutablePointer<UInt32>?, _ end: UnsafeMutablePointer<UInt32>?, _ markStart: UnsafeMutablePointer<UInt32>?, _ markEnd: UnsafeMutablePointer<UInt32>?) -> Int32
 @_silgen_name("bubble_unit_at")
-func bubble_unit_at(_ x: Float, _ y: Float, _ unit: UnsafeMutablePointer<UInt32>?) -> Int32
+func bubble_unit_at(_ shell: OpaquePointer?, _ x: Float, _ y: Float, _ unit: UnsafeMutablePointer<UInt32>?) -> Int32
 @_silgen_name("bubble_caret_at")
-func bubble_caret_at(_ unit: UInt32, _ x: UnsafeMutablePointer<Float>?, _ y: UnsafeMutablePointer<Float>?, _ w: UnsafeMutablePointer<Float>?, _ h: UnsafeMutablePointer<Float>?) -> Int32
+func bubble_caret_at(_ shell: OpaquePointer?, _ unit: UInt32, _ x: UnsafeMutablePointer<Float>?, _ y: UnsafeMutablePointer<Float>?, _ w: UnsafeMutablePointer<Float>?, _ h: UnsafeMutablePointer<Float>?) -> Int32
 @_silgen_name("bubble_selection_count")
-func bubble_selection_count() -> UInt32
+func bubble_selection_count(_ shell: OpaquePointer?) -> UInt32
 @_silgen_name("bubble_selection_rect")
-func bubble_selection_rect(_ index: UInt32, _ x: UnsafeMutablePointer<Float>?, _ y: UnsafeMutablePointer<Float>?, _ w: UnsafeMutablePointer<Float>?, _ h: UnsafeMutablePointer<Float>?) -> Int32
+func bubble_selection_rect(_ shell: OpaquePointer?, _ index: UInt32, _ x: UnsafeMutablePointer<Float>?, _ y: UnsafeMutablePointer<Float>?, _ w: UnsafeMutablePointer<Float>?, _ h: UnsafeMutablePointer<Float>?) -> Int32
 @_silgen_name("bubble_visual_pointer")
-func bubble_visual_pointer(_ action: UInt32, _ id: UInt32, _ x: Float, _ y: Float, _ timeMs: Double, _ pointerKind: UInt32, _ buttons: UInt32) -> Int32
+func bubble_visual_pointer(_ shell: OpaquePointer?, _ action: UInt32, _ id: UInt32, _ x: Float, _ y: Float, _ timeMs: Double, _ pointerKind: UInt32, _ buttons: UInt32) -> Int32
 @_silgen_name("bubble_tick")
-func bubble_tick(_ timeMs: Double) -> Int32
+func bubble_tick(_ shell: OpaquePointer?, _ timeMs: Double) -> Int32
 @_silgen_name("bubble_scroll")
-func bubble_scroll(_ x: Float, _ y: Float, _ dx: Float, _ dy: Float)
+func bubble_scroll(_ shell: OpaquePointer?, _ x: Float, _ y: Float, _ dx: Float, _ dy: Float)
 @_silgen_name("bubble_scroll_x_of")
-func bubble_scroll_x_of(_ handle: UInt32) -> Float
+func bubble_scroll_x_of(_ shell: OpaquePointer?, _ handle: UInt32) -> Float
 @_silgen_name("bubble_scroll_y_of")
-func bubble_scroll_y_of(_ handle: UInt32) -> Float
+func bubble_scroll_y_of(_ shell: OpaquePointer?, _ handle: UInt32) -> Float
 @_silgen_name("bubble_register_font")
-func bubble_register_font(_ family: UnsafePointer<CChar>?, _ data: UnsafePointer<UInt8>?, _ len: UInt32)
+func bubble_register_font(_ shell: OpaquePointer?, _ family: UnsafePointer<CChar>?, _ data: UnsafePointer<UInt8>?, _ len: UInt32)
 @_silgen_name("bubble_font_epoch")
-func bubble_font_epoch() -> UInt32
+func bubble_font_epoch(_ shell: OpaquePointer?) -> UInt32
 @_silgen_name("bubble_node_text")
-func bubble_node_text(_ handle: UInt32, _ buf: UnsafeMutablePointer<CChar>?, _ cap: UInt32) -> Int32
+func bubble_node_text(_ shell: OpaquePointer?, _ handle: UInt32, _ buf: UnsafeMutablePointer<CChar>?, _ cap: UInt32) -> Int32
 @_silgen_name("bubble_node_box")
-func bubble_node_box(_ handle: UInt32, _ x: UnsafeMutablePointer<Float>?, _ y: UnsafeMutablePointer<Float>?, _ w: UnsafeMutablePointer<Float>?, _ h: UnsafeMutablePointer<Float>?) -> Int32
+func bubble_node_box(_ shell: OpaquePointer?, _ handle: UInt32, _ x: UnsafeMutablePointer<Float>?, _ y: UnsafeMutablePointer<Float>?, _ w: UnsafeMutablePointer<Float>?, _ h: UnsafeMutablePointer<Float>?) -> Int32
 @_silgen_name("bubble_post_eval")
-func bubble_post_eval(_ source: UnsafePointer<CChar>?)
+func bubble_post_eval(_ shell: OpaquePointer?, _ source: UnsafePointer<CChar>?)
 @_silgen_name("bubble_set_visible")
-func bubble_set_visible(_ visible: Int32)
+func bubble_set_visible(_ shell: OpaquePointer?, _ visible: Int32)
 @_silgen_name("bubble_faults")
-func bubble_faults() -> UInt32
+func bubble_faults(_ shell: OpaquePointer?) -> UInt32
 @_silgen_name("bubble_generation")
-func bubble_generation() -> UInt32
+func bubble_generation(_ shell: OpaquePointer?) -> UInt32
 @_silgen_name("bubble_last_error")
-func bubble_last_error() -> UnsafePointer<CChar>?
+func bubble_last_error(_ shell: OpaquePointer?) -> UnsafePointer<CChar>?
 @_silgen_name("bubble_has_back_handler")
-func bubble_has_back_handler() -> Int32
+func bubble_has_back_handler(_ shell: OpaquePointer?) -> Int32
 @_silgen_name("bubble_send")
-func bubble_send(_ name: UnsafePointer<CChar>?, _ payload: UnsafePointer<CChar>?) -> Int32
+func bubble_send(_ shell: OpaquePointer?, _ name: UnsafePointer<CChar>?, _ payload: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
 
 struct BubbleHost {
     var measure: (@convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, Float, Float, UInt16, Float, Int32, UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?) -> Void)?
@@ -247,14 +247,14 @@ func layoutSnapshot(_ text: String, _ width: CGFloat, _ fontSize: CGFloat, _ lin
     return data
 }
 
-func drainHostCalls() {
+func drainHostCalls(_ shell: OpaquePointer?) {
     while true {
         var id: UInt32 = 0
         let method = UnsafeMutablePointer<CChar>.allocate(capacity: 128)
         let params = UnsafeMutablePointer<CChar>.allocate(capacity: 8192)
         method.initialize(repeating: 0, count: 128)
         params.initialize(repeating: 0, count: 8192)
-        let code = bubble_poll_request(&id, method, 128, params, 8192)
+        let code = bubble_poll_request(shell, &id, method, 128, params, 8192)
         let methodName = String(cString: method)
         let paramText = String(cString: params)
         method.deallocate()
@@ -262,7 +262,7 @@ func drainHostCalls() {
         if code != 1 { return }
         let object = (try? JSONSerialization.jsonObject(with: Data(paramText.utf8))) as? [String: Any] ?? [:]
         func finish(_ ok: Int32, _ result: String) {
-            result.withCString { bubble_finish_request(id, ok, $0) }
+            result.withCString { bubble_finish_request(shell, id, ok, $0) }
         }
         switch methodName {
         case "toast":
@@ -341,13 +341,22 @@ final class BubbleView: UIView {
         return image
     }
 
+    fileprivate let shell: OpaquePointer
+
     override init(frame: CGRect) {
+        var host = BubbleHost(measure: measure, ctx: nil, layout: layoutText)
+        guard let created = bubble_create(&host) else {
+            fatalError("bubble_create failed")
+        }
+        shell = created
         super.init(frame: frame)
         isMultipleTouchEnabled = true
         contentMode = .redraw
         backgroundColor = .black
         isAccessibilityElement = false
     }
+
+    deinit { bubble_destroy(shell) }
 
     required init?(coder: NSCoder) { nil }
     func contentSize() -> CGSize {
@@ -386,7 +395,7 @@ final class BubbleView: UIView {
         case .keyboardSpacebar where editSnapshot() == nil: action = 3
         default: return false
         }
-        guard bubble_key(action, CACurrentMediaTime() * 1000) > 0 else { return false }
+        guard bubble_key(shell, action, CACurrentMediaTime() * 1000) > 0 else { return false }
         afterNavigationKey()
         return true
     }
@@ -422,7 +431,7 @@ final class BubbleView: UIView {
         if tracePointers {
             logPointerSample(action, id, logicalX, logicalY)
         }
-        _ = bubble_pointer(
+        _ = bubble_pointer(shell, 
             action,
             id,
             logicalX,
@@ -436,7 +445,7 @@ final class BubbleView: UIView {
     private func sendVisualPointer(_ action: UInt32, _ touch: UITouch, id known: UInt32? = nil) {
         let id = known ?? pointerId(touch)
         let point = touch.location(in: self)
-        _ = bubble_visual_pointer(
+        _ = bubble_visual_pointer(shell, 
             action,
             id,
             Float(point.x - safeAreaInsets.left),
@@ -504,12 +513,12 @@ final class BubbleView: UIView {
     }
 
     func refresh() {
-        _ = bubble_tick(CACurrentMediaTime() * 1000)
-        drainHostCalls()
+        _ = bubble_tick(shell, CACurrentMediaTime() * 1000)
+        drainHostCalls(shell)
         var ptr: UnsafePointer<UInt8>?
         var len: UInt32 = 0
         let size = contentSize()
-        let code = bubble_frame(Float(size.width), Float(size.height), &ptr, &len)
+        let code = bubble_frame(shell, Float(size.width), Float(size.height), &ptr, &len)
         if code == 0, let ptr, len > 0 {
             paint = Data(bytes: ptr, count: Int(len))
         }
@@ -647,7 +656,7 @@ final class BubbleView: UIView {
     private func drawSelectionHandles(_ ctx: CGContext) {
         var sx: Float = 0, sy: Float = 0, sw: Float = 0, sh: Float = 0
         var ex: Float = 0, ey: Float = 0, ew: Float = 0, eh: Float = 0
-        guard bubble_selection_handles(&sx, &sy, &sw, &sh, &ex, &ey, &ew, &eh) == 0 else { return }
+        guard bubble_selection_handles(shell, &sx, &sy, &sw, &sh, &ex, &ey, &ew, &eh) == 0 else { return }
         ctx.setFillColor(UIColor(red: 0.30, green: 0.64, blue: 1.0, alpha: 0.95).cgColor)
         for (x, y, w, h) in [(sx, sy, sw, sh), (ex, ey, ew, eh)] {
             ctx.fillEllipse(in: CGRect(x: CGFloat(x) + CGFloat(w) / 2 - 7, y: CGFloat(y) + CGFloat(h) / 2 - 7, width: 14, height: 14))
@@ -659,7 +668,7 @@ final class BubbleView: UIView {
             return
         }
         var buf = [CChar](repeating: 0, count: 262144)
-        guard bubble_semantics(&buf, UInt32(buf.count)) == 0 else { return }
+        guard bubble_semantics(shell, &buf, UInt32(buf.count)) == 0 else { return }
         let data = Data(buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) })
         guard data != semanticSnapshot else { return }
         semanticSnapshot = data
@@ -717,13 +726,13 @@ final class BubbleView: UIView {
             let local = contentPoint(touch.location(in: self))
             var sx: Float = 0, sy: Float = 0, sw: Float = 0, sh: Float = 0
             var ex: Float = 0, ey: Float = 0, ew: Float = 0, eh: Float = 0
-            if bubble_field_at(Float(local.x), Float(local.y)) != 0,
-               bubble_selection_handles(&sx, &sy, &sw, &sh, &ex, &ey, &ew, &eh) == 0 {
+            if bubble_field_at(shell, Float(local.x), Float(local.y)) != 0,
+               bubble_selection_handles(shell, &sx, &sy, &sw, &sh, &ex, &ey, &ew, &eh) == 0 {
                 var start: UInt32 = 0
                 var end: UInt32 = 0
                 var markStart: UInt32 = 0
                 var markEnd: UInt32 = 0
-                _ = bubble_selection(&start, &end, &markStart, &markEnd)
+                _ = bubble_selection(shell, &start, &end, &markStart, &markEnd)
                 let startHit = hypot(local.x - CGFloat(sx + sw / 2), local.y - CGFloat(sy + sh / 2)) <= 16
                 let endHit = hypot(local.x - CGFloat(ex + ew / 2), local.y - CGFloat(ey + eh / 2)) <= 16
                 if startHit || endHit {
@@ -746,8 +755,8 @@ final class BubbleView: UIView {
                 if let snapshot = editSnapshot() {
                     let local = contentPoint(touch.location(in: self))
                     var unit: UInt32 = 0
-                    if bubble_unit_at(Float(local.x), Float(local.y), &unit) == 0 {
-                        _ = bubble_edit_select(snapshot.session, UInt32(drag.anchor), unit)
+                    if bubble_unit_at(shell, Float(local.x), Float(local.y), &unit) == 0 {
+                        _ = bubble_edit_select(shell, snapshot.session, UInt32(drag.anchor), unit)
                     }
                 }
                 continue
@@ -773,7 +782,7 @@ final class BubbleView: UIView {
             delivered = true
             sendPointer(2, touch)
             let point = touch.location(in: self)
-            let handle = bubble_focus_at(
+            let handle = bubble_focus_at(shell, 
                 Float(point.x - safeAreaInsets.left),
                 Float(point.y - safeAreaInsets.top)
             )
@@ -805,15 +814,15 @@ final class BubbleView: UIView {
     }
 
     private func showEditMenu() {
-        guard bubble_focused() != 0 else { return }
+        guard bubble_focused(shell, ) != 0 else { return }
         var start: UInt32 = 0
         var end: UInt32 = 0
         var markStart: UInt32 = 0
         var markEnd: UInt32 = 0
-        _ = bubble_selection(&start, &end, &markStart, &markEnd)
+        _ = bubble_selection(shell, &start, &end, &markStart, &markEnd)
         guard start != end else { return }
         var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
-        _ = bubble_selection_rect(0, &x, &y, &w, &h)
+        _ = bubble_selection_rect(shell, 0, &x, &y, &w, &h)
         _ = becomeFirstResponder()
         UIMenuController.shared.showMenu(
             from: self,
@@ -834,7 +843,7 @@ final class BubbleView: UIView {
         let bytes = Array(clip.utf8)
         var out = [CChar](repeating: 0, count: 65536)
         let changed = bytes.withUnsafeBufferPointer { buffer in
-            bubble_edit_menu(action, buffer.baseAddress, UInt32(bytes.count), &out, UInt32(out.count))
+            bubble_edit_menu(shell, action, buffer.baseAddress, UInt32(bytes.count), &out, UInt32(out.count))
         }
         if changed >= 0 && (action == 0 || action == 1) {
             UIPasteboard.general.string = String(decoding: out.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
@@ -850,7 +859,7 @@ final class BubbleView: UIView {
     override func selectAll(_ sender: Any?) { runEditMenu(3) }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        if bubble_focused() != 0 {
+        if bubble_focused(shell, ) != 0 {
             if action == #selector(cut(_:)) || action == #selector(copy(_:)) ||
                 action == #selector(paste(_:)) || action == #selector(selectAll(_:)) {
                 return true
@@ -874,7 +883,7 @@ final class BubbleView: UIView {
         let session = editSnapshot()?.session ?? 0
         guard session != inputSession else { return }
         inputSession = session
-        let flags = bubble_field_flags(bubble_focused())
+        let flags = bubble_field_flags(shell, bubble_focused(shell))
         secureEntry = flags & 2 != 0
         switch (flags >> 8) & 0xff {
         case 1: keyboardKind = .numberPad
@@ -907,7 +916,7 @@ final class BubbleA11yElement: UIAccessibilityElement {
     }
 
     override func accessibilityActivate() -> Bool {
-        guard bubble_a11y_action(handle, 1, nil, 0) == 0 else { return false }
+        guard bubble_a11y_action(view?.shell, handle, 1, nil, 0) == 0 else { return false }
         view?.afterNavigationKey()
         return true
     }
@@ -923,13 +932,13 @@ final class BubbleA11yElement: UIAccessibilityElement {
         case .previous: action = 4
         @unknown default: return false
         }
-        guard bubble_a11y_action(handle, action, nil, 0) == 0 else { return false }
+        guard bubble_a11y_action(view?.shell, handle, action, nil, 0) == 0 else { return false }
         view?.refresh()
         return true
     }
 
     override func accessibilityElementDidBecomeFocused() {
-        if bubble_a11y_action(handle, 0, nil, 0) == 0 { view?.afterNavigationKey() }
+        if bubble_a11y_action(view?.shell, handle, 0, nil, 0) == 0 { view?.afterNavigationKey() }
     }
 }
 
@@ -999,14 +1008,14 @@ extension BubbleView: UITextInput {
     @objc func undoEditing() {
         changeText {
             guard let snapshot = editSnapshot() else { return }
-            _ = bubble_edit_undo(snapshot.session)
+            _ = bubble_edit_undo(shell, snapshot.session)
         }
     }
 
     @objc func redoEditing() {
         changeText {
             guard let snapshot = editSnapshot() else { return }
-            _ = bubble_edit_redo(snapshot.session)
+            _ = bubble_edit_redo(shell, snapshot.session)
         }
     }
 
@@ -1045,7 +1054,7 @@ extension BubbleView: UITextInput {
             case " ": action = 3
             default: return
             }
-            if bubble_key(action, CACurrentMediaTime() * 1000) > 0 { afterNavigationKey() }
+            if bubble_key(shell, action, CACurrentMediaTime() * 1000) > 0 { afterNavigationKey() }
             return
         }
         changeText {
@@ -1060,7 +1069,7 @@ extension BubbleView: UITextInput {
             if snapshot.hasComposition || snapshot.start != snapshot.end {
                 editCommit(snapshot.session, text: "")
             } else {
-                _ = bubble_edit_delete_surrounding(snapshot.session, 1, 0)
+                _ = bubble_edit_delete_surrounding(shell, snapshot.session, 1, 0)
             }
         }
     }
@@ -1073,7 +1082,7 @@ extension BubbleView: UITextInput {
         set {
             guard let range = newValue as? IndexedRange, let snapshot = editSnapshot() else { return }
             changeText {
-                _ = bubble_edit_select(
+                _ = bubble_edit_select(shell, 
                     snapshot.session,
                     UInt32(range.startIndex),
                     UInt32(range.endIndex),
@@ -1111,26 +1120,26 @@ extension BubbleView: UITextInput {
         let location = selectedRange.location == NSNotFound ? text.utf16.count : selectedRange.location
         let length = selectedRange.length
         changeText {
-            _ = bubble_edit_batch_begin(snapshot.session)
+            _ = bubble_edit_batch_begin(shell, snapshot.session)
             editCompose(snapshot.session, text: text)
             if let current = editSnapshot() {
                 let base = current.compositionStart
                 let anchor = min(current.compositionEnd, base + location)
                 let active = min(current.compositionEnd, anchor + length)
-                _ = bubble_edit_select(
+                _ = bubble_edit_select(shell, 
                     snapshot.session,
                     UInt32(anchor),
                     UInt32(active),
                 )
             }
-            _ = bubble_edit_batch_end(snapshot.session)
+            _ = bubble_edit_batch_end(shell, snapshot.session)
         }
     }
 
     func unmarkText() {
         guard let snapshot = editSnapshot(), snapshot.composing else { return }
         changeText {
-            _ = bubble_edit_finish_composition(snapshot.session)
+            _ = bubble_edit_finish_composition(shell, snapshot.session)
         }
     }
 
@@ -1200,7 +1209,7 @@ extension BubbleView: UITextInput {
         guard let range = range as? IndexedRange else { return .zero }
         if let selected = selectedTextRange as? IndexedRange,
            selected.startIndex == range.startIndex && selected.endIndex == range.endIndex,
-           bubble_selection_count() > 0 {
+           bubble_selection_count(shell, ) > 0 {
             return selectionRect(0)
         }
         return caretRect(for: IndexedPosition(range.startIndex))
@@ -1209,13 +1218,13 @@ extension BubbleView: UITextInput {
     func caretRect(for position: UITextPosition) -> CGRect {
         guard let position = position as? IndexedPosition else { return .zero }
         var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
-        if bubble_caret_at(UInt32(position.index), &x, &y, &w, &h) != 0 { return .zero }
+        if bubble_caret_at(shell, UInt32(position.index), &x, &y, &w, &h) != 0 { return .zero }
         return viewRect(x, y, w, h)
     }
 
     func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
         guard let range = range as? IndexedRange else { return [] }
-        let count = Int(bubble_selection_count())
+        let count = Int(bubble_selection_count(shell, ))
         let selected = selectedTextRange as? IndexedRange
         if let selected, selected.startIndex == range.startIndex && selected.endIndex == range.endIndex && count > 0 {
             return (0..<count).map { index in
@@ -1229,7 +1238,7 @@ extension BubbleView: UITextInput {
     func closestPosition(to point: CGPoint) -> UITextPosition? {
         let local = contentPoint(point)
         var unit: UInt32 = 0
-        if bubble_unit_at(Float(local.x), Float(local.y), &unit) != 0 { return nil }
+        if bubble_unit_at(shell, Float(local.x), Float(local.y), &unit) != 0 { return nil }
         return IndexedPosition(Int(unit))
     }
 
@@ -1252,10 +1261,10 @@ extension BubbleView: UITextInput {
     }
 
     private func focusedFieldText() -> String {
-        let handle = bubble_focused()
+        let handle = bubble_focused(shell, )
         if handle == 0 { return "" }
         var buf = [CChar](repeating: 0, count: 65536)
-        guard bubble_node_text(handle, &buf, UInt32(buf.count)) == 0 else { return "" }
+        guard bubble_node_text(shell, handle, &buf, UInt32(buf.count)) == 0 else { return "" }
         return String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 
@@ -1274,7 +1283,7 @@ extension BubbleView: UITextInput {
         var compositionStart: UInt32 = 0
         var compositionEnd: UInt32 = 0
         var composing: UInt32 = 0
-        guard bubble_edit_snapshot(
+        guard bubble_edit_snapshot(shell, 
             &session,
             &revision,
             &anchor,
@@ -1297,14 +1306,14 @@ extension BubbleView: UITextInput {
     private func editCommit(_ session: UInt64, text: String, newCursor: Int32 = 1) {
         let bytes = Array(text.utf8)
         bytes.withUnsafeBufferPointer { buffer in
-            _ = bubble_edit_commit(session, buffer.baseAddress, UInt32(bytes.count), newCursor)
+            _ = bubble_edit_commit(shell, session, buffer.baseAddress, UInt32(bytes.count), newCursor)
         }
     }
 
     private func editCompose(_ session: UInt64, text: String, newCursor: Int32 = 1) {
         let bytes = Array(text.utf8)
         bytes.withUnsafeBufferPointer { buffer in
-            _ = bubble_edit_compose(session, buffer.baseAddress, UInt32(bytes.count), newCursor)
+            _ = bubble_edit_compose(shell, session, buffer.baseAddress, UInt32(bytes.count), newCursor)
         }
     }
 
@@ -1317,7 +1326,7 @@ extension BubbleView: UITextInput {
     ) -> Int32 {
         let bytes = Array(text.utf8)
         return bytes.withUnsafeBufferPointer { buffer in
-            bubble_edit_replace(
+            bubble_edit_replace(shell, 
                 session,
                 UInt32(start),
                 UInt32(end),
@@ -1353,7 +1362,7 @@ extension BubbleView: UITextInput {
 
     private func selectionRect(_ index: UInt32) -> CGRect {
         var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
-        if bubble_selection_rect(index, &x, &y, &w, &h) != 0 { return .zero }
+        if bubble_selection_rect(shell, index, &x, &y, &w, &h) != 0 { return .zero }
         return viewRect(x, y, w, h)
     }
 }

@@ -2,8 +2,8 @@
 //! Android host would: load a bundle, pump frames and gesture ticks from a
 //! detached thread, then send pointer/edit input and read semantics.
 //!
-//! The C ABI binds shells per thread, so steps run on the session thread
-//! while the pump thread keeps only `bubble_tick` + `bubble_frame` alive.
+//! The session holds the shell pointer and passes it to every call. The pump
+//! thread uses the same pointer for `bubble_tick` and `bubble_frame`.
 
 use std::ffi::{CStr, CString};
 use std::ptr;
@@ -25,9 +25,9 @@ fn c_string(text: &str) -> Result<CString, String> {
     CString::new(text).map_err(|_| "text contains a nul".into())
 }
 
-fn last_error() -> String {
+fn last_error(shell: *mut bubble_ffi::BubbleShell) -> String {
     unsafe {
-        let ptr = bubble_ffi::bubble_last_error();
+        let ptr = bubble_ffi::bubble_last_error(shell);
         if ptr.is_null() {
             return String::new();
         }
@@ -37,61 +37,74 @@ fn last_error() -> String {
 
 /// The app a scenario steps, from bundle load to assertions.
 pub struct Session {
-    id: i32,
+    shell: usize,
     opened: Instant,
     stop: Arc<AtomicBool>,
     pump: Option<JoinHandle<()>>,
 }
 
 impl Session {
+    fn ptr(&self) -> *mut bubble_ffi::BubbleShell {
+        self.shell as *mut bubble_ffi::BubbleShell
+    }
+
     /// Destroy any shell left by a previous test, create one, and load the
     /// fixture bundle. Starts the frame/gesture pump thread.
     pub fn start(app: &App) -> Result<Self, String> {
-        unsafe { bubble_ffi::bubble_destroy() };
-        if unsafe { bubble_ffi::bubble_create(ptr::null()) } != 0 {
-            return Err(last_error());
+        let created = unsafe { bubble_ffi::bubble_create(ptr::null()) };
+        if created.is_null() {
+            return Err("bubble_create failed".into());
         }
-        let id = unsafe { bubble_ffi::bubble_current() };
         let mut session = Self {
-            id,
+            shell: created as usize,
             opened: Instant::now(),
             stop: Arc::new(AtomicBool::new(false)),
             pump: None,
         };
         session.load(app)?;
-        // First frame on this thread so bounds are valid before steps run.
         let mut paint: *const u8 = ptr::null();
         let mut len = 0u32;
-        unsafe { bubble_ffi::bubble_frame(VIEWPORT.0, VIEWPORT.1, &mut paint, &mut len) };
+        unsafe {
+            bubble_ffi::bubble_frame(session.ptr(), VIEWPORT.0, VIEWPORT.1, &mut paint, &mut len);
+        }
         session.pump = Some(session.spawn_pump());
         Ok(session)
     }
 
     fn load(&mut self, app: &App) -> Result<(), String> {
         let manifest = c_string(&app.manifest)?;
-        let code = unsafe {
-            bubble_ffi::bubble_load(manifest.as_ptr(), app.entry.as_ptr(), app.entry.len() as u32)
+        let err = unsafe {
+            bubble_ffi::bubble_load(
+                self.ptr(),
+                manifest.as_ptr(),
+                app.entry.as_ptr(),
+                app.entry.len() as u32,
+            )
         };
-        if code != 0 {
-            return Err(last_error());
+        if !err.is_null() {
+            let message = unsafe { CStr::from_ptr(err) }
+                .to_string_lossy()
+                .into_owned();
+            unsafe { bubble_ffi::bubble_string_free(err) };
+            return Err(message);
         }
         Ok(())
     }
 
     fn spawn_pump(&self) -> JoinHandle<()> {
-        let id = self.id;
+        let shell = self.shell;
         let stop = Arc::clone(&self.stop);
         let opened = self.opened;
         std::thread::spawn(move || {
+            let shell = shell as *mut bubble_ffi::BubbleShell;
             while !stop.load(Ordering::Relaxed) {
-                if unsafe { bubble_ffi::bubble_bind(id) } != 0 {
-                    break;
-                }
                 let now_ms = opened.elapsed().as_secs_f64() * 1000.0;
-                unsafe { bubble_ffi::bubble_tick(now_ms) };
+                unsafe { bubble_ffi::bubble_tick(shell, now_ms) };
                 let mut paint: *const u8 = ptr::null();
                 let mut len = 0u32;
-                unsafe { bubble_ffi::bubble_frame(VIEWPORT.0, VIEWPORT.1, &mut paint, &mut len) };
+                unsafe {
+                    bubble_ffi::bubble_frame(shell, VIEWPORT.0, VIEWPORT.1, &mut paint, &mut len);
+                }
                 std::thread::sleep(Duration::from_millis(8));
             }
         })
@@ -105,7 +118,16 @@ impl Session {
     /// Used directly by Rust-level gesture scenarios.
     pub fn pointer(&self, action: u32, x: f32, y: f32, time_ms: f64) {
         unsafe {
-            bubble_ffi::bubble_pointer(action, 1, x, y, time_ms, 0, u32::from(action != 2));
+            bubble_ffi::bubble_pointer(
+                self.ptr(),
+                action,
+                1,
+                x,
+                y,
+                time_ms,
+                0,
+                u32::from(action != 2),
+            );
         }
     }
 
@@ -121,7 +143,7 @@ impl Session {
     /// Scroll by `dx`, `dy` from the center of the node.
     pub fn scroll(&self, selector: &Selector, dx: f32, dy: f32) -> Result<(), String> {
         let (x, y) = self.center(selector)?;
-        unsafe { bubble_ffi::bubble_scroll(x, y, dx, dy) };
+        unsafe { bubble_ffi::bubble_scroll(self.ptr(), x, y, dx, dy) };
         Ok(())
     }
 
@@ -130,45 +152,61 @@ impl Session {
         let snapshot = self.semantics()?;
         let handle = self.resolve(&snapshot, selector)?;
         // Wire codes: 0 focus, 1 activate (focuses a field), 2 set-value.
-        if unsafe { bubble_ffi::bubble_a11y_action(handle, 1, ptr::null(), 0) } < 0 {
-            return Err(last_error());
+        if unsafe { bubble_ffi::bubble_a11y_action(self.ptr(), handle, 1, ptr::null(), 0) } < 0 {
+            return Err(last_error(self.ptr()));
         }
         let text = c_string(text)?;
-        if unsafe { bubble_ffi::bubble_edit(1, text.as_ptr() as *const u8, text.as_bytes().len() as u32, 0, 0) }
-            < 0
+        if unsafe {
+            bubble_ffi::bubble_edit(
+                self.ptr(),
+                1,
+                text.as_ptr() as *const u8,
+                text.as_bytes().len() as u32,
+                0,
+                0,
+            )
+        } < 0
         {
-            return Err(last_error());
+            return Err(last_error(self.ptr()));
         }
         Ok(())
     }
 
     /// Current semantics snapshot.
     pub fn semantics(&self) -> Result<SemanticsSnapshot, String> {
-        sem::snapshot()
+        sem::snapshot(self.ptr())
     }
 
     /// Text content of the node, via the same accessor hosts use.
     pub fn text_of(&self, selector: &Selector) -> Result<String, String> {
         let handle = self.resolve(&self.semantics()?, selector)?;
         let mut buf = vec![0 as libc_char; 256];
-        let code = unsafe { bubble_ffi::bubble_node_text(handle, buf.as_mut_ptr(), buf.len() as u32) };
+        let code = unsafe {
+            bubble_ffi::bubble_node_text(self.ptr(), handle, buf.as_mut_ptr(), buf.len() as u32)
+        };
         if code != 0 {
-            return Err(last_error());
+            return Err(last_error(self.ptr()));
         }
-        Ok(unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned())
+        Ok(unsafe { CStr::from_ptr(buf.as_ptr()) }
+            .to_string_lossy()
+            .into_owned())
     }
 
     fn resolve(&self, snapshot: &SemanticsSnapshot, selector: &Selector) -> Result<u32, String> {
         match selector {
             Selector::Id(id) => sem::by_id(snapshot, id),
-            Selector::Text(text) => sem::by_text(snapshot, text)
-                .ok_or_else(|| format!("no node with text {text:?}; snapshot: {}", sem::excerpt(snapshot))),
+            Selector::Text(text) => sem::by_text(snapshot, text).ok_or_else(|| {
+                format!(
+                    "no node with text {text:?}; snapshot: {}",
+                    sem::excerpt(snapshot)
+                )
+            }),
         }
     }
 
     pub fn scroll_y_of(&self, selector: &Selector) -> Result<f32, String> {
         let handle = self.resolve(&self.semantics()?, selector)?;
-        Ok(unsafe { bubble_ffi::bubble_scroll_y_of(handle) })
+        Ok(unsafe { bubble_ffi::bubble_scroll_y_of(self.ptr(), handle) })
     }
 
     /// Center of the node's semantics bounds.
@@ -190,39 +228,51 @@ impl Session {
     pub fn eval(&self, source: &str) -> Result<String, String> {
         let source = c_string(source)?;
         let mut buf = vec![0 as libc_char; 1024];
-        let code = unsafe { bubble_ffi::bubble_eval(source.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+        let code = unsafe {
+            bubble_ffi::bubble_eval(
+                self.ptr(),
+                source.as_ptr(),
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+            )
+        };
         if code != 0 {
-            return Err(last_error());
+            return Err(last_error(self.ptr()));
         }
-        Ok(unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned())
+        Ok(unsafe { CStr::from_ptr(buf.as_ptr()) }
+            .to_string_lossy()
+            .into_owned())
     }
 
     /// Queue JS to run on the script thread.
     pub fn post_eval(&self, source: &str) -> Result<(), String> {
         let source = c_string(source)?;
-        unsafe { bubble_ffi::bubble_post_eval(source.as_ptr()) };
+        unsafe { bubble_ffi::bubble_post_eval(self.ptr(), source.as_ptr()) };
         Ok(())
     }
 
     pub fn set_visible(&self, visible: bool) {
-        unsafe { bubble_ffi::bubble_set_visible(i32::from(visible)) };
+        unsafe { bubble_ffi::bubble_set_visible(self.ptr(), i32::from(visible)) };
     }
 
     pub fn generation(&self) -> u32 {
-        unsafe { bubble_ffi::bubble_generation() }
+        unsafe { bubble_ffi::bubble_generation(self.ptr()) }
     }
 
     pub fn faults(&self) -> u32 {
-        unsafe { bubble_ffi::bubble_faults() }
+        unsafe { bubble_ffi::bubble_faults(self.ptr()) }
     }
 
     pub fn status(&self) -> String {
         let mut buf = vec![0 as libc_char; 64];
-        let code = unsafe { bubble_ffi::bubble_status(buf.as_mut_ptr(), buf.len() as u32) };
+        let code =
+            unsafe { bubble_ffi::bubble_status(self.ptr(), buf.as_mut_ptr(), buf.len() as u32) };
         if code != 0 {
-            return last_error();
+            return last_error(self.ptr());
         }
-        unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
+        unsafe { CStr::from_ptr(buf.as_ptr()) }
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// Next queued `bubbleHost.call`, or `None`.
@@ -232,6 +282,7 @@ impl Session {
         let mut params = vec![0 as libc_char; 1024];
         let code = unsafe {
             bubble_ffi::bubble_poll_request(
+                self.ptr(),
                 &mut id,
                 method.as_mut_ptr(),
                 method.len() as u32,
@@ -243,18 +294,24 @@ impl Session {
             return Ok(None);
         }
         if code < 0 {
-            return Err(last_error());
+            return Err(last_error(self.ptr()));
         }
         Ok(Some(HostRequest {
             id,
-            method: unsafe { CStr::from_ptr(method.as_ptr()) }.to_string_lossy().into_owned(),
-            params: unsafe { CStr::from_ptr(params.as_ptr()) }.to_string_lossy().into_owned(),
+            method: unsafe { CStr::from_ptr(method.as_ptr()) }
+                .to_string_lossy()
+                .into_owned(),
+            params: unsafe { CStr::from_ptr(params.as_ptr()) }
+                .to_string_lossy()
+                .into_owned(),
         }))
     }
 
     pub fn finish_request(&self, id: u32, ok: bool, result: &str) -> Result<(), String> {
         let result = c_string(result)?;
-        unsafe { bubble_ffi::bubble_finish_request(id, i32::from(ok), result.as_ptr()) };
+        unsafe {
+            bubble_ffi::bubble_finish_request(self.ptr(), id, i32::from(ok), result.as_ptr())
+        };
         Ok(())
     }
 
@@ -351,9 +408,9 @@ impl Drop for Session {
         if let Some(pump) = self.pump.take() {
             let _ = pump.join();
         }
-        unsafe {
-            bubble_ffi::bubble_bind(self.id);
-            bubble_ffi::bubble_destroy();
+        let shell = self.ptr();
+        if !shell.is_null() {
+            unsafe { bubble_ffi::bubble_destroy(shell) };
         }
     }
 }
