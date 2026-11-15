@@ -15,10 +15,10 @@ MVP definition:
   perform one basic click/scroll/edit. Host apps are workspace crates (like
   nsh's `crates/*-host`); they are not in the repo yet and never live under
   `examples/`.
-- `cargo test --workspace` stays fast, offline, and device-free.
+- `cargo test --workspace` stays offline and device-free.
 - `node --test sdk/web/*.test.mjs` passes.
 
-Deferred until after the MVP (do not plan, implement, or ask for these now):
+Deferred until after the MVP. Do not add these, and do not stop a product change because a plan mentions them:
 
 - Physical-device matrices, vendor keyboards, external keyboards.
 - Real screen-reader acceptance (VoiceOver, TalkBack, NVDA) and accessibility
@@ -29,25 +29,25 @@ Deferred until after the MVP (do not plan, implement, or ask for these now):
 - Device reports, recorded verification runs, screenshots, or xcresult
   attachments.
 
-Simulator checks already in the repo may be kept, but they are optional
-regression entry points, not MVP gates. Do not extend them without explicit
-approval.
+Simulator checks already in the repo may be run. They are optional regression
+entry points, not MVP gates. Do not add new ones unless the user asks.
 
 ## Verification budget
 
-Allowed by default:
+Run existing tests. No approval needed. Use the narrowest command that covers the change:
 
 ```sh
-cargo test --workspace     # under 10 s, offline, no devices
+cargo test --workspace     # offline, no devices
 cargo check --workspace
 node --test sdk/web/*.test.mjs
 ```
 
-Manual demo smoke: build the fixtures, run the wasm smoke
-(`node sdk/web/m0-smoke.mjs counter|gestures`), launch an iOS or Android host
-app on a simulator, tap/scroll/type once.
+Also fine: the wasm smoke (`node sdk/web/m0-smoke.mjs counter|gestures`, after
+`cargo build -p bubble-wasm --target wasm32-unknown-unknown --release`), and an
+iOS or Android simulator launch that is already wired up. Tap, scroll, or type
+once when that is what the change affects.
 
-Prohibited unless the user explicitly approves it for the current task:
+Do not add tests, fixtures, harnesses, or CI jobs. In particular, do not add:
 
 - XCUITest, UiAutomation, `adb shell input`, Appium/Detox, or any new simulator
   or device automation harness.
@@ -57,6 +57,8 @@ Prohibited unless the user explicitly approves it for the current task:
   memory gates, and CI jobs that boot emulators or devices.
 - Verification-only crates, acceptance-report harnesses, fixture matrices, and
   multi-host acceptance suites.
+
+Running a command that already exists is not one of the items above.
 
 ## Demo hosts stay clean
 
@@ -73,7 +75,7 @@ workspace crates (like nsh's `crates/*-host`), never projects under
 
 ## Writing tests
 
-- Add one regression test for the behavior the user reported or asked for.
+- Do not add tests unless the user asks. Running the existing suite is the check.
 - Test observable behavior, not source text, wiring, forwarding, or incidental
   defaults.
 - Do not duplicate the same path in several suites.
@@ -94,14 +96,15 @@ workspace crates (like nsh's `crates/*-host`), never projects under
 ## Documentation
 
 - Do not record verification runs, screenshots, frame numbers, or acceptance
-  results unless they are reproducible with the allowed commands above.
+  results unless they are reproducible by re-running an existing command.
 - Do not document commands whose harness was deleted.
 - Keep the roadmap MVP-first: post-MVP verification belongs in the deferred
   backlog, not in current milestone acceptance.
-- When a plan needs expensive validation, write it as a post-MVP item and stop.
+- When a plan includes expensive validation, skip that validation. Do not add
+  it, and do not block the product change on it.
 
 ## Scope gate
 
-Any task that introduces a new verification tool, device harness, test matrix,
-performance gate, or cross-platform acceptance work must pause and ask the user
-first. The default answer is no.
+Do not introduce a new verification tool, device harness, test matrix,
+performance gate, or cross-platform acceptance suite unless the user asks.
+Executing tests that already exist does not need a pause.
