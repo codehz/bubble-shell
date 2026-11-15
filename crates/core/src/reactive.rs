@@ -108,7 +108,11 @@ impl Graph {
             updated_at: None,
             disposed: false,
         });
-        if is_node(owner) && kind != Kind::Signal {
+        // Only a memo re-run recreates its inner state, so only memos own the
+        // computations their body allocates. Effects and user effects keep
+        // their children across re-runs; the runtime disposes them through its
+        // own scope teardown.
+        if is_node(owner) && kind != Kind::Signal && self.nodes[owner as usize].kind == Kind::Memo {
             self.nodes[owner as usize].owned.push(id);
         }
         id
