@@ -16,10 +16,11 @@ use std::collections::VecDeque;
 
 use bubble_core::decode_program;
 use bubble_core::{
-    decode_layout, encode_edit_events, encode_events, encode_paint, encode_set_text,
-    encode_var_events, validate_bundle_hashes, A11yAction, AnimChoice, AnimSpec, ComputationKind,
-    EditCommand, EditEvent, EditMenuAction, GestureEvent, GestureKind, Key, Kind, LayoutRequest,
-    NodeDesc, Op, PointerAction, PointerInput, Sched, Shell, Turn, Value, VarEvent,
+    check_edit_session, encode_edit_events, encode_events, encode_paint, encode_set_text,
+    encode_var_events, parse_computation_kind, read_abi_utf8, validate_bundle_hashes, A11yAction,
+    AnimChoice, AnimSpec, EditCommand, EditEvent, EditMenuAction, GestureEvent, GestureKind, Key,
+    Kind, LayoutRequest, NodeDesc, Op, PointerAction, PointerInput, Sched, Shell, Turn, Value,
+    VarEvent,
 };
 
 thread_local! {
@@ -91,37 +92,22 @@ fn set_error(message: String) {
 }
 
 fn wasm_layout(req: &LayoutRequest<'_>) -> Result<bubble_core::LayoutSnapshot, String> {
-    let mut cap = (req.text.len() as u32)
-        .saturating_mul(64)
-        .saturating_add(4096);
-    for _ in 0..2 {
-        let mut buf = vec![0u8; cap as usize];
-        let n = unsafe {
-            host_layout(
-                req.text.as_ptr() as u32,
-                req.text.len() as u32,
-                req.key.width,
-                req.key.font_size,
-                req.key.line_height,
-                u32::from(req.key.font_weight),
-                u32::from(req.key.align),
-                req.key.density,
-                req.key.revision as u32,
-                (req.key.revision >> 32) as u32,
-                buf.as_mut_ptr() as u32,
-                cap,
-            )
-        };
-        if n < 0 {
-            return Err("host layout failed".into());
-        }
-        if n as u32 > cap {
-            cap = n as u32;
-            continue;
-        }
-        return decode_layout(&buf[..n as usize]);
-    }
-    Err("host layout did not fit".into())
+    bubble_core::call_host_layout(req, |cap, buf| unsafe {
+        host_layout(
+            req.text.as_ptr() as u32,
+            req.text.len() as u32,
+            req.key.width,
+            req.key.font_size,
+            req.key.line_height,
+            u32::from(req.key.font_weight),
+            u32::from(req.key.align),
+            req.key.density,
+            req.key.revision as u32,
+            (req.key.revision >> 32) as u32,
+            buf.as_mut_ptr() as u32,
+            cap,
+        )
+    })
 }
 
 fn store_scratch(bytes: Vec<u8>) -> u32 {
@@ -250,16 +236,15 @@ pub extern "C" fn pointer(
     };
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            shell.pointer(PointerInput {
+            shell.pointer(PointerInput::from_abi(
                 action,
                 id,
                 x,
                 y,
                 time_ms,
+                pointer_kind,
                 buttons,
-                pointer_kind: pointer_kind.min(255) as u8,
-                path: Vec::new(),
-            });
+            ));
             collect_events(shell);
             Ok(())
         })
@@ -285,16 +270,15 @@ pub extern "C" fn visual_pointer(
     };
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            shell.visual_pointer(PointerInput {
+            shell.visual_pointer(PointerInput::from_abi(
                 action,
                 id,
                 x,
                 y,
                 time_ms,
+                pointer_kind,
                 buttons,
-                pointer_kind: pointer_kind.min(255) as u8,
-                path: Vec::new(),
-            });
+            ));
             Ok(())
         })
     });
@@ -493,31 +477,18 @@ pub extern "C" fn selection_handles() -> u32 {
 /// Same action codes as `bubble_edit`.
 #[no_mangle]
 pub extern "C" fn edit(action: u32, ptr: *const u8, len: u32, a: u32, b: u32) -> i32 {
-    let text = if ptr.is_null() || len == 0 {
-        String::new()
-    } else {
-        match std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len as usize) }) {
-            Ok(text) => text.to_owned(),
-            Err(_) => {
-                set_error("edit text is not utf-8".into());
-                return 1;
-            }
+    let text = match read_abi_utf8(ptr, len, "edit text") {
+        Ok(text) => text,
+        Err(err) => {
+            set_error(err);
+            return 1;
         }
     };
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            match action {
-                0 => shell.focus(a)?,
-                1 => shell.edit(EditCommand::Insert(text))?,
-                2 => shell.edit(EditCommand::Backspace)?,
-                3 => shell.edit(EditCommand::DeleteForward)?,
-                4 => shell.edit(EditCommand::SetSelection { start: a, end: b })?,
-                5 => shell.edit(EditCommand::CompositionStart)?,
-                6 => shell.edit(EditCommand::CompositionUpdate(text))?,
-                7 => shell.edit(EditCommand::CompositionEnd(text))?,
-                8 => shell.edit(EditCommand::Undo)?,
-                9 => shell.edit(EditCommand::Redo)?,
-                other => return Err(format!("bad edit action {other}")),
+            match EditCommand::parse(action, text, a, b)? {
+                None => shell.focus(a)?,
+                Some(command) => shell.edit(command)?,
             }
             collect_events(shell);
             Ok(())
@@ -530,7 +501,7 @@ pub extern "C" fn edit(action: u32, ptr: *const u8, len: u32, a: u32, b: u32) ->
 pub extern "C" fn edit_batch_begin(session: u64) -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            wasm_session(shell, session)?;
+            check_edit_session(shell, session)?;
             shell.begin_edit_batch()?;
             collect_events(shell);
             Ok(())
@@ -543,7 +514,7 @@ pub extern "C" fn edit_batch_begin(session: u64) -> i32 {
 pub extern "C" fn edit_batch_end(session: u64) -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            wasm_session(shell, session)?;
+            check_edit_session(shell, session)?;
             shell.end_edit_batch()?;
             collect_events(shell);
             Ok(())
@@ -567,23 +538,6 @@ pub extern "C" fn edit_batch_abort(session: u64) -> i32 {
         })
     });
     settle(result)
-}
-
-fn wasm_session(shell: &Shell, session: u64) -> Result<(), String> {
-    let state = shell.focused_state()?;
-    if state.session.get() != session {
-        return Err("stale editing session".into());
-    }
-    Ok(())
-}
-
-fn edit_text(ptr: *const u8, len: u32) -> Result<String, String> {
-    if ptr.is_null() || len == 0 {
-        return Ok(String::new());
-    }
-    std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len as usize) })
-        .map(str::to_owned)
-        .map_err(|_| "edit text is not utf-8".into())
 }
 
 /// 36-byte focused snapshot: session u64, revision u64, anchor, active,
@@ -622,9 +576,9 @@ pub extern "C" fn edit_commit(
     new_cursor_position: i32,
 ) -> i32 {
     let result = drain_pending().and_then(|()| {
-        let text = edit_text(ptr, len)?;
+        let text = read_abi_utf8(ptr, len, "edit text")?;
         with_shell(|shell| {
-            wasm_session(shell, session)?;
+            check_edit_session(shell, session)?;
             shell.commit_text(&text, new_cursor_position)?;
             collect_events(shell);
             Ok(())
@@ -641,9 +595,9 @@ pub extern "C" fn edit_compose(
     new_cursor_position: i32,
 ) -> i32 {
     let result = drain_pending().and_then(|()| {
-        let text = edit_text(ptr, len)?;
+        let text = read_abi_utf8(ptr, len, "edit text")?;
         with_shell(|shell| {
-            wasm_session(shell, session)?;
+            check_edit_session(shell, session)?;
             shell.compose_text(&text, new_cursor_position)?;
             collect_events(shell);
             Ok(())
@@ -663,9 +617,9 @@ pub extern "C" fn edit_replace(
     composing: u32,
 ) -> i32 {
     let result = drain_pending().and_then(|()| {
-        let text = edit_text(ptr, len)?;
+        let text = read_abi_utf8(ptr, len, "edit text")?;
         with_shell(|shell| {
-            wasm_session(shell, session)?;
+            check_edit_session(shell, session)?;
             shell.replace_with_cursor(start, end, &text, new_cursor_position, composing != 0)?;
             collect_events(shell);
             Ok(())
@@ -678,7 +632,7 @@ pub extern "C" fn edit_replace(
 pub extern "C" fn edit_delete_surrounding(session: u64, before: u32, after: u32) -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            wasm_session(shell, session)?;
+            check_edit_session(shell, session)?;
             shell.delete_surrounding(before, after)?;
             collect_events(shell);
             Ok(())
@@ -695,7 +649,7 @@ pub extern "C" fn edit_delete_surrounding_code_points(
 ) -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            wasm_session(shell, session)?;
+            check_edit_session(shell, session)?;
             shell.delete_surrounding_code_points(before, after)?;
             collect_events(shell);
             Ok(())
@@ -708,7 +662,7 @@ pub extern "C" fn edit_delete_surrounding_code_points(
 pub extern "C" fn edit_set_composition(session: u64, start: u32, end: u32) -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            wasm_session(shell, session)?;
+            check_edit_session(shell, session)?;
             shell.set_composition_region(start, end)?;
             collect_events(shell);
             Ok(())
@@ -721,7 +675,7 @@ pub extern "C" fn edit_set_composition(session: u64, start: u32, end: u32) -> i3
 pub extern "C" fn edit_finish_composition(session: u64) -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            wasm_session(shell, session)?;
+            check_edit_session(shell, session)?;
             shell.finish_composition()?;
             collect_events(shell);
             Ok(())
@@ -734,7 +688,7 @@ pub extern "C" fn edit_finish_composition(session: u64) -> i32 {
 pub extern "C" fn edit_select(session: u64, anchor: u32, active: u32) -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            wasm_session(shell, session)?;
+            check_edit_session(shell, session)?;
             shell.edit(EditCommand::SetSelection {
                 start: anchor,
                 end: active,
@@ -750,7 +704,7 @@ pub extern "C" fn edit_select(session: u64, anchor: u32, active: u32) -> i32 {
 pub extern "C" fn edit_undo(session: u64) -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            wasm_session(shell, session)?;
+            check_edit_session(shell, session)?;
             shell.edit(EditCommand::Undo)?;
             collect_events(shell);
             Ok(())
@@ -763,7 +717,7 @@ pub extern "C" fn edit_undo(session: u64) -> i32 {
 pub extern "C" fn edit_redo(session: u64) -> i32 {
     let result = drain_pending().and_then(|()| {
         with_shell(|shell| {
-            wasm_session(shell, session)?;
+            check_edit_session(shell, session)?;
             shell.edit(EditCommand::Redo)?;
             collect_events(shell);
             Ok(())
@@ -1052,12 +1006,10 @@ pub extern "C" fn signal_notify(id: u32) -> i32 {
 /// `kind`: 1 memo, 2 render effect, 3 user effect.
 #[no_mangle]
 pub extern "C" fn alloc_node(kind: u32) -> u32 {
-    let kind = match kind {
-        1 => ComputationKind::Memo,
-        2 => ComputationKind::Effect,
-        3 => ComputationKind::UserEffect,
-        _ => {
-            set_error(format!("bad computation kind {kind}"));
+    let kind = match parse_computation_kind(kind) {
+        Ok(kind) => kind,
+        Err(err) => {
+            set_error(err);
             return 0;
         }
     };
@@ -1233,21 +1185,18 @@ pub extern "C" fn set_prop(
         set_error("prop key is not utf-8".into());
         return 1;
     };
-    let value = match tag {
-        0 => Value::Null,
-        1 => Value::Bool(number != 0.0),
-        2 => Value::Int(number as i64),
-        3 => Value::Float(number),
-        4 => {
-            let bytes = unsafe { std::slice::from_raw_parts(text_ptr, text_len as usize) };
-            let Ok(text) = std::str::from_utf8(bytes) else {
-                set_error("prop string is not utf-8".into());
-                return 1;
-            };
-            Value::String(text.to_owned())
-        }
-        other => {
-            set_error(format!("unsupported prop tag {other}"));
+    let value = match Value::from_abi(
+        tag,
+        number,
+        if tag == 4 {
+            read_abi_utf8(text_ptr, text_len, "prop string")
+        } else {
+            Ok(String::new())
+        },
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            set_error(err);
             return 1;
         }
     };
@@ -1314,21 +1263,6 @@ pub extern "C" fn spawn_gesture(target: u32, kind: u32, index: u32) -> u32 {
     }
 }
 
-fn read_value(tag: u32, number: f64, text_ptr: *const u8, text_len: u32) -> Result<Value, String> {
-    Ok(match tag {
-        0 => Value::Null,
-        1 => Value::Bool(number != 0.0),
-        2 => Value::Int(number as i64),
-        3 => Value::Float(number),
-        4 => {
-            let bytes = unsafe { std::slice::from_raw_parts(text_ptr, text_len as usize) };
-            let text = std::str::from_utf8(bytes).map_err(|_| "prop string is not utf-8")?;
-            Value::String(text.to_owned())
-        }
-        other => return Err(format!("unsupported prop tag {other}")),
-    })
-}
-
 #[no_mangle]
 pub extern "C" fn set_gesture_prop(
     handle: u32,
@@ -1344,7 +1278,15 @@ pub extern "C" fn set_gesture_prop(
         set_error("gesture key is not utf-8".into());
         return 1;
     };
-    let value = match read_value(tag, number, text_ptr, text_len) {
+    let value = match Value::from_abi(
+        tag,
+        number,
+        if tag == 4 {
+            read_abi_utf8(text_ptr, text_len, "prop string")
+        } else {
+            Ok(String::new())
+        },
+    ) {
         Ok(value) => value,
         Err(err) => {
             set_error(err);
@@ -1409,33 +1351,6 @@ pub extern "C" fn move_gesture(handle: u32, target: u32, index: u32) -> i32 {
     }
 }
 
-/// Shared wire decoding of an animation spec for the var exports.
-fn anim_spec(anim: u32, a: f64, b: f64, c: u32) -> Result<Option<AnimSpec>, String> {
-    Ok(match anim {
-        0 => None,
-        1 => Some(AnimSpec::Instant),
-        2 => Some(AnimSpec::Tween {
-            duration_ms: a as f32,
-            easing: c.min(255) as u8,
-        }),
-        3 => Some(AnimSpec::Spring {
-            stiffness: a as f32,
-            damping: b as f32,
-        }),
-        other => return Err(format!("unknown anim spec code {other}")),
-    })
-}
-
-/// `anim` 0 var default, 1 instant, 2 tween, 3 spring.
-fn anim_choice(anim: u32, a: f64, b: f64, c: u32) -> Result<AnimChoice, String> {
-    Ok(match anim {
-        0 => AnimChoice::Default,
-        1 => AnimChoice::Instant,
-        2 | 3 => AnimChoice::Spec(anim_spec(anim, a, b, c)?.expect("2 and 3 carry a spec")),
-        other => return Err(format!("unknown anim choice code {other}")),
-    })
-}
-
 /// `anim` 0 none, 1 instant, 2 tween (a=duration ms, c=easing code),
 /// 3 spring (a=stiffness, b=damping); matches the runtime's `animParts`.
 #[no_mangle]
@@ -1448,21 +1363,22 @@ pub extern "C" fn create_var(
     anim_b: f64,
     anim_c: u32,
 ) -> u32 {
-    let initial = match initial_tag {
-        0 => Value::Null,
-        1 => Value::Bool(initial_number != 0.0),
-        2 => Value::Int(initial_number as i64),
-        3 => Value::Float(initial_number),
-        _ => {
-            set_error(format!("unsupported var initial tag {initial_tag}"));
-            return 0;
-        }
-    };
-    let spec = match anim_spec(anim, anim_a, anim_b, anim_c) {
-        Ok(spec) => spec,
+    let initial = match Value::from_abi(initial_tag, initial_number, Ok(String::new())) {
+        Ok(value) => value,
         Err(err) => {
             set_error(err);
             return 0;
+        }
+    };
+    let spec = if anim == 0 {
+        None
+    } else {
+        match AnimSpec::from_abi(anim, anim_a, anim_b, anim_c) {
+            Ok(spec) => Some(spec),
+            Err(err) => {
+                set_error(err);
+                return 0;
+            }
         }
     };
     match with_turn(|turn| turn.create_var(source as u8, initial, spec)) {
@@ -1501,17 +1417,14 @@ pub extern "C" fn set_var(
     anim_b: f64,
     anim_c: u32,
 ) -> i32 {
-    let value = match tag {
-        0 => Value::Null,
-        1 => Value::Bool(number != 0.0),
-        2 => Value::Int(number as i64),
-        3 => Value::Float(number),
-        other => {
-            set_error(format!("unsupported var value tag {other}"));
+    let value = match Value::from_abi(tag, number, Ok(String::new())) {
+        Ok(value) => value,
+        Err(err) => {
+            set_error(err);
             return 1;
         }
     };
-    let choice = match anim_choice(anim, anim_a, anim_b, anim_c) {
+    let choice = match AnimChoice::from_abi(anim, anim_a, anim_b, anim_c) {
         Ok(choice) => choice,
         Err(err) => {
             set_error(err);
@@ -1584,7 +1497,15 @@ pub extern "C" fn set_style_prop(
         set_error("style declaration key is not utf-8".into());
         return 1;
     };
-    let value = match read_value(tag, number, text_ptr, text_len) {
+    let value = match Value::from_abi(
+        tag,
+        number,
+        if tag == 4 {
+            read_abi_utf8(text_ptr, text_len, "prop string")
+        } else {
+            Ok(String::new())
+        },
+    ) {
         Ok(value) => value,
         Err(err) => {
             set_error(err);

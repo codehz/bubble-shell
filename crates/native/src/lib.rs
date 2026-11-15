@@ -23,9 +23,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use bubble_core::{
-    decode_layout, encode_edit_events, encode_events, encode_paint, encode_var_events,
-    wrapping_layout, A11yAction, EditCommand, EditEvent, EditMenuAction, GestureEvent, Key,
-    LayoutRequest, LayoutSnapshot, PointerAction, PointerInput, Shell, VarEvent,
+    call_host_layout, check_edit_session, encode_edit_events, encode_events, encode_paint,
+    encode_var_events, read_abi_utf8, wrapping_layout, A11yAction, EditCommand, EditEvent,
+    EditMenuAction, GestureEvent, Key, LayoutRequest, LayoutSnapshot, PointerAction, PointerInput,
+    Shell, VarEvent,
 };
 
 use script::Cmd;
@@ -598,16 +599,15 @@ pub extern "C" fn bubble_pointer(
                 .shell
                 .lock()
                 .map_err(|_| "tree lock poisoned".to_string())?;
-            shell.pointer(PointerInput {
+            shell.pointer(PointerInput::from_abi(
                 action,
                 id,
                 x,
                 y,
                 time_ms,
+                pointer_kind,
                 buttons,
-                pointer_kind: pointer_kind.min(255) as u8,
-                path: Vec::new(),
-            });
+            ));
             shell.take_gesture_events()
         };
         send_events(&engine.shared, events);
@@ -640,16 +640,15 @@ pub extern "C" fn bubble_visual_pointer(
             .shell
             .lock()
             .map_err(|_| "tree lock poisoned".to_string())?;
-        shell.visual_pointer(PointerInput {
+        shell.visual_pointer(PointerInput::from_abi(
             action,
             id,
             x,
             y,
             time_ms,
+            pointer_kind,
             buttons,
-            pointer_kind: pointer_kind.min(255) as u8,
-            path: Vec::new(),
-        });
+        ));
         Ok(())
     });
     finish(shell, result)
@@ -691,25 +690,8 @@ pub extern "C" fn bubble_edit(
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let bytes = if text.is_null() || text_len == 0 {
-            Vec::new()
-        } else {
-            unsafe { std::slice::from_raw_parts(text, text_len as usize) }.to_vec()
-        };
-        let text = String::from_utf8(bytes).map_err(|_| "edit text is not utf-8".to_string())?;
-        let command = match action {
-            0 => None,
-            1 => Some(EditCommand::Insert(text)),
-            2 => Some(EditCommand::Backspace),
-            3 => Some(EditCommand::DeleteForward),
-            4 => Some(EditCommand::SetSelection { start: a, end: b }),
-            5 => Some(EditCommand::CompositionStart),
-            6 => Some(EditCommand::CompositionUpdate(text)),
-            7 => Some(EditCommand::CompositionEnd(text)),
-            8 => Some(EditCommand::Undo),
-            9 => Some(EditCommand::Redo),
-            other => return Err(format!("bad edit action {other}")),
-        };
+        let text = read_abi_utf8(text, text_len, "edit text")?;
+        let command = EditCommand::parse(action, text, a, b)?;
         let events = {
             let mut shell = engine
                 .shared
@@ -827,23 +809,6 @@ pub extern "C" fn bubble_edit_snapshot(
     finish(shell, result)
 }
 
-fn check_edit_session(shell: &Shell, session: u64) -> Result<(), String> {
-    let state = shell.focused_state()?;
-    if state.session.get() != session {
-        return Err("stale editing session".into());
-    }
-    Ok(())
-}
-
-fn read_utf8(text: *const u8, len: u32) -> Result<String, String> {
-    let bytes = if text.is_null() || len == 0 {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(text, len as usize) }.to_vec()
-    };
-    String::from_utf8(bytes).map_err(|_| "edit text is not utf-8".to_string())
-}
-
 /// Replace `start..end` with UTF-8 text and apply Android's
 /// `newCursorPosition`. `composing` 1 keeps/starts composition.
 #[no_mangle]
@@ -860,7 +825,7 @@ pub extern "C" fn bubble_edit_replace(
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let text = read_utf8(text, text_len)?;
+        let text = read_abi_utf8(text, text_len, "edit text")?;
         let events = {
             let mut shell = engine
                 .shared
@@ -888,7 +853,7 @@ pub extern "C" fn bubble_edit_commit(
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let text = read_utf8(text, text_len)?;
+        let text = read_abi_utf8(text, text_len, "edit text")?;
         let events = {
             let mut shell = engine
                 .shared
@@ -916,7 +881,7 @@ pub extern "C" fn bubble_edit_compose(
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let text = read_utf8(text, text_len)?;
+        let text = read_abi_utf8(text, text_len, "edit text")?;
         let events = {
             let mut shell = engine
                 .shared
@@ -1188,7 +1153,7 @@ pub extern "C" fn bubble_a11y_action(
         let action =
             A11yAction::parse(action).ok_or_else(|| format!("bad a11y action {action}"))?;
         let action = match action {
-            A11yAction::SetValue(_) => A11yAction::SetValue(read_utf8(text, text_len)?),
+            A11yAction::SetValue(_) => A11yAction::SetValue(read_abi_utf8(text, text_len, "edit text")?),
             other => other,
         };
         let engine = engine(shell)?;
@@ -1224,7 +1189,7 @@ pub extern "C" fn bubble_edit_menu(
     let result = catch(|| {
         let action =
             EditMenuAction::parse(action).ok_or_else(|| format!("bad menu action {action}"))?;
-        let clipboard = read_utf8(clip, clip_len)?;
+        let clipboard = read_abi_utf8(clip, clip_len, "edit text")?;
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
         let (menu, events) = {
@@ -1492,12 +1457,8 @@ fn host_measure(
 }
 fn field_layout(host: &HostFns, req: &LayoutRequest<'_>) -> Result<LayoutSnapshot, String> {
     if let Some(layout) = host.layout {
-        let mut cap = (req.text.len() as u32)
-            .saturating_mul(64)
-            .saturating_add(4096);
-        for _ in 0..2 {
-            let mut buf = vec![0u8; cap as usize];
-            let n = layout(
+        return call_host_layout(req, |cap, buf| {
+            layout(
                 host.ctx as *mut c_void,
                 req.text.as_ptr(),
                 req.text.len() as u32,
@@ -1510,17 +1471,8 @@ fn field_layout(host: &HostFns, req: &LayoutRequest<'_>) -> Result<LayoutSnapsho
                 req.key.revision,
                 buf.as_mut_ptr(),
                 cap,
-            );
-            if n < 0 {
-                return Err("host layout failed".into());
-            }
-            if (n as u32) > cap {
-                cap = n as u32;
-                continue;
-            }
-            return decode_layout(&buf[..n as usize]);
-        }
-        return Err("host layout did not fit".into());
+            )
+        });
     }
     #[cfg(target_os = "android")]
     if let Some(snapshot) = android::layout_snapshot(req) {
