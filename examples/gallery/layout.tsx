@@ -49,7 +49,7 @@ export function TextPropsDemo() {
         <Text fontSize={12} color="#d1d5db">12px regular</Text>
         <Text fontSize={20} color="#d1d5db">20px regular</Text>
         <Text fontSize={28} fontWeight={700} color="#ffffff">28px bold</Text>
-        <View width={240} backgroundColor={0xff374151} radius={6} padding={[6, 8, 8, 6]} gap={4}>
+        <View width={240} backgroundColor={0xff374151} radius={6} padding={[8, 8, 8, 8]} gap={4}>
           <Text fontSize={14} color="#ffffff" textAlign="left">aligned left</Text>
           <Text fontSize={14} color="#ffffff" textAlign="center">aligned center</Text>
           <Text fontSize={14} color="#ffffff" textAlign="right">aligned right</Text>
@@ -67,7 +67,7 @@ export function TextPropsDemo() {
           color="#ffffff"
           backgroundColor={0xff4b5563}
           radius={6}
-          padding={[8, 10, 10, 8]}
+          padding={[8, 8, 8, 8]}
           keyboard="number"
           label="Font size"
           onChange={(e) => {

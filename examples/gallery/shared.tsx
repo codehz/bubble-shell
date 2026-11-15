@@ -3,7 +3,7 @@ import { View, Text, TextField, TapGesture } from "bubble-shell";
 
 export function Section(props) {
   return (
-    <View backgroundColor="#1f2937" radius={8} padding={[12, 12, 12, 14]} gap={8}>
+    <View backgroundColor="#1f2937" radius={8} padding={[12, 12, 12, 12]} gap={8}>
       <Text color="#fbbf24" fontSize={13} fontWeight={700}>{props.title()}</Text>
       {props.children}
     </View>
@@ -17,7 +17,7 @@ export function Btn(props) {
       label={props.label()}
       backgroundColor={props.color()}
       radius={8}
-      padding={[10, 10, 10, 14]}
+      padding={[12, 12, 12, 12]}
     >
       <TapGesture onTap={props.onTap} />
       <Text color="#ffffff" fontSize={14}>{props.label()}</Text>
@@ -34,7 +34,7 @@ export function Field(props) {
       color="#ffffff"
       backgroundColor={0xff4b5563}
       radius={6}
-      padding={[8, 10, 10, 8]}
+      padding={[8, 8, 8, 8]}
       label={props.label()}
       secure={props.secure ? props.secure() : false}
       multiline={props.multiline ? props.multiline() : false}

@@ -58,7 +58,7 @@ export function FocusedDemo() {
           color="#ffffff"
           backgroundColor={0xff4b5563}
           radius={6}
-          padding={[8, 10, 10, 8]}
+          padding={[8, 8, 8, 8]}
           label="Focus me"
           onChange={(e) => echo.set(e.value)}
         >

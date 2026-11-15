@@ -57,7 +57,7 @@ function App() {
   const selected = signal(0);
   return (
     <View backgroundColor="#0d0f14" flexGrow={1} flexShrink={1} flexDirection="row" padding={[10, 10, 10, 10]} gap={10}>
-      <View backgroundColor="#111827" radius={8} width={190} overflowY="scroll" padding={[10, 8, 8, 10]} gap={4}>
+      <View backgroundColor="#111827" radius={8} width={190} overflowY="scroll" padding={[10, 10, 10, 10]} gap={4}>
         <Text color="#6b7280" fontSize={11}>bubble gallery · {demos.length} demos</Text>
         <For each={demos} by={(d) => d.name}>
           {(read, i) => (
@@ -66,7 +66,7 @@ function App() {
               label={"Open " + read().name}
               backgroundColor={selected() === i ? "#2563eb" : "#1f2937"}
               radius={6}
-              padding={[9, 6, 6, 10]}
+              padding={[8, 8, 8, 8]}
             >
               <TapGesture onTap={() => selected.set(i)} />
               <Text color={selected() === i ? "#ffffff" : "#9ca3af"} fontSize={13}>{read().name}</Text>
@@ -79,7 +79,7 @@ function App() {
         radius={8}
         flexGrow={1}
         flexShrink={1}
-        padding={[14, 12, 12, 14]}
+        padding={[12, 12, 12, 12]}
         gap={12}
         overflowY="scroll"
       >

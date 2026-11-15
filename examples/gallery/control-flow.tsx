@@ -13,7 +13,7 @@ export function ShowDemo() {
           fallback={<Text color="#6b7280" fontSize={14}>Hidden — this is the fallback branch.</Text>}
         >
           {() => (
-            <View backgroundColor={0xff22c55e} radius={6} padding={[10, 10, 10, 12]}>
+            <View backgroundColor={0xff22c55e} radius={6} padding={[10, 10, 10, 10]}>
               <Text color="#ffffff" fontSize={14}>Visible content</Text>
             </View>
           )}
@@ -33,7 +33,7 @@ export function ForDemo() {
           <Btn label="Add" color={0xff22c55e} onTap={() => items.update((list) => [...list, "fresh " + next++])} />
           <Btn label="Remove last" color={0xfff59e0b} onTap={() => items.update((list) => list.slice(0, -1))} />
         </View>
-        <View backgroundColor={0xff374151} radius={6} padding={[8, 8, 8, 10]} gap={4}>
+        <View backgroundColor={0xff374151} radius={6} padding={[8, 8, 8, 8]} gap={4}>
           <For each={items()} by={(item) => item}>
             {(read) => <Text color="#a3e635" fontSize={14}>item {read()}</Text>}
           </For>
@@ -52,7 +52,7 @@ export function IndexDemo() {
           <Btn label="Reverse" color={0xff3b82f6} onTap={() => items.set(["gamma", "beta", "alpha"])} />
           <Btn label="Replace first" color={0xff22c55e} onTap={() => items.set(["first", "beta", "gamma"])} />
         </View>
-        <View backgroundColor={0xff374151} radius={6} padding={[8, 8, 8, 10]} gap={4}>
+        <View backgroundColor={0xff374151} radius={6} padding={[8, 8, 8, 8]} gap={4}>
           <Index each={items()}>
             {(read, i) => <Text color="#93c5fd" fontSize={14}>{i + ": " + read()}</Text>}
           </Index>
@@ -87,7 +87,7 @@ export function SwitchDemo() {
 
 function SlotCard(props) {
   return (
-    <View backgroundColor={0xff1b1e27} radius={8} padding={[12, 12, 12, 14]} gap={8}>
+    <View backgroundColor={0xff1b1e27} radius={8} padding={[12, 12, 12, 12]} gap={8}>
       <Slot of={props.header} fallback={<Text color="#666677" fontSize={12}>no header slot</Text>} />
       {props.children}
       <Text color="#8892a0" fontSize={12}>tail</Text>

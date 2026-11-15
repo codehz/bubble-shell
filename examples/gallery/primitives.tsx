@@ -36,7 +36,7 @@ export function ViewDemo() {
           overflowY="scroll"
           backgroundColor={0xff374151}
           radius={6}
-          padding={[8, 8, 8, 10]}
+          padding={[8, 8, 8, 8]}
           gap={6}
         >
           <For each={numbers} by={(n) => n}>
@@ -45,7 +45,7 @@ export function ViewDemo() {
         </View>
       </Section>
       <Section title="Nested flex — column of rows with grow">
-        <View flexDirection="column" gap={6} backgroundColor={0xff374151} radius={6} padding={[8, 8, 8, 10]}>
+        <View flexDirection="column" gap={6} backgroundColor={0xff374151} radius={6} padding={[8, 8, 8, 8]}>
           <View flexDirection="row" gap={6}>
             <View backgroundColor={0xff0ea5e9} flexGrow={1} height={28} radius={4} />
             <View backgroundColor={0xff0ea5e9} flexGrow={2} height={28} radius={4} />
@@ -77,7 +77,7 @@ export function TextDemo() {
         <Text fontSize={15} color="oklch(0.72 0.19 328)">oklch pink</Text>
       </Section>
       <Section title="Alignment">
-        <View width={240} backgroundColor={0xff374151} radius={6} padding={[6, 8, 8, 6]} gap={4}>
+        <View width={240} backgroundColor={0xff374151} radius={6} padding={[8, 8, 8, 8]} gap={4}>
           <Text fontSize={14} color="#ffffff" textAlign="left">aligned left</Text>
           <Text fontSize={14} color="#ffffff" textAlign="center">aligned center</Text>
           <Text fontSize={14} color="#ffffff" textAlign="right">aligned right</Text>

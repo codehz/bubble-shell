@@ -21,7 +21,7 @@ export function TapDemo() {
   return (
     <View gap={12}>
       <Section title="TapGesture — onTap">
-        <View role="button" label="Tap card" backgroundColor={0xff3b82f6} radius={8} padding={[14, 12, 12, 16]}>
+        <View role="button" label="Tap card" backgroundColor={0xff3b82f6} radius={8} padding={[14, 14, 14, 14]}>
           <TapGesture onTap={() => taps.update((c) => c + 1)} />
           <Text color="#ffffff" fontSize={16}>Tap me</Text>
         </View>
@@ -36,7 +36,7 @@ export function DoubleTapDemo() {
   return (
     <View gap={12}>
       <Section title="DoubleTapGesture — onDoubleTap">
-        <View role="button" label="Double tap card" backgroundColor={0xff22c55e} radius={8} padding={[14, 12, 12, 16]}>
+        <View role="button" label="Double tap card" backgroundColor={0xff22c55e} radius={8} padding={[14, 14, 14, 14]}>
           <DoubleTapGesture onDoubleTap={() => status.set("double-tapped")} />
           <Text color="#ffffff" fontSize={16}>Double tap me</Text>
         </View>
@@ -51,7 +51,7 @@ export function LongPressDemo() {
   return (
     <View gap={12}>
       <Section title="LongPressGesture — 500 ms">
-        <View role="button" label="Long press card" backgroundColor={0xfff59e0b} radius={8} padding={[14, 12, 12, 16]}>
+        <View role="button" label="Long press card" backgroundColor={0xfff59e0b} radius={8} padding={[14, 14, 14, 14]}>
           <LongPressGesture
             duration={500}
             onLongPress={() => status.set("long-pressed")}
@@ -185,7 +185,7 @@ export function GestureVarsDemo() {
   const sy = createSharedValue({ source: "scroll.y", target: scrollRef });
   return (
     <View gap={12}>
-      <View backgroundColor="#1f2937" radius={8} padding={[12, 12, 12, 14]} gap={8}>
+      <View backgroundColor="#1f2937" radius={8} padding={[12, 12, 12, 12]} gap={8}>
         <Text color="#fbbf24" fontSize={13} fontWeight={700}>Pan follows gesture-source variables</Text>
         <Text color="#9ca3af" fontSize={13}>
           The card reads gesture.translationX/Y straight from the recognizer — it never lags a frame behind.
@@ -204,7 +204,7 @@ export function GestureVarsDemo() {
           <Text color="#ffffff" fontSize={14}>drag me</Text>
         </View>
       </View>
-      <View backgroundColor="#1f2937" radius={8} padding={[12, 12, 12, 14]} gap={8}>
+      <View backgroundColor="#1f2937" radius={8} padding={[12, 12, 12, 12]} gap={8}>
         <Text color="#fbbf24" fontSize={13} fontWeight={700}>Bar color tracks scroll.y</Text>
         <Text color="#9ca3af" fontSize={13}>
           Scroll the list; the bar mixes blue to green over 200 px of scroll offset.
@@ -215,7 +215,7 @@ export function GestureVarsDemo() {
           overflowY="scroll"
           backgroundColor={0xff374151}
           radius={6}
-          padding={[8, 8, 8, 10]}
+          padding={[8, 8, 8, 8]}
           gap={6}
         >
           <For each={SCROLL_ROWS} by={(row) => row}>
