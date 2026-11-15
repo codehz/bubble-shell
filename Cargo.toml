@@ -9,3 +9,7 @@ members = [
     "crates/native",
     "crates/testing",
 ]
+
+# bubble-wasm is a wasm32 cdylib; building it for the host fails at link time.
+# Pin defaults so bare `cargo run`/`cargo test` only touch the host CLI.
+default-members = ["crates/cli"]
