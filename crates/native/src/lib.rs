@@ -133,16 +133,11 @@ impl Shared {
             .filter(|id| !id.is_empty())
             .unwrap_or_else(|| "default".into());
         if let Ok(mut slot) = self.storage_id.lock() {
-            *slot = id;
+            *slot = id.clone();
         }
         let Some(dir) = self.storage_dir.lock().ok().and_then(|dir| dir.clone()) else {
             return;
         };
-        let id = self
-            .storage_id
-            .lock()
-            .map(|id| id.clone())
-            .unwrap_or_else(|_| "default".into());
         let loaded = std::fs::read_to_string(storage_file(&dir, &id))
             .ok()
             .and_then(|text| serde_json::from_str::<HashMap<String, String>>(&text).ok())
@@ -972,7 +967,9 @@ pub extern "C" fn bubble_a11y_action(
         let action =
             A11yAction::parse(action).ok_or_else(|| format!("bad a11y action {action}"))?;
         let action = match action {
-            A11yAction::SetValue(_) => A11yAction::SetValue(read_abi_utf8(text, text_len, "edit text")?),
+            A11yAction::SetValue(_) => {
+                A11yAction::SetValue(read_abi_utf8(text, text_len, "edit text")?)
+            }
             other => other,
         };
         let engine = engine(shell)?;
