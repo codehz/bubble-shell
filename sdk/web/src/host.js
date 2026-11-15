@@ -52,10 +52,7 @@ const A11Y_ROLES = {
 };
 
 function a11yAction(handle, action, text = "") {
-  const bytes = encoder.encode(text);
-  const ptr = bytes.length ? copyBytes(bytes) : 0;
-  const result = exports.a11y_action(handle, action, ptr, bytes.length);
-  if (bytes.length) exports.dealloc(ptr, bytes.length);
+  const result = withStr(text, (ptr, len) => exports.a11y_action(handle, action, ptr, len));
   pumpGestures();
   if (exports.layout() === 0) paint();
   return result === 0;
@@ -339,6 +336,21 @@ function copyBytes(bytes) {
   return ptr;
 }
 
+// Copy `bytes` into wasm memory for one export call, freeing afterwards even
+// when the call traps.
+function withBytes(bytes, fn) {
+  const ptr = bytes.length ? copyBytes(bytes) : 0;
+  try {
+    return fn(ptr, bytes.length);
+  } finally {
+    if (bytes.length) exports.dealloc(ptr, bytes.length);
+  }
+}
+
+function withStr(text, fn) {
+  return withBytes(encoder.encode(text ?? ""), fn);
+}
+
 function packFile(path, data) {
   const name = new TextEncoder().encode(path);
   const packed = new Uint8Array(8 + name.length + data.length);
@@ -357,11 +369,9 @@ async function checkBundle() {
   const manifest = new Uint8Array(await (await fetch(`./fixtures/${fixture}.json`)).arrayBuffer());
   const main = new Uint8Array(await (await fetch(`./fixtures/${fixture}.js`)).arrayBuffer());
   const files = packFile(`${fixture}.js`, main);
-  const manifestPtr = copyBytes(manifest);
-  const filesPtr = copyBytes(files);
-  const failed = exports.validate(manifestPtr, manifest.length, filesPtr, files.length);
-  exports.dealloc(manifestPtr, manifest.length);
-  exports.dealloc(filesPtr, files.length);
+  const failed = withBytes(manifest, (manifestPtr, manifestLen) =>
+    withBytes(files, (filesPtr, filesLen) =>
+      exports.validate(manifestPtr, manifestLen, filesPtr, filesLen)));
   if (failed) throw new Error(error() || "bundle rejected");
 }
 
@@ -378,50 +388,29 @@ setApi({
   run_init: exports.run_init,
   run_updates: exports.run_updates,
   spawn(parent, kind, text) {
-    const bytes = encoder.encode(text ?? "");
-    const ptr = bytes.length ? copyBytes(bytes) : 0;
-    const handle = exports.spawn(parent, kind, ptr, bytes.length);
-    if (bytes.length) exports.dealloc(ptr, bytes.length);
-    return handle;
+    return withStr(text, (ptr, len) => exports.spawn(parent, kind, ptr, len));
   },
   spawn_at(parent, index, kind, text) {
-    const bytes = encoder.encode(text ?? "");
-    const ptr = bytes.length ? copyBytes(bytes) : 0;
-    const handle = exports.spawn_at(parent, index, kind, ptr, bytes.length);
-    if (bytes.length) exports.dealloc(ptr, bytes.length);
-    return handle;
+    return withStr(text, (ptr, len) => exports.spawn_at(parent, index, kind, ptr, len));
   },
   dispose: exports.dispose,
   move_node: exports.move_node,
   set_prop(handle, key, tag, number, text) {
-    const keyBytes = encoder.encode(key);
-    const textBytes = tag === 4 ? encoder.encode(text) : new Uint8Array(0);
-    const keyPtr = copyBytes(keyBytes);
-    const textPtr = textBytes.length ? copyBytes(textBytes) : 0;
-    const code = exports.set_prop(handle, keyPtr, keyBytes.length, tag, number, textPtr, textBytes.length);
-    exports.dealloc(keyPtr, keyBytes.length);
-    if (textBytes.length) exports.dealloc(textPtr, textBytes.length);
-    return code;
+    return withStr(key, (keyPtr, keyLen) =>
+      withStr(tag === 4 ? text : "", (textPtr, textLen) =>
+        exports.set_prop(handle, keyPtr, keyLen, tag, number, textPtr, textLen)));
   },
   bind_event: exports.bind_event,
   focus: exports.focus,
   set_editing_value(handle, epoch, value, start, end, cancel) {
-    const bytes = encoder.encode(value ?? "");
-    const ptr = bytes.length ? copyBytes(bytes) : 0;
-    const code = exports.set_editing_value(handle, epoch, ptr, bytes.length, start, end, cancel);
-    if (bytes.length) exports.dealloc(ptr, bytes.length);
-    return code;
+    return withStr(value, (ptr, len) =>
+      exports.set_editing_value(handle, epoch, ptr, len, start, end, cancel));
   },
   spawn_gesture: exports.spawn_gesture,
   set_gesture_prop(handle, key, tag, number, text) {
-    const keyBytes = encoder.encode(key);
-    const textBytes = tag === 4 ? encoder.encode(text) : new Uint8Array(0);
-    const keyPtr = copyBytes(keyBytes);
-    const textPtr = textBytes.length ? copyBytes(textBytes) : 0;
-    const code = exports.set_gesture_prop(handle, keyPtr, keyBytes.length, tag, number, textPtr, textBytes.length);
-    exports.dealloc(keyPtr, keyBytes.length);
-    if (textBytes.length) exports.dealloc(textPtr, textBytes.length);
-    return code;
+    return withStr(key, (keyPtr, keyLen) =>
+      withStr(tag === 4 ? text : "", (textPtr, textLen) =>
+        exports.set_gesture_prop(handle, keyPtr, keyLen, tag, number, textPtr, textLen)));
   },
   bind_gesture_event: exports.bind_gesture_event,
   dispose_gesture: exports.dispose_gesture,
@@ -437,24 +426,14 @@ setApi({
   dispose_var: exports.dispose_var,
   spawn_style_decl: exports.spawn_style_decl,
   set_style_prop(decl, key, tag, number, text) {
-    const keyBytes = encoder.encode(key);
-    const textBytes = tag === 4 ? encoder.encode(text) : new Uint8Array(0);
-    const keyPtr = copyBytes(keyBytes);
-    const textPtr = textBytes.length ? copyBytes(textBytes) : 0;
-    const code = exports.set_style_prop(decl, keyPtr, keyBytes.length, tag, number, textPtr, textBytes.length);
-    exports.dealloc(keyPtr, keyBytes.length);
-    if (textBytes.length) exports.dealloc(textPtr, textBytes.length);
-    return code;
+    return withStr(key, (keyPtr, keyLen) =>
+      withStr(tag === 4 ? text : "", (textPtr, textLen) =>
+        exports.set_style_prop(decl, keyPtr, keyLen, tag, number, textPtr, textLen)));
   },
   set_style_prop_program(decl, key, bytes) {
-    const keyBytes = encoder.encode(key);
-    const data = Uint8Array.from(bytes);
-    const keyPtr = copyBytes(keyBytes);
-    const dataPtr = copyBytes(data);
-    const code = exports.set_style_prop_program(decl, keyPtr, keyBytes.length, dataPtr, data.length);
-    exports.dealloc(keyPtr, keyBytes.length);
-    exports.dealloc(dataPtr, data.length);
-    return code;
+    return withStr(key, (keyPtr, keyLen) =>
+      withBytes(Uint8Array.from(bytes), (dataPtr, dataLen) =>
+        exports.set_style_prop_program(decl, keyPtr, keyLen, dataPtr, dataLen)));
   },
   move_style_decl: exports.move_style_decl,
   dispose_style_decl: exports.dispose_style_decl,
@@ -464,11 +443,7 @@ setApi({
   take_gesture_events: exports.take_gesture_events,
   take_var_events: exports.take_var_events,
   queue_text(handle, text) {
-    const bytes = encoder.encode(text ?? "");
-    const ptr = bytes.length ? copyBytes(bytes) : 0;
-    const code = exports.queue_text(handle, ptr, bytes.length);
-    if (bytes.length) exports.dealloc(ptr, bytes.length);
-    return code;
+    return withStr(text, (ptr, len) => exports.queue_text(handle, ptr, len));
   },
   commit: exports.commit,
   // Layout after a committed batch must also repaint: programmatic focus and
@@ -876,30 +851,29 @@ function applyEditCommands(commands) {
   const snapshot = editSnapshot();
   if (!snapshot) return;
   for (const command of commands) {
-    const bytes = encoder.encode(command.text ?? "");
-    const ptr = bytes.length ? copyBytes(bytes) : 0;
-    if (command.op === "commit") {
-      exports.edit_commit(snapshot.session, ptr, bytes.length, 1);
-    } else if (command.op === "compose") {
-      exports.edit_compose(snapshot.session, ptr, bytes.length, 1);
-    } else if (command.op === "replace") {
-      exports.edit_replace(snapshot.session, command.start, command.end, ptr, bytes.length, 0, 0);
-    } else if (command.op === "delete") {
-      if (snapshot.anchor !== snapshot.active) {
-        exports.edit_commit(snapshot.session, 0, 0, 1);
-      } else {
-        exports.edit_delete_surrounding(snapshot.session, command.before ?? 0, command.after ?? 0);
+    withStr(command.text ?? "", (ptr, len) => {
+      if (command.op === "commit") {
+        exports.edit_commit(snapshot.session, ptr, len, 1);
+      } else if (command.op === "compose") {
+        exports.edit_compose(snapshot.session, ptr, len, 1);
+      } else if (command.op === "replace") {
+        exports.edit_replace(snapshot.session, command.start, command.end, ptr, len, 0, 0);
+      } else if (command.op === "delete") {
+        if (snapshot.anchor !== snapshot.active) {
+          exports.edit_commit(snapshot.session, 0, 0, 1);
+        } else {
+          exports.edit_delete_surrounding(snapshot.session, command.before ?? 0, command.after ?? 0);
+        }
+      } else if (command.op === "select") {
+        exports.edit_select(snapshot.session, command.anchor, command.active);
+      } else if (command.op === "undo") {
+        exports.edit_undo(snapshot.session);
+      } else if (command.op === "redo") {
+        exports.edit_redo(snapshot.session);
+      } else if (command.op === "finish") {
+        exports.edit_finish_composition(snapshot.session);
       }
-    } else if (command.op === "select") {
-      exports.edit_select(snapshot.session, command.anchor, command.active);
-    } else if (command.op === "undo") {
-      exports.edit_undo(snapshot.session);
-    } else if (command.op === "redo") {
-      exports.edit_redo(snapshot.session);
-    } else if (command.op === "finish") {
-      exports.edit_finish_composition(snapshot.session);
-    }
-    if (bytes.length) exports.dealloc(ptr, bytes.length);
+    });
   }
   pumpGestures();
   if (exports.layout() === 0) paint();
@@ -991,10 +965,7 @@ async function runEditMenu(name) {
   if (name === "paste") {
     try { clip = await navigator.clipboard.readText(); } catch { clip = ""; }
   }
-  const bytes = encoder.encode(clip);
-  const ptr = bytes.length ? copyBytes(bytes) : 0;
-  const code = exports.edit_menu(action, ptr, bytes.length);
-  if (bytes.length) exports.dealloc(ptr, bytes.length);
+  const code = withStr(clip, (ptr, len) => exports.edit_menu(action, ptr, len));
   if (code < 0) return;
   if ((name === "copy" || name === "cut") && code >= 0) {
     const len = exports.scratch_len();
