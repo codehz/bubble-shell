@@ -2189,19 +2189,42 @@ mod android {
     }
 
     #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_setParams<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        shell: jlong,
+        json: JString<'a>,
+    ) -> JString<'a> {
+        let Ok(json) = env.get_string(&json) else {
+            return env
+                .new_string("params are not a string")
+                .unwrap_or_else(|_| JObject::null().into());
+        };
+        let json = super::CString_from(&json.to_string_lossy());
+        let err = super::bubble_set_params(shell as *mut super::BubbleShell, json.as_ptr());
+        jni_error(&mut env, err)
+    }
+
+    #[no_mangle]
     pub extern "system" fn Java_dev_bubble_shell_BubbleNative_setStorageDir<'a>(
         mut env: JNIEnv<'a>,
         _class: JClass<'a>,
         shell: jlong,
         path: JString<'a>,
     ) -> JString<'a> {
-        let Ok(path) = env.get_string(&path) else {
-            return env
-                .new_string("storage path is not a string")
-                .unwrap_or_else(|_| JObject::null().into());
+        let owned;
+        let path_ptr = if path.is_null() {
+            std::ptr::null()
+        } else {
+            let Ok(path) = env.get_string(&path) else {
+                return env
+                    .new_string("storage path is not a string")
+                    .unwrap_or_else(|_| JObject::null().into());
+            };
+            owned = super::CString_from(&path.to_string_lossy());
+            owned.as_ptr()
         };
-        let path = super::CString_from(&path.to_string_lossy());
-        let err = super::bubble_set_storage_dir(shell as *mut super::BubbleShell, path.as_ptr());
+        let err = super::bubble_set_storage_dir(shell as *mut super::BubbleShell, path_ptr);
         jni_error(&mut env, err)
     }
 

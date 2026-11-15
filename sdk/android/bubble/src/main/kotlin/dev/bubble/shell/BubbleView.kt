@@ -46,6 +46,8 @@ private val ACTION_SCROLL_RIGHT_ID = AccessibilityNodeInfo.AccessibilityAction.A
 private val ACTION_SCROLL_UP_ID = AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id
 private val ACTION_SCROLL_DOWN_ID = AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id
 
+class BubbleError(message: String) : Exception(message)
+
 class BubbleView(context: Context) : View(context) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
@@ -95,14 +97,14 @@ class BubbleView(context: Context) : View(context) {
             check(handle != 0L)
             engine = true
         }
-        BubbleNative.setStorageDir(handle, storageDir.absolutePath)
-        BubbleNative.registerFont(handle, "HostFont", font)
+        setStorageDirectory(storageDir.absolutePath)
+        registerFont("HostFont", font)
         val file = File(context.cacheDir, "HostFont.ttf")
         file.writeBytes(font)
         setHostTypeface(Typeface.createFromFile(file))
         this.devUrl = devUrl
         if (devUrl == null && manifest != null && entry != null) {
-            BubbleNative.load(handle, manifest, entry)?.let { error(it) }
+            loadBundle(manifest, entry)
         }
     }
 
@@ -113,6 +115,26 @@ class BubbleView(context: Context) : View(context) {
         handle = 0L
         engine = false
     }
+    fun loadBundle(manifest: String, entry: ByteArray) {
+        BubbleNative.load(handle, manifest, entry)?.let { throw BubbleError(it) }
+    }
+
+    fun setParams(json: String) {
+        BubbleNative.setParams(handle, json)?.let { throw BubbleError(it) }
+    }
+
+    fun setStorageDirectory(path: String?) {
+        BubbleNative.setStorageDir(handle, path)?.let { throw BubbleError(it) }
+    }
+
+    fun send(name: String, payload: String) {
+        BubbleNative.send(handle, name, payload)?.let { throw BubbleError(it) }
+    }
+
+    fun registerFont(family: String, data: ByteArray) {
+        BubbleNative.registerFont(handle, family, data)
+    }
+
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()

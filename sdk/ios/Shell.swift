@@ -6,10 +6,14 @@ import UIKit
 func bubble_create(_ host: UnsafePointer<BubbleHost>?) -> OpaquePointer?
 @_silgen_name("bubble_destroy")
 func bubble_destroy(_ shell: OpaquePointer?)
+@_silgen_name("bubble_string_free")
+func bubble_string_free(_ s: UnsafeMutablePointer<CChar>?)
 @_silgen_name("bubble_load")
 func bubble_load(_ shell: OpaquePointer?, _ manifest: UnsafePointer<CChar>?, _ entry: UnsafePointer<UInt8>?, _ entryLen: UInt32) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("bubble_set_storage_dir")
 func bubble_set_storage_dir(_ shell: OpaquePointer?, _ path: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("bubble_set_params")
+func bubble_set_params(_ shell: OpaquePointer?, _ json: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("bubble_poll_request")
 func bubble_poll_request(_ shell: OpaquePointer?, _ id: UnsafeMutablePointer<UInt32>?, _ method: UnsafeMutablePointer<CChar>?, _ methodCap: UInt32, _ params: UnsafeMutablePointer<CChar>?, _ paramsCap: UInt32) -> Int32
 @_silgen_name("bubble_finish_request")
@@ -322,6 +326,19 @@ func drainHostCalls(_ shell: OpaquePointer?) {
 }
 
 
+struct BubbleError: Error, LocalizedError, CustomStringConvertible {
+    let message: String
+    var description: String { message }
+    var errorDescription: String? { message }
+}
+
+private func check(_ error: UnsafeMutablePointer<CChar>?) throws {
+    guard let error else { return }
+    let message = String(cString: error)
+    bubble_string_free(error)
+    throw BubbleError(message: message)
+}
+
 final class BubbleView: UIView {
     var paint = Data()
     var family = "Arial"
@@ -357,6 +374,48 @@ final class BubbleView: UIView {
     }
 
     deinit { bubble_destroy(shell) }
+    func loadBundle(manifest: String, entry: Data) throws {
+        try manifest.withCString { manifestPtr in
+            try entry.withUnsafeBytes { raw in
+                let bytes = raw.bindMemory(to: UInt8.self).baseAddress
+                try check(bubble_load(shell, manifestPtr, bytes, UInt32(entry.count)))
+            }
+        }
+    }
+
+    func setParams(_ json: String) throws {
+        try json.withCString { ptr in
+            try check(bubble_set_params(shell, ptr))
+        }
+    }
+
+    func setStorageDirectory(_ path: String?) throws {
+        if let path {
+            try path.withCString { ptr in
+                try check(bubble_set_storage_dir(shell, ptr))
+            }
+        } else {
+            try check(bubble_set_storage_dir(shell, nil))
+        }
+    }
+
+    func send(name: String, payload: String) throws {
+        try name.withCString { namePtr in
+            try payload.withCString { payloadPtr in
+                try check(bubble_send(shell, namePtr, payloadPtr))
+            }
+        }
+    }
+
+    func registerFont(family: String, data: Data) {
+        family.withCString { familyPtr in
+            data.withUnsafeBytes { raw in
+                let bytes = raw.bindMemory(to: UInt8.self).baseAddress
+                bubble_register_font(shell, familyPtr, bytes, UInt32(data.count))
+            }
+        }
+    }
+
 
     required init?(coder: NSCoder) { nil }
     func contentSize() -> CGSize {

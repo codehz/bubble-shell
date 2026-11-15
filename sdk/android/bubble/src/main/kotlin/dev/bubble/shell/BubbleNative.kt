@@ -8,7 +8,8 @@ object BubbleNative {
     external fun create(): Long
     external fun destroy(handle: Long)
     external fun load(handle: Long, manifest: String, entry: ByteArray): String?
-    external fun setStorageDir(handle: Long, path: String): String?
+    external fun setParams(handle: Long, json: String): String?
+    external fun setStorageDir(handle: Long, path: String?): String?
     external fun frame(handle: Long, width: Float, height: Float): ByteArray
     external fun pointer(handle: Long, action: Int, id: Int, x: Float, y: Float, timeMs: Double, pointerKind: Int, buttons: Int): Int
     external fun visualPointer(handle: Long, action: Int, id: Int, x: Float, y: Float, timeMs: Double, pointerKind: Int, buttons: Int): Int

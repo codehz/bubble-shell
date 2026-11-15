@@ -1,5 +1,8 @@
 #pragma once
 #include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 typedef struct BubbleShell BubbleShell;
 
@@ -121,3 +124,7 @@ const char *bubble_last_error(BubbleShell *shell);
 int bubble_poll_request(BubbleShell *shell, uint32_t *id, char *method, uint32_t method_cap, char *params,
                         uint32_t params_cap);
 void bubble_finish_request(BubbleShell *shell, uint32_t id, int ok, const char *result);
+
+#ifdef __cplusplus
+}
+#endif

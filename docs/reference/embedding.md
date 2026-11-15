@@ -50,6 +50,8 @@ shell.setVisible(true);
 shell.destroy();
 ```
 
+iOS 与 Android 的 `BubbleView` 持有不透明 shell。`loadBundle`、`setParams`、`setStorageDirectory`、`send` 失败时抛出 `BubbleError`，消息就是 C ABI 返回的错误字符串，调用方不再释放。`registerFont` 没有失败返回。帧、指针和编辑事务留在视图内部。C 头在 xcframework 里是 clang module `BubbleShellC`。
+
 ### 生命周期
 
 - `setVisible(false)`：暂停 vsync、动画、滚动惯性；保留树与状态。
