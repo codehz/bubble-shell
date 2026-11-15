@@ -1753,6 +1753,11 @@ export const storage = {
   keys() { return globalThis.bubbleStorage.keys(); },
 };
 
+// host.call returns a Promise on every backend. Delivery differs: on wasm
+// bubbleHost.call runs on the same thread and usually settles within the
+// tick; on native the request queues in Shared.requests and settles when the
+// host answers via bubble_poll_request / bubble_finish_request. Callers must
+// await; never rely on synchronous timing.
 export const host = {
   get params() { return globalThis.bubbleHost.params; },
   call(name, data) { return globalThis.bubbleHost.call(name, data); },

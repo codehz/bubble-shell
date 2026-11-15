@@ -88,8 +88,9 @@ Cancel   { id }
 
 ### 跨线程代理
 
-- Native：脚本线程 → C ABI → UI 线程/宿主线程；结果回调脚本线程。
-- Web：同线程调用宿主 API，结果用 Promise 回到这次事件循环。没有 `postMessage`。
+- Native：脚本线程 → C ABI → UI 线程/宿主线程；结果回调脚本线程。请求进 `Shared.requests` 队列；宿主必须轮询 `bubble_poll_request` 取出请求，并以 `bubble_finish_request` 结算，否则对应 Promise 永不 settle。
+- Web：同线程调用宿主 API，结果用 Promise 回到这次事件循环。没有 `postMessage`。`bubbleHost.call` 通常当帧同步 settle。
+- 两端共享同一 Promise 合约：调用方必须 `await`，不得依赖同步时序。在 Web 上测过的同步依赖到 Native 会变成竞态。
 - 不做同步调用；脚本需要布局结果时读上一帧缓存或 await。
 
 ## 3. 导航
