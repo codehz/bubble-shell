@@ -8,9 +8,9 @@ use bubble_ffi::{
     bubble_edit_commit, bubble_edit_compose, bubble_edit_delete_surrounding,
     bubble_edit_finish_composition, bubble_edit_replace, bubble_edit_snapshot, bubble_eval,
     bubble_faults, bubble_finish_request, bubble_font_count, bubble_font_epoch, bubble_frame,
-    bubble_generation, bubble_last_error, bubble_load, bubble_node_box, bubble_node_text,
-    bubble_pointer, bubble_poll_request, bubble_post_eval, bubble_register_font, bubble_scroll,
-    bubble_tick, bubble_scroll_y_of, bubble_set_visible, bubble_status,
+    bubble_generation, bubble_has_back_handler, bubble_last_error, bubble_load, bubble_node_box,
+    bubble_node_text, bubble_pointer, bubble_poll_request, bubble_post_eval, bubble_register_font,
+    bubble_scroll, bubble_scroll_y_of, bubble_set_visible, bubble_status, bubble_tick,
 };
 
 // The C ABI owns one process-global shell. Cargo runs tests in one process in
@@ -563,6 +563,52 @@ fn storage_params_and_host_events_roundtrip() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(eval("String(globalThis.seen)"), "2");
+    bubble_destroy();
+}
+
+#[test]
+fn back_handler_gates_back_events() {
+    let _guard = exclusive();
+    bubble_destroy();
+    assert_eq!(bubble_create(ptr::null()), 0, "{}", error());
+    assert_eq!(bubble_has_back_handler(), 0);
+    try_load_source("export const ready = true;\n").unwrap();
+    assert_eq!(bubble_has_back_handler(), 0);
+    eval(
+        "globalThis.backs = 0; globalThis.seen = 0; bubbleHost.onBack((value) => { globalThis.backs += 1; globalThis.backValue = value; }); bubbleHost.on('ping', (data) => { globalThis.seen = data.n })",
+    );
+    assert_eq!(bubble_has_back_handler(), 1);
+    let name = c("back");
+    let payload = c("null");
+    assert_eq!(bubble_send(name.as_ptr(), payload.as_ptr()), 0, "{}", error());
+    let ping = c("ping");
+    let ping_body = c(r#"{"n":7}"#);
+    assert_eq!(bubble_send(ping.as_ptr(), ping_body.as_ptr()), 0, "{}", error());
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline
+        && (eval("String(globalThis.backs)") != "1" || eval("String(globalThis.seen)") != "7")
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(eval("String(globalThis.backs)"), "1");
+    assert_eq!(eval("String(globalThis.backValue)"), "null");
+    assert_eq!(eval("String(globalThis.seen)"), "7");
+    eval("bubbleHost.offBack()");
+    assert_eq!(bubble_has_back_handler(), 0);
+    let other = c(r#"{"n":1}"#);
+    let later = c(r#"{"n":8}"#);
+    assert_eq!(bubble_send(name.as_ptr(), other.as_ptr()), 0, "{}", error());
+    assert_eq!(bubble_send(ping.as_ptr(), later.as_ptr()), 0, "{}", error());
+    let after = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < after && eval("String(globalThis.seen)") != "8" {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(eval("String(globalThis.seen)"), "8");
+    assert_eq!(eval("String(globalThis.backs)"), "1");
+    eval("bubbleHost.onBack(() => {})");
+    assert_eq!(bubble_has_back_handler(), 1);
+    try_load_source("export const ready = true;\n").unwrap();
+    assert_eq!(bubble_has_back_handler(), 0);
     bubble_destroy();
 }
 

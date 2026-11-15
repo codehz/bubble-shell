@@ -109,6 +109,10 @@ func bubble_faults() -> UInt32
 func bubble_generation() -> UInt32
 @_silgen_name("bubble_last_error")
 func bubble_last_error() -> UnsafePointer<CChar>?
+@_silgen_name("bubble_has_back_handler")
+func bubble_has_back_handler() -> Int32
+@_silgen_name("bubble_send")
+func bubble_send(_ name: UnsafePointer<CChar>?, _ payload: UnsafePointer<CChar>?) -> Int32
 
 struct BubbleHost {
     var measure: (@convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, Float, Float, UInt16, Float, Int32, UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?) -> Void)?

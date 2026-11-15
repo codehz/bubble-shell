@@ -53,4 +53,6 @@ object BubbleNative {
     external fun fontEpoch(): Int
     external fun pollRequest(): String?
     external fun finishRequest(id: Int, ok: Int, result: String)
+    external fun hasBackHandler(): Int
+    external fun send(name: String, payload: String): Int
 }

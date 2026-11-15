@@ -1766,6 +1766,8 @@ export const host = {
   call(name, data) { return globalThis.bubbleHost.call(name, data); },
   post(name, data) { globalThis.bubbleHost.post(name, data); },
   on(name, fn) { globalThis.bubbleHost.on(name, fn); },
+  onBack(fn) { return globalThis.bubbleHost.onBack(fn); },
+  offBack() { return globalThis.bubbleHost.offBack(); },
 };
 
 export function toast(message) {

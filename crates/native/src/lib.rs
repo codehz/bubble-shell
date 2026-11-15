@@ -103,6 +103,7 @@ pub struct Shared {
     storage_dir: Mutex<Option<PathBuf>>,
     storage_id: Mutex<String>,
     params: Mutex<String>,
+    has_back_handler: AtomicBool,
 }
 
 impl Shared {
@@ -340,6 +341,7 @@ pub extern "C" fn bubble_create(host: *const BubbleHost) -> i32 {
             storage_dir: Mutex::new(None),
             storage_id: Mutex::new("default".into()),
             params: Mutex::new("null".into()),
+            has_back_handler: AtomicBool::new(false),
         });
         let (tx, thread) = script::start(Arc::clone(&shared));
         if let Ok(mut slot) = shared.commands.lock() {
@@ -1859,6 +1861,14 @@ pub extern "C" fn bubble_last_error() -> *const c_char {
         .unwrap_or(std::ptr::null())
 }
 
+/// Returns 1 when the loaded bundle has registered a back handler, 0 otherwise.
+#[no_mangle]
+pub extern "C" fn bubble_has_back_handler() -> i32 {
+    engine()
+        .map(|engine| engine.shared.has_back_handler.load(Ordering::Relaxed) as i32)
+        .unwrap_or(0)
+}
+
 #[no_mangle]
 pub extern "C" fn bubble_poll_request(
     id: *mut u32,
@@ -2716,6 +2726,29 @@ mod android {
     ) -> jint {
         super::bubble_font_epoch() as jint
     }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_hasBackHandler<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+    ) -> jint {
+        super::bubble_has_back_handler()
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_send<'a>(
+        mut env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        name: JString<'a>,
+        payload: JString<'a>,
+    ) -> jint {
+        let Ok(name) = env.get_string(&name) else { return -1 };
+        let Ok(payload) = env.get_string(&payload) else { return -1 };
+        let name = super::CString_from(&name.to_string_lossy());
+        let payload = super::CString_from(&payload.to_string_lossy());
+        super::bubble_send(name.as_ptr(), payload.as_ptr())
+    }
+
 
     fn cstr_lossy(bytes: &[u8]) -> String {
         let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());

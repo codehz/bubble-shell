@@ -486,6 +486,8 @@ setApi({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     exports.set_viewport(width, height);
   },
+  set_back_handler: exports.set_back_handler,
+  has_back_handler: exports.has_back_handler,
 
 });
 
@@ -1053,6 +1055,41 @@ canvas.addEventListener(
 );
 
 window.addEventListener("resize", resize);
+
+// A synthetic history entry exists only while a bundle handler is registered,
+// so a page with no handler still leaves on the first back press.
+let backHandler = null;
+let backArmed = false;
+const backHost = globalThis.bubbleHost ?? (globalThis.bubbleHost = {});
+backHost.onBack = (fn) => {
+  backHandler = fn;
+  exports.set_back_handler(1);
+  if (!backArmed) {
+    backArmed = true;
+    history.pushState(null, "", location.href);
+  }
+};
+backHost.offBack = () => {
+  backHandler = null;
+  exports.set_back_handler(0);
+};
+const origHostEmit = globalThis.__bubbleHostEmit;
+globalThis.__bubbleHostEmit = (name, payload) => {
+  if (name === "back" && backHandler) {
+    let value = payload;
+    try { value = JSON.parse(payload); } catch { /* keep the raw payload */ }
+    backHandler(value);
+    return;
+  }
+  if (typeof origHostEmit === "function") origHostEmit(name, payload);
+};
+window.addEventListener("popstate", (event) => {
+  if (exports.has_back_handler()) {
+    history.pushState(null, "", location.href);
+    globalThis.__bubbleHostEmit("back", "null");
+    event.stopImmediatePropagation();
+  }
+});
 
 const started = performance.now();
 if (dev) {

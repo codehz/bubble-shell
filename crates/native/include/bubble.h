@@ -31,6 +31,8 @@ int bubble_set_params(const char *json);
 int bubble_set_storage_dir(const char *path);
 /* JSON payload for host.on(name). Queued until a listener exists. */
 int bubble_send(const char *name, const char *payload);
+/* 1 when the loaded bundle registered bubbleHost.onBack, else 0. */
+int bubble_has_back_handler(void);
 
 /* `entry` is the manifest entry file. Other manifest files are not accepted yet. */
 int bubble_load(const char *manifest_json, const uint8_t *entry, uint32_t entry_len);

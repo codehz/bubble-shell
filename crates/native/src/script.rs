@@ -276,6 +276,9 @@ impl Session {
 
     fn boot_vm(&mut self) -> Result<(), String> {
         self.shared.input_epoch.fetch_add(1, Ordering::SeqCst);
+        self.shared
+            .has_back_handler
+            .store(false, Ordering::Relaxed);
         let Some((manifest, entry)) = self.bundle.clone() else {
             return Err("no bundle loaded".into());
         };
@@ -298,6 +301,9 @@ impl Session {
         match loaded {
             Ok(()) => Ok(()),
             Err(err) => {
+                self.shared
+                    .has_back_handler
+                    .store(false, Ordering::Relaxed);
                 self.vm = None;
                 Err(err)
             }
@@ -871,6 +877,10 @@ fn bind_api(ctx: &Context) -> Result<(), RuntimeError> {
     })?;
     ctx.define_function(&api, "cancel", 1, |_: &mut Scope<'_>, id: f64| {
         api_cancel(id);
+        Ok(())
+    })?;
+    ctx.define_function(&api, "set_back_handler", 1, |_: &mut Scope<'_>, has: f64| {
+        api_set_back_handler(has);
         Ok(())
     })?;
     let key = PropertyKey::from_js_string(JsString::from_static("__bubble"));
@@ -1645,6 +1655,14 @@ fn api_storage_keys() -> String {
     serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into())
 }
 
+fn api_set_back_handler(has: f64) {
+    if let Some(shared) = flags() {
+        shared
+            .has_back_handler
+            .store(has != 0.0, Ordering::Relaxed);
+    }
+}
+
 fn api_request(method: String, params: String) -> u32 {
     let id = NEXT_REQUEST.with(|slot| {
         let mut next = slot.borrow_mut();
@@ -1773,4 +1791,24 @@ globalThis.__fireTimer = (id) => {
   __timers.delete(id);
   if (typeof fn === "function") fn();
 };
+let __backHandler = null;
+globalThis.bubbleHost.onBack = (fn) => {
+  __backHandler = fn;
+  globalThis.__bubble.set_back_handler(1);
+};
+globalThis.bubbleHost.offBack = () => {
+  __backHandler = null;
+  globalThis.__bubble.set_back_handler(0);
+};
+globalThis.__bubbleHostEmit = (function(_orig) {
+  return (name, payload) => {
+    if (name === 'back' && __backHandler) {
+      let value = payload;
+      try { value = JSON.parse(payload); } catch (err) {}
+      __backHandler(value);
+      return;
+    }
+    _orig(name, payload);
+  };
+})(globalThis.__bubbleHostEmit);
 "#;

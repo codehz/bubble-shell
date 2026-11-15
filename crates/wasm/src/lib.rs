@@ -32,6 +32,10 @@ thread_local! {
     static VARS: RefCell<Vec<VarEvent>> = const { RefCell::new(Vec::new()) };
 }
 
+thread_local! {
+    static BACK_HANDLER: Cell<bool> = const { Cell::new(false) };
+}
+
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
     fn host_measure(
@@ -321,6 +325,18 @@ pub extern "C" fn take_gesture_events() -> u32 {
     } else {
         store_scratch(encode_events(&events))
     }
+}
+
+/// Called by the JS runtime when the bundle registers or clears a back handler.
+#[no_mangle]
+pub extern "C" fn set_back_handler(has: i32) {
+    BACK_HANDLER.with(|slot| slot.set(has != 0));
+}
+
+/// Returns 1 when the loaded bundle has registered a back handler, 0 otherwise.
+#[no_mangle]
+pub extern "C" fn has_back_handler() -> i32 {
+    BACK_HANDLER.with(|slot| slot.get() as i32)
 }
 
 /// UI-thread keyboard intent. Actions match the native ABI: 0 Tab,
