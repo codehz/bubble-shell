@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use crate::color::Color;
 use crate::expr::{ExprValue, Program};
 use crate::ordered::OrderedDecls;
-use crate::props::{VIEW_STYLE_PROPS, TEXT_STYLE_PROPS};
+use crate::props::{TEXT_STYLE_PROPS, VIEW_STYLE_PROPS};
 
 /// State source kinds. `0` is "no source": the script thread writes the value.
 pub const SOURCE_NONE: u8 = 0;
@@ -138,7 +138,11 @@ pub(crate) fn slot_of(key: &str) -> Option<usize> {
 /// Whether `component` may patch `slot`. Components differ only in this
 /// compile-time whitelist.
 pub(crate) fn slot_allowed(component: u8, slot: usize) -> bool {
-    let props = if component == 1 { VIEW_STYLE_PROPS } else { TEXT_STYLE_PROPS };
+    let props = if component == 1 {
+        VIEW_STYLE_PROPS
+    } else {
+        TEXT_STYLE_PROPS
+    };
     let name = match slot {
         SLOT_BACKGROUND => "backgroundColor",
         SLOT_COLOR => "color",
@@ -228,7 +232,10 @@ impl AnimState {
     pub fn step(&mut self, now_ms: f64) -> (Option<ExprValue>, bool) {
         match self.spec {
             AnimSpec::Instant => (Some(self.to.clone()), true),
-            AnimSpec::Tween { duration_ms, easing } => {
+            AnimSpec::Tween {
+                duration_ms,
+                easing,
+            } => {
                 let duration = (duration_ms as f64).max(1.0);
                 let t = ((now_ms - self.start_ms) / duration).clamp(0.0, 1.0) as f32;
                 self.progress = ease(easing, t);
@@ -236,7 +243,13 @@ impl AnimState {
                 if converged {
                     self.progress = 1.0;
                 }
-                (Some(mix_values(&self.from, &self.to, self.progress).unwrap_or_else(|| self.to.clone())), converged)
+                (
+                    Some(
+                        mix_values(&self.from, &self.to, self.progress)
+                            .unwrap_or_else(|| self.to.clone()),
+                    ),
+                    converged,
+                )
             }
             AnimSpec::Spring { stiffness, damping } => {
                 // Sub-step so a coarse or long tick stays stable.
@@ -253,13 +266,18 @@ impl AnimState {
                 }
                 self.velocity = v;
                 self.progress = x;
-                let converged =
-                    (1.0 - x).abs() < SPRING_EPS && v.abs() < SPRING_VELOCITY_EPS;
+                let converged = (1.0 - x).abs() < SPRING_EPS && v.abs() < SPRING_VELOCITY_EPS;
                 if converged {
                     self.progress = 1.0;
                     self.velocity = 0.0;
                 }
-                (Some(mix_values(&self.from, &self.to, self.progress).unwrap_or_else(|| self.to.clone())), converged)
+                (
+                    Some(
+                        mix_values(&self.from, &self.to, self.progress)
+                            .unwrap_or_else(|| self.to.clone()),
+                    ),
+                    converged,
+                )
             }
         }
     }
@@ -597,8 +615,10 @@ impl StyleDecls {
         let Some(ids) = self.ordered.ids(target) else {
             return false;
         };
-        ids.iter()
-            .any(|id| self.decl(*id).is_some_and(|decl| decl.interests & INT_PRESSED != 0))
+        ids.iter().any(|id| {
+            self.decl(*id)
+                .is_some_and(|decl| decl.interests & INT_PRESSED != 0)
+        })
     }
 
     /// Whether a pressed-interest declaration currently matches; the pressed

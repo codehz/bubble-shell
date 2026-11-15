@@ -14,13 +14,13 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
+use bubble_core::decode_program;
 use bubble_core::{
     decode_layout, encode_edit_events, encode_events, encode_paint, encode_set_text,
     encode_var_events, validate_bundle_hashes, A11yAction, AnimChoice, AnimSpec, ComputationKind,
     EditCommand, EditEvent, EditMenuAction, GestureEvent, GestureKind, Key, Kind, LayoutRequest,
     NodeDesc, Op, PointerAction, PointerInput, Sched, Shell, Turn, Value, VarEvent,
 };
-use bubble_core::decode_program;
 
 thread_local! {
     static TURN: RefCell<Option<Turn>> = const { RefCell::new(None) };

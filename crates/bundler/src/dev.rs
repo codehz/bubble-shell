@@ -42,8 +42,10 @@ pub struct DevBuildError {
 
 /// Build every module of `entry` as a CommonJS factory.
 pub fn build_dev(entry: &Path) -> Result<DevBuild, DevBuildError> {
-    let entry = std::fs::canonicalize(entry)
-        .map_err(|error| DevBuildError { message: format!("{}: {error}", entry.display()), sources: Vec::new() })?;
+    let entry = std::fs::canonicalize(entry).map_err(|error| DevBuildError {
+        message: format!("{}: {error}", entry.display()),
+        sources: Vec::new(),
+    })?;
     let name = entry
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -74,9 +76,15 @@ pub fn build_dev(entry: &Path) -> Result<DevBuild, DevBuildError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|error| DevBuildError { message: format!("tokio runtime: {error}"), sources: Vec::new() })?;
+        .map_err(|error| DevBuildError {
+            message: format!("tokio runtime: {error}"),
+            sources: Vec::new(),
+        })?;
     let mut bundler = Bundler::with_plugins(options, vec![BubblePlugin::new_shared(plugin)])
-        .map_err(|error| DevBuildError { message: format!("{error:?}"), sources: Vec::new() })?;
+        .map_err(|error| DevBuildError {
+            message: format!("{error:?}"),
+            sources: Vec::new(),
+        })?;
     let generated = match runtime.block_on(bundler.generate()) {
         Ok(generated) => generated,
         Err(error) => {

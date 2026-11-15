@@ -135,7 +135,9 @@ function App() {
 "#;
     let error = compile_module("bad.tsx", source, &CompileOptions::default()).unwrap_err();
     assert!(
-        error.contains("prop live is a signal binding; pass its current value with a read: live={live()}"),
+        error.contains(
+            "prop live is a signal binding; pass its current value with a read: live={live()}"
+        ),
         "{error}"
     );
 }

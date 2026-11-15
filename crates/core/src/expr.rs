@@ -43,7 +43,6 @@ pub const OP_ABS: u8 = 22;
 /// Easing selector `0` is linear; more curves arrive with the animation stage.
 pub const OP_EASE: u8 = 23;
 
-
 /// One engine value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ExprValue {
@@ -133,7 +132,9 @@ impl Program {
             cursor += 1;
             let instr = match op {
                 OP_CONST => {
-                    let index = *code.get(cursor).ok_or_else(|| ProgramError("truncated program".into()))?;
+                    let index = *code
+                        .get(cursor)
+                        .ok_or_else(|| ProgramError("truncated program".into()))?;
                     cursor += 1;
                     if index as usize >= consts.len() {
                         return err("constant index out of range");
@@ -154,7 +155,9 @@ impl Program {
                     Instr::Load(id)
                 }
                 OP_EASE => {
-                    let selector = *code.get(cursor).ok_or_else(|| ProgramError("truncated program".into()))?;
+                    let selector = *code
+                        .get(cursor)
+                        .ok_or_else(|| ProgramError("truncated program".into()))?;
                     cursor += 1;
                     Instr::Ease(selector)
                 }
@@ -163,7 +166,10 @@ impl Program {
             };
             instrs.push(instr);
         }
-        Ok(Self { consts, code: instrs })
+        Ok(Self {
+            consts,
+            code: instrs,
+        })
     }
 
     /// Variable ids the program loads, deduplicated.
@@ -180,14 +186,19 @@ impl Program {
     }
 
     /// Static type of the program result under the given variable types.
-    pub fn result_type(&self, var_types: &dyn Fn(u32) -> Option<Type>) -> Result<Type, ProgramError> {
+    pub fn result_type(
+        &self,
+        var_types: &dyn Fn(u32) -> Option<Type>,
+    ) -> Result<Type, ProgramError> {
         let mut stack: Vec<Type> = Vec::new();
         let push = |stack: &mut Vec<Type>, kind: Type| -> Result<(), ProgramError> {
             stack.push(kind);
             Ok(())
         };
         let pop = |stack: &mut Vec<Type>, what: &str| -> Result<Type, ProgramError> {
-            stack.pop().ok_or_else(|| ProgramError(format!("{what} underflows the stack")))
+            stack
+                .pop()
+                .ok_or_else(|| ProgramError(format!("{what} underflows the stack")))
         };
         let pop_as = |stack: &mut Vec<Type>, want: Type, what: &str| -> Result<(), ProgramError> {
             let got = pop(stack, what)?;
@@ -291,7 +302,9 @@ impl Program {
     pub fn eval(&self, vars: &dyn Fn(u32) -> Option<ExprValue>) -> Result<ExprValue, ProgramError> {
         let mut stack: Vec<ExprValue> = Vec::new();
         let pop = |stack: &mut Vec<ExprValue>| -> Result<ExprValue, ProgramError> {
-            stack.pop().ok_or_else(|| ProgramError("stack underflow".into()))
+            stack
+                .pop()
+                .ok_or_else(|| ProgramError("stack underflow".into()))
         };
         let num = |value: ExprValue, what: &str| -> Result<f32, ProgramError> {
             match value {
@@ -318,9 +331,9 @@ impl Program {
                         ExprConst::Num(value) => ExprValue::Num(*value),
                         ExprConst::Color(value) => ExprValue::Color(*value),
                         ExprConst::Bool(value) => ExprValue::Bool(*value),
-                        ExprConst::ColorString(text) => {
-                            ExprValue::Color(crate::color::parse(text).map_err(|e| ProgramError(e))?)
-                        }
+                        ExprConst::ColorString(text) => ExprValue::Color(
+                            crate::color::parse(text).map_err(|e| ProgramError(e))?,
+                        ),
                     };
                     stack.push(value);
                 }
@@ -386,9 +399,7 @@ impl Program {
                     }
                     OP_AND => {
                         let (b, a) = (pop(&mut stack)?, pop(&mut stack)?);
-                        stack.push(ExprValue::Bool(
-                            boolean(a, "and")? && boolean(b, "and")?,
-                        ));
+                        stack.push(ExprValue::Bool(boolean(a, "and")? && boolean(b, "and")?));
                     }
                     OP_OR => {
                         let (b, a) = (pop(&mut stack)?, pop(&mut stack)?);
@@ -413,9 +424,9 @@ impl Program {
                             (Type::N, Type::N) => ExprValue::Num(
                                 num(a, "mix")? + (num(b, "mix")? - num(a, "mix")?) * t,
                             ),
-                            (Type::C, Type::C) => ExprValue::Color(
-                                color(a, "mix")?.mix(&color(b, "mix")?, t),
-                            ),
+                            (Type::C, Type::C) => {
+                                ExprValue::Color(color(a, "mix")?.mix(&color(b, "mix")?, t))
+                            }
                             _ => return err("mix interpolates two numbers or two colors"),
                         };
                         stack.push(value);
@@ -450,7 +461,9 @@ impl Program {
                 },
             }
         }
-        let value = stack.pop().ok_or_else(|| ProgramError("stack underflow".into()))?;
+        let value = stack
+            .pop()
+            .ok_or_else(|| ProgramError("stack underflow".into()))?;
         if let ExprValue::Num(value) = value {
             if !value.is_finite() {
                 return err("program produced a non-finite value");
@@ -511,7 +524,9 @@ impl Program {
 pub fn decode_program(bytes: &[u8]) -> Result<Program, ProgramError> {
     let mut cursor = 0;
     let read = |cursor: &mut usize| -> Result<u8, ProgramError> {
-        let byte = *bytes.get(*cursor).ok_or_else(|| ProgramError("truncated program".into()))?;
+        let byte = *bytes
+            .get(*cursor)
+            .ok_or_else(|| ProgramError("truncated program".into()))?;
         *cursor += 1;
         Ok(byte)
     };
@@ -557,10 +572,8 @@ pub fn decode_program(bytes: &[u8]) -> Result<Program, ProgramError> {
                 if cursor + len > bytes.len() {
                     return err("truncated program");
                 }
-                let text =
-                    std::str::from_utf8(&bytes[cursor..cursor + len]).map_err(|_| {
-                        ProgramError("program color string is not utf-8".into())
-                    })?;
+                let text = std::str::from_utf8(&bytes[cursor..cursor + len])
+                    .map_err(|_| ProgramError("program color string is not utf-8".into()))?;
                 cursor += len;
                 ExprConst::ColorString(text.to_owned())
             }
@@ -683,10 +696,13 @@ mod tests {
         // ADD with one operand underflows the stack.
         let mut builder = ProgramBuilder::new();
         builder.const_num(1.0).op(OP_ADD);
-        assert!(builder
-            .build()
-            .and_then(|program| program.result_type(&|_| None).map(|_| ()))
-            .is_err(), "an underflowing add is invalid");
+        assert!(
+            builder
+                .build()
+                .and_then(|program| program.result_type(&|_| None).map(|_| ()))
+                .is_err(),
+            "an underflowing add is invalid"
+        );
 
         let mut builder = ProgramBuilder::new();
         builder.const_num(1.0).op(99);

@@ -19,7 +19,8 @@ fn apps_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps")
 }
 
-static APPS: LazyLock<Mutex<HashMap<String, Arc<App>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static APPS: LazyLock<Mutex<HashMap<String, Arc<App>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Build (once per process) and return the fixture named `apps/<name>.tsx`.
 pub fn app(name: &str) -> Result<Arc<App>, String> {

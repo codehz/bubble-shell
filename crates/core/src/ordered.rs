@@ -80,9 +80,7 @@ impl<T> OrderedDecls<T> {
                 .is_some_and(|list| list.contains(&id));
         let capacity = len - usize::from(held);
         if index as usize > capacity {
-            return Err(format!(
-                "{what} index {index} past {capacity} declarations"
-            ));
+            return Err(format!("{what} index {index} past {capacity} declarations"));
         }
         if let Some(list) = self.order.get_mut(&old_target) {
             list.retain(|existing| *existing != id);

@@ -36,12 +36,21 @@ fn lengths_percent_align_wrap_and_shrink_default() {
     set(&mut shell, 2, "width", Value::Float(100.0));
     set(&mut shell, 2, "height", Value::Float(80.0));
     set(&mut shell, 2, "flexDirection", Value::String("row".into()));
-    set(&mut shell, 2, "alignItems", Value::String("flex-start".into()));
+    set(
+        &mut shell,
+        2,
+        "alignItems",
+        Value::String("flex-start".into()),
+    );
     view(&mut shell, 3, 2);
     set(&mut shell, 3, "width", Value::String("50%".into()));
     set(&mut shell, 3, "height", Value::Float(10.0));
     layout(&mut shell);
-    assert_eq!(shell.node_box(3).unwrap().2, 50.0, "percent width is half the parent");
+    assert_eq!(
+        shell.node_box(3).unwrap().2,
+        50.0,
+        "percent width is half the parent"
+    );
     set(&mut shell, 3, "flexShrink", Value::Float(1.0));
     view(&mut shell, 4, 2);
     set(&mut shell, 4, "width", Value::Float(80.0));
@@ -70,7 +79,10 @@ fn lengths_percent_align_wrap_and_shrink_default() {
     set(&mut shell, 7, "height", Value::Float(10.0));
     layout(&mut shell);
     let (_, _, _, h_pad) = shell.node_box(3).unwrap();
-    assert!(h_pad >= 20.0, "vertical padding percent uses the parent width");
+    assert!(
+        h_pad >= 20.0,
+        "vertical padding percent uses the parent width"
+    );
 
     view(&mut shell, 6, 1);
     set(&mut shell, 6, "width", Value::Float(40.0));
@@ -82,9 +94,18 @@ fn lengths_percent_align_wrap_and_shrink_default() {
 
     set(&mut shell, 6, "height", Value::Float(30.0));
     layout(&mut shell);
-    assert_eq!(shell.node_box(6).unwrap().3, 30.0, "both sizes ignore aspectRatio");
+    assert_eq!(
+        shell.node_box(6).unwrap().3,
+        30.0,
+        "both sizes ignore aspectRatio"
+    );
 
-    set(&mut shell, 2, "flexDirection", Value::String("row-reverse".into()));
+    set(
+        &mut shell,
+        2,
+        "flexDirection",
+        Value::String("row-reverse".into()),
+    );
     set(&mut shell, 2, "flexWrap", Value::String("nowrap".into()));
     layout(&mut shell);
     let (x3, _, _, _) = shell.node_box(3).unwrap();

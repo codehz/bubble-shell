@@ -787,7 +787,10 @@ impl<'a> Lower<'a> {
         if is_function || slot_ref(&thunk) {
             return thunk;
         }
-        self.error(span, "children prop must be a render function or JSX element");
+        self.error(
+            span,
+            "children prop must be a render function or JSX element",
+        );
         self.null(span)
     }
 
@@ -795,7 +798,10 @@ impl<'a> Lower<'a> {
     /// values and forwarded references pass through unchanged.
     fn slot_thunk_of(&mut self, span: Span, mut value: Expression<'a>) -> Expression<'a> {
         if contains_jsx(&value) && !matches!(value, Expression::JSXElement(_)) {
-            self.error(span, "JSX control flow must use Show, For, Index, or Switch");
+            self.error(
+                span,
+                "JSX control flow must use Show, For, Index, or Switch",
+            );
             return self.null(span);
         }
         if !matches!(value, Expression::JSXElement(_)) {
@@ -823,10 +829,7 @@ impl<'a> Lower<'a> {
         if !is_slot_body {
             return;
         }
-        let taken = std::mem::replace(
-            &mut arrow.body,
-            ArrowFunctionBody::from(self.null(SPAN)),
-        );
+        let taken = std::mem::replace(&mut arrow.body, ArrowFunctionBody::from(self.null(SPAN)));
         let span = taken.span();
         let thunk = self.reduce_slot(taken.into_expression());
         let call = self.call(RT_SLOT, vec![thunk], span);
@@ -846,7 +849,8 @@ impl<'a> Lower<'a> {
                     chain.take_in(&self.builder).expression.into()
                 }
                 Expression::CallExpression(mut call) => call.take_in(&self.builder).callee,
-                Expression::Identifier(_) | Expression::StaticMemberExpression(_)
+                Expression::Identifier(_)
+                | Expression::StaticMemberExpression(_)
                 | Expression::ComputedMemberExpression(_) => {
                     let mut thunk = taken;
                     self.visit_expression(&mut thunk);
@@ -882,10 +886,7 @@ impl<'a> Lower<'a> {
                 match child {
                     JSXChild::Text(text) if text.value.trim().is_empty() => {}
                     JSXChild::Text(text) => {
-                        self.error(
-                            text.span,
-                            "<Slot> children must be a render function value",
-                        );
+                        self.error(text.span, "<Slot> children must be a render function value");
                     }
                     JSXChild::ExpressionContainer(container) => {
                         let container = self.take(container);
@@ -1112,15 +1113,22 @@ impl<'a> Lower<'a> {
 
     fn style_tree_expr(&mut self, span: Span, expression: Expression<'a>) -> Expression<'a> {
         match expression {
-            Expression::BooleanLiteral(_) | Expression::NumericLiteral(_)
-            | Expression::StringLiteral(_) | Expression::Identifier(_) => expression,
+            Expression::BooleanLiteral(_)
+            | Expression::NumericLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::Identifier(_) => expression,
             Expression::UnaryExpression(mut unary) => {
-                let UnaryExpression { operator, argument, .. } = unary.take_in(&self.builder);
+                let UnaryExpression {
+                    operator, argument, ..
+                } = unary.take_in(&self.builder);
                 let name = match operator {
                     UnaryOperator::UnaryNegation => "neg",
                     UnaryOperator::LogicalNot => "not",
                     other => {
-                        self.error(span, format!("operator {other:?} is not a style expression"));
+                        self.error(
+                            span,
+                            format!("operator {other:?} is not a style expression"),
+                        );
                         return self.null(span);
                     }
                 };
@@ -1128,7 +1136,12 @@ impl<'a> Lower<'a> {
                 self.style_op(span, name, vec![argument])
             }
             Expression::BinaryExpression(mut binary) => {
-                let BinaryExpression { operator, left, right, .. } = binary.take_in(&self.builder);
+                let BinaryExpression {
+                    operator,
+                    left,
+                    right,
+                    ..
+                } = binary.take_in(&self.builder);
                 let name = match operator {
                     BinaryOperator::Addition => "add",
                     BinaryOperator::Subtraction => "sub",
@@ -1141,7 +1154,10 @@ impl<'a> Lower<'a> {
                     BinaryOperator::Equality | BinaryOperator::StrictEquality => "eq",
                     BinaryOperator::Inequality | BinaryOperator::StrictInequality => "ne",
                     other => {
-                        self.error(span, format!("operator {other:?} is not a style expression"));
+                        self.error(
+                            span,
+                            format!("operator {other:?} is not a style expression"),
+                        );
                         return self.null(span);
                     }
                 };
@@ -1150,13 +1166,20 @@ impl<'a> Lower<'a> {
                 self.style_op(span, name, vec![left, right])
             }
             Expression::LogicalExpression(mut logical) => {
-                let LogicalExpression { operator, left, right, .. } =
-                    logical.take_in(&self.builder);
+                let LogicalExpression {
+                    operator,
+                    left,
+                    right,
+                    ..
+                } = logical.take_in(&self.builder);
                 let name = match operator {
                     LogicalOperator::And => "and",
                     LogicalOperator::Or => "or",
                     other => {
-                        self.error(span, format!("operator {other:?} is not a style expression"));
+                        self.error(
+                            span,
+                            format!("operator {other:?} is not a style expression"),
+                        );
                         return self.null(span);
                     }
                 };
@@ -1165,8 +1188,12 @@ impl<'a> Lower<'a> {
                 self.style_op(span, name, vec![left, right])
             }
             Expression::ConditionalExpression(mut conditional) => {
-                let ConditionalExpression { test, consequent, alternate, .. } =
-                    conditional.take_in(&self.builder);
+                let ConditionalExpression {
+                    test,
+                    consequent,
+                    alternate,
+                    ..
+                } = conditional.take_in(&self.builder);
                 let test = self.style_tree_expr(span, test);
                 let consequent = self.style_tree_expr(span, consequent);
                 let alternate = self.style_tree_expr(span, alternate);
@@ -1177,17 +1204,16 @@ impl<'a> Lower<'a> {
                 self.style_tree_expr(span, inner)
             }
             Expression::CallExpression(mut call) => {
-                let CallExpression { callee, arguments, .. } = call.take_in(&self.builder);
+                let CallExpression {
+                    callee, arguments, ..
+                } = call.take_in(&self.builder);
                 let name = match &callee {
                     Expression::Identifier(id) => match id.name.as_str() {
                         "mix" | "lerp" | "clamp" | "min" | "max" | "abs" | "select" => {
                             self.allocator.alloc_str(id.name.as_str())
                         }
                         other => {
-                            self.error(
-                                span,
-                                format!("{other} is not a style expression function"),
-                            );
+                            self.error(span, format!("{other} is not a style expression function"));
                             return self.null(span);
                         }
                     },
@@ -1754,7 +1780,11 @@ impl<'a> VisitMut<'a> for Lower<'a> {
             declarator.init,
             Some(Expression::JSXElement(_)) | Some(Expression::JSXFragment(_))
         );
-        let span = declarator.init.as_ref().map(|init| init.span()).unwrap_or(SPAN);
+        let span = declarator
+            .init
+            .as_ref()
+            .map(|init| init.span())
+            .unwrap_or(SPAN);
         self.thunk_jsx = true;
         oxc::ast_visit::walk_mut::walk_variable_declarator(self, declarator);
         self.thunk_jsx = false;

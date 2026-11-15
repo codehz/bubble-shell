@@ -10,12 +10,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bubble_core::{
-    validate_bundle_hashes, AnimChoice, AnimSpec, ComputationKind, GestureKind, Kind, NodeDesc,
-    Op, Sched, Turn, Value,
+    validate_bundle_hashes, AnimChoice, AnimSpec, ComputationKind, GestureKind, Kind, NodeDesc, Op,
+    Sched, Turn, Value,
 };
 use quickjs_oxide::engine::api::core::{
     CallableRef, Context, HeapLimits, Host, Js, JsString, ModuleImportAttributes, ModuleLoader,
-    ModuleScope, ModuleSource, NativeErrorKind, ObjectRef, PropertyKey, PromiseState, Runtime,
+    ModuleScope, ModuleSource, NativeErrorKind, ObjectRef, PromiseState, PropertyKey, Runtime,
     RuntimeError, RuntimeOptions, Scope, TypedArrayKind, Value as JsValue,
 };
 use serde::Deserialize;
@@ -276,9 +276,7 @@ impl Session {
 
     fn boot_vm(&mut self) -> Result<(), String> {
         self.shared.input_epoch.fetch_add(1, Ordering::SeqCst);
-        self.shared
-            .has_back_handler
-            .store(false, Ordering::Relaxed);
+        self.shared.has_back_handler.store(false, Ordering::Relaxed);
         let Some((manifest, entry)) = self.bundle.clone() else {
             return Err("no bundle loaded".into());
         };
@@ -301,9 +299,7 @@ impl Session {
         match loaded {
             Ok(()) => Ok(()),
             Err(err) => {
-                self.shared
-                    .has_back_handler
-                    .store(false, Ordering::Relaxed);
+                self.shared.has_back_handler.store(false, Ordering::Relaxed);
                 self.vm = None;
                 Err(err)
             }
@@ -601,8 +597,7 @@ fn gesture_in(vm: &mut Vm, bytes: &[u8]) -> Result<(), String> {
     let result = (|| -> Result<(), RuntimeError> {
         let array = byte_array_value(vm, bytes)?;
         let dispatch = js_callable(&mut vm.context, "__bubbleGesture")?;
-        vm.context
-            .call(&dispatch, JsValue::Undefined, &[array])?;
+        vm.context.call(&dispatch, JsValue::Undefined, &[array])?;
         pump(vm)
     })();
     leave_js();
@@ -614,8 +609,7 @@ fn edit_in(vm: &mut Vm, bytes: &[u8]) -> Result<(), String> {
     let result = (|| -> Result<(), RuntimeError> {
         let array = byte_array_value(vm, bytes)?;
         let dispatch = js_callable(&mut vm.context, "__bubbleEdit")?;
-        vm.context
-            .call(&dispatch, JsValue::Undefined, &[array])?;
+        vm.context.call(&dispatch, JsValue::Undefined, &[array])?;
         pump(vm)
     })();
     leave_js();
@@ -627,8 +621,7 @@ fn vars_in(vm: &mut Vm, bytes: &[u8]) -> Result<(), String> {
     let result = (|| -> Result<(), RuntimeError> {
         let array = byte_array_value(vm, bytes)?;
         let dispatch = js_callable(&mut vm.context, "__bubbleVar")?;
-        vm.context
-            .call(&dispatch, JsValue::Undefined, &[array])?;
+        vm.context.call(&dispatch, JsValue::Undefined, &[array])?;
         pump(vm)
     })();
     leave_js();
@@ -738,9 +731,9 @@ fn property_string(js: &mut impl Js, object: &ObjectRef, key: &'static str) -> S
 /// A `Uint8Array` view over a copy of `bytes`, as a JS argument.
 fn byte_array_value(vm: &mut Vm, bytes: &[u8]) -> Result<JsValue, RuntimeError> {
     let buffer = vm.context.new_array_buffer(bytes)?;
-    let array =
-        vm.context
-            .new_typed_array(TypedArrayKind::Uint8, &buffer, 0, None)?;
+    let array = vm
+        .context
+        .new_typed_array(TypedArrayKind::Uint8, &buffer, 0, None)?;
     Ok(JsValue::Object(array))
 }
 
@@ -758,9 +751,12 @@ fn bind_api(ctx: &Context) -> Result<(), RuntimeError> {
     ctx.define_function(&api, "signal_read", 1, |scope: &mut Scope<'_>, id: f64| {
         Ok(api_signal_read(scope, id))
     })?;
-    ctx.define_function(&api, "signal_notify", 1, |scope: &mut Scope<'_>, id: f64| {
-        Ok(api_signal_notify(scope, id))
-    })?;
+    ctx.define_function(
+        &api,
+        "signal_notify",
+        1,
+        |scope: &mut Scope<'_>, id: f64| Ok(api_signal_notify(scope, id)),
+    )?;
     ctx.define_function(&api, "alloc_node", 1, |_: &mut Scope<'_>, kind: f64| {
         Ok(api_alloc_node(kind))
     })?;
@@ -779,110 +775,246 @@ fn bind_api(ctx: &Context) -> Result<(), RuntimeError> {
     ctx.define_function(&api, "run_updates", 0, |scope: &mut Scope<'_>| {
         Ok(JsValue::from(api_run_updates(scope)))
     })?;
-    ctx.define_function(&api, "spawn", 3, |_: &mut Scope<'_>, parent: f64, kind: f64, text: String| {
-        Ok(api_spawn(parent, kind, text))
-    })?;
-    ctx.define_function(&api, "spawn_at", 4, |_: &mut Scope<'_>, parent: f64, index: f64, kind: f64, text: String| {
-        Ok(api_spawn_at(parent, index, kind, text))
-    })?;
+    ctx.define_function(
+        &api,
+        "spawn",
+        3,
+        |_: &mut Scope<'_>, parent: f64, kind: f64, text: String| Ok(api_spawn(parent, kind, text)),
+    )?;
+    ctx.define_function(
+        &api,
+        "spawn_at",
+        4,
+        |_: &mut Scope<'_>, parent: f64, index: f64, kind: f64, text: String| {
+            Ok(api_spawn_at(parent, index, kind, text))
+        },
+    )?;
     ctx.define_function(&api, "dispose", 1, |_: &mut Scope<'_>, handle: f64| {
         Ok(api_dispose(handle))
     })?;
-    ctx.define_function(&api, "move_node", 3, |_: &mut Scope<'_>, handle: f64, parent: f64, index: f64| {
-        Ok(api_move_node(handle, parent, index))
-    })?;
-    ctx.define_function(&api, "set_prop", 5, |_: &mut Scope<'_>, handle: f64, key: String, tag: f64, number: f64, text: String| {
-        Ok(api_set_prop(handle, key, tag, number, text))
-    })?;
-    ctx.define_function(&api, "queue_text", 2, |_: &mut Scope<'_>, handle: f64, text: String| {
-        Ok(api_queue_text(handle, text))
-    })?;
-    ctx.define_function(&api, "bind_event", 2, |_: &mut Scope<'_>, handle: f64, handler: f64| {
-        Ok(api_bind(handle, handler))
-    })?;
+    ctx.define_function(
+        &api,
+        "move_node",
+        3,
+        |_: &mut Scope<'_>, handle: f64, parent: f64, index: f64| {
+            Ok(api_move_node(handle, parent, index))
+        },
+    )?;
+    ctx.define_function(
+        &api,
+        "set_prop",
+        5,
+        |_: &mut Scope<'_>, handle: f64, key: String, tag: f64, number: f64, text: String| {
+            Ok(api_set_prop(handle, key, tag, number, text))
+        },
+    )?;
+    ctx.define_function(
+        &api,
+        "queue_text",
+        2,
+        |_: &mut Scope<'_>, handle: f64, text: String| Ok(api_queue_text(handle, text)),
+    )?;
+    ctx.define_function(
+        &api,
+        "bind_event",
+        2,
+        |_: &mut Scope<'_>, handle: f64, handler: f64| Ok(api_bind(handle, handler)),
+    )?;
     ctx.define_function(&api, "focus", 1, |_: &mut Scope<'_>, handle: f64| {
         Ok(api_focus(handle))
     })?;
-    ctx.define_function(&api, "set_editing_value", 6, |_: &mut Scope<'_>, handle: f64, epoch: f64, value: String, sel_start: f64, sel_end: f64, cancel: f64| {
-        Ok(api_set_editing(handle, epoch, value, sel_start, sel_end, cancel))
-    })?;
-    ctx.define_function(&api, "spawn_gesture", 3, |_: &mut Scope<'_>, target: f64, kind: f64, index: f64| {
-        Ok(api_spawn_gesture(target, kind, index))
-    })?;
-    ctx.define_function(&api, "set_gesture_prop", 5, |_: &mut Scope<'_>, handle: f64, key: String, tag: f64, number: f64, text: String| {
-        Ok(api_set_gesture_prop(handle, key, tag, number, text))
-    })?;
-    ctx.define_function(&api, "bind_gesture_event", 3, |_: &mut Scope<'_>, handle: f64, slot: f64, handler: f64| {
-        Ok(api_bind_gesture_event(handle, slot, handler))
-    })?;
-    ctx.define_function(&api, "dispose_gesture", 1, |_: &mut Scope<'_>, handle: f64| {
-        Ok(api_dispose_gesture(handle))
-    })?;
-    ctx.define_function(&api, "move_gesture", 3, |_: &mut Scope<'_>, handle: f64, target: f64, index: f64| {
-        Ok(api_move_gesture(handle, target, index))
-    })?;
-    ctx.define_function(&api, "create_var", 7, |_: &mut Scope<'_>, source: f64, initial_tag: f64, initial_number: f64, anim: f64, a: f64, b: f64, c: f64| {
-        Ok(api_create_var(source, initial_tag, initial_number, anim, a, b, c))
-    })?;
-    ctx.define_function(&api, "bind_var", 2, |_: &mut Scope<'_>, var: f64, target: f64| {
-        Ok(api_bind_var(var, target))
-    })?;
-    ctx.define_function(&api, "set_var", 7, |_: &mut Scope<'_>, var: f64, tag: f64, number: f64, anim: f64, a: f64, b: f64, c: f64| {
-        Ok(api_set_var(var, tag, number, anim, a, b, c))
-    })?;
+    ctx.define_function(
+        &api,
+        "set_editing_value",
+        6,
+        |_: &mut Scope<'_>,
+         handle: f64,
+         epoch: f64,
+         value: String,
+         sel_start: f64,
+         sel_end: f64,
+         cancel: f64| {
+            Ok(api_set_editing(
+                handle, epoch, value, sel_start, sel_end, cancel,
+            ))
+        },
+    )?;
+    ctx.define_function(
+        &api,
+        "spawn_gesture",
+        3,
+        |_: &mut Scope<'_>, target: f64, kind: f64, index: f64| {
+            Ok(api_spawn_gesture(target, kind, index))
+        },
+    )?;
+    ctx.define_function(
+        &api,
+        "set_gesture_prop",
+        5,
+        |_: &mut Scope<'_>, handle: f64, key: String, tag: f64, number: f64, text: String| {
+            Ok(api_set_gesture_prop(handle, key, tag, number, text))
+        },
+    )?;
+    ctx.define_function(
+        &api,
+        "bind_gesture_event",
+        3,
+        |_: &mut Scope<'_>, handle: f64, slot: f64, handler: f64| {
+            Ok(api_bind_gesture_event(handle, slot, handler))
+        },
+    )?;
+    ctx.define_function(
+        &api,
+        "dispose_gesture",
+        1,
+        |_: &mut Scope<'_>, handle: f64| Ok(api_dispose_gesture(handle)),
+    )?;
+    ctx.define_function(
+        &api,
+        "move_gesture",
+        3,
+        |_: &mut Scope<'_>, handle: f64, target: f64, index: f64| {
+            Ok(api_move_gesture(handle, target, index))
+        },
+    )?;
+    ctx.define_function(
+        &api,
+        "create_var",
+        7,
+        |_: &mut Scope<'_>,
+         source: f64,
+         initial_tag: f64,
+         initial_number: f64,
+         anim: f64,
+         a: f64,
+         b: f64,
+         c: f64| {
+            Ok(api_create_var(
+                source,
+                initial_tag,
+                initial_number,
+                anim,
+                a,
+                b,
+                c,
+            ))
+        },
+    )?;
+    ctx.define_function(
+        &api,
+        "bind_var",
+        2,
+        |_: &mut Scope<'_>, var: f64, target: f64| Ok(api_bind_var(var, target)),
+    )?;
+    ctx.define_function(
+        &api,
+        "set_var",
+        7,
+        |_: &mut Scope<'_>, var: f64, tag: f64, number: f64, anim: f64, a: f64, b: f64, c: f64| {
+            Ok(api_set_var(var, tag, number, anim, a, b, c))
+        },
+    )?;
     ctx.define_function(&api, "settle_var", 1, |_: &mut Scope<'_>, var: f64| {
         Ok(api_settle_var(var))
     })?;
     ctx.define_function(&api, "dispose_var", 1, |_: &mut Scope<'_>, var: f64| {
         Ok(api_dispose_var(var))
     })?;
-    ctx.define_function(&api, "spawn_style_decl", 3, |_: &mut Scope<'_>, target: f64, component: f64, index: f64| {
-        Ok(api_spawn_style_decl(target, component, index))
-    })?;
-    ctx.define_function(&api, "set_style_prop", 5, |_: &mut Scope<'_>, decl: f64, key: String, tag: f64, number: f64, text: String| {
-        Ok(api_set_style_prop(decl, key, tag, number, text))
-    })?;
-    ctx.define_function(&api, "set_style_prop_program", 3, |scope: &mut Scope<'_>, decl: f64, key: String, bytes: JsValue| {
-        Ok(api_set_style_prop_program(scope, decl, key, bytes))
-    })?;
-    ctx.define_function(&api, "move_style_decl", 3, |_: &mut Scope<'_>, decl: f64, target: f64, index: f64| {
-        Ok(api_move_style_decl(decl, target, index))
-    })?;
-    ctx.define_function(&api, "dispose_style_decl", 1, |_: &mut Scope<'_>, decl: f64| {
-        Ok(api_dispose_style_decl(decl))
-    })?;
+    ctx.define_function(
+        &api,
+        "spawn_style_decl",
+        3,
+        |_: &mut Scope<'_>, target: f64, component: f64, index: f64| {
+            Ok(api_spawn_style_decl(target, component, index))
+        },
+    )?;
+    ctx.define_function(
+        &api,
+        "set_style_prop",
+        5,
+        |_: &mut Scope<'_>, decl: f64, key: String, tag: f64, number: f64, text: String| {
+            Ok(api_set_style_prop(decl, key, tag, number, text))
+        },
+    )?;
+    ctx.define_function(
+        &api,
+        "set_style_prop_program",
+        3,
+        |scope: &mut Scope<'_>, decl: f64, key: String, bytes: JsValue| {
+            Ok(api_set_style_prop_program(scope, decl, key, bytes))
+        },
+    )?;
+    ctx.define_function(
+        &api,
+        "move_style_decl",
+        3,
+        |_: &mut Scope<'_>, decl: f64, target: f64, index: f64| {
+            Ok(api_move_style_decl(decl, target, index))
+        },
+    )?;
+    ctx.define_function(
+        &api,
+        "dispose_style_decl",
+        1,
+        |_: &mut Scope<'_>, decl: f64| Ok(api_dispose_style_decl(decl)),
+    )?;
     ctx.define_function(&api, "commit", 0, |_: &mut Scope<'_>| {
         Ok(JsValue::from(api_commit()))
     })?;
-    ctx.define_function(&api, "request", 2, |_: &mut Scope<'_>, method: String, params: String| {
-        Ok(api_request(method, params))
-    })?;
+    ctx.define_function(
+        &api,
+        "request",
+        2,
+        |_: &mut Scope<'_>, method: String, params: String| Ok(api_request(method, params)),
+    )?;
     ctx.define_function(&api, "storage_get", 1, |_: &mut Scope<'_>, key: String| {
         Ok(api_storage_get(key))
     })?;
-    ctx.define_function(&api, "storage_set", 2, |_: &mut Scope<'_>, key: String, value: String| {
-        api_storage_set(key, value);
-        Ok(())
-    })?;
-    ctx.define_function(&api, "storage_remove", 1, |_: &mut Scope<'_>, key: String| {
-        api_storage_remove(key);
-        Ok(())
-    })?;
+    ctx.define_function(
+        &api,
+        "storage_set",
+        2,
+        |_: &mut Scope<'_>, key: String, value: String| {
+            api_storage_set(key, value);
+            Ok(())
+        },
+    )?;
+    ctx.define_function(
+        &api,
+        "storage_remove",
+        1,
+        |_: &mut Scope<'_>, key: String| {
+            api_storage_remove(key);
+            Ok(())
+        },
+    )?;
     ctx.define_function(&api, "storage_keys", 0, |_: &mut Scope<'_>| {
-        Ok(JsValue::String(JsString::try_from_utf8(&api_storage_keys())?))
+        Ok(JsValue::String(JsString::try_from_utf8(
+            &api_storage_keys(),
+        )?))
     })?;
-    ctx.define_function(&api, "schedule", 2, |_: &mut Scope<'_>, id: f64, ms: f64| {
-        api_schedule(id, ms);
-        Ok(())
-    })?;
+    ctx.define_function(
+        &api,
+        "schedule",
+        2,
+        |_: &mut Scope<'_>, id: f64, ms: f64| {
+            api_schedule(id, ms);
+            Ok(())
+        },
+    )?;
     ctx.define_function(&api, "cancel", 1, |_: &mut Scope<'_>, id: f64| {
         api_cancel(id);
         Ok(())
     })?;
-    ctx.define_function(&api, "set_back_handler", 1, |_: &mut Scope<'_>, has: f64| {
-        api_set_back_handler(has);
-        Ok(())
-    })?;
+    ctx.define_function(
+        &api,
+        "set_back_handler",
+        1,
+        |_: &mut Scope<'_>, has: f64| {
+            api_set_back_handler(has);
+            Ok(())
+        },
+    )?;
     let key = PropertyKey::from_js_string(JsString::from_static("__bubble"));
     let global = ctx.global_object()?;
     if !ctx.set_property(&global, &key, JsValue::Object(api))? {
@@ -1063,11 +1195,9 @@ impl Sched for JsHost<'_, '_> {
     }
     fn cleanup(&mut self, id: u32) {
         if let Ok(func) = js_callable(self.scope, "__bubbleCleanup") {
-            let _ = self.scope.call(
-                &func,
-                JsValue::Undefined,
-                &[JsValue::number(f64::from(id))],
-            );
+            let _ = self
+                .scope
+                .call(&func, JsValue::Undefined, &[JsValue::number(f64::from(id))]);
         }
     }
 }
@@ -1331,7 +1461,15 @@ fn api_move_gesture(handle: f64, target: f64, index: f64) -> i32 {
     }
 }
 
-fn api_create_var(source: f64, initial_tag: f64, initial_number: f64, anim: f64, a: f64, b: f64, c: f64) -> u32 {
+fn api_create_var(
+    source: f64,
+    initial_tag: f64,
+    initial_number: f64,
+    anim: f64,
+    a: f64,
+    b: f64,
+    c: f64,
+) -> u32 {
     let initial = match initial_tag as u32 {
         0 => Value::Null,
         1 => Value::Bool(initial_number != 0.0),
@@ -1490,7 +1628,12 @@ fn api_set_style_prop(decl: f64, key: String, tag: f64, number: f64, text: Strin
 }
 
 /// Program bytes arrive as a JS array of byte numbers; programs are small.
-fn api_set_style_prop_program(scope: &mut Scope<'_>, decl: f64, key: String, bytes: JsValue) -> i32 {
+fn api_set_style_prop_program(
+    scope: &mut Scope<'_>,
+    decl: f64,
+    key: String,
+    bytes: JsValue,
+) -> i32 {
     let data = match byte_array(scope, &bytes) {
         Some(data) => data,
         None => {
@@ -1657,9 +1800,7 @@ fn api_storage_keys() -> String {
 
 fn api_set_back_handler(has: f64) {
     if let Some(shared) = flags() {
-        shared
-            .has_back_handler
-            .store(has != 0.0, Ordering::Relaxed);
+        shared.has_back_handler.store(has != 0.0, Ordering::Relaxed);
     }
 }
 

@@ -8,6 +8,7 @@ use crate::editing::{
     display_text, utf16_len, DocRange, EditCommand, EditConfig, EditError, EditEvent, EditOp,
     EditOutcome, EditSession, FieldState, Selection, SessionId,
 };
+use crate::expr::ExprValue;
 use crate::gesture::{
     GestureEvent, GestureKind, PointerAction, PointerInput, Recognizer, TAP_SLOP,
 };
@@ -20,7 +21,6 @@ use crate::semantics::{
     ACTION_SCROLL_DOWN, ACTION_SCROLL_FORWARD, ACTION_SCROLL_LEFT, ACTION_SCROLL_RIGHT,
     ACTION_SCROLL_UP, ACTION_SET_VALUE,
 };
-use crate::expr::ExprValue;
 use crate::state_style::{
     slot_allowed, slot_of, slot_type, AnimChoice, AnimSpec, AnimState, DeclExpr, ResolvedPatch,
     SlotType, StyleDecls, VarEvent, VarTable, SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED,
@@ -1068,10 +1068,15 @@ impl Shell {
             return Err(format!("var {var} has unknown source {source}"));
         }
         let value = match source {
-            SOURCE_NONE => parse_expr_value(initial)
-                .ok_or_else(|| format!("var {var} initial value must be a number, color, or bool"))?,
-            SOURCE_PRESSED | SOURCE_GESTURE_TX | SOURCE_GESTURE_TY | SOURCE_GESTURE_ROTATION
-            | SOURCE_SCROLL_X | SOURCE_SCROLL_Y => ExprValue::Num(0.0),
+            SOURCE_NONE => parse_expr_value(initial).ok_or_else(|| {
+                format!("var {var} initial value must be a number, color, or bool")
+            })?,
+            SOURCE_PRESSED
+            | SOURCE_GESTURE_TX
+            | SOURCE_GESTURE_TY
+            | SOURCE_GESTURE_ROTATION
+            | SOURCE_SCROLL_X
+            | SOURCE_SCROLL_Y => ExprValue::Num(0.0),
             // Pinch scale reads as "no transform" while idle.
             SOURCE_GESTURE_SCALE => ExprValue::Num(1.0),
             _ => ExprValue::Bool(false),
@@ -1232,10 +1237,7 @@ impl Shell {
         self.paint_dirty.set(true);
     }
 
-    fn state_styles_decl_mut(
-        &mut self,
-        id: u32,
-    ) -> Option<&mut crate::state_style::StyleDecl> {
+    fn state_styles_decl_mut(&mut self, id: u32) -> Option<&mut crate::state_style::StyleDecl> {
         // The declaration table is owned by `state_styles`; expose the mutable
         // decl through a narrow accessor on the table.
         self.state_styles.decl_mut(id)
@@ -1248,7 +1250,8 @@ impl Shell {
         let slot = if key == "when" {
             None
         } else {
-            let slot = slot_of(key).ok_or_else(|| format!("style declaration has no property {key}"))?;
+            let slot =
+                slot_of(key).ok_or_else(|| format!("style declaration has no property {key}"))?;
             let component = self
                 .state_styles
                 .decl(decl)
@@ -1276,11 +1279,11 @@ impl Shell {
             }
             (Some(slot), static_value) => {
                 let parsed = match slot_type(slot) {
-                    SlotType::Color => {
-                        ExprValue::Color(static_value.as_color().map_err(|error| {
-                            format!("{key}: {error}")
-                        })?)
-                    }
+                    SlotType::Color => ExprValue::Color(
+                        static_value
+                            .as_color()
+                            .map_err(|error| format!("{key}: {error}"))?,
+                    ),
                     SlotType::Enum if matches!(static_value, Value::String(_)) => {
                         // Enum names are static values too: map them to codes.
                         let code = if slot == crate::state_style::SLOT_TEXT_ALIGN {
@@ -1321,9 +1324,9 @@ impl Shell {
         let mut matched = match &when {
             Some(when) => {
                 matches!(
-                decl_eval_slot(None, when, &self.vars),
-                Ok(Some(ExprValue::Bool(true)))
-            )
+                    decl_eval_slot(None, when, &self.vars),
+                    Ok(Some(ExprValue::Bool(true)))
+                )
             }
             None => false,
         };
@@ -1374,24 +1377,24 @@ impl Shell {
                     0.0
                 }),
                 SOURCE_FOCUSED => ExprValue::Bool(self.focused == target && target != 0),
-                SOURCE_DISABLED => ExprValue::Bool(
-                    self.node(target).map(|node| node.disabled).unwrap_or(true),
-                ),
+                SOURCE_DISABLED => {
+                    ExprValue::Bool(self.node(target).map(|node| node.disabled).unwrap_or(true))
+                }
                 SOURCE_EDITING => ExprValue::Bool(
                     target != 0 && self.focused == target && self.fields.contains_key(&target),
                 ),
-                SOURCE_GESTURE_TX | SOURCE_GESTURE_TY | SOURCE_GESTURE_SCALE
-                | SOURCE_GESTURE_ROTATION => {
-                    ExprValue::Num(self.recognizer.live(target, source))
-                }
+                SOURCE_GESTURE_TX
+                | SOURCE_GESTURE_TY
+                | SOURCE_GESTURE_SCALE
+                | SOURCE_GESTURE_ROTATION => ExprValue::Num(self.recognizer.live(target, source)),
                 SOURCE_SCROLL_X => ExprValue::Num(
                     self.node(target)
                         .map(|node| node.scroll_left)
                         .unwrap_or(0.0),
                 ),
-                SOURCE_SCROLL_Y => ExprValue::Num(
-                    self.node(target).map(|node| node.scroll_top).unwrap_or(0.0),
-                ),
+                SOURCE_SCROLL_Y => {
+                    ExprValue::Num(self.node(target).map(|node| node.scroll_top).unwrap_or(0.0))
+                }
                 _ => continue,
             };
             if let Some(var) = self.vars.get_mut(id) {

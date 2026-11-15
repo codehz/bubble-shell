@@ -6,11 +6,10 @@
 //! syntax to exactly these ops.
 
 use bubble_core::{
-    encode, encode_set_prop_color, spawn_ops, wrapping_layout, AnimChoice, AnimSpec, Color,
-    EASE_LINEAR, Kind,
+    encode, encode_set_prop_color, spawn_ops, wrapping_layout, AnimChoice, AnimSpec, Color, Kind,
     LayoutRequest, NodeDesc, Op, PaintCmd, PointerAction, PointerInput, ProgramBuilder, Shell,
-    Value, VarEvent, OP_AND, OP_GT, OP_NOT, SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED,
-    SOURCE_NONE, SOURCE_PRESSED,
+    Value, VarEvent, EASE_LINEAR, OP_AND, OP_GT, OP_NOT, SOURCE_DISABLED, SOURCE_EDITING,
+    SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED,
 };
 
 const BLUE: u32 = 0xff25_63eb;
@@ -106,8 +105,10 @@ fn when_not(var: u32) -> impl FnOnce(&mut ProgramBuilder) {
     }
 }
 
-fn when_and(left: impl FnOnce(&mut ProgramBuilder), right: impl FnOnce(&mut ProgramBuilder)) 
--> impl FnOnce(&mut ProgramBuilder) {
+fn when_and(
+    left: impl FnOnce(&mut ProgramBuilder),
+    right: impl FnOnce(&mut ProgramBuilder),
+) -> impl FnOnce(&mut ProgramBuilder) {
     move |builder: &mut ProgramBuilder| {
         left(builder);
         right(builder);
@@ -359,10 +360,7 @@ fn state_cascade_focus_and_declaration_lifecycle() {
     // Disposing the matching pressed declaration cleared the live press, and
     // re-matching does not revive it inside the same touch.
     shell
-        .apply_ops(&encode(
-            9,
-            &[paint_op(2, "when", program(when_pressed(2)))],
-        ))
+        .apply_ops(&encode(9, &[paint_op(2, "when", program(when_pressed(2)))]))
         .unwrap();
     assert_eq!(fills(&shell), vec![BLUE]);
     shell.pointer(input(PointerAction::Up, 1, 50.0, 50.0, 60.0));
@@ -454,7 +452,11 @@ fn disabled_source_overrides_pressed_and_blocks_feedback() {
         })
         .collect();
     drop(paint);
-    assert_eq!(opacity, vec![0.5], "the disabled declaration patches opacity");
+    assert_eq!(
+        opacity,
+        vec![0.5],
+        "the disabled declaration patches opacity"
+    );
     assert_eq!(fills(&shell), vec![BLUE], "the pressed overlay is gone");
 
     shell
@@ -467,7 +469,11 @@ fn disabled_source_overrides_pressed_and_blocks_feedback() {
             }],
         ))
         .unwrap();
-    assert_eq!(fills(&shell), vec![BLUE], "a disabled touch does not revive");
+    assert_eq!(
+        fills(&shell),
+        vec![BLUE],
+        "a disabled touch does not revive"
+    );
 }
 
 #[test]
@@ -709,21 +715,27 @@ fn script_var_write_drives_declaration_paint() {
     assert_eq!(fills(&shell), vec![BLUE]);
 
     shell
-        .apply_ops(&encode(2, &[Op::SetVar {
-            var: 1,
-            value: Value::Bool(true),
-            anim: AnimChoice::Default,
-        }]))
+        .apply_ops(&encode(
+            2,
+            &[Op::SetVar {
+                var: 1,
+                value: Value::Bool(true),
+                anim: AnimChoice::Default,
+            }],
+        ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
     assert_eq!(fills(&shell), vec![GREEN]);
 
     shell
-        .apply_ops(&encode(3, &[Op::SetVar {
-            var: 1,
-            value: Value::Bool(false),
-            anim: AnimChoice::Default,
-        }]))
+        .apply_ops(&encode(
+            3,
+            &[Op::SetVar {
+                var: 1,
+                value: Value::Bool(false),
+                anim: AnimChoice::Default,
+            }],
+        ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
     assert_eq!(fills(&shell), vec![BLUE], "false reverts the patch");
@@ -733,11 +745,14 @@ fn script_var_write_drives_declaration_paint() {
 fn script_var_write_rejects_source_variable() {
     let mut shell = pressed_shell();
     let err = shell
-        .apply_ops(&encode(2, &[Op::SetVar {
-            var: 1,
-            value: Value::Bool(true),
-            anim: AnimChoice::Default,
-        }]))
+        .apply_ops(&encode(
+            2,
+            &[Op::SetVar {
+                var: 1,
+                value: Value::Bool(true),
+                anim: AnimChoice::Default,
+            }],
+        ))
         .unwrap_err();
     assert!(err.contains("state source"), "{err}");
     // The failed write left the variable untouched.
@@ -749,11 +764,14 @@ fn script_var_write_rejects_source_variable() {
 fn script_var_write_unknown_var_fails() {
     let mut shell = Shell::blank().unwrap();
     let err = shell
-        .apply_ops(&encode(1, &[Op::SetVar {
-            var: 9,
-            value: Value::Bool(true),
-            anim: AnimChoice::Default,
-        }]))
+        .apply_ops(&encode(
+            1,
+            &[Op::SetVar {
+                var: 9,
+                value: Value::Bool(true),
+                anim: AnimChoice::Default,
+            }],
+        ))
         .unwrap_err();
     assert!(err.contains("unknown var"), "{err}");
 }
@@ -840,12 +858,23 @@ fn tween_write_tracks_the_tick_and_settles() {
         ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
-    assert_eq!(fills(&shell), vec![BLUE], "the tween starts at the old value");
-    assert!(shell.take_var_events().is_empty(), "no settle while in flight");
+    assert_eq!(
+        fills(&shell),
+        vec![BLUE],
+        "the tween starts at the old value"
+    );
+    assert!(
+        shell.take_var_events().is_empty(),
+        "no settle while in flight"
+    );
 
     shell.advance_animations(60.0);
     shell.layout(&mut measure).unwrap();
-    assert_eq!(fills(&shell), vec![GREEN], "past the midpoint the patch matches");
+    assert_eq!(
+        fills(&shell),
+        vec![GREEN],
+        "past the midpoint the patch matches"
+    );
 
     shell.advance_animations(160.0);
     shell.layout(&mut measure).unwrap();
@@ -862,27 +891,45 @@ fn tween_write_tracks_the_tick_and_settles() {
 fn instant_override_lands_immediately() {
     let mut shell = tween_shell();
     shell
-        .apply_ops(&encode(2, &[Op::SetVar {
-            var: 1,
-            value: Value::Float(1.0),
-            anim: AnimChoice::Instant,
-        }]))
+        .apply_ops(&encode(
+            2,
+            &[Op::SetVar {
+                var: 1,
+                value: Value::Float(1.0),
+                anim: AnimChoice::Instant,
+            }],
+        ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
-    assert_eq!(fills(&shell), vec![GREEN], "the per-write override skips the tween");
+    assert_eq!(
+        fills(&shell),
+        vec![GREEN],
+        "the per-write override skips the tween"
+    );
 
     shell
-        .apply_ops(&encode(3, &[Op::SetVar {
-            var: 1,
-            value: Value::Float(0.0),
-            anim: AnimChoice::Default,
-        }]))
+        .apply_ops(&encode(
+            3,
+            &[Op::SetVar {
+                var: 1,
+                value: Value::Float(0.0),
+                anim: AnimChoice::Default,
+            }],
+        ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
-    assert_eq!(fills(&shell), vec![GREEN], "the default tween restarts from 1.0");
+    assert_eq!(
+        fills(&shell),
+        vec![GREEN],
+        "the default tween restarts from 1.0"
+    );
     shell.advance_animations(60.0);
     shell.layout(&mut measure).unwrap();
-    assert_eq!(fills(&shell), vec![BLUE], "past the midpoint the patch stops matching");
+    assert_eq!(
+        fills(&shell),
+        vec![BLUE],
+        "past the midpoint the patch stops matching"
+    );
 }
 
 #[test]
@@ -926,11 +973,16 @@ fn spring_write_converges_and_settles() {
         ))
         .unwrap();
     shell.layout(&mut measure).unwrap();
-    assert!(shell.take_var_events().is_empty(), "no settle while in flight");
+    assert!(
+        shell.take_var_events().is_empty(),
+        "no settle while in flight"
+    );
 
     // The spring crosses the midpoint quickly and converges within a second.
     let mut settled = false;
-    for ms in [16.0, 32.0, 48.0, 64.0, 96.0, 160.0, 320.0, 640.0, 1280.0, 1600.0, 2000.0] {
+    for ms in [
+        16.0, 32.0, 48.0, 64.0, 96.0, 160.0, 320.0, 640.0, 1280.0, 1600.0, 2000.0,
+    ] {
         shell.advance_animations(ms);
         if !shell.take_var_events().is_empty() {
             settled = true;
@@ -939,7 +991,11 @@ fn spring_write_converges_and_settles() {
     }
     assert!(settled, "the spring must converge and settle");
     shell.layout(&mut measure).unwrap();
-    assert_eq!(fills(&shell), vec![GREEN], "convergence snaps onto the target");
+    assert_eq!(
+        fills(&shell),
+        vec![GREEN],
+        "convergence snaps onto the target"
+    );
 }
 
 #[test]
@@ -973,10 +1029,7 @@ fn transform_patch_moves_the_node_paint() {
     transforms.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
     // One transform around the node center; the focus ring shares the node's
     // transform, so a single push covers the whole subtree.
-    assert_eq!(
-        transforms,
-        vec![(100.0, 100.0, 10.0, 5.0, 2.0, 0.5)]
-    );
+    assert_eq!(transforms, vec![(100.0, 100.0, 10.0, 5.0, 2.0, 0.5)]);
 
     // A unit transform is skipped: no push, no pop, zero cost.
     let mut ops = vec![paint_op(1, "scale", Value::Float(1.0))];

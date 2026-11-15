@@ -348,7 +348,10 @@ fn direction_name(direction: u8) -> &'static str {
 fn push_anim_spec(payload: &mut Vec<u8>, spec: &AnimSpec) {
     match spec {
         AnimSpec::Instant => payload.push(1),
-        AnimSpec::Tween { duration_ms, easing } => {
+        AnimSpec::Tween {
+            duration_ms,
+            easing,
+        } => {
             payload.push(2);
             payload.extend_from_slice(&duration_ms.to_le_bytes());
             payload.push(*easing);
@@ -921,7 +924,8 @@ fn read_value(cur: &mut Cursor<&[u8]>, strings: &[String]) -> Result<Value, Stri
         5 => {
             let len = read_u32(cur)? as usize;
             let mut buf = vec![0u8; len];
-            cur.read_exact(&mut buf).map_err(|_| "truncated program value")?;
+            cur.read_exact(&mut buf)
+                .map_err(|_| "truncated program value")?;
             Value::Program(decode_program(&buf).map_err(|e| e.to_string())?)
         }
         other => return Err(format!("unsupported prop value tag {other}")),

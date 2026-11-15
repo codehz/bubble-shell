@@ -581,7 +581,10 @@ impl Recognizer {
         }
         let hit = if let Some(seq) = &self.sequence {
             seq.path.contains(&target)
-                || seq.tap.as_ref().is_some_and(|family| family.target == target)
+                || seq
+                    .tap
+                    .as_ref()
+                    .is_some_and(|family| family.target == target)
                 || seq
                     .second
                     .as_ref()

@@ -30,9 +30,8 @@ fn test_id_reaches_the_semantics_snapshot() {
         ))
         .unwrap();
     shell.layout(&mut |t, f, _, _, _| measure(t, f)).unwrap();
-    let snapshot =
-        serde_json::from_str::<bubble_core::SemanticsSnapshot>(&shell.semantics_json())
-            .expect("snapshot parses");
+    let snapshot = serde_json::from_str::<bubble_core::SemanticsSnapshot>(&shell.semantics_json())
+        .expect("snapshot parses");
     assert_eq!(snapshot.nodes.len(), 1);
     assert_eq!(snapshot.nodes[0].test_id, "counter-label");
     assert_eq!(snapshot.nodes[0].label, "Count: 0");
@@ -45,8 +44,7 @@ fn unset_test_id_serializes_empty() {
         .apply_ops(&encode(1, &spawn_ops(NodeDesc::text(2, 1, "plain"))))
         .unwrap();
     shell.layout(&mut |t, f, _, _, _| measure(t, f)).unwrap();
-    let snapshot =
-        serde_json::from_str::<bubble_core::SemanticsSnapshot>(&shell.semantics_json())
-            .expect("snapshot parses");
+    let snapshot = serde_json::from_str::<bubble_core::SemanticsSnapshot>(&shell.semantics_json())
+        .expect("snapshot parses");
     assert_eq!(snapshot.nodes[0].test_id, "");
 }

@@ -29,6 +29,11 @@ pub use editing::{
     DocRange, EditCommand, EditConfig, EditDelta, EditError, EditEvent, EditOp, EditOutcome,
     EditSession, Expect, FieldState, Revision, Selection, SessionId,
 };
+pub use expr::{
+    decode_program, Ease, Program, ProgramBuilder, ProgramError, OP_ABS, OP_ADD, OP_AND, OP_CLAMP,
+    OP_CONST, OP_DIV, OP_EASE, OP_EQ, OP_GT, OP_LE, OP_LERP, OP_LOAD, OP_LT, OP_MAX, OP_MIN,
+    OP_MIX, OP_MUL, OP_NE, OP_NEG, OP_NOT, OP_OR, OP_SELECT, OP_SUB,
+};
 pub use gesture::{
     encode_events, GestureConfig, GestureDecl, GestureEvent, GestureKind, PointerAction,
     PointerInput, Recognizer, ScrollRequest, REASON_HOST_CANCEL,
@@ -42,11 +47,6 @@ pub use manifest::validate_bundle_hashes;
 pub use ops::{
     decode_ops, encode, encode_set_prop_color, encode_set_text, spawn_at_ops, spawn_ops, Op, Value,
 };
-pub use expr::{
-    decode_program, Ease, Program, ProgramBuilder, ProgramError, OP_ABS, OP_ADD, OP_AND, OP_CLAMP,
-    OP_CONST, OP_DIV, OP_EASE, OP_EQ, OP_GT, OP_LE, OP_LOAD, OP_LERP, OP_LT, OP_MAX, OP_MIN,
-    OP_MIX, OP_MUL, OP_NE, OP_NEG, OP_NOT, OP_OR, OP_SELECT, OP_SUB,
-};
 pub use paint::encode_paint;
 pub use props::{Prop, TEXT_STYLE_PROPS, VIEW_STYLE_PROPS};
 pub use reactive::{Kind as ComputationKind, Sched};
@@ -55,9 +55,9 @@ pub use semantics::{
     ACTION_SCROLL_DOWN, ACTION_SCROLL_FORWARD, ACTION_SCROLL_LEFT, ACTION_SCROLL_RIGHT,
     ACTION_SCROLL_UP, ACTION_SET_VALUE,
 };
-pub use state_style::{
-    encode_var_events, AnimChoice, AnimSpec, EASE_LINEAR, SOURCE_DISABLED, SOURCE_EDITING,
-    SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED, VarEvent,
-};
 pub use shell::{A11yAction, EditMenuAction, Key, MenuResult, PaintCmd, ScrollOutcome, Shell};
+pub use state_style::{
+    encode_var_events, AnimChoice, AnimSpec, VarEvent, EASE_LINEAR, SOURCE_DISABLED,
+    SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED,
+};
 pub use turn::Turn;

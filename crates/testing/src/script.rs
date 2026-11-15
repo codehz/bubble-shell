@@ -34,8 +34,8 @@ fn parse(text: &str) -> Result<Vec<Step>, String> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let step = parse_step(line)
-            .ok_or_else(|| format!("line {}: cannot parse {line:?}", index + 1))?;
+        let step =
+            parse_step(line).ok_or_else(|| format!("line {}: cannot parse {line:?}", index + 1))?;
         steps.push(step);
     }
     Ok(steps)
@@ -86,7 +86,10 @@ fn parse_step(line: &str) -> Option<Step> {
 
 /// `eval` accepts either a quoted string or bare source.
 fn eval_source(text: &str) -> String {
-    quoted(text).map_or_else(|| text.to_string(), |source| unquote(source).expect("balanced quotes"))
+    quoted(text).map_or_else(
+        || text.to_string(),
+        |source| unquote(source).expect("balanced quotes"),
+    )
 }
 
 fn parse_selector(text: &str) -> Option<Selector> {
@@ -123,8 +126,7 @@ fn run(name: &str, steps: &[Step]) -> Result<(), String> {
     let session = Session::start(&app)?;
     for (index, step) in steps.iter().enumerate() {
         let line = index + 1;
-        run_step(&session, step)
-            .map_err(|error| format!("line {line}: {error}"))?;
+        run_step(&session, step).map_err(|error| format!("line {line}: {error}"))?;
     }
     Ok(())
 }
@@ -163,7 +165,7 @@ pub fn run_file(path: &Path) -> Result<(), String> {
         .and_then(|stem| stem.to_str())
         .ok_or_else(|| format!("{}: script has no file stem", path.display()))?
         .to_string();
-    let text = std::fs::read_to_string(path)
-        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
     run(&name, &parse(&text)?)
 }
