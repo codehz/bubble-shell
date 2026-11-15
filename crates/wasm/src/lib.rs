@@ -39,6 +39,34 @@ thread_local! {
     static BACK_HANDLER: Cell<bool> = const { Cell::new(false) };
 }
 
+fn catch<T: Default>(body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        Ok(r) => r,
+        Err(_) => Err("wasm panic".into()),
+    }
+}
+
+macro_rules! abi_ok {
+    ($e:expr) => {
+        match catch(|| $e) {
+            Ok(v) => v,
+            Err(e) => {
+                set_error(e);
+                return 0;
+            }
+        }
+    };
+    ($e:expr, $fail:expr) => {
+        match catch(|| $e) {
+            Ok(v) => v,
+            Err(e) => {
+                set_error(e);
+                return $fail;
+            }
+        }
+    };
+}
+
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
     fn host_measure(
@@ -206,17 +234,12 @@ fn flush_events() {
     }
 }
 
-/// Map a `Result<(), String>` export result to its code, then push events.
-fn settle(result: Result<(), String>) -> i32 {
-    let code = match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    };
-    flush_events();
-    code
+/// Drops at export return, so `abi_ok!`'s early error return still pushes events.
+struct FlushEvents;
+impl Drop for FlushEvents {
+    fn drop(&mut self) {
+        flush_events();
+    }
 }
 
 /// `action` 0 down, 1 move, 2 up, 3 cancel. Returns 0 on success.
@@ -234,7 +257,8 @@ pub extern "C" fn pointer(
         set_error(format!("bad pointer action {action}"));
         return 1;
     };
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             shell.pointer(PointerInput::from_abi(
                 action,
@@ -246,10 +270,9 @@ pub extern "C" fn pointer(
                 buttons,
             ));
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 /// Pressed feedback only: no recognition, no tap, no scroll. Editing hosts
@@ -268,7 +291,8 @@ pub extern "C" fn visual_pointer(
         set_error(format!("bad pointer action {action}"));
         return 1;
     };
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             shell.visual_pointer(PointerInput::from_abi(
                 action,
@@ -279,23 +303,22 @@ pub extern "C" fn visual_pointer(
                 pointer_kind,
                 buttons,
             ));
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 /// Advance UI-thread gesture timers (long press, double-tap window).
 #[no_mangle]
 pub extern "C" fn tick(time_ms: f64) -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             shell.advance_gestures(time_ms);
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 #[no_mangle]
@@ -347,22 +370,14 @@ pub extern "C" fn key(action: u32, time_ms: f64) -> i32 {
         set_error(format!("bad key action {action}"));
         return -1;
     };
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             let handled = shell.key(key, time_ms);
             collect_events(shell);
-            Ok(handled)
+            Ok(i32::from(handled))
         })
-    });
-    let handled = match result {
-        Ok(handled) => i32::from(handled),
-        Err(err) => {
-            set_error(err);
-            -1
-        }
-    };
-    flush_events();
-    handled
+    }), -1)
 }
 
 /// Accessibility semantics snapshot as UTF-8 JSON in scratch.
@@ -399,14 +414,14 @@ pub extern "C" fn a11y_action(handle: u32, action: u32, ptr: *const u8, len: u32
         }
         other => other,
     };
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             shell.a11y_action(handle, action)?;
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 /// Edit menu command: 0 cut, 1 copy, 2 paste, 3 select all. Writes any
@@ -428,32 +443,24 @@ pub extern "C" fn edit_menu(action: u32, ptr: *const u8, len: u32) -> i32 {
             }
         }
     };
-    let result = drain_pending().and_then(|()| {
+    let (changed, out) = abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             let menu = shell.edit_menu(action, &clipboard)?;
             collect_events(shell);
             Ok((menu.changed, menu.clipboard))
         })
-    });
+    }), -1);
     // Flush before the clipboard lands in scratch: the event push reuses it.
-    match result {
-        Ok((changed, out)) => {
-            flush_events();
-            store_scratch(out.unwrap_or_default().into_bytes());
-            i32::from(changed)
-        }
-        Err(err) => {
-            set_error(err);
-            -1
-        }
-    }
+    flush_events();
+    store_scratch(out.unwrap_or_default().into_bytes());
+    i32::from(changed)
 }
 
 /// Start and end selection handle boxes as 8 little-endian f32 values in
 /// scratch. Returns the byte length (0 when the selection is collapsed).
 #[no_mangle]
 pub extern "C" fn selection_handles() -> u32 {
-    let result = drain_pending().and_then(|()| {
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             let Some([a, b]) = shell.selection_handles() else {
                 return Ok(Vec::new());
@@ -464,14 +471,7 @@ pub extern "C" fn selection_handles() -> u32 {
             }
             Ok(bytes)
         })
-    });
-    match result {
-        Ok(bytes) => store_scratch(bytes),
-        Err(err) => {
-            set_error(err);
-            0
-        }
-    }
+    }).map(store_scratch))
 }
 
 /// Same action codes as `bubble_edit`.
@@ -484,48 +484,49 @@ pub extern "C" fn edit(action: u32, ptr: *const u8, len: u32, a: u32, b: u32) ->
             return 1;
         }
     };
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             match EditCommand::parse(action, text, a, b)? {
                 None => shell.focus(a)?,
                 Some(command) => shell.edit(command)?,
             }
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn edit_batch_begin(session: u64) -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             check_edit_session(shell, session)?;
             shell.begin_edit_batch()?;
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn edit_batch_end(session: u64) -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             check_edit_session(shell, session)?;
             shell.end_edit_batch()?;
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn edit_batch_abort(session: u64) -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             if shell
                 .focused_state()
@@ -534,17 +535,16 @@ pub extern "C" fn edit_batch_abort(session: u64) -> i32 {
                 shell.abort_edit_batch();
             }
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 /// 36-byte focused snapshot: session u64, revision u64, anchor, active,
 /// composition start, composition end (u32::MAX when absent), composing.
 #[no_mangle]
 pub extern "C" fn edit_snapshot() -> u32 {
-    let result = drain_pending().and_then(|()| {
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             let state = shell.focused_state()?;
             let mut out = Vec::with_capacity(36);
@@ -558,14 +558,7 @@ pub extern "C" fn edit_snapshot() -> u32 {
             out.extend_from_slice(&u32::from(state.composing).to_le_bytes());
             Ok(out)
         })
-    });
-    match result {
-        Ok(bytes) => store_scratch(bytes),
-        Err(err) => {
-            set_error(err);
-            store_scratch(Vec::new())
-        }
-    }
+    }).map(store_scratch), store_scratch(Vec::new()))
 }
 
 #[no_mangle]
@@ -575,16 +568,16 @@ pub extern "C" fn edit_commit(
     len: u32,
     new_cursor_position: i32,
 ) -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         let text = read_abi_utf8(ptr, len, "edit text")?;
         with_shell(|shell| {
             check_edit_session(shell, session)?;
             shell.commit_text(&text, new_cursor_position)?;
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 #[no_mangle]
@@ -594,16 +587,16 @@ pub extern "C" fn edit_compose(
     len: u32,
     new_cursor_position: i32,
 ) -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         let text = read_abi_utf8(ptr, len, "edit text")?;
         with_shell(|shell| {
             check_edit_session(shell, session)?;
             shell.compose_text(&text, new_cursor_position)?;
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 #[no_mangle]
@@ -616,29 +609,29 @@ pub extern "C" fn edit_replace(
     new_cursor_position: i32,
     composing: u32,
 ) -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         let text = read_abi_utf8(ptr, len, "edit text")?;
         with_shell(|shell| {
             check_edit_session(shell, session)?;
             shell.replace_with_cursor(start, end, &text, new_cursor_position, composing != 0)?;
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn edit_delete_surrounding(session: u64, before: u32, after: u32) -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             check_edit_session(shell, session)?;
             shell.delete_surrounding(before, after)?;
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 #[no_mangle]
@@ -647,46 +640,47 @@ pub extern "C" fn edit_delete_surrounding_code_points(
     before: u32,
     after: u32,
 ) -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             check_edit_session(shell, session)?;
             shell.delete_surrounding_code_points(before, after)?;
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn edit_set_composition(session: u64, start: u32, end: u32) -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             check_edit_session(shell, session)?;
             shell.set_composition_region(start, end)?;
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn edit_finish_composition(session: u64) -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             check_edit_session(shell, session)?;
             shell.finish_composition()?;
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn edit_select(session: u64, anchor: u32, active: u32) -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             check_edit_session(shell, session)?;
             shell.edit(EditCommand::SetSelection {
@@ -694,36 +688,35 @@ pub extern "C" fn edit_select(session: u64, anchor: u32, active: u32) -> i32 {
                 end: active,
             })?;
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn edit_undo(session: u64) -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             check_edit_session(shell, session)?;
             shell.edit(EditCommand::Undo)?;
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn edit_redo(session: u64) -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             check_edit_session(shell, session)?;
             shell.edit(EditCommand::Redo)?;
             collect_events(shell);
-            Ok(())
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 /// Deepest text field under the point, or `0`.
@@ -736,22 +729,14 @@ pub extern "C" fn field_at(x: f32, y: f32) -> u32 {
 /// Focus the field under the point and place the caret. Returns the handle, or 0.
 #[no_mangle]
 pub extern "C" fn focus_at(x: f32, y: f32) -> u32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             let handle = shell.focus_point_with(x, y, &mut wasm_layout)?;
             collect_events(shell);
             Ok(handle)
         })
-    });
-    let handle = match result {
-        Ok(handle) => handle,
-        Err(err) => {
-            set_error(err);
-            0
-        }
-    };
-    flush_events();
-    handle
+    }), 0)
 }
 
 /// Nearest UTF-16 offset in the focused field. `u32::MAX` when nothing is focused.
@@ -849,16 +834,10 @@ pub extern "C" fn focused_text() -> u32 {
 
 #[no_mangle]
 pub extern "C" fn focus(handle: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.push(Op::Focus { handle });
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        Ok(0)
+    }), 1)
 }
 
 #[no_mangle]
@@ -871,34 +850,26 @@ pub extern "C" fn set_editing_value(
     sel_end: u32,
     cancel: u32,
 ) -> i32 {
-    let value = if ptr.is_null() || len == 0 {
-        String::new()
-    } else {
-        match std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len as usize) }) {
-            Ok(text) => text.to_owned(),
-            Err(_) => {
-                set_error("editing value is not utf-8".into());
-                return 1;
-            }
-        }
-    };
-    match with_turn(|turn| {
-        turn.push(Op::SetEditingValue {
-            handle,
-            epoch: epoch as u64,
-            value,
-            sel_start,
-            sel_end,
-            cancel: cancel != 0,
-        });
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    abi_ok!({
+        let value = if ptr.is_null() || len == 0 {
+            String::new()
+        } else {
+            std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len as usize) })
+                .map_err(|_| "editing value is not utf-8".to_string())?
+                .to_owned()
+        };
+        with_turn(|turn| {
+            turn.push(Op::SetEditingValue {
+                handle,
+                epoch: epoch as u64,
+                value,
+                sel_start,
+                sel_end,
+                cancel: cancel != 0,
+            });
+            Ok(0)
+        })
+    }, 1)
 }
 
 #[no_mangle]
@@ -977,91 +948,54 @@ pub extern "C" fn signal_alloc() -> u32 {
 /// Records a read. Returns 0, or 1 when `id` is not a signal.
 #[no_mangle]
 pub extern "C" fn signal_read(id: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.read(id, &mut WasmHost)?;
-        note_graph(turn)
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        note_graph(turn)?;
+        Ok(0)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn signal_notify(id: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.notify(id, &mut WasmHost)?;
-        note_graph(turn)
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        note_graph(turn)?;
+        Ok(0)
+    }), 1)
 }
 
 /// `kind`: 1 memo, 2 render effect, 3 user effect.
 #[no_mangle]
 pub extern "C" fn alloc_node(kind: u32) -> u32 {
-    let kind = match parse_computation_kind(kind) {
-        Ok(kind) => kind,
-        Err(err) => {
-            set_error(err);
-            return 0;
-        }
-    };
-    match with_turn(|turn| turn.alloc_computation(kind)) {
-        Ok(id) => id,
-        Err(err) => {
-            set_error(err);
-            0
-        }
-    }
+    abi_ok!({
+        let kind = parse_computation_kind(kind)?;
+        with_turn(|turn| turn.alloc_computation(kind))
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn mount_node(id: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.mount_computation(id, &mut WasmHost)?;
-        note_graph(turn)
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        note_graph(turn)?;
+        Ok(0)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn dispose_node(id: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.dispose_computation(id, &mut WasmHost);
-        note_graph(turn)
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        note_graph(turn)?;
+        Ok(0)
+    }), 1)
 }
 
 /// Stores cleanup `id` on the running owner. Returns 0, or 1 when there is
 /// no owner and the host should run it now.
 #[no_mangle]
 pub extern "C" fn on_cleanup(id: u32) -> i32 {
-    match with_turn(|turn| Ok(turn.on_cleanup(id))) {
-        Ok(true) => 0,
-        Ok(false) => 1,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    abi_ok!(with_turn(|turn| Ok(i32::from(!turn.on_cleanup(id)))), 1)
 }
 
 #[no_mangle]
@@ -1075,16 +1009,11 @@ pub extern "C" fn run_updates() -> i32 {
 }
 
 fn scheduled(init: bool) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.run_scheduled(init, &mut WasmHost);
-        note_graph(turn)
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        note_graph(turn)?;
+        Ok(0)
+    }), 1)
 }
 
 fn spawn_desc(parent: u32, kind: u32, ptr: *const u8, len: u32) -> Result<NodeDesc, String> {
@@ -1108,66 +1037,34 @@ fn spawn_desc(parent: u32, kind: u32, ptr: *const u8, len: u32) -> Result<NodeDe
 
 #[no_mangle]
 pub extern "C" fn spawn(parent: u32, kind: u32, ptr: *const u8, len: u32) -> u32 {
-    let desc = match spawn_desc(parent, kind, ptr, len) {
-        Ok(desc) => desc,
-        Err(err) => {
-            set_error(err);
-            return 0;
-        }
-    };
-    match with_turn(|turn| turn.spawn(desc)) {
-        Ok(handle) => handle,
-        Err(err) => {
-            set_error(err);
-            0
-        }
-    }
+    abi_ok!({
+        let desc = spawn_desc(parent, kind, ptr, len)?;
+        with_turn(|turn| turn.spawn(desc))
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn spawn_at(parent: u32, index: u32, kind: u32, ptr: *const u8, len: u32) -> u32 {
-    let desc = match spawn_desc(parent, kind, ptr, len) {
-        Ok(desc) => desc,
-        Err(err) => {
-            set_error(err);
-            return 0;
-        }
-    };
-    match with_turn(|turn| turn.spawn_at(desc, index)) {
-        Ok(handle) => handle,
-        Err(err) => {
-            set_error(err);
-            0
-        }
-    }
+    abi_ok!({
+        let desc = spawn_desc(parent, kind, ptr, len)?;
+        with_turn(|turn| turn.spawn_at(desc, index))
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn dispose(handle: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.dispose(handle);
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        Ok(0)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn move_node(handle: u32, parent: u32, index: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.move_node(handle, parent, index);
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        Ok(0)
+    }), 1)
 }
 
 #[no_mangle]
@@ -1180,87 +1077,54 @@ pub extern "C" fn set_prop(
     text_ptr: *const u8,
     text_len: u32,
 ) -> i32 {
-    let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
-    let Ok(key) = std::str::from_utf8(key_bytes) else {
-        set_error("prop key is not utf-8".into());
-        return 1;
-    };
-    let value = match Value::from_abi(
-        tag,
-        number,
-        if tag == 4 {
-            read_abi_utf8(text_ptr, text_len, "prop string")
-        } else {
-            Ok(String::new())
-        },
-    ) {
-        Ok(value) => value,
-        Err(err) => {
-            set_error(err);
-            return 1;
-        }
-    };
-    match with_turn(|turn| {
-        turn.set_prop(handle, key, value.clone());
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    abi_ok!({
+        let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
+        let key = std::str::from_utf8(key_bytes).map_err(|_| "prop key is not utf-8".to_string())?;
+        let value = Value::from_abi(
+            tag,
+            number,
+            if tag == 4 {
+                read_abi_utf8(text_ptr, text_len, "prop string")
+            } else {
+                Ok(String::new())
+            },
+        )?;
+        with_turn(|turn| {
+            turn.set_prop(handle, key, value);
+            Ok(0)
+        })
+    }, 1)
 }
 
 #[no_mangle]
 pub extern "C" fn queue_text(handle: u32, ptr: *const u8, len: u32) -> i32 {
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
-    let Ok(text) = std::str::from_utf8(bytes) else {
-        set_error("op text is not utf-8".into());
-        return 1;
-    };
-    match with_turn(|turn| {
-        turn.push(Op::SetText {
-            handle,
-            text: text.to_owned(),
-        });
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    abi_ok!({
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+        let text = std::str::from_utf8(bytes).map_err(|_| "op text is not utf-8".to_string())?;
+        with_turn(|turn| {
+            turn.push(Op::SetText {
+                handle,
+                text: text.to_owned(),
+            });
+            Ok(0)
+        })
+    }, 1)
 }
 
 #[no_mangle]
 pub extern "C" fn bind_event(handle: u32, handler: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.bind_event(handle, handler);
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        Ok(0)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn spawn_gesture(target: u32, kind: u32, index: u32) -> u32 {
-    let Some(kind) = GestureKind::parse(kind) else {
-        set_error(format!("bad gesture kind {kind}"));
-        return 0;
-    };
-    match with_turn(|turn| turn.spawn_gesture(target, kind, index)) {
-        Ok(handle) => handle,
-        Err(err) => {
-            set_error(err);
-            0
-        }
-    }
+    abi_ok!({
+        let parsed = GestureKind::parse(kind).ok_or_else(|| format!("bad gesture kind {kind}"))?;
+        with_turn(|turn| turn.spawn_gesture(target, parsed, index))
+    })
 }
 
 #[no_mangle]
@@ -1273,82 +1137,53 @@ pub extern "C" fn set_gesture_prop(
     text_ptr: *const u8,
     text_len: u32,
 ) -> i32 {
-    let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
-    let Ok(key) = std::str::from_utf8(key_bytes) else {
-        set_error("gesture key is not utf-8".into());
-        return 1;
-    };
-    let value = match Value::from_abi(
-        tag,
-        number,
-        if tag == 4 {
-            read_abi_utf8(text_ptr, text_len, "prop string")
-        } else {
-            Ok(String::new())
-        },
-    ) {
-        Ok(value) => value,
-        Err(err) => {
-            set_error(err);
-            return 1;
-        }
-    };
-    match with_turn(|turn| {
-        turn.set_gesture_prop(handle, key, value.clone());
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    abi_ok!({
+        let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
+        let key =
+            std::str::from_utf8(key_bytes).map_err(|_| "gesture key is not utf-8".to_string())?;
+        let value = Value::from_abi(
+            tag,
+            number,
+            if tag == 4 {
+                read_abi_utf8(text_ptr, text_len, "prop string")
+            } else {
+                Ok(String::new())
+            },
+        )?;
+        with_turn(|turn| {
+            turn.set_gesture_prop(handle, key, value);
+            Ok(0)
+        })
+    }, 1)
 }
 
 #[no_mangle]
 pub extern "C" fn bind_gesture_event(handle: u32, slot: u32, handler: u32) -> i32 {
-    if !(1..=9).contains(&slot) {
-        set_error(format!("bad gesture event slot {slot}"));
-        return 1;
-    }
-    match with_turn(|turn| {
-        turn.bind_gesture_event(handle, slot as u8, handler);
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
+    abi_ok!({
+        if !(1..=9).contains(&slot) {
+            return Err(format!("bad gesture event slot {slot}"));
         }
-    }
+        with_turn(|turn| {
+            turn.bind_gesture_event(handle, slot as u8, handler);
+            Ok(0)
+        })
+    }, 1)
 }
 
 #[no_mangle]
 pub extern "C" fn dispose_gesture(handle: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.dispose_gesture(handle);
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        Ok(0)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn move_gesture(handle: u32, target: u32, index: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.move_gesture(handle, target, index);
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        Ok(0)
+    }), 1)
 }
 
 /// `anim` 0 none, 1 instant, 2 tween (a=duration ms, c=easing code),
@@ -1363,45 +1198,23 @@ pub extern "C" fn create_var(
     anim_b: f64,
     anim_c: u32,
 ) -> u32 {
-    let initial = match Value::from_abi(initial_tag, initial_number, Ok(String::new())) {
-        Ok(value) => value,
-        Err(err) => {
-            set_error(err);
-            return 0;
-        }
-    };
-    let spec = if anim == 0 {
-        None
-    } else {
-        match AnimSpec::from_abi(anim, anim_a, anim_b, anim_c) {
-            Ok(spec) => Some(spec),
-            Err(err) => {
-                set_error(err);
-                return 0;
-            }
-        }
-    };
-    match with_turn(|turn| turn.create_var(source as u8, initial, spec)) {
-        Ok(var) => var,
-        Err(err) => {
-            set_error(err);
-            0
-        }
-    }
+    abi_ok!({
+        let initial = Value::from_abi(initial_tag, initial_number, Ok(String::new()))?;
+        let spec = if anim == 0 {
+            None
+        } else {
+            Some(AnimSpec::from_abi(anim, anim_a, anim_b, anim_c)?)
+        };
+        with_turn(|turn| turn.create_var(source as u8, initial, spec))
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn bind_var(var: u32, target: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.bind_var(var, target);
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        Ok(0)
+    }), 1)
 }
 
 /// `tag` 0 none, 1 bool, 2 int, 3 float; matches `propParts` on the JS side.
@@ -1417,69 +1230,35 @@ pub extern "C" fn set_var(
     anim_b: f64,
     anim_c: u32,
 ) -> i32 {
-    let value = match Value::from_abi(tag, number, Ok(String::new())) {
-        Ok(value) => value,
-        Err(err) => {
-            set_error(err);
-            return 1;
-        }
-    };
-    let choice = match AnimChoice::from_abi(anim, anim_a, anim_b, anim_c) {
-        Ok(choice) => choice,
-        Err(err) => {
-            set_error(err);
-            return 1;
-        }
-    };
-    match with_turn(|turn| {
-        turn.set_var(var, value, choice);
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    abi_ok!({
+        let value = Value::from_abi(tag, number, Ok(String::new()))?;
+        let choice = AnimChoice::from_abi(anim, anim_a, anim_b, anim_c)?;
+        with_turn(|turn| {
+            turn.set_var(var, value, choice);
+            Ok(0)
+        })
+    }, 1)
 }
 
 #[no_mangle]
 pub extern "C" fn settle_var(var: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.settle_var(var);
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        Ok(0)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn dispose_var(var: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.dispose_var(var);
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        Ok(0)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn spawn_style_decl(target: u32, component: u32, index: u32) -> u32 {
-    match with_turn(|turn| turn.spawn_style_decl(target, component as u8, index)) {
-        Ok(decl) => decl,
-        Err(err) => {
-            set_error(err);
-            0
-        }
-    }
+    abi_ok!(with_turn(|turn| turn.spawn_style_decl(target, component as u8, index)))
 }
 
 #[no_mangle]
@@ -1492,36 +1271,24 @@ pub extern "C" fn set_style_prop(
     text_ptr: *const u8,
     text_len: u32,
 ) -> i32 {
-    let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
-    let Ok(key) = std::str::from_utf8(key_bytes) else {
-        set_error("style declaration key is not utf-8".into());
-        return 1;
-    };
-    let value = match Value::from_abi(
-        tag,
-        number,
-        if tag == 4 {
-            read_abi_utf8(text_ptr, text_len, "prop string")
-        } else {
-            Ok(String::new())
-        },
-    ) {
-        Ok(value) => value,
-        Err(err) => {
-            set_error(err);
-            return 1;
-        }
-    };
-    match with_turn(|turn| {
-        turn.set_style_decl_prop(decl, key, value.clone());
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    abi_ok!({
+        let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
+        let key = std::str::from_utf8(key_bytes)
+            .map_err(|_| "style declaration key is not utf-8".to_string())?;
+        let value = Value::from_abi(
+            tag,
+            number,
+            if tag == 4 {
+                read_abi_utf8(text_ptr, text_len, "prop string")
+            } else {
+                Ok(String::new())
+            },
+        )?;
+        with_turn(|turn| {
+            turn.set_style_decl_prop(decl, key, value);
+            Ok(0)
+        })
+    }, 1)
 }
 
 #[no_mangle]
@@ -1532,78 +1299,54 @@ pub extern "C" fn set_style_prop_program(
     data_ptr: *const u8,
     data_len: u32,
 ) -> i32 {
-    let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
-    let Ok(key) = std::str::from_utf8(key_bytes) else {
-        set_error("style declaration key is not utf-8".into());
-        return 1;
-    };
-    let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len as usize) }.to_vec();
-    match with_turn(|turn| {
-        let program = match decode_program(&bytes) {
-            Ok(program) => program,
-            Err(error) => {
-                set_error(error.to_string());
-                return Ok(());
-            }
-        };
-        turn.set_style_decl_prop(decl, key, Value::Program(program));
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    abi_ok!({
+        let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
+        let key = std::str::from_utf8(key_bytes)
+            .map_err(|_| "style declaration key is not utf-8".to_string())?;
+        let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len as usize) }.to_vec();
+        with_turn(|turn| {
+            let program = match decode_program(&bytes) {
+                Ok(program) => program,
+                Err(error) => {
+                    set_error(error.to_string());
+                    return Ok(0);
+                }
+            };
+            turn.set_style_decl_prop(decl, key, Value::Program(program));
+            Ok(0)
+        })
+    }, 1)
 }
 
 #[no_mangle]
 pub extern "C" fn move_style_decl(decl: u32, target: u32, index: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.move_style_decl(decl, target, index);
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        Ok(0)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn dispose_style_decl(decl: u32) -> i32 {
-    match with_turn(|turn| {
+    abi_ok!(with_turn(|turn| {
         turn.dispose_style_decl(decl);
-        Ok(())
-    }) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+        Ok(0)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn commit() -> u32 {
-    let result = with_turn(|turn| turn.commit());
-    match result {
-        Ok(bytes) => {
-            let len = bytes.len() as u32;
-            PENDING.with(|queue| queue.borrow_mut().push_back(bytes));
-            len
-        }
-        Err(err) => {
-            set_error(err);
-            0
-        }
-    }
+    abi_ok!(with_turn(|turn| turn.commit()).map(|bytes| {
+        let len = bytes.len() as u32;
+        PENDING.with(|queue| queue.borrow_mut().push_back(bytes));
+        len
+    }))
 }
 
 #[no_mangle]
 pub extern "C" fn layout() -> i32 {
-    let result = drain_pending().and_then(|()| {
+    let _flush = FlushEvents;
+    abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
             shell.compute_layout(
                 &mut |text, font_size, line_height, font_weight, max_width| {
@@ -1623,26 +1366,18 @@ pub extern "C" fn layout() -> i32 {
                     (out[0], out[1])
                 },
             )?;
-            shell.refresh_caret(&mut wasm_layout)
+            shell.refresh_caret(&mut wasm_layout)?;
+            Ok(0)
         })
-    });
-    settle(result)
+    }), 1)
 }
 
 #[no_mangle]
 pub extern "C" fn apply_ops(ptr: *const u8, len: u32) -> i32 {
-    if let Err(err) = drain_pending() {
-        set_error(err);
-        return 1;
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
-    match with_shell(|shell| shell.apply_ops(bytes).map(|_| ())) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    abi_ok!(drain_pending().and_then(|()| {
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+        with_shell(|shell| shell.apply_ops(bytes).map(|_| 0))
+    }), 1)
 }
 
 #[no_mangle]
@@ -1659,17 +1394,9 @@ pub extern "C" fn tap(x: f32, y: f32) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn scroll_wheel(x: f32, y: f32, dx: f32, dy: f32) -> i32 {
-    if let Err(err) = drain_pending() {
-        set_error(err);
-        return 0;
-    }
-    match with_shell(|shell| Ok(shell.scroll_wheel(x, y, dx, dy))) {
-        Ok(changed) => i32::from(changed),
-        Err(err) => {
-            set_error(err);
-            0
-        }
-    }
+    abi_ok!(drain_pending().and_then(|()| {
+        with_shell(|shell| Ok(i32::from(shell.scroll_wheel(x, y, dx, dy))))
+    }))
 }
 
 #[no_mangle]
@@ -1700,30 +1427,19 @@ pub extern "C" fn validate(
     files_ptr: *const u8,
     files_len: u32,
 ) -> i32 {
-    let manifest = unsafe { std::slice::from_raw_parts(manifest_ptr, manifest_len as usize) };
-    let files = unsafe { std::slice::from_raw_parts(files_ptr, files_len as usize) };
-    let Ok(manifest) = std::str::from_utf8(manifest) else {
-        set_error("manifest is not utf-8".into());
-        return 1;
-    };
-    let parsed = match parse_files(files) {
-        Ok(files) => files,
-        Err(err) => {
-            set_error(err);
-            return 1;
-        }
-    };
-    let refs: Vec<(&str, &[u8])> = parsed
-        .iter()
-        .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
-        .collect();
-    match validate_bundle_hashes(manifest, &refs) {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    abi_ok!({
+        let manifest = unsafe { std::slice::from_raw_parts(manifest_ptr, manifest_len as usize) };
+        let files = unsafe { std::slice::from_raw_parts(files_ptr, files_len as usize) };
+        let manifest = std::str::from_utf8(manifest)
+            .map_err(|_| "manifest is not utf-8".to_string())?;
+        let parsed = parse_files(files)?;
+        let refs: Vec<(&str, &[u8])> = parsed
+            .iter()
+            .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+            .collect();
+        validate_bundle_hashes(manifest, &refs)?;
+        Ok(0)
+    }, 1)
 }
 
 fn parse_files(mut bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
