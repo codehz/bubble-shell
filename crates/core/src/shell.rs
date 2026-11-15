@@ -1419,23 +1419,16 @@ impl Shell {
         self.state_styles.focus_style_taken(id)
     }
 
-    /// Nearest node that owns pressed feedback for a fresh touch. A deeper
-    /// click target blocks its ancestors even without a style declaration.
+    /// Nearest node in the hit path that owns pressed feedback for a fresh
+    /// touch. Interest wins regardless of click targets deeper in the path:
+    /// tapping a nested button still drives an ancestor's pressed style.
     fn press_target(&self, path: &[u32]) -> u32 {
         let modal = self.active_modal();
         for id in path {
             if !self.interaction_available(*id, modal) {
                 continue;
             }
-            let wants = self.state_styles.pressed_interest(*id);
-            if self
-                .recognizer
-                .click_target(std::slice::from_ref(id))
-                .is_some()
-            {
-                return if wants { *id } else { 0 };
-            }
-            if wants {
+            if self.state_styles.pressed_interest(*id) {
                 return *id;
             }
         }
@@ -1460,7 +1453,11 @@ impl Shell {
     /// Track one eligible pointer sample. Returns whether pressed feedback
     /// changed. `gesture` marks a sample the recognizer also saw.
     fn track_press(&mut self, input: &PointerInput, gesture: bool) -> bool {
-        if !input.eligible() {
+        // Eligibility gates starting a sequence: a mouse sample only counts
+        // while the primary button is held, and a released mouse pointer
+        // reports `buttons == 0`. Up/Move/Cancel of a tracked pointer must
+        // always pass so the sequence can end.
+        if input.action == PointerAction::Down && !input.eligible() {
             return false;
         }
         match input.action {
