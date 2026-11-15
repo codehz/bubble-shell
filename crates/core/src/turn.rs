@@ -126,12 +126,7 @@ impl Turn {
     }
 
     fn allocate_handle(&mut self) -> Result<u32, String> {
-        let handle = self.next_handle;
-        self.next_handle = self
-            .next_handle
-            .checked_add(1)
-            .ok_or_else(|| "handle space exhausted".to_string())?;
-        Ok(handle)
+        bump(&mut self.next_handle, "handle")
     }
 
     pub fn bind_event(&mut self, handle: u32, handler: u32) {
@@ -145,11 +140,7 @@ impl Turn {
         kind: GestureKind,
         index: u32,
     ) -> Result<u32, String> {
-        let gesture = self.next_gesture;
-        self.next_gesture = self
-            .next_gesture
-            .checked_add(1)
-            .ok_or_else(|| "gesture space exhausted".to_string())?;
+        let gesture = bump(&mut self.next_gesture, "gesture")?;
         self.push(Op::SpawnGesture {
             gesture,
             target,
@@ -197,11 +188,7 @@ impl Turn {
         initial: Value,
         anim: Option<AnimSpec>,
     ) -> Result<u32, String> {
-        let var = self.next_var;
-        self.next_var = self
-            .next_var
-            .checked_add(1)
-            .ok_or_else(|| "var space exhausted".to_string())?;
+        let var = bump(&mut self.next_var, "var")?;
         self.push(Op::CreateVar {
             var,
             source,
@@ -242,11 +229,7 @@ impl Turn {
         component: u8,
         index: u32,
     ) -> Result<u32, String> {
-        let decl = self.next_style;
-        self.next_style = self
-            .next_style
-            .checked_add(1)
-            .ok_or_else(|| "style declaration space exhausted".to_string())?;
+        let decl = bump(&mut self.next_style, "style declaration")?;
         self.push(Op::SpawnStyleDecl {
             decl,
             target,
@@ -301,129 +284,151 @@ impl Turn {
     }
 }
 
+/// One step of a backwards `coalesce` scan.
+enum Scan {
+    /// Previous write found and rewritten; drop the incoming op.
+    Replace,
+    /// Transparent for this op kind; keep scanning.
+    Skip,
+    /// Barrier for this op kind; stop scanning.
+    Stop,
+}
+
+/// Shared backwards scan for the `coalesce` arms: walks the buffer from the
+/// end, lets `visit` rewrite an existing op or pass over it. The per-arm skip
+/// lists live in the match arms of `coalesce`, side by side, so they can be
+/// compared and tightened deliberately.
+fn coalesce_last(buf: &mut Vec<Op>, mut visit: impl FnMut(&mut Op) -> Scan) -> bool {
+    for item in buf.iter_mut().rev() {
+        match visit(item) {
+            Scan::Replace => return true,
+            Scan::Skip => {}
+            Scan::Stop => return false,
+        }
+    }
+    false
+}
+
+/// Allocate the current value of a counter and advance it.
+fn bump(counter: &mut u32, what: &str) -> Result<u32, String> {
+    let value = *counter;
+    *counter = value
+        .checked_add(1)
+        .ok_or_else(|| format!("{what} space exhausted"))?;
+    Ok(value)
+}
+
 fn coalesce(buf: &mut Vec<Op>, op: Op) {
-    match &op {
+    let handled = match &op {
         Op::SetText { handle, text } => {
-            for item in buf.iter_mut().rev() {
-                match item {
-                    Op::SetText {
-                        handle: existing,
-                        text: slot,
-                    } if existing == handle => {
-                        *slot = text.clone();
-                        return;
-                    }
-                    Op::SetPropColor { .. } | Op::SetProp { .. } => {}
-                    _ => break,
+            coalesce_last(buf, |item| match item {
+                Op::SetText {
+                    handle: existing,
+                    text: slot,
+                } if existing == handle => {
+                    *slot = text.clone();
+                    Scan::Replace
                 }
-            }
+                Op::SetPropColor { .. } | Op::SetProp { .. } => Scan::Skip,
+                _ => Scan::Stop,
+            })
         }
         Op::SetPropColor { handle, key, rgba } => {
-            for item in buf.iter_mut().rev() {
-                match item {
-                    Op::SetPropColor {
-                        handle: existing,
-                        key: existing_key,
-                        rgba: slot,
-                    } if existing == handle && existing_key == key => {
-                        *slot = *rgba;
-                        return;
-                    }
-                    Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } => {}
-                    _ => break,
+            coalesce_last(buf, |item| match item {
+                Op::SetPropColor {
+                    handle: existing,
+                    key: existing_key,
+                    rgba: slot,
+                } if existing == handle && existing_key == key => {
+                    *slot = *rgba;
+                    Scan::Replace
                 }
-            }
+                Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } => Scan::Skip,
+                _ => Scan::Stop,
+            })
         }
         Op::SetProp { handle, key, value } => {
-            for item in buf.iter_mut().rev() {
-                match item {
-                    Op::SetProp {
-                        handle: existing,
-                        key: existing_key,
-                        value: slot,
-                    } if existing == handle && existing_key == key => {
-                        *slot = value.clone();
-                        return;
-                    }
-                    Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } => {}
-                    _ => break,
+            coalesce_last(buf, |item| match item {
+                Op::SetProp {
+                    handle: existing,
+                    key: existing_key,
+                    value: slot,
+                } if existing == handle && existing_key == key => {
+                    *slot = value.clone();
+                    Scan::Replace
                 }
-            }
+                Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } => Scan::Skip,
+                _ => Scan::Stop,
+            })
         }
         Op::SetStyleDeclProp { decl, key, value } => {
-            for item in buf.iter_mut().rev() {
-                match item {
-                    Op::SetStyleDeclProp {
-                        decl: existing,
-                        key: existing_key,
-                        value: slot,
-                    } if existing == decl && existing_key == key => {
-                        *slot = value.clone();
-                        return;
-                    }
-                    Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } => {}
-                    _ => break,
+            coalesce_last(buf, |item| match item {
+                Op::SetStyleDeclProp {
+                    decl: existing,
+                    key: existing_key,
+                    value: slot,
+                } if existing == decl && existing_key == key => {
+                    *slot = value.clone();
+                    Scan::Replace
                 }
-            }
+                Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } => Scan::Skip,
+                _ => Scan::Stop,
+            })
         }
         Op::SetVar { var, value, anim } => {
-            for item in buf.iter_mut().rev() {
-                match item {
-                    Op::SetVar {
-                        var: existing,
-                        value: slot,
-                        anim: slot_anim,
-                    } if existing == var => {
-                        *slot = value.clone();
-                        *slot_anim = *anim;
-                        return;
-                    }
-                    Op::SetText { .. }
-                    | Op::SetPropColor { .. }
-                    | Op::SetProp { .. }
-                    | Op::SetStyleDeclProp { .. }
-                    | Op::SetGestureProp { .. }
-                    | Op::SetVar { .. } => {}
-                    _ => break,
+            coalesce_last(buf, |item| match item {
+                Op::SetVar {
+                    var: existing,
+                    value: slot,
+                    anim: slot_anim,
+                } if existing == var => {
+                    *slot = value.clone();
+                    *slot_anim = *anim;
+                    Scan::Replace
                 }
-            }
+                Op::SetText { .. }
+                | Op::SetPropColor { .. }
+                | Op::SetProp { .. }
+                | Op::SetStyleDeclProp { .. }
+                | Op::SetGestureProp { .. }
+                | Op::SetVar { .. } => Scan::Skip,
+                _ => Scan::Stop,
+            })
         }
         Op::SettleVar { var } => {
-            for item in buf.iter_mut().rev() {
-                match item {
-                    // A pending request already covers this variable.
-                    Op::SettleVar { var: existing } if existing == var => return,
-                    Op::SetText { .. }
-                    | Op::SetPropColor { .. }
-                    | Op::SetProp { .. }
-                    | Op::SetStyleDeclProp { .. }
-                    | Op::SetGestureProp { .. }
-                    | Op::SetVar { .. } => {}
-                    _ => break,
-                }
-            }
+            coalesce_last(buf, |item| match item {
+                // A pending request already covers this variable.
+                Op::SettleVar { var: existing } if existing == var => Scan::Replace,
+                Op::SetText { .. }
+                | Op::SetPropColor { .. }
+                | Op::SetProp { .. }
+                | Op::SetStyleDeclProp { .. }
+                | Op::SetGestureProp { .. }
+                | Op::SetVar { .. } => Scan::Skip,
+                _ => Scan::Stop,
+            })
         }
         Op::SetGestureProp {
             gesture,
             key,
             value,
         } => {
-            for item in buf.iter_mut().rev() {
-                match item {
-                    Op::SetGestureProp {
-                        gesture: existing,
-                        key: existing_key,
-                        value: slot,
-                    } if existing == gesture && existing_key == key => {
-                        *slot = value.clone();
-                        return;
-                    }
-                    Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } => {}
-                    _ => break,
+            coalesce_last(buf, |item| match item {
+                Op::SetGestureProp {
+                    gesture: existing,
+                    key: existing_key,
+                    value: slot,
+                } if existing == gesture && existing_key == key => {
+                    *slot = value.clone();
+                    Scan::Replace
                 }
-            }
+                Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } => Scan::Skip,
+                _ => Scan::Stop,
+            })
         }
-        _ => {}
+        _ => false,
+    };
+    if !handled {
+        buf.push(op);
     }
-    buf.push(op);
 }
