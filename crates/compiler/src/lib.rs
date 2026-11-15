@@ -1797,9 +1797,17 @@ impl<'a> Lower<'a> {
             body_elements.push(ArrayExpressionElement::from(statement));
         }
         let body_array = Expression::new_array_expression(span, body_elements, &self.builder);
+        // Stable per-definition site key: the runtime caches one UI program
+        // per site so re-renders reuse the id instead of leaking a new one.
+        let site = format!("{}:{}", self.name, span.start);
         self.call(
             RT_UI_FUNCTION,
-            vec![params_array, captures_array, body_array],
+            vec![
+                params_array,
+                captures_array,
+                body_array,
+                self.string_of(&site),
+            ],
             span,
         )
     }

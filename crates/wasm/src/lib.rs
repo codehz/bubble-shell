@@ -1249,13 +1249,18 @@ pub extern "C" fn settle_var(var: u32) -> i32 {
 }
 
 /// Defines one UI program ("worklet"). `payload` carries captures, consts,
-/// and code; the shell validates it when the op lands.
+/// and code; the shell validates it when the op lands. `reuse` is the id the
+/// definition site already owns, or 0 for a fresh id.
 #[no_mangle]
-pub extern "C" fn define_ui_function(params: u32, ptr: *const u8, len: u32) -> u32 {
+pub extern "C" fn define_ui_function(params: u32, ptr: *const u8, len: u32, reuse: u32) -> u32 {
+    if params > 255 {
+        set_error(format!("bad worklet parameter count {params}"));
+        return 0;
+    }
     abi_ok!({
         let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
         let (captures, consts, code) = decode_ui_function_payload(bytes)?;
-        with_turn(|turn| turn.define_ui_function(params.min(255) as u8, captures, consts, code))
+        with_turn(|turn| turn.define_ui_function(params as u8, captures, consts, code, reuse))
     })
 }
 

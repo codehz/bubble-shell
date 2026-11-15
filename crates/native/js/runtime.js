@@ -112,9 +112,7 @@ function resetRenderState() {
   gestureHandlerIds.clear();
   retiredGestureHandlers.clear();
   styleOrderOfTarget.clear();
-  uiCallbacks.clear();
-  uiCallbacksOfGesture.clear();
-  gestureOwnerStack.length = 0;
+  resetUiPrograms();
   virtualTargetOf.clear();
   virtualScopeOf.clear();
   virtualRoots.clear();
@@ -625,18 +623,13 @@ function packGesture(type, props) {
   }
   const target = parent();
   const { id } = registerGesture(target, kind);
-  gestureOwnerStack.push(id);
-  try {
-    for (const key of Object.keys(props)) {
-      const value = props[key];
-      if (key in GESTURE_EVENTS[kind] && GESTURE_EVENTS[kind][key]) continue;
-      if (value instanceof Dynamic) bindGestureProp(id, key, value.run);
-      else setGestureProp(id, key, value);
-    }
-    addGestureHandlers(id, props, kind);
-  } finally {
-    gestureOwnerStack.pop();
+  for (const key of Object.keys(props)) {
+    const value = props[key];
+    if (key in GESTURE_EVENTS[kind] && GESTURE_EVENTS[kind][key]) continue;
+    if (value instanceof Dynamic) bindGestureProp(id, key, value.run);
+    else setGestureProp(id, key, value);
   }
+  addGestureHandlers(id, props, kind);
   return id;
 }
 
@@ -765,11 +758,6 @@ function disposeGesture(id) {
     // handlers until that barrier also covers disposal from an event callback.
     retiredGestureHandlers.set(id, handlers);
     gestureHandlerIds.delete(id);
-  }
-  const callbacks = uiCallbacksOfGesture.get(id);
-  if (callbacks) {
-    for (const handler of callbacks) uiCallbacks.delete(handler);
-    uiCallbacksOfGesture.delete(id);
   }
   const order = gestureOrderOfTarget.get(target);
   if (order) {
@@ -991,24 +979,67 @@ export function cancelAnimation(sv) {
 // ---------------------------------------------------------------------------
 
 // Handler ids for JS functions captured by worklets and called through
-// scheduleOnJS. Cleared when the owning gesture or node is disposed.
+// scheduleOnJS. Each UI program retains the handlers it captures, so a
+// redefinition keeps shared callbacks alive and frees the rest.
 const uiCallbacks = new Map();
-const uiCallbacksOfGesture = new Map();
+const uiCallbackRefs = new Map();
+let uiCallbackIds = new WeakMap();
+/// Compiler site key → the UI program that definition owns. A re-render
+/// redefines the same site in place, so the program table is bounded by
+/// source sites instead of growing once per render.
+const uiSites = new Map();
 
-function rememberUiCallback(gesture, handler) {
-  if (gesture == null) return;
-  let ids = uiCallbacksOfGesture.get(gesture);
-  if (!ids) {
-    ids = [];
-    uiCallbacksOfGesture.set(gesture, ids);
+function resetUiPrograms() {
+  uiCallbacks.clear();
+  uiCallbackRefs.clear();
+  uiCallbackIds = new WeakMap();
+  uiSites.clear();
+}
+
+function uiCallbackId(fn) {
+  let id = uiCallbackIds.get(fn);
+  if (id === undefined) {
+    id = nextHandler++;
+    uiCallbackIds.set(fn, id);
   }
-  ids.push(handler);
+  return id;
+}
+
+function retainUiCallbacks(fns) {
+  for (const fn of fns) {
+    const id = uiCallbackId(fn);
+    const refs = uiCallbackRefs.get(id) ?? 0;
+    uiCallbackRefs.set(id, refs + 1);
+    if (refs === 0) uiCallbacks.set(id, fn);
+  }
+}
+
+function releaseUiCallbacks(fns) {
+  for (const fn of fns) {
+    const id = uiCallbackId(fn);
+    const refs = (uiCallbackRefs.get(id) ?? 0) - 1;
+    if (refs > 0) {
+      uiCallbackRefs.set(id, refs);
+    } else {
+      uiCallbackRefs.delete(id);
+      uiCallbacks.delete(id);
+    }
+  }
+}
+
+function sameUiPayload(a, b) {
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
 }
 
 /// Compiler-facing: define one UI program. `params` is an array of parameter
 /// name strings, `captures` an array of captured VALUES (shared values,
-/// worklets, JS functions, or primitives), `body` the statement tree.
-export function uiFunction(params, captures, body) {
+/// worklets, JS functions, or primitives), `body` the statement tree, and
+/// `site` the compiler's stable per-definition key.
+export function uiFunction(params, captures, body, site) {
   if (typeof api.define_ui_function !== "function") {
     throw new Error("host does not expose UI worklets");
   }
@@ -1018,7 +1049,7 @@ export function uiFunction(params, captures, body) {
   if (captures == null || typeof body !== "object" || body == null) {
     throw new Error("worklet body must be an encoded tree");
   }
-  const owner = currentGestureOwner();
+  const callbacks = [];
   const entries = captures.map((value) => {
     if (value == null) throw new Error("worklet captured null");
     if (typeof value === "number") {
@@ -1032,16 +1063,23 @@ export function uiFunction(params, captures, body) {
       return { tag: 5, number: value.__uiFunction };
     }
     if (typeof value === "function") {
-      const handler = nextHandler++;
-      uiCallbacks.set(handler, value);
-      rememberUiCallback(owner, handler);
-      return { tag: 6, number: handler };
+      callbacks.push(value);
+      return { tag: 6, number: uiCallbackId(value) };
     }
     throw new Error(`worklet captured an unsupported value ${typeof value}`);
   });
   const payload = encodeUiFunction(params.length, entries, body);
-  const id = api.define_ui_function(params.length, Array.from(payload));
+  const cached = site == null ? undefined : uiSites.get(site);
+  if (cached && sameUiPayload(cached.payload, payload)) {
+    // Same captures and code: keep the existing program.
+    return { __uiFunction: cached.id };
+  }
+  const reuse = cached ? cached.id : 0;
+  const id = api.define_ui_function(params.length, Array.from(payload), reuse);
   if (!id) throw new Error(api.error() || "define_ui_function failed");
+  retainUiCallbacks(callbacks);
+  if (cached) releaseUiCallbacks(cached.callbacks);
+  if (site != null) uiSites.set(site, { id, payload, callbacks });
   return { __uiFunction: id };
 }
 
@@ -1111,14 +1149,6 @@ export function dispatchUiCalls(bytes) {
   });
   if (ran) flush();
   return calls.length;
-}
-
-/// The gesture declaration a worklet definition runs inside, so its
-/// captured JS callbacks retire with the gesture.
-const gestureOwnerStack = [];
-
-function currentGestureOwner() {
-  return gestureOwnerStack[gestureOwnerStack.length - 1] ?? null;
 }
 
 // UI program opcodes; must match crates/core/src/ui.rs.

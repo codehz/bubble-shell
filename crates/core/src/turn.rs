@@ -220,15 +220,23 @@ impl Turn {
         self.push(Op::SettleVar { var });
     }
 
-    /// Allocate a UI program id and queue its definition.
+    /// Queue a UI program definition. `reuse` is the id a site already owns;
+    /// 0 allocates a fresh one. Redefining replaces that id in place so the
+    /// program table stays bounded by source sites.
     pub fn define_ui_function(
         &mut self,
         params: u8,
         captures: Vec<UiCapture>,
         consts: Vec<ExprConst>,
         code: Vec<u8>,
+        reuse: u32,
     ) -> Result<u32, String> {
-        let id = bump(&mut self.next_ui_function, "ui function")?;
+        let id = if reuse == 0 {
+            bump(&mut self.next_ui_function, "ui function")?
+        } else {
+            self.next_ui_function = self.next_ui_function.max(reuse.saturating_add(1));
+            reuse
+        };
         self.push(Op::DefineUiFunction {
             id,
             params,

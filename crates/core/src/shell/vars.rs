@@ -379,7 +379,9 @@ impl Shell {
         self.state_styles.focus_style_taken(id)
     }
 
-    /// Register one UI program ("worklet"). Validation fails the batch.
+    /// Register one UI program ("worklet"). Validation fails the batch. A
+    /// redefinition replaces the id in place: the runtime keys definitions
+    /// by source site, so a re-render updates its own program.
     pub(super) fn define_ui_function(
         &mut self,
         id: u32,
@@ -397,9 +399,6 @@ impl Shell {
         program.validate()?;
         if id == 0 {
             return Err("ui function id must be nonzero".into());
-        }
-        if self.ui_programs.get(id as usize).is_some_and(Option::is_some) {
-            return Err(format!("ui function {id} is not free"));
         }
         if self.ui_programs.len() <= id as usize {
             self.ui_programs.resize_with(id as usize + 1, || None);

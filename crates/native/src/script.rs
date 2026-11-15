@@ -843,7 +843,7 @@ fn bind_api(ctx: &Context) -> Result<(), RuntimeError> {
     def!(ctx, &api, "set_var", 7, (var: f64, tag: f64, number: f64, anim: f64, a: f64, b: f64, c: f64) => api_set_var(var, tag, number, anim, a, b, c));
     def!(ctx, &api, "settle_var", 1, (var: f64) => api_settle_var(var));
     def!(ctx, &api, "dispose_var", 1, (var: f64) => api_dispose_var(var));
-    def!(ctx, &api, "define_ui_function", 2, scope(params: f64, bytes: JsValue) => api_define_ui_function(params, bytes));
+    def!(ctx, &api, "define_ui_function", 3, scope(params: f64, bytes: JsValue, reuse: f64) => api_define_ui_function(params, bytes, reuse));
     def!(ctx, &api, "bind_gesture_program", 3, (handle: f64, slot: f64, function: f64) => api_bind_gesture_program(handle, slot, function));
     def!(ctx, &api, "run_ui_function", 2, scope(function: f64, bytes: JsValue) => api_run_ui_function(function, bytes));
     def!(ctx, &api, "cancel_anim", 1, (var: f64) => api_cancel_anim(var));
@@ -1408,7 +1408,20 @@ fn api_dispose_var(var: f64) -> i32 {
 }
 
 /// Program bytes arrive as a JS array of byte numbers; programs are small.
-fn api_define_ui_function(scope: &mut Scope<'_>, params: f64, bytes: JsValue) -> u32 {
+fn api_define_ui_function(
+    scope: &mut Scope<'_>,
+    params: f64,
+    bytes: JsValue,
+    reuse: f64,
+) -> u32 {
+    if params.fract() != 0.0 || !(0.0..=255.0).contains(&params) {
+        set_api_error(format!("bad worklet parameter count {params}"));
+        return 0;
+    }
+    if reuse.fract() != 0.0 || !(0.0..=u32::MAX as f64).contains(&reuse) {
+        set_api_error(format!("bad worklet site id {reuse}"));
+        return 0;
+    }
     let data = match byte_array(scope, &bytes) {
         Some(data) => data,
         None => {
@@ -1423,7 +1436,9 @@ fn api_define_ui_function(scope: &mut Scope<'_>, params: f64, bytes: JsValue) ->
             return 0;
         }
     };
-    match with_turn(|turn| turn.define_ui_function(params as u8, captures, consts, code)) {
+    match with_turn(|turn| {
+        turn.define_ui_function(params as u8, captures, consts, code, reuse as u32)
+    }) {
         Ok(id) => id,
         Err(err) => {
             set_api_error(err);
