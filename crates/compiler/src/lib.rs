@@ -123,10 +123,13 @@ pub fn compile_module(
         thunk_jsx: false,
         errors: Vec::new(),
         worklets: Vec::new(),
+        worklet_arity: HashMap::new(),
+        worklet_calls: Vec::new(),
         current_worklet_name: None,
     };
     lower.visit_program(&mut program);
     lower.check_worklet_recursion();
+    lower.check_worklet_calls();
     if let Some(error) = lower.errors.first() {
         return Err(error.clone());
     }
@@ -280,6 +283,11 @@ struct Lower<'a> {
     /// Module-level worklet functions: name, then the worklet callees its
     /// body calls. Feeds the recursion cycle check.
     worklets: Vec<(String, Vec<String>)>,
+    /// Parameter count per module-level worklet name; `None` once two
+    /// definitions disagree and call arity can no longer be checked.
+    worklet_arity: HashMap<String, Option<usize>>,
+    /// Worklet-to-worklet call sites, checked after every definition is known.
+    worklet_calls: Vec<(String, usize, Span)>,
     /// Name of the worklet currently being lowered, for self-edge recording.
     current_worklet_name: Option<String>,
 }
@@ -1766,6 +1774,15 @@ impl<'a> Lower<'a> {
         let previous = self.current_worklet_name.take();
         if let Some(name) = &previous {
             let callees = ctx.callees.clone();
+            match self.worklet_arity.get(name) {
+                None => {
+                    self.worklet_arity.insert(name.clone(), Some(params.len()));
+                }
+                Some(Some(existing)) if *existing != params.len() => {
+                    self.worklet_arity.insert(name.clone(), None);
+                }
+                _ => {}
+            }
             self.worklets.push((name.clone(), callees));
         }
         self.current_worklet_name = previous;
@@ -2450,6 +2467,7 @@ impl<'a> Lower<'a> {
                     trees.push(self.worklet_expr(span, ctx, argument));
                 }
                 let index = self.worklet_capture(ctx, Expression::Identifier(callee));
+                self.worklet_calls.push((name.clone(), trees.len(), span));
                 self.tree_op(span, "call", {
                     let mut args = vec![self.number(span, index as f64)];
                     args.extend(trees);
@@ -2487,6 +2505,23 @@ impl<'a> Lower<'a> {
             if dfs_cycle(name, &edges, &mut colors) {
                 self.error(SPAN, "worklet recursion is not supported");
                 return;
+            }
+        }
+    }
+
+    /// Fail the compile when a worklet call disagrees with that worklet's
+    /// declared parameters. Local worklets of the same name with different
+    /// arities make the name ambiguous and are left to the runtime check.
+    fn check_worklet_calls(&mut self) {
+        for (name, argc, span) in self.worklet_calls.clone() {
+            let Some(Some(arity)) = self.worklet_arity.get(&name).copied() else {
+                continue;
+            };
+            if arity != argc {
+                self.error(
+                    span,
+                    format!("worklet {name} takes {arity} argument(s), got {argc}"),
+                );
             }
         }
     }
