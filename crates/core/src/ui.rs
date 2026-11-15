@@ -170,6 +170,17 @@ pub struct UiProgram {
     pub code: Vec<u8>,
 }
 
+/// Stack inputs a worklet opcode consumes. `OP_ADD..=OP_ABS` come from the
+/// shared expression table; `OP_FLOOR..=OP_POW` extends it with unary math
+/// plus a binary POW.
+fn worklet_op_pops(op: u8) -> usize {
+    match crate::expr::op_pops(op) {
+        Some(pops) => usize::from(pops),
+        None if op == OP_POW => 2,
+        None => 1,
+    }
+}
+
 /// One instruction, decoded for validation and execution.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Instr {
@@ -264,16 +275,7 @@ fn effect_of(instr: &Instr) -> (usize, usize) {
         | Instr::PushCapture(_)
         | Instr::LoadEvent(_)
         | Instr::LoadLocal(_) => (0, 1),
-        Instr::Op(op) => {
-            // The shared expression table stops at OP_ABS; the worklet-only
-            // FLOOR..POW range adds unary math plus a binary POW.
-            let pops = match crate::expr::op_pops(*op) {
-                Some(pops) => usize::from(pops),
-                None if *op == OP_POW => 2,
-                None => 1,
-            };
-            (pops, 1)
-        }
+        Instr::Op(op) => (worklet_op_pops(*op), 1),
         Instr::StoreShared(_) => (1, 0),
         // to, spec code, and two spec parameters.
         Instr::StoreAnim(_) => (4, 0),
@@ -847,9 +849,9 @@ impl crate::shell::Shell {
     /// One arithmetic, comparison, or logic op over the shared stack. The
     /// result is pushed in place of its operands.
     fn eval_op(&mut self, op: u8, base: usize) -> Result<(), String> {
-        use crate::expr::*;
+        use crate::expr::{OP_EQ, OP_NE, OP_SELECT};
         macro_rules! pop {
-            ($what:expr) => {{
+            () => {{
                 let top = self.ui_stack.len().saturating_sub(1);
                 if top < base {
                     return Err(self.fault("stack underflow"));
@@ -871,14 +873,6 @@ impl crate::shell::Shell {
                 }
             }};
         }
-        macro_rules! boolean {
-            ($value:expr, $what:expr) => {{
-                match $value {
-                    UiValue::Bool(value) => value,
-                    other => return Err(self.fault(format!("{} expects a bool, got {other:?}", $what))),
-                }
-            }};
-        }
         macro_rules! push {
             ($value:expr) => {{
                 let value: UiValue = $value;
@@ -888,144 +882,94 @@ impl crate::shell::Shell {
                 self.ui_stack.push(value);
             }};
         }
-        match op {
-            OP_ADD => {
-                let (b, a) = (pop!("add"), pop!("add"));
-                let (a, b) = (num!(a, "add"), num!(b, "add"));
-                push!(UiValue::Num(a + b));
-            }
-            OP_SUB => {
-                let (b, a) = (pop!("sub"), pop!("sub"));
-                let (a, b) = (num!(a, "sub"), num!(b, "sub"));
-                push!(UiValue::Num(a - b));
-            }
-            OP_MUL => {
-                let (b, a) = (pop!("mul"), pop!("mul"));
-                let (a, b) = (num!(a, "mul"), num!(b, "mul"));
-                push!(UiValue::Num(a * b));
-            }
-            OP_DIV => {
-                let (b, a) = (pop!("div"), pop!("div"));
-                let (a, b) = (num!(a, "div"), num!(b, "div"));
-                if b == 0.0 {
-                    return Err(self.fault("division by zero"));
-                }
-                push!(UiValue::Num(a / b));
-            }
-            OP_NEG => {
-                let a = pop!("neg");
-                push!(UiValue::Num(-num!(a, "neg")));
-            }
-            OP_LT => {
-                let (b, a) = (pop!("lt"), pop!("lt"));
-                let (a, b) = (num!(a, "lt"), num!(b, "lt"));
-                push!(UiValue::Bool(a < b));
-            }
-            OP_LE => {
-                let (b, a) = (pop!("le"), pop!("le"));
-                let (a, b) = (num!(a, "le"), num!(b, "le"));
-                push!(UiValue::Bool(a <= b));
-            }
-            OP_GT => {
-                let (b, a) = (pop!("gt"), pop!("gt"));
-                let (a, b) = (num!(a, "gt"), num!(b, "gt"));
-                push!(UiValue::Bool(a > b));
-            }
-            OP_GE => {
-                let (b, a) = (pop!("ge"), pop!("ge"));
-                let (a, b) = (num!(a, "ge"), num!(b, "ge"));
-                push!(UiValue::Bool(a >= b));
-            }
-            OP_EQ | OP_NE => {
-                let (b, a) = (pop!("eq"), pop!("eq"));
-                let equal = match (a, b) {
-                    (UiValue::Num(a), UiValue::Num(b)) => a == b,
-                    (UiValue::Color(a), UiValue::Color(b)) => a == b,
-                    (UiValue::Bool(a), UiValue::Bool(b)) => a == b,
+        // Strings only participate in equality and as select branches; every
+        // other op delegates to the shared expression evaluator.
+        if matches!(op, OP_EQ | OP_NE) {
+            let b = pop!();
+            let a = pop!();
+            if matches!(a, UiValue::Text(_)) || matches!(b, UiValue::Text(_)) {
+                let equal = match (&a, &b) {
                     (UiValue::Text(a), UiValue::Text(b)) => a == b,
                     _ => return Err(self.fault("equality compares different types")),
                 };
                 push!(UiValue::Bool(equal == (op == OP_EQ)));
+                return Ok(());
             }
-            OP_AND => {
-                let (b, a) = (pop!("and"), pop!("and"));
-                push!(UiValue::Bool(boolean!(a, "and") && boolean!(b, "and")));
-            }
-            OP_OR => {
-                let (b, a) = (pop!("or"), pop!("or"));
-                push!(UiValue::Bool(boolean!(a, "or") || boolean!(b, "or")));
-            }
-            OP_NOT => {
-                let a = pop!("not");
-                push!(UiValue::Bool(!boolean!(a, "not")));
-            }
-            OP_SELECT => {
-                let (b, a) = (pop!("select"), pop!("select"));
-                let condition = pop!("select");
-                let condition = boolean!(condition, "select");
-                if std::mem::discriminant(&a) != std::mem::discriminant(&b) {
+            self.ui_stack.push(a);
+            self.ui_stack.push(b);
+        } else if op == OP_SELECT {
+            let b = pop!();
+            let a = pop!();
+            let condition = match pop!() {
+                UiValue::Bool(value) => value,
+                other => {
+                    return Err(
+                        self.fault(format!("select expects a bool condition, got {other:?}"))
+                    )
+                }
+            };
+            if matches!(a, UiValue::Text(_)) || matches!(b, UiValue::Text(_)) {
+                if !matches!((&a, &b), (UiValue::Text(_), UiValue::Text(_))) {
                     return Err(self.fault("select branches have different types"));
                 }
                 push!(if condition { a } else { b });
+                return Ok(());
             }
-            OP_MIX => {
-                let t = num!(pop!("mix"), "mix");
-                let (b, a) = (pop!("mix"), pop!("mix"));
-                let pushed = match (&a, &b) {
-                    (UiValue::Num(a), UiValue::Num(b)) => UiValue::Num(a + (b - a) * t),
-                    (UiValue::Color(a), UiValue::Color(b)) => UiValue::Color(a.mix(b, t)),
-                    _ => return Err(self.fault("mix interpolates two numbers or two colors")),
-                };
-                push!(pushed);
-            }
-            OP_LERP => {
-                let (t, b, a) = (pop!("lerp"), pop!("lerp"), pop!("lerp"));
-                let (a, b, t) = (num!(a, "lerp"), num!(b, "lerp"), num!(t, "lerp"));
-                push!(UiValue::Num(a + (b - a) * t));
-            }
-            OP_CLAMP => {
-                let (hi, lo, v) = (pop!("clamp"), pop!("clamp"), pop!("clamp"));
-                let (v, lo, hi) = (num!(v, "clamp"), num!(lo, "clamp"), num!(hi, "clamp"));
-                if hi < lo {
-                    return Err(self.fault("clamp low bound exceeds high bound"));
+            self.ui_stack.push(UiValue::Bool(condition));
+            self.ui_stack.push(a);
+            self.ui_stack.push(b);
+        }
+        // Worklet-only math opcodes stay here; the shared table stops at
+        // OP_ABS.
+        if (OP_FLOOR..=OP_POW).contains(&op) {
+            match op {
+                OP_FLOOR => {
+                    let a = pop!();
+                    push!(UiValue::Num(num!(a, "floor").floor()));
                 }
-                push!(UiValue::Num(v.clamp(lo, hi)));
-            }
-            OP_MIN | OP_MAX => {
-                let (b, a) = (pop!("min"), pop!("min"));
-                let (a, b) = (num!(a, "min"), num!(b, "min"));
-                push!(UiValue::Num(if op == OP_MIN { a.min(b) } else { a.max(b) }));
-            }
-            OP_ABS => {
-                let a = pop!("abs");
-                push!(UiValue::Num(num!(a, "abs").abs()));
-            }
-            OP_FLOOR => {
-                let a = pop!("floor");
-                push!(UiValue::Num(num!(a, "floor").floor()));
-            }
-            OP_CEIL => {
-                let a = pop!("ceil");
-                push!(UiValue::Num(num!(a, "ceil").ceil()));
-            }
-            OP_ROUND => {
-                let a = pop!("round");
-                push!(UiValue::Num(num!(a, "round").round()));
-            }
-            OP_SQRT => {
-                let a = pop!("sqrt");
-                let value = num!(a, "sqrt");
-                if value < 0.0 {
-                    return Err(self.fault("sqrt expects a non-negative number"));
+                OP_CEIL => {
+                    let a = pop!();
+                    push!(UiValue::Num(num!(a, "ceil").ceil()));
                 }
-                push!(UiValue::Num(value.sqrt()));
+                OP_ROUND => {
+                    let a = pop!();
+                    push!(UiValue::Num(num!(a, "round").round()));
+                }
+                OP_SQRT => {
+                    let a = pop!();
+                    let value = num!(a, "sqrt");
+                    if value < 0.0 {
+                        return Err(self.fault("sqrt expects a non-negative number"));
+                    }
+                    push!(UiValue::Num(value.sqrt()));
+                }
+                _ => {
+                    let b = pop!();
+                    let a = pop!();
+                    let (a, b) = (num!(a, "pow"), num!(b, "pow"));
+                    push!(UiValue::Num(a.powf(b)));
+                }
             }
-            OP_POW => {
-                let (b, a) = (pop!("pow"), pop!("pow"));
-                let (a, b) = (num!(a, "pow"), num!(b, "pow"));
-                push!(UiValue::Num(a.powf(b)));
+            return Ok(());
+        }
+        let pops = worklet_op_pops(op);
+        if self.ui_stack.len() < base + pops {
+            return Err(self.fault("stack underflow"));
+        }
+        let start = self.ui_stack.len() - pops;
+        let drained = self.ui_stack.split_off(start);
+        let mut stack = Vec::with_capacity(pops);
+        for value in drained {
+            stack.push(value.as_expr().map_err(|error| self.fault(error))?);
+        }
+        crate::expr::eval_op(op, &mut stack).map_err(|error| self.fault(error.0))?;
+        if let Some(ExprValue::Num(value)) = stack.last() {
+            if !value.is_finite() {
+                return Err(self.fault("operator produced a non-finite value"));
             }
-            other => return Err(self.fault(format!("unknown program opcode {other}"))),
+        }
+        for value in stack {
+            self.ui_stack.push(UiValue::from_expr(value));
         }
         Ok(())
     }

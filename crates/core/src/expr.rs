@@ -171,6 +171,144 @@ pub(crate) fn op_pops(op: u8) -> Option<u8> {
     op_spec(op).ok().map(|spec| spec.pops)
 }
 
+/// Apply one opcode to `stack` with the engine's numeric, color, and bool
+/// semantics. Style declarations and UI worklets share this so the two
+/// interpreters cannot drift.
+pub(crate) fn eval_op(op: u8, stack: &mut Vec<ExprValue>) -> Result<(), ProgramError> {
+    let pop = |stack: &mut Vec<ExprValue>| -> Result<ExprValue, ProgramError> {
+        stack
+            .pop()
+            .ok_or_else(|| ProgramError("stack underflow".into()))
+    };
+    let num = |value: ExprValue, what: &str| -> Result<f32, ProgramError> {
+        match value {
+            ExprValue::Num(value) if value.is_finite() => Ok(value),
+            _ => Err(ProgramError(format!("{what} expects a finite number"))),
+        }
+    };
+    let color = |value: ExprValue, what: &str| -> Result<Color, ProgramError> {
+        match value {
+            ExprValue::Color(value) => Ok(value),
+            _ => Err(ProgramError(format!("{what} expects a color"))),
+        }
+    };
+    let boolean = |value: ExprValue, what: &str| -> Result<bool, ProgramError> {
+        match value {
+            ExprValue::Bool(value) => Ok(value),
+            _ => Err(ProgramError(format!("{what} expects a bool"))),
+        }
+    };
+    match op {
+        OP_ADD => {
+            let (b, a) = (pop(stack)?, pop(stack)?);
+            stack.push(ExprValue::Num(num(a, "add")? + num(b, "add")?));
+        }
+        OP_SUB => {
+            let (b, a) = (pop(stack)?, pop(stack)?);
+            stack.push(ExprValue::Num(num(a, "sub")? - num(b, "sub")?));
+        }
+        OP_MUL => {
+            let (b, a) = (pop(stack)?, pop(stack)?);
+            stack.push(ExprValue::Num(num(a, "mul")? * num(b, "mul")?));
+        }
+        OP_DIV => {
+            let (b, a) = (pop(stack)?, pop(stack)?);
+            let (a, b) = (num(a, "div")?, num(b, "div")?);
+            if b == 0.0 {
+                return err("division by zero");
+            }
+            stack.push(ExprValue::Num(a / b));
+        }
+        OP_NEG => {
+            let a = pop(stack)?;
+            stack.push(ExprValue::Num(-num(a, "neg")?));
+        }
+        OP_LT | OP_LE | OP_GT | OP_GE => {
+            let (b, a) = (pop(stack)?, pop(stack)?);
+            let (a, b) = (num(a, "comparison")?, num(b, "comparison")?);
+            let result = match op {
+                OP_LT => a < b,
+                OP_LE => a <= b,
+                OP_GT => a > b,
+                _ => a >= b,
+            };
+            stack.push(ExprValue::Bool(result));
+        }
+        OP_EQ | OP_NE => {
+            let (b, a) = (pop(stack)?, pop(stack)?);
+            let equal = match (a, b) {
+                (ExprValue::Num(a), ExprValue::Num(b)) => a == b,
+                (ExprValue::Color(a), ExprValue::Color(b)) => a == b,
+                (ExprValue::Bool(a), ExprValue::Bool(b)) => a == b,
+                _ => return err("equality compares different types"),
+            };
+            stack.push(ExprValue::Bool(equal == (op == OP_EQ)));
+        }
+        OP_AND => {
+            let (b, a) = (pop(stack)?, pop(stack)?);
+            stack.push(ExprValue::Bool(boolean(a, "and")? && boolean(b, "and")?));
+        }
+        OP_OR => {
+            let (b, a) = (pop(stack)?, pop(stack)?);
+            stack.push(ExprValue::Bool(boolean(a, "or")? || boolean(b, "or")?));
+        }
+        OP_NOT => {
+            let a = pop(stack)?;
+            stack.push(ExprValue::Bool(!boolean(a, "not")?));
+        }
+        OP_SELECT => {
+            let (b, a) = (pop(stack)?, pop(stack)?);
+            let cond = boolean(pop(stack)?, "select")?;
+            if a.kind() != b.kind() {
+                return err("select branches have different types");
+            }
+            stack.push(if cond { a } else { b });
+        }
+        OP_MIX => {
+            let t = num(pop(stack)?, "mix")?;
+            let (b, a) = (pop(stack)?, pop(stack)?);
+            let value = match (a.kind(), b.kind()) {
+                (Type::N, Type::N) => {
+                    ExprValue::Num(num(a, "mix")? + (num(b, "mix")? - num(a, "mix")?) * t)
+                }
+                (Type::C, Type::C) => {
+                    ExprValue::Color(color(a, "mix")?.mix(&color(b, "mix")?, t))
+                }
+                _ => return err("mix interpolates two numbers or two colors"),
+            };
+            stack.push(value);
+        }
+        OP_LERP => {
+            let (t, b, a) = (pop(stack)?, pop(stack)?, pop(stack)?);
+            let (a, b, t) = (num(a, "lerp")?, num(b, "lerp")?, num(t, "lerp")?);
+            stack.push(ExprValue::Num(a + (b - a) * t));
+        }
+        OP_CLAMP => {
+            let (hi, lo, v) = (pop(stack)?, pop(stack)?, pop(stack)?);
+            let (v, lo, hi) = (num(v, "clamp")?, num(lo, "clamp")?, num(hi, "clamp")?);
+            if hi < lo {
+                return err("clamp low bound exceeds high bound");
+            }
+            stack.push(ExprValue::Num(v.clamp(lo, hi)));
+        }
+        OP_MIN | OP_MAX => {
+            let (b, a) = (pop(stack)?, pop(stack)?);
+            let (a, b) = (num(a, "min")?, num(b, "min")?);
+            stack.push(ExprValue::Num(if op == OP_MIN {
+                a.min(b)
+            } else {
+                a.max(b)
+            }));
+        }
+        OP_ABS => {
+            let a = pop(stack)?;
+            stack.push(ExprValue::Num(num(a, "abs")?.abs()));
+        }
+        other => return err(format!("unknown program opcode {other}")),
+    }
+    Ok(())
+}
+
 impl Program {
     /// Validate constants and instruction stream. Callers then prove the
     /// slot type with [`Self::result_type`], passing the types of the
@@ -371,18 +509,6 @@ impl Program {
                 _ => Err(ProgramError(format!("{what} expects a finite number"))),
             }
         };
-        let color = |value: ExprValue, what: &str| -> Result<Color, ProgramError> {
-            match value {
-                ExprValue::Color(value) => Ok(value),
-                _ => Err(ProgramError(format!("{what} expects a color"))),
-            }
-        };
-        let boolean = |value: ExprValue, what: &str| -> Result<bool, ProgramError> {
-            match value {
-                ExprValue::Bool(value) => Ok(value),
-                _ => Err(ProgramError(format!("{what} expects a bool"))),
-            }
-        };
         for instr in &self.code {
             match instr {
                 Instr::Const(index) => {
@@ -409,115 +535,7 @@ impl Program {
                     };
                     stack.push(ExprValue::Num(eased));
                 }
-                Instr::Op(op) => match *op {
-                    OP_ADD => {
-                        let (b, a) = (pop(&mut stack)?, pop(&mut stack)?);
-                        let value = num(a, "add")? + num(b, "add")?;
-                        stack.push(ExprValue::Num(value));
-                    }
-                    OP_SUB => {
-                        let (b, a) = (pop(&mut stack)?, pop(&mut stack)?);
-                        stack.push(ExprValue::Num(num(a, "sub")? - num(b, "sub")?));
-                    }
-                    OP_MUL => {
-                        let (b, a) = (pop(&mut stack)?, pop(&mut stack)?);
-                        stack.push(ExprValue::Num(num(a, "mul")? * num(b, "mul")?));
-                    }
-                    OP_DIV => {
-                        let (b, a) = (pop(&mut stack)?, pop(&mut stack)?);
-                        let (a, b) = (num(a, "div")?, num(b, "div")?);
-                        if b == 0.0 {
-                            return err("division by zero");
-                        }
-                        stack.push(ExprValue::Num(a / b));
-                    }
-                    OP_NEG => {
-                        let a = pop(&mut stack)?;
-                        stack.push(ExprValue::Num(-num(a, "neg")?));
-                    }
-                    OP_LT | OP_LE | OP_GT | OP_GE => {
-                        let (b, a) = (pop(&mut stack)?, pop(&mut stack)?);
-                        let (a, b) = (num(a, "comparison")?, num(b, "comparison")?);
-                        let result = match *op {
-                            OP_LT => a < b,
-                            OP_LE => a <= b,
-                            OP_GT => a > b,
-                            _ => a >= b,
-                        };
-                        stack.push(ExprValue::Bool(result));
-                    }
-                    OP_EQ | OP_NE => {
-                        let (b, a) = (pop(&mut stack)?, pop(&mut stack)?);
-                        let equal = match (a, b) {
-                            (ExprValue::Num(a), ExprValue::Num(b)) => a == b,
-                            (ExprValue::Color(a), ExprValue::Color(b)) => a == b,
-                            (ExprValue::Bool(a), ExprValue::Bool(b)) => a == b,
-                            _ => return err("equality compares different types"),
-                        };
-                        stack.push(ExprValue::Bool(equal == (*op == OP_EQ)));
-                    }
-                    OP_AND => {
-                        let (b, a) = (pop(&mut stack)?, pop(&mut stack)?);
-                        stack.push(ExprValue::Bool(boolean(a, "and")? && boolean(b, "and")?));
-                    }
-                    OP_OR => {
-                        let (b, a) = (pop(&mut stack)?, pop(&mut stack)?);
-                        stack.push(ExprValue::Bool(boolean(a, "or")? || boolean(b, "or")?));
-                    }
-                    OP_NOT => {
-                        let a = pop(&mut stack)?;
-                        stack.push(ExprValue::Bool(!boolean(a, "not")?));
-                    }
-                    OP_SELECT => {
-                        let (b, a) = (pop(&mut stack)?, pop(&mut stack)?);
-                        let cond = boolean(pop(&mut stack)?, "select")?;
-                        if a.kind() != b.kind() {
-                            return err("select branches have different types");
-                        }
-                        stack.push(if cond { a } else { b });
-                    }
-                    OP_MIX => {
-                        let t = num(pop(&mut stack)?, "mix")?;
-                        let (b, a) = (pop(&mut stack)?, pop(&mut stack)?);
-                        let value = match (a.kind(), b.kind()) {
-                            (Type::N, Type::N) => ExprValue::Num(
-                                num(a, "mix")? + (num(b, "mix")? - num(a, "mix")?) * t,
-                            ),
-                            (Type::C, Type::C) => {
-                                ExprValue::Color(color(a, "mix")?.mix(&color(b, "mix")?, t))
-                            }
-                            _ => return err("mix interpolates two numbers or two colors"),
-                        };
-                        stack.push(value);
-                    }
-                    OP_LERP => {
-                        let (t, b, a) = (pop(&mut stack)?, pop(&mut stack)?, pop(&mut stack)?);
-                        let (a, b, t) = (num(a, "lerp")?, num(b, "lerp")?, num(t, "lerp")?);
-                        stack.push(ExprValue::Num(a + (b - a) * t));
-                    }
-                    OP_CLAMP => {
-                        let (hi, lo, v) = (pop(&mut stack)?, pop(&mut stack)?, pop(&mut stack)?);
-                        let (v, lo, hi) = (num(v, "clamp")?, num(lo, "clamp")?, num(hi, "clamp")?);
-                        if hi < lo {
-                            return err("clamp low bound exceeds high bound");
-                        }
-                        stack.push(ExprValue::Num(v.clamp(lo, hi)));
-                    }
-                    OP_MIN | OP_MAX => {
-                        let (b, a) = (pop(&mut stack)?, pop(&mut stack)?);
-                        let (a, b) = (num(a, "min")?, num(b, "min")?);
-                        stack.push(ExprValue::Num(if *op == OP_MIN {
-                            a.min(b)
-                        } else {
-                            a.max(b)
-                        }));
-                    }
-                    OP_ABS => {
-                        let a = pop(&mut stack)?;
-                        stack.push(ExprValue::Num(num(a, "abs")?.abs()));
-                    }
-                    other => return err(format!("unknown program opcode {other}")),
-                },
+                Instr::Op(op) => eval_op(*op, &mut stack)?,
             }
         }
         let value = stack
