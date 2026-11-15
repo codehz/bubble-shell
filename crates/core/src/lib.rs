@@ -6,6 +6,7 @@
 //! unique and never reused. A bundle signature must be non-empty; it is not
 //! verified cryptographically yet.
 
+mod abi;
 mod color;
 mod editing;
 mod expr;
@@ -23,6 +24,7 @@ mod shell;
 mod state_style;
 mod turn;
 
+pub use abi::{call_host_layout, check_edit_session, parse_computation_kind, read_abi_utf8};
 pub use color::{parse as parse_color, Color};
 pub use editing::{
     display_text, encode_edit_events, utf16_len, Affinity, CompositionChange, DocPosition,
