@@ -266,6 +266,27 @@ fn drain_pending(shared: &Shared) -> Result<(), String> {
     send_events(shared, events);
     send_edits(shared, edits);
     send_vars(shared, vars);
+    // UI-thread faults surface through the shared fault counter and the last
+    // error the host reads.
+    {
+        let mut shell = lock_or(&shared.shell, "tree lock poisoned")?;
+        let (faults, last_error) = shell.take_ui_faults();
+        if faults != 0 {
+            shared.faults.fetch_add(faults, Ordering::Relaxed);
+            if !last_error.is_empty() {
+                shared.set_error(&last_error);
+            }
+        }
+        let js_calls = shell.take_js_calls();
+        if !js_calls.is_empty() {
+            let bytes = bubble_core::encode_js_calls(&js_calls);
+            if let Ok(slot) = shared.commands.lock() {
+                if let Some(tx) = slot.as_ref() {
+                    let _ = tx.send(Cmd::UiCalls { bytes });
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1595,6 +1616,20 @@ pub extern "C" fn bubble_faults(shell: *mut BubbleShell) -> u32 {
     engine(shell)
         .map(|engine| engine.shared.faults.load(Ordering::Relaxed))
         .unwrap_or(0)
+}
+
+/// Whether timers, animations, queued UI calls, or pending gestures still
+/// need frame ticks. Drains pending op batches first, so a queued JS→UI call
+/// counts once applied.
+#[no_mangle]
+pub extern "C" fn bubble_pending(shell: *mut BubbleShell) -> i32 {
+    let result = catch(|| {
+        let engine = engine(shell)?;
+        drain_pending(&engine.shared)?;
+        let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
+        Ok(i32::from(shell.pending()))
+    });
+    result.unwrap_or(0)
 }
 
 #[no_mangle]

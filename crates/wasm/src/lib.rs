@@ -16,11 +16,11 @@ use std::collections::VecDeque;
 
 use bubble_core::decode_program;
 use bubble_core::{
-    check_edit_session, encode_edit_events, encode_events, encode_paint, encode_set_text,
-    encode_var_events, parse_computation_kind, read_abi_utf8, validate_bundle_hashes, A11yAction,
-    AnimChoice, AnimSpec, EditCommand, EditEvent, EditMenuAction, GestureEvent, GestureKind, Key,
-    Kind, LayoutRequest, NodeDesc, Op, PointerAction, PointerInput, Sched, Shell, Turn, Value,
-    VarEvent,
+    check_edit_session, decode_ui_args, decode_ui_function_payload, encode_edit_events,
+    encode_events, encode_paint, encode_set_text, encode_var_events, parse_computation_kind,
+    read_abi_utf8, validate_bundle_hashes, A11yAction, AnimSpec, EditCommand, EditEvent,
+    EditMenuAction, GestureEvent, GestureKind, Key, Kind, LayoutRequest, NodeDesc, Op,
+    PointerAction, PointerInput, Sched, Shell, Turn, Value, VarEvent,
 };
 
 thread_local! {
@@ -33,6 +33,7 @@ thread_local! {
     static GESTURES: RefCell<Vec<GestureEvent>> = const { RefCell::new(Vec::new()) };
     static EDITS: RefCell<Vec<EditEvent>> = const { RefCell::new(Vec::new()) };
     static VARS: RefCell<Vec<VarEvent>> = const { RefCell::new(Vec::new()) };
+    static JS_CALLS: RefCell<Vec<bubble_core::UiCall>> = const { RefCell::new(Vec::new()) };
 }
 
 thread_local! {
@@ -100,6 +101,8 @@ unsafe extern "C" {
     fn host_gesture_events(ptr: u32, len: u32);
     fn host_edit_events(ptr: u32, len: u32);
     fn host_var_events(ptr: u32, len: u32);
+    /// Drained `BSUE` UI→JS call batch, encoded in scratch.
+    fn host_ui_calls(ptr: u32, len: u32);
 }
 
 struct WasmHost;
@@ -207,6 +210,10 @@ fn collect_events(shell: &mut Shell) {
     if !vars.is_empty() {
         VARS.with(|queue| queue.borrow_mut().extend(vars));
     }
+    let js_calls = shell.take_js_calls();
+    if !js_calls.is_empty() {
+        JS_CALLS.with(|queue| queue.borrow_mut().extend(js_calls));
+    }
 }
 
 /// Push drained event batches to the JS host through the `host_*_events`
@@ -231,6 +238,12 @@ fn flush_events() {
         let len = store_scratch(encode_var_events(&vars));
         let ptr = SCRATCH.with(|slot| slot.borrow().as_ptr() as u32);
         unsafe { host_var_events(ptr, len) };
+    }
+    let js_calls = JS_CALLS.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
+    if !js_calls.is_empty() {
+        let len = store_scratch(bubble_core::encode_js_calls(&js_calls));
+        let ptr = SCRATCH.with(|slot| slot.borrow().as_ptr() as u32);
+        unsafe { host_ui_calls(ptr, len) };
     }
 }
 
@@ -1186,26 +1199,11 @@ pub extern "C" fn move_gesture(handle: u32, target: u32, index: u32) -> i32 {
     }), 1)
 }
 
-/// `anim` 0 none, 1 instant, 2 tween (a=duration ms, c=easing code),
-/// 3 spring (a=stiffness, b=damping); matches the runtime's `animParts`.
 #[no_mangle]
-pub extern "C" fn create_var(
-    source: u32,
-    initial_tag: u32,
-    initial_number: f64,
-    anim: u32,
-    anim_a: f64,
-    anim_b: f64,
-    anim_c: u32,
-) -> u32 {
+pub extern "C" fn create_var(source: u32, initial_tag: u32, initial_number: f64) -> u32 {
     abi_ok!({
         let initial = Value::from_abi(initial_tag, initial_number, Ok(String::new()))?;
-        let spec = if anim == 0 {
-            None
-        } else {
-            Some(AnimSpec::from_abi(anim, anim_a, anim_b, anim_c)?)
-        };
-        with_turn(|turn| turn.create_var(source as u8, initial, spec))
+        with_turn(|turn| turn.create_var(source as u8, initial))
     })
 }
 
@@ -1218,7 +1216,7 @@ pub extern "C" fn bind_var(var: u32, target: u32) -> i32 {
 }
 
 /// `tag` 0 none, 1 bool, 2 int, 3 float; matches `propParts` on the JS side.
-/// `anim` 0 var default, 1 instant, 2 tween (a=duration ms, c=easing code),
+/// `anim` 0 immediate, 2 tween (a=duration ms, c=easing code),
 /// 3 spring (a=stiffness, b=damping); matches the runtime's `animParts`.
 #[no_mangle]
 pub extern "C" fn set_var(
@@ -1232,9 +1230,13 @@ pub extern "C" fn set_var(
 ) -> i32 {
     abi_ok!({
         let value = Value::from_abi(tag, number, Ok(String::new()))?;
-        let choice = AnimChoice::from_abi(anim, anim_a, anim_b, anim_c)?;
+        let spec = if anim == 0 {
+            None
+        } else {
+            Some(AnimSpec::from_abi(anim, anim_a, anim_b, anim_c)?)
+        };
         with_turn(|turn| {
-            turn.set_var(var, value, choice);
+            turn.set_var(var, value, spec);
             Ok(0)
         })
     }, 1)
@@ -1246,6 +1248,60 @@ pub extern "C" fn settle_var(var: u32) -> i32 {
         turn.settle_var(var);
         Ok(0)
     }), 1)
+}
+
+/// Defines one UI program ("worklet"). `payload` carries captures, consts,
+/// and code; the shell validates it when the op lands.
+#[no_mangle]
+pub extern "C" fn define_ui_function(params: u32, ptr: *const u8, len: u32) -> u32 {
+    abi_ok!({
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+        let (captures, consts, code) = decode_ui_function_payload(bytes)?;
+        with_turn(|turn| turn.define_ui_function(params.min(255) as u8, captures, consts, code))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn bind_gesture_program(handle: u32, slot: u32, function: u32) -> i32 {
+    abi_ok!({
+        if !(1..=9).contains(&slot) {
+            return Err(format!("bad gesture event slot {slot}"));
+        }
+        with_turn(|turn| {
+            turn.bind_gesture_program(handle, slot as u8, function);
+            Ok(0)
+        })
+    }, 1)
+}
+
+/// `args` is the encoded `encode_ui_args` stream.
+#[no_mangle]
+pub extern "C" fn run_ui_function(function: u32, ptr: *const u8, len: u32) -> i32 {
+    abi_ok!({
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+        let args = decode_ui_args(bytes)?;
+        with_turn(|turn| {
+            turn.run_ui_function(function, args);
+            Ok(0)
+        })
+    }, 1)
+}
+
+#[no_mangle]
+pub extern "C" fn cancel_anim(var: u32) -> i32 {
+    abi_ok!(with_turn(|turn| {
+        turn.cancel_animation(var);
+        Ok(0)
+    }), 1)
+}
+
+/// Whether timers, animations, queued UI calls, or pending gestures still
+/// need frame ticks.
+#[no_mangle]
+pub extern "C" fn pending() -> i32 {
+    let _ = drain_pending();
+    let calls = JS_CALLS.with(|queue| !queue.borrow().is_empty());
+    with_shell(|shell| Ok(i32::from(shell.pending() || calls))).unwrap_or(0)
 }
 
 #[no_mangle]

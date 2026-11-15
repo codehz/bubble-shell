@@ -65,12 +65,10 @@ pub(crate) const SLOT_COUNT: usize = 10;
 pub const EASE_LINEAR: u8 = 0;
 pub const EASE_IN_OUT: u8 = 1;
 
-/// How one variable transition animates. The animation belongs to the
-/// variable, so styles that read the variable get the motion for free.
+/// How one write transitions. The animation belongs to the write that
+/// started it: styles that read the variable get the motion for free.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AnimSpec {
-    /// Writes land immediately; the value converges the moment it applies.
-    Instant,
     Tween {
         duration_ms: f32,
         easing: u8,
@@ -79,18 +77,6 @@ pub enum AnimSpec {
         stiffness: f32,
         damping: f32,
     },
-}
-
-/// Wire choice of a write's animation: per-write override or the variable's
-/// default.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum AnimChoice {
-    /// Use the variable's default spec; a variable without one lands instantly.
-    Default,
-    /// Per-write override: land immediately even if the variable animates.
-    Instant,
-    /// Per-write override with an explicit spec.
-    Spec(AnimSpec),
 }
 
 /// Easing in `[0, 1] -> [0, 1]`.
@@ -186,8 +172,6 @@ pub(crate) struct Var {
     pub target: u32,
     /// Declarations that read this variable.
     pub dependents: Vec<u32>,
-    /// Per-variable default spec; `None` writes land instantly.
-    pub anim: Option<AnimSpec>,
     /// In-flight transition, if the last write started one.
     pub anim_state: Option<AnimState>,
 }
@@ -231,7 +215,6 @@ impl AnimState {
     /// whether the transition converged on `to`.
     pub fn step(&mut self, now_ms: f64) -> (Option<ExprValue>, bool) {
         match self.spec {
-            AnimSpec::Instant => (Some(self.to.clone()), true),
             AnimSpec::Tween {
                 duration_ms,
                 easing,
@@ -313,14 +296,7 @@ impl VarTable {
     }
 
     /// Claim `id`. Variables are never reused; a retired id stays retired.
-    pub fn create(
-        &mut self,
-        id: u32,
-        source: u8,
-        target: u32,
-        value: ExprValue,
-        anim: Option<AnimSpec>,
-    ) -> Result<(), String> {
+    pub fn create(&mut self, id: u32, source: u8, target: u32, value: ExprValue) -> Result<(), String> {
         if id == 0 || self.retired.contains(&id) || self.get(id).is_some() {
             return Err(format!("var {id} is not free"));
         }
@@ -332,7 +308,6 @@ impl VarTable {
             source,
             target,
             dependents: Vec::new(),
-            anim,
             anim_state: None,
         });
         Ok(())
@@ -371,6 +346,13 @@ impl VarTable {
             .enumerate()
             .filter_map(|(index, slot)| slot.as_ref().map(|_| index as u32))
             .collect()
+    }
+
+    /// Whether any variable still carries an in-flight transition.
+    pub fn any_animating(&self) -> bool {
+        self.vars
+            .iter()
+            .any(|slot| slot.as_ref().is_some_and(|var| var.anim_state.is_some()))
     }
 
     /// Variables sourced at a destroyed node; callers dispose them.

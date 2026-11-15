@@ -23,7 +23,10 @@ import {
   Match,
   Slot,
   ViewStyle,
-  createVar,
+  createSharedValue,
+  scheduleOnUI,
+  withSpring,
+  withTiming,
   ref,
   storage,
   clipboard,
@@ -295,8 +298,8 @@ function LongPressDemo() {
 
 function PanDemo() {
   const boxRef = ref();
-  const panX = createVar(0);
-  const panY = createVar(0);
+  const panX = createSharedValue(0);
+  const panY = createSharedValue(0);
   const status = signal("idle");
   return (
     <View gap={12}>
@@ -314,17 +317,25 @@ function PanDemo() {
             <PanGesture
               axis="both"
               minDistance={5}
-              onPanStart={() => {
-                panX.set(0);
-                panY.set(0);
-                status.set("panning");
+              onPanStart={(e) => {
+                "worklet";
+                panX.value = 0;
+                panY.value = 0;
+                scheduleOnJS(status.set, "panning");
               }}
               onPanUpdate={(e) => {
-                panX.set(e.translationX);
-                panY.set(e.translationY);
+                "worklet";
+                panX.value = e.translationX;
+                panY.value = e.translationY;
               }}
-              onPanEnd={() => status.set("panned, card stays where dropped")}
-              onPanCancel={() => status.set("pan cancelled")}
+              onPanEnd={(e) => {
+                "worklet";
+                scheduleOnJS(status.set, "panned, card stays where dropped");
+              }}
+              onPanCancel={(e) => {
+                "worklet";
+                scheduleOnJS(status.set, "pan cancelled");
+              }}
             />
             <ViewStyle target={boxRef} when={true} translateX={panX} translateY={panY} />
             <Text color="#ffffff" fontSize={14}>drag me</Text>
@@ -338,9 +349,13 @@ function PanDemo() {
 
 function TransformDemo() {
   const boxRef = ref();
-  const scaleV = createVar(1);
-  const rotateV = createVar(0);
+  const scaleV = createSharedValue(1);
+  const rotateV = createSharedValue(0);
   const status = signal("idle");
+  // JS-side formatter: the worklet calls it through scheduleOnJS with the
+  // event numbers as arguments.
+  const describe = (scale, rotation) =>
+    status.set("scale " + scale.toFixed(2) + " rotate " + rotation.toFixed(1));
   return (
     <View gap={12}>
       <Section title="TransformGesture — pinch zoom, rotate, pan">
@@ -357,14 +372,24 @@ function TransformDemo() {
             <TransformGesture
               mode={["pan", "pinch", "rotate"]}
               minDistance={5}
-              onTransformStart={() => status.set("transforming")}
-              onTransformUpdate={(e) => {
-                scaleV.set(e.scale);
-                rotateV.set(e.rotation);
-                status.set("scale " + e.scale.toFixed(2) + " rotate " + e.rotation.toFixed(1));
+              onTransformStart={(e) => {
+                "worklet";
+                scheduleOnJS(status.set, "transforming");
               }}
-              onTransformEnd={() => status.set("transform ended")}
-              onTransformCancel={() => status.set("transform cancelled")}
+              onTransformUpdate={(e) => {
+                "worklet";
+                scaleV.value = e.scale;
+                rotateV.value = e.rotation;
+                scheduleOnJS(describe, e.scale, e.rotation);
+              }}
+              onTransformEnd={(e) => {
+                "worklet";
+                scheduleOnJS(status.set, "transform ended");
+              }}
+              onTransformCancel={(e) => {
+                "worklet";
+                scheduleOnJS(status.set, "transform cancelled");
+              }}
             />
             <ViewStyle target={boxRef} when={true} scale={scaleV} rotate={rotateV} />
             <Text color="#ffffff" fontSize={14}>pinch / rotate</Text>
@@ -395,8 +420,8 @@ function GestureVarsDemo() {
         { backgroundColor: 0xff8b5cf6, radius: 8, width: 150, height: 72, justifyContent: "center", alignItems: "center", ref: cardRef },
         () => {
           const pan = panGesture({ onPanUpdate: () => {}, onPanEnd: () => {} });
-          const tx = createVar({ source: "gesture.translationX", target: pan });
-          const ty = createVar({ source: "gesture.translationY", target: pan });
+          const tx = createSharedValue({ source: "gesture.translationX", target: pan });
+          const ty = createSharedValue({ source: "gesture.translationY", target: pan });
           primitive("ViewStyle", { target: cardRef, when: true, translateX: tx, translateY: ty });
           text({ color: "#ffffff", fontSize: 14 }, "drag me");
         },
@@ -408,7 +433,7 @@ function GestureVarsDemo() {
         { color: "#9ca3af", fontSize: 13 },
         "Scroll the list; the bar mixes blue to green over 200 px of scroll offset.",
       );
-      const sy = createVar({ source: "scroll.y", target: scrollRef });
+      const sy = createSharedValue({ source: "scroll.y", target: scrollRef });
       view(
         { ref: scrollRef, height: 140, overflowY: "scroll", backgroundColor: 0xff374151, radius: 6, padding: [8, 8, 8, 10], gap: 6 },
         () => {
@@ -635,7 +660,7 @@ function TextPropsDemo() {
 
 function PressedDemo() {
   const btnRef = ref();
-  const press = createVar({ source: "pressed", target: btnRef });
+  const press = createSharedValue({ source: "pressed", target: btnRef });
   const taps = signal(0);
   return (
     <View gap={12}>
@@ -663,8 +688,8 @@ function PressedDemo() {
 
 function FocusedDemo() {
   const fieldRef = ref();
-  const focused = createVar({ source: "focused", target: fieldRef });
-  const editing = createVar({ source: "editing", target: fieldRef });
+  const focused = createSharedValue({ source: "focused", target: fieldRef });
+  const editing = createSharedValue({ source: "editing", target: fieldRef });
   const echo = signal("");
   return (
     <View gap={12}>
@@ -694,24 +719,39 @@ function FocusedDemo() {
 function AnimatedDemo() {
   const springBox = ref();
   const tweenBox = ref();
-  const slide = createVar(0, { anim: { type: "spring", stiffness: 200, damping: 18 } });
-  const glide = createVar(0, { anim: { type: "tween", duration: 400, easing: "easeInOut" } });
+  const slide = createSharedValue(0);
+  const glide = createSharedValue(0);
+  // Animations start on the UI thread: a JS tap schedules a worklet whose
+  // assignment of withTiming/withSpring drives the value without any JS
+  // running per frame.
+  const springTo = (target) => {
+    scheduleOnUI(() => {
+      "worklet";
+      slide.value = withSpring(target, { stiffness: 200, damping: 18 });
+    }, target);
+  };
+  const tweenTo = (target) => {
+    scheduleOnUI(() => {
+      "worklet";
+      glide.value = withTiming(target, { duration: 400, easing: "easeInOut" });
+    }, target);
+  };
   return (
     <View gap={12}>
       <Section title="Spring animation on a script-driven var">
         <View ref={springBox} backgroundColor={0xff22c55e} radius={10} width={56} height={56} />
         <ViewStyle target={springBox} when={true} translateX={slide} />
         <View flexDirection="row" gap={8}>
-          <Btn label="Spring to 100" color={0xff22c55e} onTap={() => slide.set(100)} />
-          <Btn label="Spring to 0" color={0xff4b5563} onTap={() => slide.set(0)} />
+          <Btn label="Spring to 100" color={0xff22c55e} onTap={() => springTo(100)} />
+          <Btn label="Spring to 0" color={0xff4b5563} onTap={() => springTo(0)} />
         </View>
       </Section>
       <Section title="Tween animation on a script-driven var">
         <View ref={tweenBox} backgroundColor={0xfff59e0b} radius={10} width={56} height={56} />
         <ViewStyle target={tweenBox} when={true} translateX={glide} />
         <View flexDirection="row" gap={8}>
-          <Btn label="Tween to 100" color={0xfff59e0b} onTap={() => glide.set(100)} />
-          <Btn label="Tween to 0" color={0xff4b5563} onTap={() => glide.set(0)} />
+          <Btn label="Tween to 100" color={0xfff59e0b} onTap={() => tweenTo(100)} />
+          <Btn label="Tween to 0" color={0xff4b5563} onTap={() => tweenTo(0)} />
         </View>
       </Section>
     </View>

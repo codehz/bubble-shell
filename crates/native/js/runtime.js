@@ -112,6 +112,9 @@ function resetRenderState() {
   gestureHandlerIds.clear();
   retiredGestureHandlers.clear();
   styleOrderOfTarget.clear();
+  uiCallbacks.clear();
+  uiCallbacksOfGesture.clear();
+  gestureOwnerStack.length = 0;
   virtualTargetOf.clear();
   virtualScopeOf.clear();
   virtualRoots.clear();
@@ -594,6 +597,14 @@ function addGestureHandlers(id, props, allowed) {
     if (!slot) continue;
     const fn = props[name];
     if (fn == null) continue;
+    // A worklet takes over the slot: the shell drops the JS handler and
+    // events flow to the UI program instead.
+    if (fn && typeof fn === "object" && typeof fn.__uiFunction === "number") {
+      if (api.bind_gesture_program(id, slot, fn.__uiFunction) !== 0) {
+        throw new Error(api.error() || "bind_gesture_program failed");
+      }
+      continue;
+    }
     if (typeof fn !== "function") throw new Error(`${name} must be a function`);
     const handler = nextHandler++;
     gestureHandlers.set(handler, fn);
@@ -614,13 +625,18 @@ function packGesture(type, props) {
   }
   const target = parent();
   const { id } = registerGesture(target, kind);
-  for (const key of Object.keys(props)) {
-    const value = props[key];
-    if (key in GESTURE_EVENTS[kind] && GESTURE_EVENTS[kind][key]) continue;
-    if (value instanceof Dynamic) bindGestureProp(id, key, value.run);
-    else setGestureProp(id, key, value);
+  gestureOwnerStack.push(id);
+  try {
+    for (const key of Object.keys(props)) {
+      const value = props[key];
+      if (key in GESTURE_EVENTS[kind] && GESTURE_EVENTS[kind][key]) continue;
+      if (value instanceof Dynamic) bindGestureProp(id, key, value.run);
+      else setGestureProp(id, key, value);
+    }
+    addGestureHandlers(id, props, kind);
+  } finally {
+    gestureOwnerStack.pop();
   }
-  addGestureHandlers(id, props, kind);
   return id;
 }
 
@@ -750,6 +766,11 @@ function disposeGesture(id) {
     retiredGestureHandlers.set(id, handlers);
     gestureHandlerIds.delete(id);
   }
+  const callbacks = uiCallbacksOfGesture.get(id);
+  if (callbacks) {
+    for (const handler of callbacks) uiCallbacks.delete(handler);
+    uiCallbacksOfGesture.delete(id);
+  }
   const order = gestureOrderOfTarget.get(target);
   if (order) {
     const index = order.indexOf(id);
@@ -784,12 +805,11 @@ const SOURCE_CODES = {
 // variable converged.
 const settleWaiters = new Map();
 
-/// Wire encoding of an animation spec. `anim` 0 none, 1 instant, 2 tween
+/// Wire encoding of an animation spec. `anim` 0 immediate, 2 tween
 /// (a=duration ms, c=easing code), 3 spring (a=stiffness, b=damping).
 function animParts(anim) {
   if (anim == null) return [0, 0, 0, 0];
-  if (anim === "instant") return [1, 0, 0, 0];
-  if (typeof anim !== "object") throw new Error("anim must be a spec object or \"instant\"");
+  if (typeof anim !== "object") throw new Error("anim must be a spec object");
   if (anim.type === "tween") {
     if (typeof anim.duration !== "number" || !(anim.duration > 0)) {
       throw new Error("tween requires a positive duration");
@@ -808,6 +828,12 @@ function animParts(anim) {
     return [3, anim.stiffness, anim.damping, 0];
   }
   throw new Error(`unsupported anim type ${anim.type}`);
+}
+
+/// Value the write converges to, unwrapped from an animation marker.
+function animTarget(value) {
+  if (value == null) throw new Error("animation target must be a number");
+  return value.target;
 }
 
 // Opcode table for the style expression program; must match crates/core/src/expr.rs.
@@ -856,21 +882,22 @@ function resolveTarget(target) {
   throw new Error("target must be a ref or a node handle");
 }
 
-/// One UI-thread variable. `createVar({ source, target })` binds a state
-/// source the shell drives; sources `gesture.translationX` /
+/// One UI-thread shared value. `createSharedValue({ source, target })` binds
+/// a state source the shell drives; sources `gesture.translationX` /
 /// `gesture.translationY` / `gesture.scale` / `gesture.rotation` read the
 /// target gesture declaration's live values (`scale` stays `1.0` and
 /// translations `0` while idle), `scroll.x` / `scroll.y` read the target
-/// container's scroll offsets. `createVar(0)` makes a script-driven variable
-/// written with `set` / `bind`. Either form accepts `{ value }` for the
+/// container's scroll offsets. `createSharedValue(0)` makes a script-driven
+/// variable written from JS with `value = ...`, or from a worklet with
+/// `.value` reads and writes. Either form accepts `{ value }` for the
 /// starting value.
-export function createVar(valueOrOptions, options) {
+export function createSharedValue(valueOrOptions, options) {
   if (typeof api.create_var !== "function") {
     throw new Error("host does not expose shared variables");
   }
   let opts = valueOrOptions;
   let initial;
-  if (valueOrOptions !== null && typeof valueOrOptions === "object") {
+  if (valueOrOptions !== null && typeof valueOrOptions === "object" && !("id" in valueOrOptions)) {
     initial = valueOrOptions.value;
   } else {
     initial = valueOrOptions;
@@ -880,8 +907,7 @@ export function createVar(valueOrOptions, options) {
   const source = (opts && opts.source) ?? "none";
   if (!(source in SOURCE_CODES)) throw new Error(`unknown var source ${source}`);
   const [tag, number] = propParts(initial);
-  const [animCode, animA, animB, animC] = animParts(opts && opts.anim);
-  const id = api.create_var(SOURCE_CODES[source], tag, number, animCode, animA, animB, animC);
+  const id = api.create_var(SOURCE_CODES[source], tag, number);
   if (!id) throw new Error(api.error() || "create_var failed");
   const targetRef = opts && opts.target;
   const target = resolveTarget(targetRef);
@@ -898,14 +924,24 @@ export function createVar(valueOrOptions, options) {
     self.set = () => {
       throw new Error("source-driven variables are written by the UI thread");
     };
+    Object.defineProperty(self, "value", {
+      get() { return undefined; },
+      set() { throw new Error("source-driven variables are written by the UI thread"); },
+    });
   } else {
-    self.set = (value, options) => {
-      const [valueTag, valueNumber] = propParts(value);
-      const [animCode, animA, animB, animC] = animParts(options && options.anim);
+    self.set = (value) => {
+      const [valueTag, valueNumber] = propParts(animTarget(value) ?? value);
+      const [animCode, animA, animB, animC] = animParts(value && value.__anim ? value.spec : null);
       if (api.set_var(id, valueTag, valueNumber, animCode, animA, animB, animC) !== 0) {
         throw new Error(api.error() || "set_var failed");
       }
     };
+    Object.defineProperty(self, "value", {
+      get() {
+        throw new Error("shared values cannot be read on the JS thread; use scheduleOnUI");
+      },
+      set(value) { self.set(value); },
+    });
     self.bind = (run) => {
       if (typeof run !== "function") throw new Error("bind requires a function");
       addBinding(() => self.set(run()));
@@ -920,6 +956,458 @@ export function createVar(valueOrOptions, options) {
     });
   };
   return self;
+}
+
+/// Start a tween to `target` when the marker is assigned to a shared value.
+export function withTiming(target, options) {
+  const duration = options && options.duration;
+  const easing = options ? options.easing : undefined;
+  const spec = { type: "tween", duration, easing };
+  animParts(spec); // validate eagerly so author mistakes throw at the call.
+  return { __anim: true, target, spec };
+}
+
+/// Start a spring to `target` when the marker is assigned to a shared value.
+export function withSpring(target, options) {
+  const spec = {
+    type: "spring",
+    stiffness: options ? options.stiffness : undefined,
+    damping: options ? options.damping : undefined,
+  };
+  animParts(spec); // validate eagerly so author mistakes throw at the call.
+  return { __anim: true, target, spec };
+}
+
+/// Stop a shared value's in-flight animation; the displayed value stays.
+export function cancelAnimation(sv) {
+  if (sv == null || typeof sv.id !== "number") {
+    throw new Error("cancelAnimation expects a shared value");
+  }
+  if (api.cancel_anim(sv.id) !== 0) throw new Error(api.error() || "cancel_anim failed");
+}
+
+// ---------------------------------------------------------------------------
+// UI worklets
+// ---------------------------------------------------------------------------
+
+// Handler ids for JS functions captured by worklets and called through
+// scheduleOnJS. Cleared when the owning gesture or node is disposed.
+const uiCallbacks = new Map();
+const uiCallbacksOfGesture = new Map();
+
+function rememberUiCallback(gesture, handler) {
+  if (gesture == null) return;
+  let ids = uiCallbacksOfGesture.get(gesture);
+  if (!ids) {
+    ids = [];
+    uiCallbacksOfGesture.set(gesture, ids);
+  }
+  ids.push(handler);
+}
+
+/// Compiler-facing: define one UI program. `params` is an array of parameter
+/// name strings, `captures` an array of captured VALUES (shared values,
+/// worklets, JS functions, or primitives), `body` the statement tree.
+export function uiFunction(params, captures, body) {
+  if (typeof api.define_ui_function !== "function") {
+    throw new Error("host does not expose UI worklets");
+  }
+  if (!Array.isArray(params) || params.some((name) => typeof name !== "string")) {
+    throw new Error("worklet parameters must be identifiers");
+  }
+  if (captures == null || typeof body !== "object" || body == null) {
+    throw new Error("worklet body must be an encoded tree");
+  }
+  const owner = currentGestureOwner();
+  const entries = captures.map((value) => {
+    if (value == null) throw new Error("worklet captured null");
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) throw new Error("worklet captured a non-finite number");
+      return { tag: 1, number: value };
+    }
+    if (typeof value === "boolean") return { tag: 3, number: value ? 1 : 0 };
+    if (typeof value === "string") return { tag: 7, text: value };
+    if (typeof value === "object" && typeof value.id === "number") return { tag: 4, number: value.id };
+    if (typeof value === "object" && typeof value.__uiFunction === "number") {
+      return { tag: 5, number: value.__uiFunction };
+    }
+    if (typeof value === "function") {
+      const handler = nextHandler++;
+      uiCallbacks.set(handler, value);
+      rememberUiCallback(owner, handler);
+      return { tag: 6, number: handler };
+    }
+    throw new Error(`worklet captured an unsupported value ${typeof value}`);
+  });
+  const payload = encodeUiFunction(params.length, entries, body);
+  const id = api.define_ui_function(params.length, Array.from(payload));
+  if (!id) throw new Error(api.error() || "define_ui_function failed");
+  return { __uiFunction: id };
+}
+
+/// Compiler-facing: queue one UI call with primitive arguments.
+export function scheduleOnUI(fn, ...args) {
+  if (fn == null || typeof fn.__uiFunction !== "number") {
+    throw new Error("scheduleOnUI requires a worklet");
+  }
+  for (const arg of args) {
+    if (arg != null && typeof arg === "object" && !("id" in arg) && typeof arg !== "number") {
+      throw new Error("scheduleOnUI arguments must be numbers, bools, or strings");
+    }
+  }
+  if (typeof api.run_ui_function !== "function") {
+    throw new Error("host does not expose UI worklets");
+  }
+  const bytes = encodeUiArgs(args);
+  if (api.run_ui_function(fn.__uiFunction, Array.from(bytes)) !== 0) {
+    throw new Error(api.error() || "run_ui_function failed");
+  }
+}
+
+/// Decode the `BSUE` batch and dispatch each queued call to its JS handler.
+export function dispatchUiCalls(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.byteLength < 10 || view.getUint8(0) !== 0x42 || view.getUint8(1) !== 0x53 ||
+      view.getUint8(2) !== 0x55 || view.getUint8(3) !== 0x45) {
+    throw new Error("bad ui call batch");
+  }
+  const version = view.getUint16(4, true);
+  if (version !== 1) throw new Error(`unsupported ui call version ${version}`);
+  const count = view.getUint32(6, true);
+  let offset = 10;
+  const calls = [];
+  for (let index = 0; index < count; index += 1) {
+    const callback = view.getUint32(offset, true);
+    offset += 4;
+    const argc = view.getUint8(offset);
+    offset += 1;
+    const args = [];
+    for (let i = 0; i < argc; i += 1) {
+      const tag = view.getUint8(offset);
+      offset += 1;
+      if (tag === 1) {
+        args.push(view.getUint8(offset) !== 0);
+        offset += 1;
+      } else if (tag === 2) {
+        args.push(view.getFloat32(offset, true));
+        offset += 4;
+      } else if (tag === 3) {
+        const len = view.getUint32(offset, true);
+        offset += 4;
+        args.push(decodeUtf8(bytes, offset, offset + len));
+        offset += len;
+      } else {
+        throw new Error(`unknown ui call arg tag ${tag}`);
+      }
+    }
+    calls.push({ callback, args });
+  }
+  let ran = false;
+  batch(() => {
+    for (const call of calls) {
+      const fn = uiCallbacks.get(call.callback);
+      if (!fn) continue;
+      ran = true;
+      fn(...call.args);
+    }
+  });
+  if (ran) flush();
+  return calls.length;
+}
+
+/// The gesture declaration a worklet definition runs inside, so its
+/// captured JS callbacks retire with the gesture.
+const gestureOwnerStack = [];
+
+function currentGestureOwner() {
+  return gestureOwnerStack[gestureOwnerStack.length - 1] ?? null;
+}
+
+// UI program opcodes; must match crates/core/src/ui.rs.
+const UI_OPS = {
+  add: 2,
+  sub: 3,
+  mul: 4,
+  div: 5,
+  neg: 6,
+  lt: 7,
+  le: 8,
+  gt: 9,
+  ge: 10,
+  eq: 11,
+  ne: 12,
+  and: 13,
+  or: 14,
+  not: 15,
+  select: 16,
+  mix: 17,
+  lerp: 18,
+  clamp: 19,
+  min: 20,
+  max: 21,
+  abs: 22,
+  floor: 45,
+  ceil: 46,
+  round: 47,
+  sqrt: 48,
+  pow: 49,
+};
+const UNARY_UI_OPS = new Set(["neg", "not", "abs", "floor", "ceil", "round", "sqrt"]);
+const BINARY_UI_OPS = new Set([
+  "add", "sub", "mul", "div", "lt", "le", "gt", "ge", "eq", "ne",
+  "and", "or", "min", "max", "pow",
+]);
+
+/// Encode one worklet body tree into captures + consts + code bytes, in the
+/// `encode_ui_function_payload` layout.
+function encodeUiFunction(params, captures, body) {
+  const capturesBytes = [];
+  const u16 = (value) => [value & 0xff, (value >>> 8) & 0xff];
+  const u32 = (value) => [
+    value & 0xff,
+    (value >>> 8) & 0xff,
+    (value >>> 16) & 0xff,
+    (value >>> 24) & 0xff,
+  ];
+  const f32 = (value) => {
+    const buffer = new ArrayBuffer(4);
+    new Float32Array(buffer)[0] = value;
+    return [...new Uint8Array(buffer)];
+  };
+  for (const capture of captures) {
+    capturesBytes.push(capture.tag);
+    if (capture.tag === 1) capturesBytes.push(...f32(capture.number));
+    else if (capture.tag === 2) capturesBytes.push(...u32(capture.number >>> 0));
+    else if (capture.tag === 3) capturesBytes.push(capture.number & 0xff);
+    else if (capture.tag >= 4 && capture.tag <= 6) capturesBytes.push(...u32(capture.number));
+    else if (capture.tag === 7) {
+      const bytes = utf8(capture.text);
+      capturesBytes.push(...u32(bytes.length), ...bytes);
+    }
+  }
+  const consts = [];
+  const constIndex = (tag, number) => {
+    const existing = consts.findIndex((c) => c[0] === tag && c[1] === number);
+    if (existing >= 0) return existing;
+    consts.push([tag, number]);
+    return consts.length - 1;
+  };
+  const code = [];
+  const byte = (value) => code.push(value & 0xff);
+  const patch16 = (at, value) => {
+    code[at] = value & 0xff;
+    code[at + 1] = (value >>> 8) & 0xff;
+  };
+
+  function pushConst(tag, number) {
+    byte(0);
+    byte(constIndex(tag, number));
+  }
+
+  function emitExpr(node) {
+    if (!Array.isArray(node)) {
+      // Non-array leaves: numbers and bools fold into constants here.
+      if (typeof node === "number") {
+        if (!Number.isFinite(node)) throw new Error("worklets only accept finite numbers");
+        pushConst(1, node);
+        return;
+      }
+      if (typeof node === "boolean") {
+        pushConst(3, node ? 1 : 0);
+        return;
+      }
+      throw new Error(`unsupported worklet value ${typeof node}`);
+    }
+    const [op, ...args] = node;
+    if (op === "const") {
+      pushConst(1, args[0]);
+      return;
+    }
+    if (op === "param") {
+      byte(1);
+      byte(args[0]);
+      return;
+    }
+    if (op === "cap") {
+      byte(32);
+      code.push(...u16(args[0]));
+      return;
+    }
+    if (op === "event") {
+      byte(33);
+      byte(args[0]);
+      return;
+    }
+    if (op === "local") {
+      byte(38);
+      byte(args[0]);
+      return;
+    }
+    if (op === "select") {
+      emitExpr(args[0]);
+      emitExpr(args[1]);
+      emitExpr(args[2]);
+      byte(16);
+      return;
+    }
+    if (op === "mix" || op === "lerp" || op === "clamp") {
+      // Push order matches core pops: t/value operands below the pair.
+      emitExpr(args[0]);
+      emitExpr(args[1]);
+      emitExpr(args[2]);
+      byte(UI_OPS[op]);
+      return;
+    }
+    if (UNARY_UI_OPS.has(op)) {
+      emitExpr(args[0]);
+      byte(UI_OPS[op]);
+      return;
+    }
+    if (BINARY_UI_OPS.has(op)) {
+      emitExpr(args[0]);
+      emitExpr(args[1]);
+      byte(UI_OPS[op]);
+      return;
+    }
+    if (op === "call") {
+      for (const arg of args.slice(1)) emitExpr(arg);
+      byte(39);
+      code.push(...u16(args[0]));
+      byte(args.length - 1);
+      return;
+    }
+    if (op === "scheduleJs") {
+      for (const arg of args.slice(1)) emitExpr(arg);
+      byte(41);
+      code.push(...u16(args[0]));
+      byte(args.length - 1);
+      return;
+    }
+    if (op === "cancelAnim") {
+      byte(36);
+      code.push(...u16(args[0]));
+      return;
+    }
+    throw new Error(`unsupported worklet expression ${op}`);
+  }
+
+  function emitStatements(statements) {
+    for (const statement of statements ?? []) emitStatement(statement);
+  }
+
+  function emitStatement(node) {
+    if (!Array.isArray(node)) throw new Error("worklet statements must be encoded trees");
+    const [op, ...args] = node;
+    if (op === "let") {
+      emitExpr(args[1]);
+      byte(37);
+      byte(args[0]);
+      return;
+    }
+    if (op === "store") {
+      emitExpr(args[1]);
+      byte(34);
+      code.push(...u16(args[0]));
+      return;
+    }
+    if (op === "storeAnim") {
+      // Stack layout, top first: value, spec code, spec params.
+      // `args[1]` is the spec tree: ["tween", duration, easing] or
+      // ["spring", stiffness, damping] — numbers the compiler baked in.
+      const spec = args[1];
+      const kind = spec?.[0];
+      if (kind === "tween") {
+        emitExpr(spec[1]);
+        emitExpr(spec[2]);
+        pushConst(1, 0);
+      } else if (kind === "spring") {
+        emitExpr(spec[1]);
+        emitExpr(spec[2]);
+        pushConst(1, 1);
+      } else {
+        throw new Error(`unsupported worklet animation ${kind}`);
+      }
+      emitExpr(args[2]);
+      byte(35);
+      code.push(...u16(args[0]));
+      return;
+    }
+    if (op === "pop") {
+      emitExpr(args[0]);
+      byte(44);
+      return;
+    }
+    if (op === "return") {
+      emitExpr(args[0]);
+      byte(40);
+      return;
+    }
+    if (op === "if") {
+      emitExpr(args[0]);
+      byte(43);
+      code.push(...u16(0));
+      const jumpAt = code.length - 2;
+      emitStatements(args[1]);
+      if (args[2] && args[2].length > 0) {
+        byte(42);
+        code.push(...u16(0));
+        const elseJumpAt = code.length - 2;
+        patch16(jumpAt, code.length);
+        emitStatements(args[2]);
+        patch16(elseJumpAt, code.length);
+      } else {
+        patch16(jumpAt, code.length);
+      }
+      return;
+    }
+    throw new Error(`unsupported worklet statement ${op}`);
+  }
+
+  emitStatements(body.statements ?? body);
+  // A trailing explicit return keeps the validator's reachability simple.
+  pushConst(1, 0);
+  byte(40);
+
+  const payload = [];
+  payload.push(...u16(captures.length));
+  payload.push(...capturesBytes);
+  payload.push(consts.length & 0xff);
+  for (const [tag, number] of consts) {
+    payload.push(tag);
+    if (tag === 1) payload.push(...f32(number));
+    else payload.push(number & 0xff);
+  }
+  payload.push(...u32(code.length), ...code);
+  return Uint8Array.from(payload);
+}
+
+/// Encode `scheduleOnUI` arguments: argc byte, then tag/payload pairs.
+function encodeUiArgs(args) {
+  const out = [Math.min(args.length, 255)];
+  const u32 = (value) => out.push(
+    value & 0xff,
+    (value >>> 8) & 0xff,
+    (value >>> 16) & 0xff,
+    (value >>> 24) & 0xff,
+  );
+  for (const arg of args) {
+    if (typeof arg === "boolean") {
+      out.push(1, arg ? 1 : 0);
+    } else if (typeof arg === "number") {
+      if (!Number.isFinite(arg)) throw new Error("scheduleOnUI arguments must be finite");
+      const buffer = new ArrayBuffer(4);
+      new Float32Array(buffer)[0] = arg;
+      out.push(2, ...new Uint8Array(buffer));
+    } else if (typeof arg === "string") {
+      const bytes = utf8(arg);
+      out.push(3);
+      u32(bytes.length);
+      out.push(...bytes);
+    } else {
+      throw new Error(`scheduleOnUI argument must be a number, bool, or string, got ${typeof arg}`);
+    }
+  }
+  return Uint8Array.from(out);
 }
 
 /// Marker wrapper the compiler emits around style declaration expressions.
@@ -1674,6 +2162,7 @@ globalThis.__bubblePress = press;
 globalThis.__bubbleGesture = dispatchGestureEvents;
 globalThis.__bubbleEdit = dispatchEditEvents;
 globalThis.__bubbleVar = dispatchVarEvents;
+globalThis.__bubbleUiCalls = dispatchUiCalls;
 
 export function dispatchVarEvents(bytes) {
   const events = decodeVarEvents(bytes);

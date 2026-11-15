@@ -9,10 +9,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use bubble_core::{
-    validate_bundle_hashes, AnimChoice, AnimSpec, ComputationKind, GestureKind, Kind, NodeDesc, Op,
-    Sched, Turn, Value,
-};
+use bubble_core::{validate_bundle_hashes, AnimSpec, ComputationKind, GestureKind, Kind, NodeDesc, Op, Sched, Turn, Value};
 use quickjs_oxide::engine::api::core::{
     CallableRef, Context, HeapLimits, Host, Js, JsString, ModuleImportAttributes, ModuleLoader,
     ModuleScope, ModuleSource, NativeErrorKind, ObjectRef, PromiseState, PropertyKey, Runtime,
@@ -67,6 +64,10 @@ pub enum Cmd {
     /// Encoded `BSVE` settled-variable batch. No epoch: variables belong to
     /// the current mount and settle events are dropped on reset.
     Vars {
+        bytes: Vec<u8>,
+    },
+    /// Encoded `BSUE` UI→JS call batch. No epoch, like `Vars`.
+    UiCalls {
         bytes: Vec<u8>,
     },
     Eval {
@@ -224,6 +225,12 @@ impl Session {
                 }
                 true
             }
+            Cmd::UiCalls { bytes } => {
+                if self.dispatch_ui_calls(&bytes).is_ok() {
+                    self.shared.generation.fetch_add(1, Ordering::Relaxed);
+                }
+                true
+            }
             Cmd::Eval { source, ack } => {
                 let result = self.eval_user(&source);
                 if let Some(ack) = ack {
@@ -366,6 +373,23 @@ impl Session {
             return Ok(());
         };
         match guarded(|| vars_in(vm, bytes)) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                if fatal(&err) {
+                    self.recover()?;
+                } else {
+                    self.note_fault(&err);
+                }
+                Err(err)
+            }
+        }
+    }
+
+    fn dispatch_ui_calls(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let Some(vm) = self.vm.as_mut() else {
+            return Ok(());
+        };
+        match guarded(|| ui_calls_in(vm, bytes)) {
             Ok(()) => Ok(()),
             Err(err) => {
                 if fatal(&err) {
@@ -638,6 +662,18 @@ fn vars_in(vm: &mut Vm, bytes: &[u8]) -> Result<(), String> {
     result.map_err(|err| format_eval(vm, err))
 }
 
+fn ui_calls_in(vm: &mut Vm, bytes: &[u8]) -> Result<(), String> {
+    enter_js();
+    let result = (|| -> Result<(), RuntimeError> {
+        let array = byte_array_value(vm, bytes)?;
+        let dispatch = js_callable(&mut vm.context, "__bubbleUiCalls")?;
+        vm.context.call(&dispatch, JsValue::Undefined, &[array])?;
+        pump(vm)
+    })();
+    leave_js();
+    result.map_err(|err| format_eval(vm, err))
+}
+
 fn settle_in(vm: &mut Vm, id: u32, ok: bool, payload: &str) -> Result<(), String> {
     enter_js();
     let result = (|| -> Result<(), RuntimeError> {
@@ -802,11 +838,15 @@ fn bind_api(ctx: &Context) -> Result<(), RuntimeError> {
     def!(ctx, &api, "bind_gesture_event", 3, (handle: f64, slot: f64, handler: f64) => api_bind_gesture_event(handle, slot, handler));
     def!(ctx, &api, "dispose_gesture", 1, (handle: f64) => api_dispose_gesture(handle));
     def!(ctx, &api, "move_gesture", 3, (handle: f64, target: f64, index: f64) => api_move_gesture(handle, target, index));
-    def!(ctx, &api, "create_var", 7, (source: f64, initial_tag: f64, initial_number: f64, anim: f64, a: f64, b: f64, c: f64) => api_create_var(source, initial_tag, initial_number, anim, a, b, c));
+    def!(ctx, &api, "create_var", 3, (source: f64, initial_tag: f64, initial_number: f64) => api_create_var(source, initial_tag, initial_number));
     def!(ctx, &api, "bind_var", 2, (var: f64, target: f64) => api_bind_var(var, target));
     def!(ctx, &api, "set_var", 7, (var: f64, tag: f64, number: f64, anim: f64, a: f64, b: f64, c: f64) => api_set_var(var, tag, number, anim, a, b, c));
     def!(ctx, &api, "settle_var", 1, (var: f64) => api_settle_var(var));
     def!(ctx, &api, "dispose_var", 1, (var: f64) => api_dispose_var(var));
+    def!(ctx, &api, "define_ui_function", 2, scope(params: f64, bytes: JsValue) => api_define_ui_function(params, bytes));
+    def!(ctx, &api, "bind_gesture_program", 3, (handle: f64, slot: f64, function: f64) => api_bind_gesture_program(handle, slot, function));
+    def!(ctx, &api, "run_ui_function", 2, scope(function: f64, bytes: JsValue) => api_run_ui_function(function, bytes));
+    def!(ctx, &api, "cancel_anim", 1, (var: f64) => api_cancel_anim(var));
     def!(ctx, &api, "spawn_style_decl", 3, (target: f64, component: f64, index: f64) => api_spawn_style_decl(target, component, index));
     def!(ctx, &api, "set_style_prop", 5, (decl: f64, key: String, tag: f64, number: f64, text: String) => api_set_style_prop(decl, key, tag, number, text));
     def!(ctx, &api, "set_style_prop_program", 3, scope(decl: f64, key: String, bytes: JsValue) => api_set_style_prop_program(decl, key, bytes));
@@ -1260,15 +1300,7 @@ fn api_move_gesture(handle: f64, target: f64, index: f64) -> i32 {
     }
 }
 
-fn api_create_var(
-    source: f64,
-    initial_tag: f64,
-    initial_number: f64,
-    anim: f64,
-    a: f64,
-    b: f64,
-    c: f64,
-) -> u32 {
+fn api_create_var(source: f64, initial_tag: f64, initial_number: f64) -> u32 {
     let initial = match initial_tag as u32 {
         0 => Value::Null,
         1 => Value::Bool(initial_number != 0.0),
@@ -1279,14 +1311,7 @@ fn api_create_var(
             return 0;
         }
     };
-    let spec = match anim_spec(anim as u32, a, b, c as u32) {
-        Ok(spec) => spec,
-        Err(err) => {
-            set_api_error(err);
-            return 0;
-        }
-    };
-    match with_turn(|turn| turn.create_var(source as u8, initial, spec)) {
+    match with_turn(|turn| turn.create_var(source as u8, initial)) {
         Ok(var) => var,
         Err(err) => {
             set_api_error(err);
@@ -1295,13 +1320,12 @@ fn api_create_var(
     }
 }
 
-/// Shared wire decoding of an animation spec for the var APIs. `anim` 0 none,
-/// 1 instant, 2 tween (a=duration ms, c=easing code), 3 spring (a=stiffness,
+/// Shared wire decoding of an animation spec for the var APIs. `anim` 0
+/// immediate, 2 tween (a=duration ms, c=easing code), 3 spring (a=stiffness,
 /// b=damping); matches the runtime's `animParts`.
 fn anim_spec(anim: u32, a: f64, b: f64, c: u32) -> Result<Option<AnimSpec>, String> {
     Ok(match anim {
         0 => None,
-        1 => Some(AnimSpec::Instant),
         2 => Some(AnimSpec::Tween {
             duration_ms: a as f32,
             easing: c.min(255) as u8,
@@ -1311,15 +1335,6 @@ fn anim_spec(anim: u32, a: f64, b: f64, c: u32) -> Result<Option<AnimSpec>, Stri
             damping: b as f32,
         }),
         other => return Err(format!("unknown anim spec code {other}")),
-    })
-}
-
-fn anim_choice(anim: u32, a: f64, b: f64, c: u32) -> Result<AnimChoice, String> {
-    Ok(match anim {
-        0 => AnimChoice::Default,
-        1 => AnimChoice::Instant,
-        2 | 3 => AnimChoice::Spec(anim_spec(anim, a, b, c)?.expect("2 and 3 carry a spec")),
-        other => return Err(format!("unknown anim choice code {other}")),
     })
 }
 
@@ -1347,15 +1362,15 @@ fn api_set_var(var: f64, tag: f64, number: f64, anim: f64, a: f64, b: f64, c: f6
             return 1;
         }
     };
-    let choice = match anim_choice(anim as u32, a, b, c as u32) {
-        Ok(choice) => choice,
+    let spec = match anim_spec(anim as u32, a, b, c as u32) {
+        Ok(spec) => spec,
         Err(err) => {
             set_api_error(err);
             return 1;
         }
     };
     match with_turn(|turn| {
-        turn.set_var(var as u32, value, choice);
+        turn.set_var(var as u32, value, spec);
         Ok(())
     }) {
         Ok(()) => 0,
@@ -1382,6 +1397,88 @@ fn api_settle_var(var: f64) -> i32 {
 fn api_dispose_var(var: f64) -> i32 {
     match with_turn(|turn| {
         turn.dispose_var(var as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+/// Program bytes arrive as a JS array of byte numbers; programs are small.
+fn api_define_ui_function(scope: &mut Scope<'_>, params: f64, bytes: JsValue) -> u32 {
+    let data = match byte_array(scope, &bytes) {
+        Some(data) => data,
+        None => {
+            set_api_error("ui program is not a byte array".into());
+            return 0;
+        }
+    };
+    let (captures, consts, code) = match bubble_core::decode_ui_function_payload(&data) {
+        Ok(parts) => parts,
+        Err(error) => {
+            set_api_error(error);
+            return 0;
+        }
+    };
+    match with_turn(|turn| turn.define_ui_function(params as u8, captures, consts, code)) {
+        Ok(id) => id,
+        Err(err) => {
+            set_api_error(err);
+            0
+        }
+    }
+}
+
+fn api_bind_gesture_program(handle: f64, slot: f64, function: f64) -> i32 {
+    if !(1..=9).contains(&(slot as u32)) {
+        set_api_error(format!("bad gesture event slot {slot}"));
+        return 1;
+    }
+    match with_turn(|turn| {
+        turn.bind_gesture_program(handle as u32, slot as u8, function as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_run_ui_function(scope: &mut Scope<'_>, function: f64, bytes: JsValue) -> i32 {
+    let data = match byte_array(scope, &bytes) {
+        Some(data) => data,
+        None => {
+            set_api_error("ui args are not a byte array".into());
+            return 1;
+        }
+    };
+    let args = match bubble_core::decode_ui_args(&data) {
+        Ok(args) => args,
+        Err(error) => {
+            set_api_error(error);
+            return 1;
+        }
+    };
+    match with_turn(|turn| {
+        turn.run_ui_function(function as u32, args);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_cancel_anim(var: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.cancel_animation(var as u32);
         Ok(())
     }) {
         Ok(()) => 0,

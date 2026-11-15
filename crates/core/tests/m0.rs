@@ -698,10 +698,10 @@ fn var_ops_roundtrip_and_coalesce() {
 
     let mut turn = Turn::new();
     let var = turn
-        .create_var(bubble_core::SOURCE_NONE, Value::Bool(false), None)
+        .create_var(bubble_core::SOURCE_NONE, Value::Bool(false))
         .unwrap();
-    turn.set_var(var, Value::Float(2.5), bubble_core::AnimChoice::Default);
-    turn.set_var(var, Value::Bool(true), bubble_core::AnimChoice::Instant);
+    turn.set_var(var, Value::Float(2.5), None);
+    turn.set_var(var, Value::Bool(true), None);
     turn.settle_var(var);
     turn.settle_var(var);
     let (_, decoded) = bubble_core::decode_ops(&turn.commit().unwrap()).unwrap();
@@ -713,12 +713,11 @@ fn var_ops_roundtrip_and_coalesce() {
                 var,
                 source: bubble_core::SOURCE_NONE,
                 initial: Value::Bool(false),
-                anim: None,
             },
             Op::SetVar {
                 var,
                 value: Value::Bool(true),
-                anim: bubble_core::AnimChoice::Instant,
+                anim: None,
             },
             Op::SettleVar { var },
         ]

@@ -1,6 +1,6 @@
 import { scrollActionForKey } from "./a11y.js";
 import { commandsForDom, dragSelection } from "./ime.js";
-import { dispatchEditEvents, dispatchGestureEvents, dispatchVarEvents, setApi } from "bubble-shell";
+import { dispatchEditEvents, dispatchGestureEvents, dispatchUiCalls, dispatchVarEvents, setApi } from "bubble-shell";
 import { layoutSnapshot, wrapLines } from "./textlayout.js";
 
 const dev = window.__bubbleDev ?? null;
@@ -316,6 +316,8 @@ const wasm = await WebAssembly.instantiateStreaming(fetch("./bubble.wasm"), {
       dispatchEditEvents(new Uint8Array(memory().buffer, ptr, len).slice()),
     host_var_events: (ptr, len) =>
       dispatchVarEvents(new Uint8Array(memory().buffer, ptr, len).slice()),
+    host_ui_calls: (ptr, len) =>
+      dispatchUiCalls(new Uint8Array(memory().buffer, ptr, len).slice()),
   },
 });
 

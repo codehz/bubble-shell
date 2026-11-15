@@ -744,7 +744,7 @@ shell.mount(function App() {
   globalThis.sigs = { open, items, ladder, gate };
 
   const viewRef = shell.ref();
-  const focused = shell.createVar({ source: "focused", target: viewRef });
+  const focused = shell.createSharedValue({ source: "focused", target: viewRef });
   const view = shell.primitive(
     "View",
     { ref: viewRef, role: "button", backgroundColor: "#ffffff", width: 200, height: 100 },
@@ -901,7 +901,7 @@ shell.mount(function App() {
   const count = shell.signal(0);
   const on = shell.signal(false);
   globalThis.sigs = { count, on };
-  const t = shell.createVar({ value: false });
+  const t = shell.createSharedValue({ value: false });
   globalThis.t = t;
   // A signal can drive the variable: each render effect rerun encodes one
   // SetVar op that lands on the UI thread at the frame boundary.
@@ -962,11 +962,9 @@ globalThis.settled = 0;
 
 const viewRef = shell.ref();
 shell.mount(function App() {
-  const t = shell.createVar({
-    value: 0,
-    anim: { type: "tween", duration: 100, easing: "linear" },
-  });
+  const t = shell.createSharedValue(0);
   globalThis.t = t;
+  globalThis.withTiming = shell.withTiming;
   t.settle().then(() => { globalThis.settled += 1; });
   shell.primitive(
     "View",
@@ -996,7 +994,7 @@ fn animated_var_drives_paint_and_settles_at_convergence() {
     assert_eq!(frame_fills(200.0, 100.0), vec![[0x00, 0x00, 0xff, 0xff]]);
 
     // The write starts the tween; the first paint still shows the old value.
-    eval("appStep(() => t.set(1))");
+    eval("appStep(() => { t.value = withTiming(1, { duration: 100, easing: \"linear\" }); })");
     assert_eq!(frame_fills(200.0, 100.0), vec![[0x00, 0x00, 0xff, 0xff]]);
 
     // Mid-tween the patch interpolates; the settle event waits for the end.
@@ -1196,7 +1194,7 @@ shell.mount(function App() {
     { ref: viewRef, backgroundColor: "#ffffff", width: 100, height: 100 },
     () => {
       const pan = shell.panGesture({ onPanUpdate: () => {} });
-      const tx = shell.createVar({ source: "gesture.translationX", target: pan });
+      const tx = shell.createSharedValue({ source: "gesture.translationX", target: pan });
       shell.primitive("ViewStyle", { target: viewRef, when: true, translateX: tx });
     },
   );
@@ -1255,7 +1253,7 @@ shell.mount(function App() {
     "View",
     { ref: containerRef, overflowY: "scroll", width: 100, height: 100 },
     () => {
-      const sy = shell.createVar({ source: "scroll.y", target: containerRef });
+      const sy = shell.createSharedValue({ source: "scroll.y", target: containerRef });
       shell.primitive("View", {
         ref: childRef,
         width: 100,
@@ -1307,7 +1305,7 @@ shell.mount(function App() {
         mode: ["pinch"],
         onTransformUpdate: () => {},
       });
-      const scale = shell.createVar({ source: "gesture.scale", target: pinch });
+      const scale = shell.createSharedValue({ source: "gesture.scale", target: pinch });
       shell.primitive("ViewStyle", { target: viewRef, when: true, scale });
     },
   );

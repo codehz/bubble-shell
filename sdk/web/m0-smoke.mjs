@@ -2,6 +2,7 @@ import { registerHooks } from "node:module";
 import {
   dispatchEditEvents,
   dispatchGestureEvents,
+  dispatchUiCalls,
   dispatchVarEvents,
   setApi,
 } from "../../crates/native/js/runtime.js";
@@ -68,6 +69,8 @@ const { instance } = await WebAssembly.instantiate(wasm, {
       dispatchEditEvents(new Uint8Array(memory().buffer, ptr, len).slice()),
     host_var_events: (ptr, len) =>
       dispatchVarEvents(new Uint8Array(memory().buffer, ptr, len).slice()),
+    host_ui_calls: (ptr, len) =>
+      dispatchUiCalls(new Uint8Array(memory().buffer, ptr, len).slice()),
   },
 });
 const exports = instance.exports;

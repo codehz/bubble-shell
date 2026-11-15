@@ -133,6 +133,9 @@ pub struct GestureDecl {
     /// Incremented on every accepted configuration update.
     pub version: u32,
     pub events: [u32; 10],
+    /// Per-slot UI program ("worklet") ids. A slot runs either its script
+    /// handler or its worklet, never both.
+    pub ui_events: [u32; 10],
 }
 
 impl GestureDecl {
@@ -142,9 +145,24 @@ impl GestureDecl {
             .is_some_and(|handler| *handler != 0)
     }
 
-    fn any_handler(&self, slots: &[u8]) -> bool {
-        slots.iter().any(|slot| self.has_handler(*slot))
+    fn has_ui_handler(&self, slot: u8) -> bool {
+        self.ui_events
+            .get(slot as usize)
+            .is_some_and(|function| *function != 0)
     }
+
+    fn any_handler(&self, slots: &[u8]) -> bool {
+        slots
+            .iter()
+            .any(|slot| self.has_handler(*slot) || self.has_ui_handler(*slot))
+    }
+}
+
+/// One gesture event routed to a UI worklet instead of a script handler.
+#[derive(Clone, Debug)]
+pub struct UiGestureEvent {
+    pub function: u32,
+    pub event: GestureEvent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -351,6 +369,8 @@ pub struct Recognizer {
     pending_tap: Option<PendingTap>,
     next_sequence: u32,
     events: Vec<GestureEvent>,
+    /// Events whose slot is bound to a UI worklet.
+    ui_events: Vec<UiGestureEvent>,
     scroll_out: Vec<ScrollRequest>,
     trace_on: bool,
     trace_lines: Vec<String>,
@@ -370,6 +390,7 @@ impl Recognizer {
             pending_tap: None,
             next_sequence: 0,
             events: Vec::new(),
+            ui_events: Vec::new(),
             scroll_out: Vec::new(),
             trace_on: false,
             trace_lines: Vec::new(),
@@ -395,6 +416,7 @@ impl Recognizer {
                 config: GestureConfig::defaults(kind),
                 version: 1,
                 events: [0; 10],
+                ui_events: [0; 10],
             },
         )
     }
@@ -445,6 +467,7 @@ impl Recognizer {
         let decls = &self.ordered.decls;
         push_event(
             &mut self.events,
+            &mut self.ui_events,
             decls,
             id,
             SLOT_TAP,
@@ -500,8 +523,42 @@ impl Recognizer {
         if !decl.kind.allows_slot(slot) {
             return Err(format!("gesture {:?} has no event slot {slot}", decl.kind));
         }
+        if slot as usize >= decl.events.len() {
+            return Err(format!("gesture {:?} has no event slot {slot}", decl.kind));
+        }
         decl.events[slot as usize] = handler;
+        if handler != 0 {
+            decl.ui_events[slot as usize] = 0;
+        }
         Ok(())
+    }
+
+    /// Bind a UI worklet to one event slot. Registering a worklet clears that
+    /// slot's script handler, so a slot keeps exactly one executor.
+    pub fn bind_program(&mut self, id: u32, slot: u8, function: u32) -> Result<(), String> {
+        let decl = self
+            .ordered
+            .decl_mut(id)
+            .ok_or_else(|| format!("unknown gesture {id}"))?;
+        if !decl.kind.allows_slot(slot) {
+            return Err(format!("gesture {:?} has no event slot {slot}", decl.kind));
+        }
+        if slot as usize >= decl.ui_events.len() {
+            return Err(format!("gesture {:?} has no event slot {slot}", decl.kind));
+        }
+        decl.ui_events[slot as usize] = function;
+        if function != 0 {
+            decl.events[slot as usize] = 0;
+        }
+        Ok(())
+    }
+
+    /// Gesture events routed to UI worklets since the last drain.
+    pub fn take_ui_events(&mut self) -> Vec<(u32, GestureEvent)> {
+        self.ui_events
+            .drain(..)
+            .map(|entry| (entry.function, entry.event))
+            .collect()
     }
 
     pub fn move_decl(&mut self, id: u32, target: u32, index: u32) -> Result<(), String> {
@@ -713,6 +770,7 @@ impl Recognizer {
         let Self {
             ordered: OrderedDecls { decls, .. },
             events,
+            ui_events,
             ..
         } = self;
         let mut accepts = Vec::new();
@@ -761,7 +819,7 @@ impl Recognizer {
                 .and_then(Option::as_ref)
                 .map(|decl| decl.target)
                 .unwrap_or(0);
-            push_event(events, decls, id, SLOT_START, sequence, now_ms, |event| {
+            push_event(events, ui_events, decls, id, SLOT_START, sequence, now_ms, |event| {
                 event.target = target;
                 event.x = x;
                 event.y = y;
@@ -799,6 +857,7 @@ impl Recognizer {
             sequence: slot,
             pending_tap,
             events,
+            ui_events,
             ..
         } = self;
         let OrderedDecls { decls, order, .. } = ordered;
@@ -891,6 +950,7 @@ impl Recognizer {
                         let target = family.target;
                         push_event(
                             events,
+                            ui_events,
                             decls,
                             id,
                             SLOT_PRESS_START,
@@ -915,6 +975,7 @@ impl Recognizer {
             ordered,
             sequence,
             events,
+            ui_events,
             ..
         } = self;
         let OrderedDecls { decls, order, .. } = ordered;
@@ -927,6 +988,7 @@ impl Recognizer {
                 let target = seq.tap.as_ref().map(|family| family.target).unwrap_or(0);
                 push_event(
                     events,
+                    ui_events,
                     decls,
                     id,
                     SLOT_PRESS_CANCEL,
@@ -1068,6 +1130,7 @@ impl Recognizer {
             ordered: OrderedDecls { decls, .. },
             sequence,
             events,
+            ui_events,
             trace_on,
             trace_lines,
             ..
@@ -1175,7 +1238,7 @@ impl Recognizer {
                 .and_then(Option::as_ref)
                 .map(|decl| decl.target)
                 .unwrap_or(0);
-            push_event(events, decls, id, SLOT_START, seq.id, time_ms, |event| {
+            push_event(events, ui_events, decls, id, SLOT_START, seq.id, time_ms, |event| {
                 event.target = target;
                 event.x = x;
                 event.y = y;
@@ -1227,7 +1290,7 @@ impl Recognizer {
                 .and_then(Option::as_ref)
                 .map(|decl| decl.target)
                 .unwrap_or(0);
-            push_event(events, decls, id, SLOT_UPDATE, seq.id, time_ms, |event| {
+            push_event(events, ui_events, decls, id, SLOT_UPDATE, seq.id, time_ms, |event| {
                 event.target = target;
                 event.x = x;
                 event.y = y;
@@ -1257,6 +1320,7 @@ impl Recognizer {
             ordered: OrderedDecls { decls, .. },
             sequence,
             events,
+            ui_events,
             ..
         } = self;
         let Some(seq) = sequence.as_mut() else {
@@ -1318,7 +1382,7 @@ impl Recognizer {
                 .and_then(Option::as_ref)
                 .map(|decl| decl.target)
                 .unwrap_or(0);
-            push_event(events, decls, decl, SLOT_CANCEL, seq.id, time_ms, |event| {
+            push_event(events, ui_events, decls, decl, SLOT_CANCEL, seq.id, time_ms, |event| {
                 event.target = target;
                 event.reason = REASON_UPGRADE;
             });
@@ -1340,7 +1404,7 @@ impl Recognizer {
             .and_then(Option::as_ref)
             .map(|decl| decl.target)
             .unwrap_or(0);
-        push_event(events, decls, id, SLOT_START, seq.id, time_ms, |event| {
+        push_event(events, ui_events, decls, id, SLOT_START, seq.id, time_ms, |event| {
             event.target = target;
             event.x = cx;
             event.y = cy;
@@ -1452,6 +1516,7 @@ impl Recognizer {
             ordered: OrderedDecls { decls, .. },
             sequence,
             events,
+            ui_events,
             ..
         } = self;
         let Some(seq) = sequence.as_mut() else {
@@ -1496,7 +1561,7 @@ impl Recognizer {
             .and_then(Option::as_ref)
             .map(|decl| decl.target)
             .unwrap_or(0);
-        push_event(events, decls, id, SLOT_UPDATE, seq.id, time_ms, |event| {
+        push_event(events, ui_events, decls, id, SLOT_UPDATE, seq.id, time_ms, |event| {
             event.target = target;
             event.x = cx;
             event.y = cy;
@@ -1516,6 +1581,7 @@ impl Recognizer {
             ordered: OrderedDecls { decls, .. },
             sequence,
             events,
+            ui_events,
             ..
         } = self;
         let Some(seq) = sequence.as_mut() else {
@@ -1560,6 +1626,7 @@ impl Recognizer {
                         .unwrap_or(0);
                     push_event(
                         events,
+                        ui_events,
                         decls,
                         id,
                         SLOT_CANCEL,
@@ -1599,6 +1666,7 @@ impl Recognizer {
             ordered: OrderedDecls { decls, .. },
             sequence,
             events,
+            ui_events,
             pending_tap,
             ..
         } = self;
@@ -1633,7 +1701,7 @@ impl Recognizer {
                 .and_then(Option::as_ref)
                 .map(|decl| decl.target)
                 .unwrap_or(0);
-            push_event(events, decls, id, SLOT_END, seq.id, time_ms, |event| {
+            push_event(events, ui_events, decls, id, SLOT_END, seq.id, time_ms, |event| {
                 event.target = target;
                 event.x = x;
                 event.y = y;
@@ -1662,6 +1730,7 @@ impl Recognizer {
                 let target = family.target;
                 push_event(
                     events,
+                    ui_events,
                     decls,
                     id,
                     SLOT_PRESS_END,
@@ -1679,6 +1748,7 @@ impl Recognizer {
             if let Some(id) = family.double {
                 push_event(
                     events,
+                    ui_events,
                     decls,
                     id,
                     SLOT_DOUBLE_TAP,
@@ -1724,6 +1794,7 @@ impl Recognizer {
             ordered: OrderedDecls { decls, .. },
             sequence,
             events,
+            ui_events,
             ..
         } = self;
         let Some(seq) = sequence.as_mut() else {
@@ -1754,7 +1825,7 @@ impl Recognizer {
             .and_then(Option::as_ref)
             .map(|decl| decl.target)
             .unwrap_or(0);
-        push_event(events, decls, id, SLOT_END, sequence, time_ms, |event| {
+        push_event(events, ui_events, decls, id, SLOT_END, sequence, time_ms, |event| {
             event.target = target;
             event.x = x;
             event.y = y;
@@ -1777,6 +1848,7 @@ impl Recognizer {
             ordered: OrderedDecls { decls, .. },
             sequence,
             events,
+            ui_events,
             ..
         } = self;
         let Some(seq) = sequence.as_mut() else {
@@ -1795,6 +1867,7 @@ impl Recognizer {
             if let Some(id) = tap {
                 push_event(
                     events,
+                    ui_events,
                     decls,
                     id,
                     SLOT_PRESS_CANCEL,
@@ -1819,6 +1892,7 @@ impl Recognizer {
             ordered: OrderedDecls { decls, .. },
             sequence,
             events,
+            ui_events,
             ..
         } = self;
         let Some(seq) = sequence.as_mut() else {
@@ -1839,7 +1913,7 @@ impl Recognizer {
                 .and_then(Option::as_ref)
                 .map(|decl| decl.target)
                 .unwrap_or(0);
-            push_event(events, decls, id, SLOT_CANCEL, seq.id, time, |event| {
+            push_event(events, ui_events, decls, id, SLOT_CANCEL, seq.id, time, |event| {
                 event.target = target;
                 event.x = x;
                 event.y = y;
@@ -1864,7 +1938,7 @@ impl Recognizer {
                     .and_then(Option::as_ref)
                     .map(|decl| decl.target)
                     .unwrap_or(0);
-                push_event(events, decls, id, SLOT_CANCEL, seq.id, time, |event| {
+                push_event(events, ui_events, decls, id, SLOT_CANCEL, seq.id, time, |event| {
                     event.target = target;
                     event.reason = reason;
                 });
@@ -1876,6 +1950,7 @@ impl Recognizer {
                 let target = seq.tap.as_ref().map(|family| family.target).unwrap_or(0);
                 push_event(
                     events,
+                    ui_events,
                     decls,
                     tap,
                     SLOT_PRESS_CANCEL,
@@ -1909,6 +1984,7 @@ impl Recognizer {
             let target = self.decl(id).map(|decl| decl.target).unwrap_or(0);
             emit_for(
                 &mut self.events,
+                &mut self.ui_events,
                 &self.ordered.decls,
                 id,
                 SLOT_CANCEL,
@@ -1924,6 +2000,7 @@ impl Recognizer {
             if let Some(id) = seq.tap.as_ref().and_then(|family| family.tap) {
                 emit_for(
                     &mut self.events,
+                    &mut self.ui_events,
                     &self.ordered.decls,
                     id,
                     SLOT_PRESS_CANCEL,
@@ -2057,6 +2134,7 @@ fn emit_tap(events: &mut Vec<GestureEvent>, pending: &PendingTap) {
 #[allow(clippy::too_many_arguments)]
 fn emit_for(
     events: &mut Vec<GestureEvent>,
+    ui_events: &mut Vec<UiGestureEvent>,
     decls: &[Option<GestureDecl>],
     id: u32,
     slot: u8,
@@ -2067,7 +2145,7 @@ fn emit_for(
     reason: u8,
     target: u32,
 ) {
-    push_event(events, decls, id, slot, sequence, time_ms, |event| {
+    push_event(events, ui_events, decls, id, slot, sequence, time_ms, |event| {
         event.target = target;
         event.x = x;
         event.y = y;
@@ -2077,6 +2155,7 @@ fn emit_for(
 
 fn push_event(
     events: &mut Vec<GestureEvent>,
+    ui_events: &mut Vec<UiGestureEvent>,
     decls: &[Option<GestureDecl>],
     id: u32,
     slot: u8,
@@ -2087,20 +2166,34 @@ fn push_event(
     let Some(Some(decl)) = decls.get(id as usize) else {
         return;
     };
-    let Some(handler) = decl.events.get(slot as usize).copied() else {
-        return;
-    };
-    if handler == 0 {
+    // `SLOT_DISPOSED` stays a script-only acknowledgement; ui_events[slot]
+    // routes the rest: one slot has exactly one executor.
+    let script_handler = decl.events.get(slot as usize).copied().unwrap_or(0);
+    let ui_function = decl.ui_events.get(slot as usize).copied().unwrap_or(0);
+    if script_handler != 0 {
+        let mut event = GestureEvent::new(time_ms);
+        event.slot = slot;
+        event.gesture = id;
+        event.sequence = sequence;
+        event.handler = script_handler;
+        event.target = decl.target;
+        fill(&mut event);
+        events.push(event);
         return;
     }
-    let mut event = GestureEvent::new(time_ms);
-    event.slot = slot;
-    event.gesture = id;
-    event.sequence = sequence;
-    event.handler = handler;
-    event.target = decl.target;
-    fill(&mut event);
-    events.push(event);
+    if ui_function != 0 {
+        let mut event = GestureEvent::new(time_ms);
+        event.slot = slot;
+        event.gesture = id;
+        event.sequence = sequence;
+        event.handler = 0;
+        event.target = decl.target;
+        fill(&mut event);
+        ui_events.push(UiGestureEvent {
+            function: ui_function,
+            event,
+        });
+    }
 }
 
 fn wrap_angle(angle: f64) -> f64 {

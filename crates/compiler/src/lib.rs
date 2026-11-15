@@ -9,7 +9,7 @@
 //! Arbitrary statements, expressions, imports, and exports survive untouched.
 //! The compiler only rejects the JSX shapes listed in `docs/07-js-bundling-plan.md`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use oxc::allocator::{Allocator, ArenaBox, ArenaVec, TakeIn};
@@ -37,6 +37,7 @@ const RT_DYNAMIC: &str = "__bubble_rt_dynamic";
 const RT_SLOT: &str = "__bubble_rt_slot";
 const RT_CONTENT: &str = "__bubble_rt_content";
 const RT_STYLE_EXPR: &str = "__bubble_rt_styleExpr";
+const RT_UI_FUNCTION: &str = "__bubble_rt_uiFunction";
 const RT_SHOW: &str = "__bubble_rt_show";
 const RT_FOR_EACH: &str = "__bubble_rt_forEach";
 const RT_INDEX_EACH: &str = "__bubble_rt_indexEach";
@@ -121,8 +122,11 @@ pub fn compile_module(
         scopes: Vec::new(),
         thunk_jsx: false,
         errors: Vec::new(),
+        worklets: Vec::new(),
+        current_worklet_name: None,
     };
     lower.visit_program(&mut program);
+    lower.check_worklet_recursion();
     if let Some(error) = lower.errors.first() {
         return Err(error.clone());
     }
@@ -164,6 +168,7 @@ fn runtime_import<'a>(builder: &AstBuilder<'a>) -> Statement<'a> {
         ("slot", RT_SLOT),
         ("content", RT_CONTENT),
         ("styleExpr", RT_STYLE_EXPR),
+        ("uiFunction", RT_UI_FUNCTION),
         ("show", RT_SHOW),
         ("forEach", RT_FOR_EACH),
         ("indexEach", RT_INDEX_EACH),
@@ -272,6 +277,11 @@ struct Lower<'a> {
     /// inside `() => ...` only executes when the function runs.
     thunk_jsx: bool,
     errors: Vec<String>,
+    /// Module-level worklet functions: name, then the worklet callees its
+    /// body calls. Feeds the recursion cycle check.
+    worklets: Vec<(String, Vec<String>)>,
+    /// Name of the worklet currently being lowered, for self-edge recording.
+    current_worklet_name: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -1102,7 +1112,7 @@ impl<'a> Lower<'a> {
         if self.reads_signal(&expression) {
             self.error(
                 span,
-                "style declaration expressions read signals; declare a variable with createVar and read it instead",
+                "style declaration expressions read signals; declare a shared value with createSharedValue and read it instead",
             );
             return self.null(span);
         }
@@ -1674,6 +1684,846 @@ fn is_element_init(expression: &Expression<'_>) -> bool {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Worklets
+// ---------------------------------------------------------------------------
+
+fn is_worklet(expression: &Expression<'_>) -> bool {
+    let body = match expression {
+        Expression::ArrowFunctionExpression(arrow) => match &arrow.body {
+            ArrowFunctionBody::FunctionBody(body) => Some(body.as_ref()),
+            _ => None,
+        },
+        Expression::FunctionExpression(function) => function.body.as_deref(),
+        _ => return false,
+    };
+    let Some(body) = body else {
+        return false;
+    };
+    // The parser stores string directives separately from the statements.
+    body.directives.iter().any(|directive| {
+        directive.expression.value.as_str() == Some("worklet")
+    })
+}
+
+/// Per-worklet lowering context.
+struct WorkletCtx<'a> {
+    params: Vec<String>,
+    locals: HashMap<String, u8>,
+    next_local: u8,
+    /// Capture values in emit order: identifier references and string
+    /// literals, deduplicated.
+    captures: Vec<Expression<'a>>,
+    /// Callee names the body calls that resolve to other worklets.
+    callees: Vec<String>,
+}
+
+impl<'a> Lower<'a> {
+    /// Replace one `'worklet'` function with a `__bubble_rt_uiFunction` call.
+    fn lower_worklet(&mut self, span: Span, value: Expression<'a>) -> Expression<'a> {
+        let (params, body) = match value {
+            Expression::ArrowFunctionExpression(mut arrow) => {
+                let arrow = arrow.take_in(&self.builder);
+                let params = self.worklet_params(span, &arrow.params);
+                let body = match arrow.body {
+                    ArrowFunctionBody::FunctionBody(body) => Some(body),
+                    _ => None,
+                };
+                (params, body)
+            }
+            Expression::FunctionExpression(mut function) => {
+                let function = function.take_in(&self.builder);
+                let params = self.worklet_params(span, &function.params);
+                (params, function.body)
+            }
+            _ => unreachable!("is_worklet checked the shape"),
+        };
+        let Some(mut body) = body else {
+            self.error(span, "worklet bodies must be blocks");
+            return self.null(span);
+        };
+        let mut ctx = WorkletCtx {
+            params: params.clone(),
+            locals: HashMap::new(),
+            next_local: 0,
+            captures: Vec::new(),
+            callees: Vec::new(),
+        };
+        let statements = body.statements.take_in(&self.builder).into_iter();
+        let lowered = self.worklet_statements(span, &mut ctx, statements);
+        let previous = self.current_worklet_name.take();
+        if let Some(name) = &previous {
+            let callees = ctx.callees.clone();
+            self.worklets.push((name.clone(), callees));
+        }
+        self.current_worklet_name = previous;
+        // The trailing line argument gives runtime faults a source location.
+        let line = locate(self.source, span).0;
+        let params_array = self.string_array(span, &params);
+        let mut captures_elements = self.ast_vec::<ArrayExpressionElement<'a>>();
+        for capture in ctx.captures {
+            captures_elements.push(ArrayExpressionElement::from(capture));
+        }
+        let captures_array = Expression::new_array_expression(span, captures_elements, &self.builder);
+        let mut body_elements = self.ast_vec::<ArrayExpressionElement<'a>>();
+        for statement in lowered {
+            body_elements.push(ArrayExpressionElement::from(statement));
+        }
+        let body_array = Expression::new_array_expression(span, body_elements, &self.builder);
+        self.call(
+            RT_UI_FUNCTION,
+            vec![
+                params_array,
+                captures_array,
+                body_array,
+                self.number(SPAN, line as f64),
+            ],
+            span,
+        )
+    }
+
+    /// Parameter names of one worklet; non-identifier parameters fail.
+    fn worklet_params(&mut self, span: Span, parameters: &FormalParameters<'a>) -> Vec<String> {
+        if parameters.rest.is_some() {
+            self.error(span, "worklet parameters must be plain identifiers");
+        }
+        let mut names = Vec::new();
+        for parameter in &parameters.items {
+            match &parameter.pattern {
+                BindingPattern::BindingIdentifier(id) => {
+                    names.push(id.name.as_str().to_string());
+                }
+                _ => self.error(span, "worklet parameters must be plain identifiers"),
+            }
+        }
+        names
+    }
+
+    fn string_array(&self, span: Span, values: &[String]) -> Expression<'a> {
+        let mut elements = self.ast_vec::<ArrayExpressionElement<'a>>();
+        for value in values {
+            elements.push(ArrayExpressionElement::from(self.string_of(value)));
+        }
+        Expression::new_array_expression(span, elements, &self.builder)
+    }
+
+    /// Lower worklet statements to a tree-node array expression each.
+    fn worklet_statements(
+        &mut self,
+        span: Span,
+        ctx: &mut WorkletCtx<'a>,
+        statements: impl Iterator<Item = Statement<'a>>,
+    ) -> Vec<Expression<'a>> {
+        let mut out = Vec::new();
+        for statement in statements {
+            match statement {
+                Statement::ExpressionStatement(mut statement) => {
+                    let expression = statement.expression.take_in(&self.builder);
+                    let span = expression.span();
+                    out.push(self.worklet_statement_expression(span, ctx, expression));
+                }
+                Statement::VariableDeclaration(mut declaration) => {
+                    if declaration.declarations.len() != 1 {
+                        self.error(span, "worklet declarations declare one binding");
+                        continue;
+                    }
+                    let mut declarator = declaration.declarations[0].take_in(&self.builder);
+                    let BindingPattern::BindingIdentifier(id) = &declarator.id else {
+                        self.error(span, "worklet declarations bind a plain identifier");
+                        continue;
+                    };
+                    if ctx.next_local >= 16 {
+                        self.error(span, "worklet has more than 16 locals");
+                        continue;
+                    }
+                    let slot = ctx.next_local;
+                    ctx.next_local += 1;
+                    ctx.locals.insert(id.name.as_str().to_string(), slot);
+                    let Some(init) = declarator.init.take() else {
+                        self.error(span, "worklet declarations need an initializer");
+                        continue;
+                    };
+                    let init_span = init.span();
+                    let value = self.worklet_statement_expression(init_span, ctx, init);
+                    out.push(self.tree_op(span, "let", vec![
+                        self.number(SPAN, slot as f64),
+                        value,
+                    ]));
+                }
+                Statement::IfStatement(mut statement) => {
+                    let test = statement.test.take_in(&self.builder);
+                    let test_span = test.span();
+                    let test = self.worklet_statement_expression(test_span, ctx, test);
+                    let consequent = statement.consequent.take_in(&self.builder);
+                    let consequent = self.worklet_block(span, ctx, consequent);
+                    let alternate = statement.alternate.take();
+                    let alternate = alternate
+                        .map(|alternate| self.worklet_block(span, ctx, alternate));
+                    let mut elements = self.ast_vec::<ArrayExpressionElement<'a>>();
+                    elements.push(ArrayExpressionElement::from(self.string("if", span)));
+                    elements.push(ArrayExpressionElement::from(test));
+                    elements.push(ArrayExpressionElement::from(self.wrap_statements(span, consequent)));
+                    if let Some(alternate) = alternate {
+                        elements.push(ArrayExpressionElement::from(self.wrap_statements(span, alternate)));
+                    }
+                    out.push(Expression::new_array_expression(span, elements, &self.builder));
+                }
+                Statement::ReturnStatement(mut statement) => {
+                    let value = match statement.argument.take() {
+                        Some(argument) => {
+                            let span = argument.span();
+                            self.worklet_statement_expression(span, ctx, argument)
+                        }
+                        None => self.number(SPAN, 0.0),
+                    };
+                    out.push(self.tree_op(span, "return", vec![value]));
+                }
+                Statement::BlockStatement(mut block) => {
+                    let body = block.body.take_in(&self.builder);
+                    out.extend(self.worklet_statements(span, ctx, body.into_iter()));
+                }
+                other => {
+                    self.error(
+                        other.span(),
+                        "worklet statements must be expressions, let/const, if/else, or return",
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    fn worklet_block(
+        &mut self,
+        span: Span,
+        ctx: &mut WorkletCtx<'a>,
+        statement: Statement<'a>,
+    ) -> Vec<Expression<'a>> {
+        match statement {
+            Statement::BlockStatement(mut block) => {
+                let body = block.body.take_in(&self.builder);
+                self.worklet_statements(span, ctx, body.into_iter())
+            }
+            other => self.worklet_statements(span, ctx, std::iter::once(other)),
+        }
+    }
+
+    fn wrap_statements(&self, span: Span, statements: Vec<Expression<'a>>) -> Expression<'a> {
+        let mut elements = self.ast_vec::<ArrayExpressionElement<'a>>();
+        for statement in statements {
+            elements.push(ArrayExpressionElement::from(statement));
+        }
+        Expression::new_array_expression(span, elements, &self.builder)
+    }
+
+    /// Lower one worklet statement-position expression. Assignments to
+    /// `.value` become stores; bare expressions evaluate and discard.
+    fn worklet_statement_expression(
+        &mut self,
+        span: Span,
+        ctx: &mut WorkletCtx<'a>,
+        expression: Expression<'a>,
+    ) -> Expression<'a> {
+        match expression {
+            Expression::AssignmentExpression(mut assignment) => {
+                let AssignmentExpression { operator, left, right, .. } =
+                    assignment.take_in(&self.builder);
+                let mut member = match left {
+                    AssignmentTarget::StaticMemberExpression(member) => member,
+                    _ => {
+                        self.error(span, "worklet assignments only write shared values (.value)");
+                        return self.null(span);
+                    }
+                };
+                if member.property.name.as_str() != "value" {
+                    self.error(span, "worklet assignments only write shared values (.value)");
+                    return self.null(span);
+                }
+                let Expression::Identifier(object) = member.object.take_in(&self.builder) else {
+                    self.error(span, "worklet assignments write shared values through an identifier");
+                    return self.null(span);
+                };
+                if ctx.params.iter().any(|param| param.as_str() == object.name.as_str()) {
+                    self.error(span, "worklet parameters are read-only");
+                    return self.null(span);
+                }
+                let index = self.worklet_capture(ctx, Expression::Identifier(object));
+                let rhs_span = right.span();
+                let value = match operator {
+                    AssignmentOperator::Assign => {
+                        // `sv.value = withTiming(x)` / `= withSpring(x)` starts
+                        // an animation instead of storing a plain value.
+                        self.worklet_anim_store(span, ctx, index, right)
+                    }
+                    AssignmentOperator::Addition => {
+                        let addend = self.worklet_expr(rhs_span, ctx, right);
+                        self.tree_op(rhs_span, "store", vec![
+                            self.number(span, index as f64),
+                            self.tree_op(rhs_span, "add", vec![
+                                self.tree_op(rhs_span, "cap", vec![self.number(span, index as f64)]),
+                                addend,
+                            ]),
+                        ])
+                    }
+                    AssignmentOperator::Subtraction => {
+                        let addend = self.worklet_expr(rhs_span, ctx, right);
+                        self.tree_op(rhs_span, "store", vec![
+                            self.number(span, index as f64),
+                            self.tree_op(rhs_span, "sub", vec![
+                                self.tree_op(rhs_span, "cap", vec![self.number(span, index as f64)]),
+                                addend,
+                            ]),
+                        ])
+                    }
+                    AssignmentOperator::Multiplication => {
+                        let factor = self.worklet_expr(rhs_span, ctx, right);
+                        self.tree_op(rhs_span, "store", vec![
+                            self.number(span, index as f64),
+                            self.tree_op(rhs_span, "mul", vec![
+                                self.tree_op(rhs_span, "cap", vec![self.number(span, index as f64)]),
+                                factor,
+                            ]),
+                        ])
+                    }
+                    AssignmentOperator::Division => {
+                        let factor = self.worklet_expr(rhs_span, ctx, right);
+                        self.tree_op(rhs_span, "store", vec![
+                            self.number(span, index as f64),
+                            self.tree_op(rhs_span, "div", vec![
+                                self.tree_op(rhs_span, "cap", vec![self.number(span, index as f64)]),
+                                factor,
+                            ]),
+                        ])
+                    }
+                    other => {
+                        self.error(span, format!("worklet assignments support = += -= *= /=, got {other:?}"));
+                        return self.null(span);
+                    }
+                };
+                value
+            }
+            other => {
+                let span = other.span();
+                let value = self.worklet_expr(span, ctx, other);
+                self.tree_op(span, "pop", vec![value])
+            }
+        }
+    }
+
+    /// `sv.value = withTiming(x, {..})` becomes a storeAnim statement; any
+    /// other RHS stores a plain value.
+    fn worklet_anim_store(
+        &mut self,
+        span: Span,
+        ctx: &mut WorkletCtx<'a>,
+        index: usize,
+        rhs: Expression<'a>,
+    ) -> Expression<'a> {
+        let rhs_span = rhs.span();
+        let mut call = match rhs {
+            Expression::CallExpression(call) => call,
+            other => {
+                let value = self.worklet_expr(rhs_span, ctx, other);
+                return self.tree_op(rhs_span, "store", vec![self.number(span, index as f64), value]);
+            }
+        };
+        let callee_name = match &call.callee {
+            Expression::Identifier(id) => id.name.as_str().to_string(),
+            _ => {
+                let value = self.worklet_expr(rhs_span, ctx, Expression::CallExpression(call));
+                return self.tree_op(rhs_span, "store", vec![self.number(span, index as f64), value]);
+            }
+        };
+        if !matches!(callee_name.as_str(), "withTiming" | "withSpring") {
+            let value = self.worklet_expr(rhs_span, ctx, Expression::CallExpression(call));
+            return self.tree_op(rhs_span, "store", vec![self.number(span, index as f64), value]);
+        }
+        let mut arguments = call.arguments.take_in(&self.builder).into_iter();
+        let Some(target) = arguments.next() else {
+            self.error(span, "withTiming needs a target value");
+            return self.null(span);
+        };
+        let target = match target {
+            Argument::SpreadElement(_) => {
+                self.error(span, "spread arguments are not worklet expressions");
+                return self.null(span);
+            }
+            other => match Expression::try_from(other) {
+                Ok(expression) => expression,
+                Err(_) => {
+                    self.error(span, "unsupported worklet argument");
+                    return self.null(span);
+                }
+            },
+        };
+        let target_span = target.span();
+        let target = self.worklet_expr(target_span, ctx, target);
+        // Spec parameters must be constants the tree can carry.
+        let spec = arguments.next();
+        let spec_numbers: Vec<(String, f64)> = match spec {
+            None => Vec::new(),
+            Some(spec) => {
+                let Ok(object) = Expression::try_from(spec) else {
+                    self.error(span, "worklet animation options must be an object literal");
+                    return self.null(span);
+                };
+                let Expression::ObjectExpression(object) = object else {
+                    self.error(span, "worklet animation options must be an object literal");
+                    return self.null(span);
+                };
+                let mut numbers = Vec::new();
+                for property in object.properties.iter() {
+                    let ObjectPropertyKind::ObjectProperty(property) = property else {
+                        self.error(span, "worklet animation options must be plain object properties");
+                        return self.null(span);
+                    };
+                    let PropertyKey::StaticIdentifier(key) = &property.key else {
+                        self.error(span, "worklet animation options must be plain object properties");
+                        return self.null(span);
+                    };
+                    let number = match &property.value {
+                        Expression::NumericLiteral(value) => value.value,
+                        // Easing names map to their codes.
+                        Expression::StringLiteral(value)
+                            if key.name.as_str() == "easing" =>
+                        {
+                            match value.value.as_str() {
+                                Some("linear") => 0.0,
+                                Some("easeInOut") => 1.0,
+                                _ => {
+                                    self.error(span, "tween easing must be \"linear\" or \"easeInOut\"");
+                                    return self.null(span);
+                                }
+                            }
+                        }
+                        _ => {
+                            self.error(span, "worklet animation options must be numeric");
+                            return self.null(span);
+                        }
+                    };
+                    numbers.push((key.name.as_str().to_string(), number));
+                }
+                numbers
+            }
+        };
+        let (kind, keys): (&str, &[&str]) = if callee_name == "withTiming" {
+            ("tween", &["duration"])
+        } else {
+            ("spring", &["stiffness", "damping"])
+        };
+        let mut spec_elements = self.ast_vec::<ArrayExpressionElement<'a>>();
+        spec_elements.push(ArrayExpressionElement::from(self.string(kind, span)));
+        for key in keys {
+            let value = spec_numbers
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| *value)
+                .unwrap_or(match *key {
+                    "duration" => 300.0,
+                    "stiffness" => 170.0,
+                    "easing" => 0.0,
+                    _ => 26.0,
+                });
+            spec_elements.push(ArrayExpressionElement::from(self.number(span, value)));
+        }
+        if callee_name == "withTiming" {
+            // Easing rides in the same spec array as a code number.
+            let easing = spec_numbers
+                .iter()
+                .find(|(name, _)| name == "easing")
+                .map(|(_, value)| *value)
+                .unwrap_or(0.0);
+            spec_elements.push(ArrayExpressionElement::from(self.number(span, easing)));
+        }
+        let spec = Expression::new_array_expression(span, spec_elements, &self.builder);
+        self.tree_op(span, "storeAnim", vec![
+            self.number(span, index as f64),
+            spec,
+            target,
+        ])
+    }
+
+    fn number(&self, span: Span, value: f64) -> Expression<'a> {
+        Expression::new_numeric_literal(span, value, None, NumberBase::Decimal, &self.builder)
+    }
+
+    /// Register a capture (identifier or string literal) and return its index.
+    fn worklet_capture(&mut self, ctx: &mut WorkletCtx<'a>, value: Expression<'a>) -> usize {
+        let key = match &value {
+            Expression::Identifier(id) => format!("id:{}", id.name.as_str()),
+            Expression::StringLiteral(literal) => format!("text:{}", literal.value.as_str().unwrap_or("")),
+            _ => format!("expr:{}", value.span().start),
+        };
+        if let Some(index) = ctx.captures.iter().position(|existing| {
+            match (existing, &value) {
+                (Expression::Identifier(a), Expression::Identifier(b)) => {
+                    a.name.as_str() == b.name.as_str()
+                }
+                (Expression::StringLiteral(a), Expression::StringLiteral(b)) => {
+                    a.value.as_str() == b.value.as_str()
+                }
+                _ => false,
+            }
+        }) {
+            return index;
+        }
+        let _ = key;
+        ctx.captures.push(value);
+        ctx.captures.len() - 1
+    }
+
+    /// Lower one worklet expression to a tree node.
+    fn worklet_expr(
+        &mut self,
+        span: Span,
+        ctx: &mut WorkletCtx<'a>,
+        expression: Expression<'a>,
+    ) -> Expression<'a> {
+        match expression {
+            Expression::NumericLiteral(literal) => {
+                if !literal.value.is_finite() {
+                    self.error(span, "worklet numbers must be finite");
+                    return self.null(span);
+                }
+                self.number(span, literal.value)
+            }
+            Expression::BooleanLiteral(literal) => Expression::BooleanLiteral(literal),
+            Expression::StringLiteral(literal) => {
+                let index = self.worklet_capture(ctx, Expression::StringLiteral(literal));
+                self.tree_op(span, "cap", vec![self.number(span, index as f64)])
+            }
+            Expression::Identifier(id) => {
+                let name = id.name.as_str().to_string();
+                if let Some(slot) = ctx.locals.get(&name) {
+                    let slot = *slot;
+                    return self.tree_op(span, "local", vec![self.number(span, slot as f64)]);
+                }
+                if let Some(position) = ctx.params.iter().position(|param| *param == name) {
+                    return self.tree_op(span, "param", vec![self.number(span, position as f64)]);
+                }
+                let index = self.worklet_capture(ctx, Expression::Identifier(id));
+                self.tree_op(span, "cap", vec![self.number(span, index as f64)])
+            }
+            Expression::UnaryExpression(mut unary) => {
+                let UnaryExpression { operator, argument, .. } = unary.take_in(&self.builder);
+                let name = match operator {
+                    UnaryOperator::UnaryNegation => "neg",
+                    UnaryOperator::LogicalNot => "not",
+                    other => {
+                        self.error(span, format!("operator {other:?} is not a worklet expression"));
+                        return self.null(span);
+                    }
+                };
+                let argument = self.worklet_expr(span, ctx, argument);
+                self.tree_op(span, name, vec![argument])
+            }
+            Expression::BinaryExpression(mut binary) => {
+                let BinaryExpression { operator, left, right, .. } = binary.take_in(&self.builder);
+                let name = match operator {
+                    BinaryOperator::Addition => "add",
+                    BinaryOperator::Subtraction => "sub",
+                    BinaryOperator::Multiplication => "mul",
+                    BinaryOperator::Division => "div",
+                    BinaryOperator::LessThan => "lt",
+                    BinaryOperator::LessEqualThan => "le",
+                    BinaryOperator::GreaterThan => "gt",
+                    BinaryOperator::GreaterEqualThan => "ge",
+                    BinaryOperator::Equality | BinaryOperator::StrictEquality => "eq",
+                    BinaryOperator::Inequality | BinaryOperator::StrictInequality => "ne",
+                    other => {
+                        self.error(span, format!("operator {other:?} is not a worklet expression"));
+                        return self.null(span);
+                    }
+                };
+                let left = self.worklet_expr(span, ctx, left);
+                let right = self.worklet_expr(span, ctx, right);
+                self.tree_op(span, name, vec![left, right])
+            }
+            Expression::LogicalExpression(mut logical) => {
+                let LogicalExpression { operator, left, right, .. } = logical.take_in(&self.builder);
+                let name = match operator {
+                    LogicalOperator::And => "and",
+                    LogicalOperator::Or => "or",
+                    other => {
+                        self.error(span, format!("operator {other:?} is not a worklet expression"));
+                        return self.null(span);
+                    }
+                };
+                let left = self.worklet_expr(span, ctx, left);
+                let right = self.worklet_expr(span, ctx, right);
+                self.tree_op(span, name, vec![left, right])
+            }
+            Expression::ConditionalExpression(mut conditional) => {
+                let ConditionalExpression { test, consequent, alternate, .. } =
+                    conditional.take_in(&self.builder);
+                let test = self.worklet_expr(span, ctx, test);
+                let consequent = self.worklet_expr(span, ctx, consequent);
+                let alternate = self.worklet_expr(span, ctx, alternate);
+                self.tree_op(span, "select", vec![test, consequent, alternate])
+            }
+            Expression::ParenthesizedExpression(mut paren) => {
+                let inner = paren.take_in(&self.builder).expression;
+                self.worklet_expr(span, ctx, inner)
+            }
+            Expression::StaticMemberExpression(mut member) => {
+                let Expression::Identifier(object) = &member.object else {
+                    self.error(span, "worklet member access reads event fields or shared values");
+                    return self.null(span);
+                };
+                let property = member.property.name.as_str().to_string();
+                if ctx.params.iter().any(|param| param.as_str() == object.name.as_str()) {
+                    let Some(field) = event_field(&property) else {
+                        self.error(span, format!("worklet events have no field {property}"));
+                        return self.null(span);
+                    };
+                    return self.tree_op(span, "event", vec![self.number(span, field as f64)]);
+                }
+                if property == "value" {
+                    let Expression::Identifier(object) = member.object.take_in(&self.builder) else {
+                        unreachable!("checked above")
+                    };
+                    let index = self.worklet_capture(ctx, Expression::Identifier(object));
+                    return self.tree_op(span, "cap", vec![self.number(span, index as f64)]);
+                }
+                // A function reference through a captured object, for
+                // example `status.set` in a scheduleOnJS call.
+                let index = self.worklet_capture(ctx, Expression::StaticMemberExpression(member));
+                self.tree_op(span, "cap", vec![self.number(span, index as f64)])
+            }
+            Expression::CallExpression(mut call) => {
+                let CallExpression { callee, arguments, .. } = call.take_in(&self.builder);
+                let name = match &callee {
+                    Expression::Identifier(id) => id.name.as_str().to_string(),
+                    Expression::StaticMemberExpression(member) => {
+                        // Math.* helpers only.
+                        let Expression::Identifier(object) = &member.object else {
+                            self.error(span, "worklet calls only support Math helpers and worklets");
+                            return self.null(span);
+                        };
+                        if object.name.as_str() != "Math" {
+                            self.error(span, "worklet calls only support Math helpers and worklets");
+                            return self.null(span);
+                        }
+                        member.property.name.as_str().to_string()
+                    }
+                    _ => {
+                        self.error(span, "worklet calls only support Math helpers and worklets");
+                        return self.null(span);
+                    }
+                };
+                if name == "withTiming" || name == "withSpring" {
+                    self.error(span, format!("{name} is only valid as a shared value assignment"));
+                    return self.null(span);
+                }
+                if name == "cancelAnimation" {
+                    let mut arguments = arguments.into_iter();
+                    let Some(target) = arguments.next() else {
+                        self.error(span, "cancelAnimation needs a shared value");
+                        return self.null(span);
+                    };
+                    let Ok(target) = Expression::try_from(target) else {
+                        self.error(span, "unsupported cancelAnimation argument");
+                        return self.null(span);
+                    };
+                    let Expression::Identifier(id) = target else {
+                        self.error(span, "cancelAnimation expects a shared value identifier");
+                        return self.null(span);
+                    };
+                    let index = self.worklet_capture(ctx, Expression::Identifier(id));
+                    return self.tree_op(span, "cancelAnim", vec![self.number(span, index as f64)]);
+                }
+                if name == "scheduleOnJS" {
+                    let mut arguments = arguments.into_iter();
+                    let Some(fn_arg) = arguments.next() else {
+                        self.error(span, "scheduleOnJS needs a function reference");
+                        return self.null(span);
+                    };
+                    let mut fn_arg = match fn_arg {
+                        Argument::SpreadElement(_) => {
+                            self.error(span, "spread arguments are not worklet expressions");
+                            return self.null(span);
+                        }
+                        other => match Expression::try_from(other) {
+                            Ok(expression) => expression,
+                            Err(_) => {
+                                self.error(span, "unsupported worklet argument");
+                                return self.null(span);
+                            }
+                        },
+                    };
+                    // The first argument must lower to a capture: a plain
+                    // identifier, a member reference like `status.set`, or
+                    // (rarely) a captured worklet's own name.
+                    let fn_index = match &fn_arg {
+                        Expression::Identifier(_) | Expression::StaticMemberExpression(_) => {
+                            let fn_arg = fn_arg.take_in(&self.builder);
+                            self.worklet_capture(ctx, fn_arg)
+                        }
+                        _ => {
+                            self.error(span, "scheduleOnJS must pass a function reference");
+                            return self.null(span);
+                        }
+                    };
+                    let mut trees = Vec::new();
+                    for argument in arguments {
+                        let argument = match argument {
+                            Argument::SpreadElement(_) => {
+                                self.error(span, "spread arguments are not worklet expressions");
+                                return self.null(span);
+                            }
+                            other => match Expression::try_from(other) {
+                                Ok(expression) => expression,
+                                Err(_) => {
+                                    self.error(span, "unsupported worklet argument");
+                                    return self.null(span);
+                                }
+                            },
+                        };
+                        trees.push(self.worklet_expr(span, ctx, argument));
+                    }
+                    let mut args = vec![self.number(span, fn_index as f64)];
+                    args.extend(trees);
+                    return self.tree_op(span, "scheduleJs", args);
+                }
+                let math = matches!(
+                    name.as_str(),
+                    "min" | "max" | "abs" | "floor" | "ceil" | "round" | "sqrt" | "pow"
+                );
+                if math {
+                    let mut trees = Vec::new();
+                    for argument in arguments {
+                        let argument = match argument {
+                            Argument::SpreadElement(_) => {
+                                self.error(span, "spread arguments are not worklet expressions");
+                                return self.null(span);
+                            }
+                            other => match Expression::try_from(other) {
+                                Ok(expression) => expression,
+                                Err(_) => {
+                                    self.error(span, "unsupported worklet argument");
+                                    return self.null(span);
+                                }
+                            },
+                        };
+                        trees.push(self.worklet_expr(span, ctx, argument));
+                    }
+                    return self.tree_op(span, &name, trees);
+                }
+                // A call to another worklet in this module.
+                let Expression::Identifier(callee) = callee else {
+                    self.error(span, "worklet calls only support Math helpers and worklets");
+                    return self.null(span);
+                };
+                if !ctx.callees.contains(&name) {
+                    ctx.callees.push(name.clone());
+                }
+                let mut trees = Vec::new();
+                for argument in arguments {
+                    let argument = match argument {
+                        Argument::SpreadElement(_) => {
+                            self.error(span, "spread arguments are not worklet expressions");
+                            return self.null(span);
+                        }
+                        other => match Expression::try_from(other) {
+                            Ok(expression) => expression,
+                            Err(_) => {
+                                self.error(span, "unsupported worklet argument");
+                                return self.null(span);
+                            }
+                        },
+                    };
+                    trees.push(self.worklet_expr(span, ctx, argument));
+                }
+                let index = self.worklet_capture(ctx, Expression::Identifier(callee));
+                self.tree_op(span, "call", {
+                    let mut args = vec![self.number(span, index as f64)];
+                    args.extend(trees);
+                    args
+                })
+            }
+            other => {
+                self.error(
+                    other.span(),
+                    "worklet expressions accept numbers, booleans, strings, parameters, shared values, and operators",
+                );
+                self.null(span)
+            }
+        }
+    }
+
+    /// `[name, ...args]` for the worklet body tree.
+    fn tree_op(&self, span: Span, name: &str, args: Vec<Expression<'a>>) -> Expression<'a> {
+        let mut elements = self.ast_vec::<ArrayExpressionElement<'a>>();
+        elements.push(ArrayExpressionElement::from(self.string_of(name)));
+        for arg in args {
+            elements.push(ArrayExpressionElement::from(arg));
+        }
+        Expression::new_array_expression(span, elements, &self.builder)
+    }
+
+    /// Fail the compile when the module's worklets call each other in a cycle.
+    fn check_worklet_recursion(&mut self) {
+        let edges: Vec<(String, Vec<String>)> = self.worklets.clone();
+        let mut colors: HashMap<String, u8> = edges
+            .iter()
+            .map(|(name, _)| (name.clone(), 0))
+            .collect();
+        for (name, _) in &edges {
+            if dfs_cycle(name, &edges, &mut colors) {
+                self.error(SPAN, "worklet recursion is not supported");
+                return;
+            }
+        }
+    }
+}
+
+/// Callee name for an event member access.
+fn event_field(name: &str) -> Option<u8> {
+    Some(match name {
+        "x" => 0,
+        "y" => 1,
+        "deltaX" => 2,
+        "deltaY" => 3,
+        "translationX" => 4,
+        "translationY" => 5,
+        "scale" => 6,
+        "rotation" => 7,
+        "velocityX" => 8,
+        "velocityY" => 9,
+        "time" => 10,
+        "sequence" => 11,
+        "reason" => 12,
+        "target" => 13,
+        _ => return None,
+    })
+}
+
+/// Depth-first cycle detection over the worklet call graph.
+fn dfs_cycle(name: &str, edges: &[(String, Vec<String>)], colors: &mut HashMap<String, u8>) -> bool {
+    match colors.get(name).copied().unwrap_or(2) {
+        1 => return true,
+        2 => return false,
+        _ => {}
+    }
+    colors.insert(name.to_string(), 1);
+    let callees = edges
+        .iter()
+        .find(|(edge, _)| edge == name)
+        .map(|(_, callees)| callees.clone())
+        .unwrap_or_default();
+    for callee in callees {
+        if names_contains(edges, &callee) && dfs_cycle(&callee, edges, colors) {
+            return true;
+        }
+    }
+    colors.insert(name.to_string(), 2);
+    false
+}
+
+fn names_contains(edges: &[(String, Vec<String>)], name: &str) -> bool {
+    edges.iter().any(|(edge, _)| edge == name)
+}
+
 impl<'a> VisitMut<'a> for Lower<'a> {
     fn visit_program(&mut self, program: &mut Program<'a>) {
         // Exported signals are shared across modules and bind by value.
@@ -1735,6 +2585,12 @@ impl<'a> VisitMut<'a> for Lower<'a> {
     }
 
     fn visit_expression(&mut self, expression: &mut Expression<'a>) {
+        if is_worklet(expression) {
+            let span = expression.span();
+            let taken = expression.take_in(&self.builder);
+            *expression = self.lower_worklet(span, taken);
+            return;
+        }
         if matches!(
             expression,
             Expression::JSXElement(_) | Expression::JSXFragment(_)
@@ -1764,18 +2620,36 @@ impl<'a> VisitMut<'a> for Lower<'a> {
     }
 
     fn visit_variable_declarator(&mut self, declarator: &mut VariableDeclarator<'a>) {
-        let is_element = declarator
-            .init
-            .as_ref()
-            .is_some_and(|init| is_element_init(init));
-        if !is_element {
-            oxc::ast_visit::walk_mut::walk_variable_declarator(self, declarator);
-            return;
-        }
         // `const pad = <Pad/>` (or any non-function init containing JSX) is a
         // node value: lower the JSX to a thunk. A bare element thunk mounts
         // when called; a compound init (ternary, `&&`) may yield a thunk, so
         // the declarator calls whatever it got.
+        let is_element = declarator
+            .init
+            .as_ref()
+            .is_some_and(|init| is_element_init(init));
+        // Record the declarator name while its worklet body lowers so calls
+        // inside it register the call edge (including self-recursion).
+        let worklet_name = match declarator.init.as_ref() {
+            Some(init)
+                if is_worklet(init)
+                    && matches!(&declarator.id, BindingPattern::BindingIdentifier(_)) =>
+            {
+                match &declarator.id {
+                    BindingPattern::BindingIdentifier(id) => {
+                        Some(id.name.as_str().to_string())
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        self.current_worklet_name = worklet_name;
+        if !is_element {
+            oxc::ast_visit::walk_mut::walk_variable_declarator(self, declarator);
+            self.current_worklet_name = None;
+            return;
+        }
         let bare = matches!(
             declarator.init,
             Some(Expression::JSXElement(_)) | Some(Expression::JSXFragment(_))
@@ -1788,6 +2662,7 @@ impl<'a> VisitMut<'a> for Lower<'a> {
         self.thunk_jsx = true;
         oxc::ast_visit::walk_mut::walk_variable_declarator(self, declarator);
         self.thunk_jsx = false;
+        self.current_worklet_name = None;
         if !bare {
             let Some(init) = declarator.init.take() else {
                 return;

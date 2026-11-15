@@ -110,6 +110,9 @@ impl Shell {
         self.flush_gesture_scroll();
         // Gesture and scroll vars track every sample, not just press edges.
         self.sample_sources();
+        // UI worklets answer gesture events after recognition and before the
+        // host paints; one dependent pass covers every write in the batch.
+        self.drain_ui_work();
         if changed {
             self.paint_dirty.set(true);
         }
@@ -145,6 +148,7 @@ impl Shell {
             self.sample_sources();
             self.paint_dirty.set(true);
         }
+        self.drain_ui_work();
     }
 
     /// Drain recognition events in order. The host dispatches them to the

@@ -13,10 +13,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use crate::editing::{EditError, EditEvent, EditSession, SessionId};
-use crate::gesture::{GestureKind, Recognizer};
+use crate::gesture::{GestureEvent, GestureKind, Recognizer};
 use crate::ir::{Kind, NodeDesc};
 use crate::ops::{decode_ops, Op, Value};
 use crate::state_style::{StyleDecls, VarEvent, VarTable};
+use crate::ui::{UiCall, UiProgram, UiValue};
+use std::collections::VecDeque;
 use taffy::prelude::*;
 use taffy::style::Overflow;
 use taffy::{NodeId, TaffyTree};
@@ -146,12 +148,12 @@ pub struct Shell {
     taffy: TaffyTree<MeasureCtx>,
     viewport: Size<f32>,
     paint_cache: RefCell<Vec<PaintCmd>>,
-    paint_dirty: Cell<bool>,
-    recognizer: Recognizer,
-    vars: VarTable,
+    pub(crate) paint_dirty: Cell<bool>,
+    pub(crate) recognizer: Recognizer,
+    pub(crate) vars: VarTable,
     var_events: Vec<VarEvent>,
     pending_settle: std::collections::HashSet<u32>,
-    now_ms: f64,
+    pub(crate) now_ms: f64,
     state_styles: StyleDecls,
     visual: VisualPress,
     fields: HashMap<u32, EditSession>,
@@ -163,6 +165,21 @@ pub struct Shell {
     caret_handle: u32,
     caret_box: Option<(f32, f32, f32, f32)>,
     selection_rects: Vec<(f32, f32, f32, f32)>,
+    /// UI-thread programs ("worklets"), by id.
+    pub(crate) ui_programs: Vec<Option<UiProgram>>,
+    /// Variables written in the current UI batch, re-evaluated once at the end.
+    pub(crate) ui_dirty: HashSet<u32>,
+    /// JS→UI calls waiting for the next `drain_ui_work`.
+    pub(crate) ui_calls: VecDeque<UiCall>,
+    /// UI→JS `scheduleOnJS` notifications, drained by the host.
+    pub(crate) js_calls: VecDeque<UiCall>,
+    /// Runtime faults of the current UI batch.
+    pub(crate) ui_faults: u32,
+    pub(crate) ui_last_error: String,
+    /// Shared value stack across one `drain_ui_work` batch.
+    pub(crate) ui_stack: Vec<UiValue>,
+    /// The gesture event the current UI call answers, if any.
+    pub(crate) ui_event: Option<GestureEvent>,
 }
 
 /// A rejected script or IME write. Never contains user text.
@@ -340,6 +357,14 @@ impl Shell {
             caret_handle: 0,
             caret_box: None,
             selection_rects: Vec::new(),
+            ui_programs: Vec::new(),
+            ui_dirty: HashSet::new(),
+            ui_calls: VecDeque::new(),
+            js_calls: VecDeque::new(),
+            ui_faults: 0,
+            ui_last_error: String::new(),
+            ui_stack: Vec::new(),
+            ui_event: None,
         })
     }
 
@@ -454,12 +479,28 @@ impl Shell {
                     var,
                     source,
                     initial,
-                    anim,
-                } => self.create_var(var, source, &initial, anim)?,
+                } => self.create_var(var, source, &initial)?,
                 Op::BindVar { var, target } => self.bind_var(var, target)?,
                 Op::DisposeVar { var } => self.dispose_var(var)?,
                 Op::SetVar { var, value, anim } => self.set_var(var, &value, anim)?,
                 Op::SettleVar { var } => self.settle_var(var)?,
+                Op::DefineUiFunction {
+                    id,
+                    params,
+                    captures,
+                    consts,
+                    code,
+                } => self.define_ui_function(id, params, captures, consts, code)?,
+                Op::BindGestureProgram {
+                    gesture,
+                    slot,
+                    function,
+                } => self.recognizer.bind_program(gesture, slot, function)?,
+                Op::RunUiFunction { function, args } => self.queue_ui_call(UiCall {
+                    function,
+                    args: args.iter().map(UiValue::from_value).collect(),
+                }),
+                Op::CancelVarAnim { var } => self.cancel_var_anim(var)?,
                 Op::SpawnStyleDecl {
                     decl,
                     target,
@@ -490,6 +531,7 @@ impl Shell {
             self.focus(0)?;
         }
         self.sync_press_target();
+        self.reval_dirty();
         self.paint_dirty.set(true);
         Ok(seq)
     }

@@ -1,13 +1,14 @@
-//! `BSOP` version 4. Little-endian batch with a string table.
+//! `BSOP` version 5. Little-endian batch with a string table.
 //! `Turn` coalesces repeated `SetText` / `SetProp` before encoding.
 //! Applied batches still run in order.
 
 use std::io::{Cursor, Read};
 
 use crate::color::Color;
-use crate::expr::{decode_program, Program};
+use crate::expr::{decode_program, ExprConst, Program};
 use crate::ir::{Kind, NodeDesc};
-use crate::state_style::{AnimChoice, AnimSpec};
+use crate::state_style::AnimSpec;
+use crate::ui::UiCapture;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -165,14 +166,11 @@ pub enum Op {
         cancel: bool,
     },
     /// UI-thread variable. `source` 0 means script-driven; `target` is bound
-    /// by a later `BindVar` op when the reference resolves. The trailing anim
-    /// payload is the per-variable default: 0 none, 2 tween (duration f32,
-    /// easing u8), 3 spring (stiffness f32, damping f32).
+    /// by a later `BindVar` op when the reference resolves.
     CreateVar {
         var: u32,
         source: u8,
         initial: Value,
-        anim: Option<AnimSpec>,
     },
     /// Attach a variable's source target; `target` 0 detaches.
     BindVar {
@@ -184,16 +182,41 @@ pub enum Op {
     },
     /// Script-driven variable write, applied when the batch lands on the UI
     /// thread. Writing a source-linked variable is an error. The trailing
-    /// anim payload chooses the transition: 0 var default, 1 instant, 2
-    /// tween (duration f32, easing u8), 3 spring (stiffness f32, damping f32).
+    /// anim payload chooses the transition: 0 immediate, 2 tween (duration
+    /// f32, easing u8), 3 spring (stiffness f32, damping f32).
     SetVar {
         var: u32,
         value: Value,
-        anim: AnimChoice,
+        anim: Option<AnimSpec>,
     },
     /// Ask the shell to emit a settle event for `var` once its pending writes
     /// converge. With no animation configured that is immediate.
     SettleVar {
+        var: u32,
+    },
+    /// Register one UI program ("worklet"): params, captures, constants, and
+    /// stack bytecode. Validation fails the batch.
+    DefineUiFunction {
+        id: u32,
+        params: u8,
+        captures: Vec<UiCapture>,
+        consts: Vec<ExprConst>,
+        code: Vec<u8>,
+    },
+    /// Bind a UI program to one gesture event slot; `function` 0 clears.
+    /// Registering a program clears that slot's script handler and vice versa.
+    BindGestureProgram {
+        gesture: u32,
+        slot: u8,
+        function: u32,
+    },
+    /// Run a UI program with JS-supplied arguments on the UI thread.
+    RunUiFunction {
+        function: u32,
+        args: Vec<Value>,
+    },
+    /// Stop a variable's in-flight animation; the value stays where it is.
+    CancelVarAnim {
         var: u32,
     },
     /// Virtual style declaration attached to `target`; `index` is its
@@ -343,11 +366,9 @@ fn direction_name(direction: u8) -> &'static str {
     }
 }
 
-/// Animation spec payload: choice byte then parameters. `Instant` is its own
-/// byte so an explicit per-write instant survives a variable default.
+/// Animation spec payload: code byte then parameters.
 fn push_anim_spec(payload: &mut Vec<u8>, spec: &AnimSpec) {
     match spec {
-        AnimSpec::Instant => payload.push(1),
         AnimSpec::Tween {
             duration_ms,
             easing,
@@ -364,7 +385,7 @@ fn push_anim_spec(payload: &mut Vec<u8>, spec: &AnimSpec) {
     }
 }
 
-/// `0` none, `1` instant, `2` tween, `3` spring.
+/// `0` immediate, `2` tween (duration f32, easing u8), `3` spring (f32, f32).
 fn read_anim_spec(cur: &mut Cursor<&[u8]>) -> Result<Option<AnimSpec>, String> {
     Ok(match read_u8(cur)? {
         0 => None,
@@ -372,10 +393,9 @@ fn read_anim_spec(cur: &mut Cursor<&[u8]>) -> Result<Option<AnimSpec>, String> {
     })
 }
 
-/// `1` instant, `2` tween (duration f32, easing u8), `3` spring (f32, f32).
+/// `2` tween (duration f32, easing u8), `3` spring (f32, f32).
 fn read_anim_body(cur: &mut Cursor<&[u8]>, code: u8) -> Result<AnimSpec, String> {
     Ok(match code {
-        1 => AnimSpec::Instant,
         2 => AnimSpec::Tween {
             duration_ms: read_f32(cur)?,
             easing: read_u8(cur)?,
@@ -416,6 +436,235 @@ fn write_value(payload: &mut Vec<u8>, value: &Value, intern: &mut impl FnMut(&st
             payload.extend_from_slice(&bytes);
         }
     }
+}
+
+/// Captures, constants, and bytecode of one UI program, as one payload.
+/// Used by the `DefineUiFunction` op and the `define_ui_function` bridges.
+pub fn encode_ui_function_payload(
+    captures: &[UiCapture],
+    consts: &[ExprConst],
+    code: &[u8],
+) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(captures.len() as u16).to_le_bytes());
+    for capture in captures {
+        match capture {
+            UiCapture::Num(value) => {
+                payload.push(1);
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+            UiCapture::Color(value) => {
+                payload.push(2);
+                payload.extend_from_slice(&value.to_argb().to_le_bytes());
+            }
+            UiCapture::Bool(value) => {
+                payload.push(3);
+                payload.push(u8::from(*value));
+            }
+            UiCapture::Shared(value) => {
+                payload.push(4);
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+            UiCapture::Function(value) => {
+                payload.push(5);
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+            UiCapture::JsCallback(value) => {
+                payload.push(6);
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+            UiCapture::Text(value) => {
+                payload.push(7);
+                payload.extend_from_slice(&(value.len() as u32).to_le_bytes());
+                payload.extend_from_slice(value.as_bytes());
+            }
+        }
+    }
+    payload.push(consts.len().min(255) as u8);
+    for value in consts {
+        match value {
+            ExprConst::Num(value) => {
+                payload.push(1);
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+            ExprConst::Color(value) => {
+                payload.push(2);
+                payload.extend_from_slice(&value.to_argb().to_le_bytes());
+            }
+            ExprConst::Bool(value) => {
+                payload.push(3);
+                payload.push(u8::from(*value));
+            }
+            ExprConst::ColorString(text) => {
+                payload.push(4);
+                payload.extend_from_slice(&(text.len() as u32).to_le_bytes());
+                payload.extend_from_slice(text.as_bytes());
+            }
+        }
+    }
+    payload.extend_from_slice(&(code.len() as u32).to_le_bytes());
+    payload.extend_from_slice(code);
+    payload
+}
+
+/// Inverse of [`encode_ui_function_payload`].
+pub fn decode_ui_function_payload(
+    bytes: &[u8],
+) -> Result<(Vec<UiCapture>, Vec<ExprConst>, Vec<u8>), String> {
+    let mut at = 0usize;
+    let u8_at = |at: &mut usize| -> Result<u8, String> {
+        let byte = *bytes.get(*at).ok_or("truncated ui function payload")?;
+        *at += 1;
+        Ok(byte)
+    };
+    let u16_at = |at: &mut usize| -> Result<u16, String> {
+        if *at + 2 > bytes.len() {
+            return Err("truncated ui function payload".into());
+        }
+        let value = u16::from_le_bytes([bytes[*at], bytes[*at + 1]]);
+        *at += 2;
+        Ok(value)
+    };
+    let u32_at = |at: &mut usize| -> Result<u32, String> {
+        if *at + 4 > bytes.len() {
+            return Err("truncated ui function payload".into());
+        }
+        let value = u32::from_le_bytes(bytes[*at..*at + 4].try_into().unwrap());
+        *at += 4;
+        Ok(value)
+    };
+    let f32_at = |at: &mut usize| -> Result<f32, String> {
+        if *at + 4 > bytes.len() {
+            return Err("truncated ui function payload".into());
+        }
+        let value = f32::from_le_bytes(bytes[*at..*at + 4].try_into().unwrap());
+        *at += 4;
+        Ok(value)
+    };
+    let text_at = |at: &mut usize| -> Result<String, String> {
+        let len = u32_at(at)? as usize;
+        if *at + len > bytes.len() {
+            return Err("truncated ui function payload".into());
+        }
+        let text = std::str::from_utf8(&bytes[*at..*at + len])
+            .map_err(|_| "ui function text is not utf-8")?;
+        *at += len;
+        Ok(text.to_owned())
+    };
+    let capture_count = u16_at(&mut at)? as usize;
+    let mut captures = Vec::with_capacity(capture_count);
+    for _ in 0..capture_count {
+        let tag = u8_at(&mut at)?;
+        let capture = match tag {
+            1 => UiCapture::Num(f32_at(&mut at)?),
+            2 => UiCapture::Color(Color::from_argb(u32_at(&mut at)?)),
+            3 => UiCapture::Bool(u8_at(&mut at)? != 0),
+            4 => UiCapture::Shared(u32_at(&mut at)?),
+            5 => UiCapture::Function(u32_at(&mut at)?),
+            6 => UiCapture::JsCallback(u32_at(&mut at)?),
+            7 => UiCapture::Text(text_at(&mut at)?),
+            other => return Err(format!("unknown ui capture tag {other}")),
+        };
+        captures.push(capture);
+    }
+    let const_count = u8_at(&mut at)? as usize;
+    let mut consts = Vec::with_capacity(const_count);
+    for _ in 0..const_count {
+        let tag = u8_at(&mut at)?;
+        let value = match tag {
+            1 => ExprConst::Num(f32_at(&mut at)?),
+            2 => ExprConst::Color(Color::from_argb(u32_at(&mut at)?)),
+            3 => ExprConst::Bool(u8_at(&mut at)? != 0),
+            4 => ExprConst::ColorString(text_at(&mut at)?),
+            other => return Err(format!("unknown ui const tag {other}")),
+        };
+        consts.push(value);
+    }
+    let code_len = u32_at(&mut at)? as usize;
+    if at + code_len > bytes.len() {
+        return Err("truncated ui program code".into());
+    }
+    let code = bytes[at..at + code_len].to_vec();
+    Ok((captures, consts, code))
+}
+
+/// JS→UI call arguments: `bool u8`, `float f32`, `string len u32 + bytes`.
+pub fn encode_ui_args(args: &[Value]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.push(args.len().min(255) as u8);
+    for value in args {
+        match value {
+            Value::Bool(value) => {
+                out.push(1);
+                out.push(u8::from(*value));
+            }
+            Value::Int(value) => {
+                out.push(2);
+                out.extend_from_slice(&(*value as f32).to_le_bytes());
+            }
+            Value::Float(value) => {
+                out.push(2);
+                out.extend_from_slice(&(*value as f32).to_le_bytes());
+            }
+            Value::String(value) => {
+                out.push(3);
+                out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+                out.extend_from_slice(value.as_bytes());
+            }
+            _ => {
+                out.push(2);
+                out.extend_from_slice(&0.0f32.to_le_bytes());
+            }
+        }
+    }
+    out
+}
+
+/// Inverse of [`encode_ui_args`]. Strings become `Value::String`; the shell
+/// faults when a worklet consumes one.
+pub fn decode_ui_args(bytes: &[u8]) -> Result<Vec<Value>, String> {
+    let mut at = 0usize;
+    let argc = *bytes.get(at).ok_or("truncated ui args")? as usize;
+    at += 1;
+    let mut args = Vec::with_capacity(argc);
+    for _ in 0..argc {
+        let tag = *bytes.get(at).ok_or("truncated ui args")?;
+        at += 1;
+        args.push(match tag {
+            1 => {
+                let value = *bytes.get(at).ok_or("truncated ui args")? != 0;
+                at += 1;
+                Value::Bool(value)
+            }
+            2 => {
+                if at + 4 > bytes.len() {
+                    return Err("truncated ui args".into());
+                }
+                let value = f32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+                at += 4;
+                Value::Float(f64::from(value))
+            }
+            3 => {
+                let len = u32::from_le_bytes(
+                    bytes
+                        .get(at..at + 4)
+                        .ok_or("truncated ui args")?
+                        .try_into()
+                        .unwrap(),
+                ) as usize;
+                at += 4;
+                if at + len > bytes.len() {
+                    return Err("truncated ui args".into());
+                }
+                let text = std::str::from_utf8(&bytes[at..at + len])
+                    .map_err(|_| "ui arg text is not utf-8")?;
+                at += len;
+                Value::String(text.to_owned())
+            }
+            other => return Err(format!("unknown ui arg tag {other}")),
+        });
+    }
+    Ok(args)
 }
 
 pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
@@ -577,16 +826,11 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 var,
                 source,
                 initial,
-                anim,
             } => {
                 payload.push(22);
                 payload.extend_from_slice(&var.to_le_bytes());
                 payload.push(*source);
                 write_value(&mut payload, initial, &mut intern);
-                match anim {
-                    None => payload.push(0),
-                    Some(spec) => push_anim_spec(&mut payload, spec),
-                }
             }
             Op::BindVar { var, target } => {
                 payload.push(23);
@@ -602,14 +846,47 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.extend_from_slice(&var.to_le_bytes());
                 write_value(&mut payload, value, &mut intern);
                 match anim {
-                    AnimChoice::Default => payload.push(0),
-                    AnimChoice::Instant => payload.push(1),
-                    AnimChoice::Spec(spec) => push_anim_spec(&mut payload, spec),
+                    None => payload.push(0),
+                    Some(spec) => push_anim_spec(&mut payload, spec),
                 }
             }
             Op::SettleVar { var } => {
                 payload.push(26);
                 payload.extend_from_slice(&var.to_le_bytes());
+            }
+            Op::BindGestureProgram {
+                gesture,
+                slot,
+                function,
+            } => {
+                payload.push(27);
+                payload.extend_from_slice(&gesture.to_le_bytes());
+                payload.push(*slot);
+                payload.extend_from_slice(&function.to_le_bytes());
+            }
+            Op::RunUiFunction { function, args } => {
+                payload.push(28);
+                payload.extend_from_slice(&function.to_le_bytes());
+                payload.push(args.len().min(255) as u8);
+                for value in args {
+                    write_value(&mut payload, value, &mut intern);
+                }
+            }
+            Op::CancelVarAnim { var } => {
+                payload.push(30);
+                payload.extend_from_slice(&var.to_le_bytes());
+            }
+            Op::DefineUiFunction {
+                id,
+                params,
+                captures,
+                consts,
+                code,
+            } => {
+                payload.push(29);
+                payload.extend_from_slice(&id.to_le_bytes());
+                payload.push(*params);
+                payload.extend_from_slice(&encode_ui_function_payload(captures, consts, code));
             }
             Op::SpawnStyleDecl {
                 decl,
@@ -656,7 +933,7 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
 
     let mut out = Vec::new();
     out.extend_from_slice(b"BSOP");
-    out.extend_from_slice(&4u16.to_le_bytes());
+    out.extend_from_slice(&5u16.to_le_bytes());
     out.extend_from_slice(&seq.to_le_bytes());
     out.extend_from_slice(&(ops.len() as u32).to_le_bytes());
     out.extend_from_slice(&(table.len() as u32).to_le_bytes());
@@ -675,7 +952,7 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
         return Err("bad op magic".into());
     }
     let version = read_u16(&mut cur)?;
-    if version != 4 {
+    if version != 5 {
         return Err(format!("unsupported op version {version}"));
     }
     let seq = read_u32(&mut cur)?;
@@ -843,12 +1120,10 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                 let var = read_u32(&mut payload_cur)?;
                 let source = read_u8(&mut payload_cur)?;
                 let initial = read_value(&mut payload_cur, &strings)?;
-                let anim = read_anim_spec(&mut payload_cur)?;
                 ops.push(Op::CreateVar {
                     var,
                     source,
                     initial,
-                    anim,
                 });
             }
             23 => ops.push(Op::BindVar {
@@ -861,18 +1136,51 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
             25 => {
                 let var = read_u32(&mut payload_cur)?;
                 let value = read_value(&mut payload_cur, &strings)?;
-                let choice = read_u8(&mut payload_cur)?;
-                let anim = match choice {
-                    0 => AnimChoice::Default,
-                    1 => AnimChoice::Instant,
-                    2 | 3 => AnimChoice::Spec(read_anim_body(&mut payload_cur, choice)?),
-                    other => return Err(format!("unknown var anim choice {other}")),
-                };
+                let anim = read_anim_spec(&mut payload_cur)?;
                 ops.push(Op::SetVar { var, value, anim });
             }
             26 => ops.push(Op::SettleVar {
                 var: read_u32(&mut payload_cur)?,
             }),
+            27 => {
+                let gesture = read_u32(&mut payload_cur)?;
+                let slot = read_u8(&mut payload_cur)?;
+                let function = read_u32(&mut payload_cur)?;
+                ops.push(Op::BindGestureProgram {
+                    gesture,
+                    slot,
+                    function,
+                });
+            }
+            28 => {
+                let function = read_u32(&mut payload_cur)?;
+                let argc = read_u8(&mut payload_cur)? as usize;
+                let mut args = Vec::with_capacity(argc);
+                for _ in 0..argc {
+                    args.push(read_value(&mut payload_cur, &strings)?);
+                }
+                ops.push(Op::RunUiFunction { function, args });
+            }
+            30 => ops.push(Op::CancelVarAnim {
+                var: read_u32(&mut payload_cur)?,
+            }),
+            29 => {
+                let id = read_u32(&mut payload_cur)?;
+                let params = read_u8(&mut payload_cur)?;
+                let rest = payload_cur
+                    .get_ref()
+                    .get(payload_cur.position() as usize..)
+                    .ok_or("truncated ui program")?;
+                let (captures, consts, code) = decode_ui_function_payload(rest)?;
+                payload_cur.set_position(payload_cur.get_ref().len() as u64);
+                ops.push(Op::DefineUiFunction {
+                    id,
+                    params,
+                    captures,
+                    consts,
+                    code,
+                });
+            }
             18 => ops.push(Op::SpawnStyleDecl {
                 decl: read_u32(&mut payload_cur)?,
                 target: read_u32(&mut payload_cur)?,

@@ -9,7 +9,7 @@ use crate::gesture::{PointerAction, PointerInput};
 use crate::layout::{decode_layout, LayoutRequest, LayoutSnapshot};
 use crate::ops::Value;
 use crate::shell::Shell;
-use crate::state_style::{AnimChoice, AnimSpec};
+use crate::state_style::AnimSpec;
 
 impl EditCommand {
     /// Bridge edit action codes shared by the native and wasm entry points:
@@ -73,12 +73,11 @@ impl PointerInput {
 }
 
 impl AnimSpec {
-    /// Wire animation spec: 1 instant, 2 tween (`a` duration ms, `c` easing),
+    /// Wire animation spec: 2 tween (`a` duration ms, `c` easing),
     /// 3 spring (`a` stiffness, `b` damping); matches the runtime's
     /// `animParts`. Code 0 means "no animation" and stays with the caller.
     pub fn from_abi(anim: u32, a: f64, b: f64, c: u32) -> Result<Self, String> {
         Ok(match anim {
-            1 => Self::Instant,
             2 => Self::Tween {
                 duration_ms: a as f32,
                 easing: c.min(255) as u8,
@@ -88,19 +87,6 @@ impl AnimSpec {
                 damping: b as f32,
             },
             other => return Err(format!("unknown anim spec code {other}")),
-        })
-    }
-}
-
-impl AnimChoice {
-    /// Wire animation choice: 0 variable default, 1 instant, 2 tween,
-    /// 3 spring; matches the runtime's `animParts`.
-    pub fn from_abi(anim: u32, a: f64, b: f64, c: u32) -> Result<Self, String> {
-        Ok(match anim {
-            0 => Self::Default,
-            1 => Self::Instant,
-            2 | 3 => Self::Spec(AnimSpec::from_abi(anim, a, b, c)?),
-            other => return Err(format!("unknown anim choice code {other}")),
         })
     }
 }

@@ -6,11 +6,13 @@
 //! only swaps buffers and encodes a batch; it never mutates the tree.
 
 use crate::reactive::{self, Graph, Kind, Sched};
-use crate::state_style::{AnimChoice, AnimSpec};
+use crate::state_style::AnimSpec;
 
+use crate::expr::ExprConst;
 use crate::gesture::GestureKind;
 use crate::ir::NodeDesc;
 use crate::ops::{encode, Op, Value};
+use crate::ui::UiCapture;
 
 pub struct Turn {
     /// Values stay in the script host. [`Graph`] schedules memos and effects.
@@ -22,6 +24,7 @@ pub struct Turn {
     next_gesture: u32,
     next_var: u32,
     next_style: u32,
+    next_ui_function: u32,
 }
 
 impl Default for Turn {
@@ -41,6 +44,7 @@ impl Turn {
             next_gesture: 1,
             next_var: 1,
             next_style: 1,
+            next_ui_function: 1,
         }
     }
 
@@ -182,18 +186,12 @@ impl Turn {
     /// `SOURCE_*` codes; `initial` carries the starting value for
     /// script-driven variables. The source target arrives with `bind_var`
     /// once the reference resolves.
-    pub fn create_var(
-        &mut self,
-        source: u8,
-        initial: Value,
-        anim: Option<AnimSpec>,
-    ) -> Result<u32, String> {
+    pub fn create_var(&mut self, source: u8, initial: Value) -> Result<u32, String> {
         let var = bump(&mut self.next_var, "var")?;
         self.push(Op::CreateVar {
             var,
             source,
             initial,
-            anim,
         });
         Ok(var)
     }
@@ -210,8 +208,9 @@ impl Turn {
 
     /// Queue one script-driven variable write. It lands on the UI thread at
     /// the frame boundary and re-evaluates the declarations that read it.
-    /// `anim` picks the transition; `Default` uses the variable's spec.
-    pub fn set_var(&mut self, var: u32, value: Value, anim: AnimChoice) {
+    /// `anim` starts a tween or spring from the current displayed value;
+    /// `None` lands immediately.
+    pub fn set_var(&mut self, var: u32, value: Value, anim: Option<AnimSpec>) {
         self.push(Op::SetVar { var, value, anim });
     }
 
@@ -219,6 +218,45 @@ impl Turn {
     /// variable converges as the batch applies, so the event goes out then.
     pub fn settle_var(&mut self, var: u32) {
         self.push(Op::SettleVar { var });
+    }
+
+    /// Allocate a UI program id and queue its definition.
+    pub fn define_ui_function(
+        &mut self,
+        params: u8,
+        captures: Vec<UiCapture>,
+        consts: Vec<ExprConst>,
+        code: Vec<u8>,
+    ) -> Result<u32, String> {
+        let id = bump(&mut self.next_ui_function, "ui function")?;
+        self.push(Op::DefineUiFunction {
+            id,
+            params,
+            captures,
+            consts,
+            code,
+        });
+        Ok(id)
+    }
+
+    /// Bind a UI program to one gesture event slot. Registering a program
+    /// clears that slot's script handler and vice versa.
+    pub fn bind_gesture_program(&mut self, gesture: u32, slot: u8, function: u32) {
+        self.push(Op::BindGestureProgram {
+            gesture,
+            slot,
+            function,
+        });
+    }
+
+    /// Queue one UI call with JS-supplied arguments.
+    pub fn run_ui_function(&mut self, function: u32, args: Vec<Value>) {
+        self.push(Op::RunUiFunction { function, args });
+    }
+
+    /// Stop a variable's in-flight animation; the displayed value stays.
+    pub fn cancel_animation(&mut self, var: u32) {
+        self.push(Op::CancelVarAnim { var });
     }
 
     /// Allocate a style declaration id and queue its declaration under

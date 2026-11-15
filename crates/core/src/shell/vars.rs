@@ -1,13 +1,15 @@
 use crate::color::Color;
 use crate::expr::ExprValue;
+use crate::gesture::GestureEvent;
 use crate::ops::Value;
 use crate::state_style::{
-    AnimChoice, AnimSpec, AnimState, DeclExpr, ResolvedPatch, SlotType, VarEvent,
+    AnimSpec, AnimState, DeclExpr, ResolvedPatch, SlotType, VarEvent,
     VarTable, SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_GESTURE_ROTATION,
     SOURCE_GESTURE_SCALE, SOURCE_GESTURE_TX, SOURCE_GESTURE_TY, SOURCE_NONE, SOURCE_PRESSED,
     SOURCE_SCROLL_X, SOURCE_SCROLL_Y,
 };
 
+use crate::ui::UiCall;
 use super::paint::EffectivePaintStyle;
 use super::tree::Node;
 use super::Shell;
@@ -65,15 +67,8 @@ impl Shell {
 
     /// Create a variable. Script-driven variables take their value from
     /// `initial`; source-driven ones start at the source's zero value and are
-    /// attached to their target node by a later `BindVar`. `anim` is the
-    /// per-variable default transition.
-    pub(super) fn create_var(
-        &mut self,
-        var: u32,
-        source: u8,
-        initial: &Value,
-        anim: Option<AnimSpec>,
-    ) -> Result<(), String> {
+    /// attached to their target node by a later `BindVar`.
+    pub(super) fn create_var(&mut self, var: u32, source: u8, initial: &Value) -> Result<(), String> {
         if source > SOURCE_SCROLL_Y {
             return Err(format!("var {var} has unknown source {source}"));
         }
@@ -91,7 +86,7 @@ impl Shell {
             SOURCE_GESTURE_SCALE => ExprValue::Num(1.0),
             _ => ExprValue::Bool(false),
         };
-        self.vars.create(var, source, 0, value, anim)
+        self.vars.create(var, source, 0, value)
     }
 
     /// Attach a variable's source target. Re-samples the source so dependent
@@ -115,10 +110,10 @@ impl Shell {
     }
 
     /// Apply one script-driven variable write. Source-linked variables are
-    /// owned by the UI thread, so the script may not write them. `choice`
-    /// picks the transition: the variable's default, an explicit instant
-    /// landing, or a full spec.
-    pub(super) fn set_var(&mut self, var: u32, value: &Value, choice: AnimChoice) -> Result<(), String> {
+    /// owned by the UI thread, so the script may not write them. `anim`
+    /// carries a tween or spring started from the current displayed value;
+    /// `None` lands immediately.
+    pub(super) fn set_var(&mut self, var: u32, value: &Value, anim: Option<AnimSpec>) -> Result<(), String> {
         let next = parse_expr_value(value)
             .ok_or_else(|| format!("var {var} value must be a number, color, or bool"))?;
         let Some(var_slot) = self.vars.get_mut(var) else {
@@ -131,28 +126,50 @@ impl Shell {
             var_slot.anim_state = None;
             return Ok(());
         }
-        let spec = match choice {
-            AnimChoice::Default => var_slot.anim.unwrap_or(AnimSpec::Instant),
-            AnimChoice::Instant => AnimSpec::Instant,
-            AnimChoice::Spec(spec) => spec,
-        };
         // Bool animates instantly, and so does anything the engine cannot
         // interpolate; only Num and Color transitions actually run.
         let animatable =
-            matches!(next, ExprValue::Num(_) | ExprValue::Color(_)) && spec != AnimSpec::Instant;
+            matches!(next, ExprValue::Num(_) | ExprValue::Color(_)) && anim.is_some();
         if animatable {
             let from = var_slot.value.clone();
-            var_slot.anim_state = Some(AnimState::new(spec, from, next, self.now_ms));
+            var_slot.anim_state = Some(AnimState::new(anim.expect("checked"), from, next, self.now_ms));
         } else {
             var_slot.anim_state = None;
             var_slot.value = next;
-            for decl in self.state_styles.dependents_of([var]) {
-                self.eval_decl(decl);
-            }
-            self.paint_dirty.set(true);
-            self.flush_var_settle(var);
+            self.mark_var_dirty(var);
         }
         Ok(())
+    }
+
+    /// Stop a variable's in-flight animation; the value stays where it is.
+    pub(super) fn cancel_var_anim(&mut self, var: u32) -> Result<(), String> {
+        let Some(var_slot) = self.vars.get_mut(var) else {
+            return Err(format!("unknown var {var}"));
+        };
+        var_slot.anim_state = None;
+        Ok(())
+    }
+
+    /// Queue a variable's dependents for re-evaluation at the end of the
+    /// current UI batch. One pass per batch instead of one per write.
+    pub(crate) fn mark_var_dirty(&mut self, var: u32) {
+        self.ui_dirty.insert(var);
+        self.paint_dirty.set(true);
+    }
+
+    /// Re-evaluate every declaration that reads a variable written in this
+    /// UI batch, then flush settled-variable events.
+    pub(super) fn reval_dirty(&mut self) {
+        if self.ui_dirty.is_empty() {
+            return;
+        }
+        let ids: Vec<u32> = self.ui_dirty.drain().collect();
+        for decl in self.state_styles.dependents_of(ids.iter().copied()) {
+            self.eval_decl(decl);
+        }
+        for id in ids {
+            self.flush_var_settle(id);
+        }
     }
 
     /// Record a settle request. The event goes out when the variable
@@ -360,6 +377,72 @@ impl Shell {
     /// when it patches nothing. Disabled or not-yet-matching ones do not.
     pub(super) fn focus_style_taken(&self, id: u32) -> bool {
         self.state_styles.focus_style_taken(id)
+    }
+
+    /// Register one UI program ("worklet"). Validation fails the batch.
+    pub(super) fn define_ui_function(
+        &mut self,
+        id: u32,
+        params: u8,
+        captures: Vec<crate::ui::UiCapture>,
+        consts: Vec<crate::expr::ExprConst>,
+        code: Vec<u8>,
+    ) -> Result<(), String> {
+        let program = crate::ui::UiProgram {
+            params,
+            captures,
+            consts,
+            code,
+        };
+        program.validate()?;
+        if id == 0 {
+            return Err("ui function id must be nonzero".into());
+        }
+        if self.ui_programs.get(id as usize).is_some_and(Option::is_some) {
+            return Err(format!("ui function {id} is not free"));
+        }
+        if self.ui_programs.len() <= id as usize {
+            self.ui_programs.resize_with(id as usize + 1, || None);
+        }
+        self.ui_programs[id as usize] = Some(program);
+        Ok(())
+    }
+
+    /// Run every queued UI call: gesture worklets first, then JS-initiated
+    /// calls, then one dependent re-evaluation pass. A failing call records
+    /// a fault and continues.
+    pub(crate) fn drain_ui_work(&mut self) {
+        let gesture_events: Vec<(u32, GestureEvent)> = self.recognizer.take_ui_events();
+        let calls: Vec<UiCall> = self.ui_calls.drain(..).collect();
+        if gesture_events.is_empty() && calls.is_empty() {
+            return;
+        }
+        for (id, event) in gesture_events {
+            self.ui_event = Some(event);
+            let result = self.run_ui_function(id, &[]);
+            self.ui_event = None;
+            let _ = result;
+        }
+        for call in calls {
+            self.ui_event = None;
+            let mut args = Vec::with_capacity(call.args.len());
+            let mut ok = true;
+            for arg in call.args {
+                match arg.as_expr() {
+                    Ok(value) => args.push(value),
+                    Err(error) => {
+                        self.ui_faults += 1;
+                        self.ui_last_error = error;
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                let _ = self.run_ui_function(call.function, &args);
+            }
+        }
+        self.reval_dirty();
     }
 }
 

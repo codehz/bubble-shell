@@ -6,7 +6,7 @@
 //! syntax to exactly these ops.
 
 use bubble_core::{
-    encode, encode_set_prop_color, spawn_ops, wrapping_layout, AnimChoice, AnimSpec, Color, Kind,
+    encode, encode_set_prop_color, spawn_ops, wrapping_layout, AnimSpec, Color, Kind,
     LayoutRequest, NodeDesc, Op, PaintCmd, PointerAction, PointerInput, ProgramBuilder, Shell,
     Value, VarEvent, EASE_LINEAR, OP_AND, OP_GT, OP_NOT, SOURCE_DISABLED, SOURCE_EDITING,
     SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED,
@@ -123,7 +123,6 @@ fn source_var(var: u32, source: u8, target: u32) -> Vec<Op> {
             var,
             source,
             initial: Value::Null,
-            anim: None,
         },
         Op::BindVar { var, target },
     ]
@@ -541,7 +540,6 @@ fn script_writes_an_unlinked_variable() {
         var: 1,
         source: SOURCE_NONE,
         initial: Value::Float(0.0),
-        anim: None,
     }]);
     ops.extend(decl(
         1,
@@ -700,7 +698,6 @@ fn var_shell() -> Shell {
         var: 1,
         source: SOURCE_NONE,
         initial: Value::Bool(false),
-        anim: None,
     });
     ops.extend(decl(1, 2, 1, 0, program(load(1))));
     ops.push(paint_op(1, "backgroundColor", Value::Int(GREEN as i64)));
@@ -720,7 +717,7 @@ fn script_var_write_drives_declaration_paint() {
             &[Op::SetVar {
                 var: 1,
                 value: Value::Bool(true),
-                anim: AnimChoice::Default,
+                anim: None,
             }],
         ))
         .unwrap();
@@ -733,7 +730,7 @@ fn script_var_write_drives_declaration_paint() {
             &[Op::SetVar {
                 var: 1,
                 value: Value::Bool(false),
-                anim: AnimChoice::Default,
+                anim: None,
             }],
         ))
         .unwrap();
@@ -750,7 +747,7 @@ fn script_var_write_rejects_source_variable() {
             &[Op::SetVar {
                 var: 1,
                 value: Value::Bool(true),
-                anim: AnimChoice::Default,
+                anim: None,
             }],
         ))
         .unwrap_err();
@@ -769,7 +766,7 @@ fn script_var_write_unknown_var_fails() {
             &[Op::SetVar {
                 var: 9,
                 value: Value::Bool(true),
-                anim: AnimChoice::Default,
+                anim: None,
             }],
         ))
         .unwrap_err();
@@ -786,7 +783,7 @@ fn settle_var_emits_one_event_per_request() {
                 Op::SetVar {
                     var: 1,
                     value: Value::Bool(true),
-                    anim: AnimChoice::Default,
+                    anim: None,
                 },
                 Op::SettleVar { var: 1 },
             ],
@@ -819,10 +816,6 @@ fn tween_shell() -> Shell {
         var: 1,
         source: SOURCE_NONE,
         initial: Value::Float(0.0),
-        anim: Some(AnimSpec::Tween {
-            duration_ms: 100.0,
-            easing: EASE_LINEAR,
-        }),
     });
     ops.extend(decl(
         1,
@@ -851,7 +844,10 @@ fn tween_write_tracks_the_tick_and_settles() {
                 Op::SetVar {
                     var: 1,
                     value: Value::Float(1.0),
-                    anim: AnimChoice::Default,
+                    anim: Some(AnimSpec::Tween {
+                        duration_ms: 100.0,
+                        easing: EASE_LINEAR,
+                    }),
                 },
                 Op::SettleVar { var: 1 },
             ],
@@ -896,7 +892,7 @@ fn instant_override_lands_immediately() {
             &[Op::SetVar {
                 var: 1,
                 value: Value::Float(1.0),
-                anim: AnimChoice::Instant,
+                anim: None,
             }],
         ))
         .unwrap();
@@ -913,7 +909,10 @@ fn instant_override_lands_immediately() {
             &[Op::SetVar {
                 var: 1,
                 value: Value::Float(0.0),
-                anim: AnimChoice::Default,
+                anim: Some(AnimSpec::Tween {
+                    duration_ms: 100.0,
+                    easing: EASE_LINEAR,
+                }),
             }],
         ))
         .unwrap();
@@ -921,7 +920,7 @@ fn instant_override_lands_immediately() {
     assert_eq!(
         fills(&shell),
         vec![GREEN],
-        "the default tween restarts from 1.0"
+        "the tween restarts from the displayed 1.0"
     );
     shell.advance_animations(60.0);
     shell.layout(&mut measure).unwrap();
@@ -941,10 +940,6 @@ fn spring_write_converges_and_settles() {
         var: 1,
         source: SOURCE_NONE,
         initial: Value::Float(0.0),
-        anim: Some(AnimSpec::Spring {
-            stiffness: 120.0,
-            damping: 12.0,
-        }),
     });
     ops.extend(decl(
         1,
@@ -966,7 +961,10 @@ fn spring_write_converges_and_settles() {
                 Op::SetVar {
                     var: 1,
                     value: Value::Float(1.0),
-                    anim: AnimChoice::Default,
+                    anim: Some(AnimSpec::Spring {
+                        stiffness: 120.0,
+                        damping: 12.0,
+                    }),
                 },
                 Op::SettleVar { var: 1 },
             ],
