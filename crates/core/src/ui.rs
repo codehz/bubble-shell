@@ -323,8 +323,9 @@ impl UiProgram {
             }
         }
         // Abstract dataflow over stack height: proves no underflow at any
-        // reachable point and bounds the live stack. Heights only grow, so
-        // the fixpoint terminates.
+        // reachable point, bounds the live stack, and requires every path
+        // into an instruction to carry the same height. Each instruction is
+        // therefore visited once.
         let mut heights: Vec<Option<usize>> = vec![None; self.code.len()];
         let mut queue: std::collections::VecDeque<(usize, usize)> =
             std::collections::VecDeque::new();
@@ -346,22 +347,33 @@ impl UiProgram {
             let next = |heights: &mut Vec<Option<usize>>,
                         queue: &mut std::collections::VecDeque<(usize, usize)>,
                         target: usize,
-                        height: usize| {
-                if let Some(slot) = heights.get_mut(target) {
-                    if slot.is_none_or(|seen| seen < height) {
+                        height: usize|
+             -> Result<(), String> {
+                let Some(slot) = heights.get_mut(target) else {
+                    return Ok(());
+                };
+                match *slot {
+                    Some(seen) if seen != height => Err(format!(
+                        "ui program stack height {height} at offset {target} disagrees with {seen}"
+                    )),
+                    Some(_) => Ok(()),
+                    None => {
                         *slot = Some(height);
                         queue.push_back((target, height));
+                        Ok(())
                     }
                 }
             };
             match instr {
                 Instr::Return => reachable_return = true,
-                Instr::Jump(target) => next(&mut heights, &mut queue, *target as usize, height),
-                Instr::JumpIfFalse(target) => {
-                    next(&mut heights, &mut queue, *target as usize, height);
-                    next(&mut heights, &mut queue, *end, height);
+                Instr::Jump(target) => {
+                    next(&mut heights, &mut queue, *target as usize, height)?
                 }
-                _ => next(&mut heights, &mut queue, *end, height),
+                Instr::JumpIfFalse(target) => {
+                    next(&mut heights, &mut queue, *target as usize, height)?;
+                    next(&mut heights, &mut queue, *end, height)?;
+                }
+                _ => next(&mut heights, &mut queue, *end, height)?,
             }
         }
         if !reachable_return {
