@@ -199,3 +199,132 @@ impl Prop {
         })
     }
 }
+
+pub(crate) fn align_items(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("alignItems must be a string".into());
+    };
+    match text.as_str() {
+        "stretch" => Ok(0),
+        "start" | "flex-start" => Ok(1),
+        "center" => Ok(2),
+        "end" | "flex-end" => Ok(3),
+        "baseline" => Ok(4),
+        other => Err(format!("unsupported alignItems {other}")),
+    }
+}
+
+pub(crate) fn justify_content(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("justifyContent must be a string".into());
+    };
+    match text.as_str() {
+        "start" | "flex-start" => Ok(0),
+        "center" => Ok(1),
+        "end" | "flex-end" => Ok(2),
+        "space-between" => Ok(3),
+        "space-around" => Ok(4),
+        "space-evenly" => Ok(5),
+        other => Err(format!("unsupported justifyContent {other}")),
+    }
+}
+
+pub(crate) fn position(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("position must be a string".into());
+    };
+    match text.as_str() {
+        "relative" => Ok(0),
+        "absolute" => Ok(1),
+        other => Err(format!("unsupported position {other}")),
+    }
+}
+
+pub(crate) fn parse_overflow(value: &Value) -> Result<Overflow, String> {
+    let Value::String(text) = value else {
+        return Err("overflow must be a string".into());
+    };
+    match text.as_str() {
+        "visible" => Ok(Overflow::Visible),
+        "hidden" => Ok(Overflow::Hidden),
+        "scroll" => Ok(Overflow::Scroll),
+        other => Err(format!("unsupported overflow {other}")),
+    }
+}
+
+pub(crate) fn parse_display_none(value: &Value) -> Result<bool, String> {
+    let Value::String(text) = value else {
+        return Err("display must be a string".into());
+    };
+    match text.as_str() {
+        "flex" => Ok(false),
+        "none" => Ok(true),
+        other => Err(format!("unsupported display {other}")),
+    }
+}
+
+pub(crate) fn parse_visibility_hidden(value: &Value) -> Result<bool, String> {
+    let Value::String(text) = value else {
+        return Err("visibility must be a string".into());
+    };
+    match text.as_str() {
+        "visible" => Ok(false),
+        "hidden" => Ok(true),
+        other => Err(format!("unsupported visibility {other}")),
+    }
+}
+
+pub(crate) fn flex_direction(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("flexDirection must be a string".into());
+    };
+    match text.as_str() {
+        "column" => Ok(0),
+        "row" => Ok(1),
+        "column-reverse" => Ok(2),
+        "row-reverse" => Ok(3),
+        other => Err(format!("unsupported flexDirection {other}")),
+    }
+}
+
+pub(crate) fn align_self(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("alignSelf must be a string".into());
+    };
+    if text == "auto" {
+        return Ok(0);
+    }
+    Ok(align_items(&Value::String(text.clone()))? + 1)
+}
+
+pub(crate) fn flex_wrap(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("flexWrap must be a string".into());
+    };
+    match text.as_str() {
+        "nowrap" => Ok(0),
+        "wrap" => Ok(1),
+        "wrap-reverse" => Ok(2),
+        other => Err(format!("unsupported flexWrap {other}")),
+    }
+}
+
+pub(crate) fn parse_len(value: &Value, allow_auto: bool) -> Result<Len, String> {
+    match value {
+        Value::Null if allow_auto => Ok(Len::Auto),
+        Value::Int(value) => Ok(Len::Pt(*value as f32)),
+        Value::Float(value) => Ok(Len::Pt(*value as f32)),
+        Value::String(text) if allow_auto && text == "auto" => Ok(Len::Auto),
+        Value::String(text) => {
+            let Some(number) = text.strip_suffix('%') else {
+                return Err(format!("unsupported length {text}"));
+            };
+            let number: f32 = number
+                .trim()
+                .parse()
+                .map_err(|_| format!("unsupported length {text}"))?;
+            Ok(Len::Pct(number / 100.0))
+        }
+        _ => Err("unsupported length".into()),
+    }
+}
