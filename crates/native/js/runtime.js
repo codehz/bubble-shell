@@ -1486,10 +1486,11 @@ export function indexEach(items, render) {
       }
     }
     // Same final-position cursor math as forEach, shared in placeGroups.
+    // Groups are keyed by position, so placeGroups walks `list.keys()`.
     placeGroups(
       parentHandle,
       anchor,
-      list,
+      list.keys(),
       [...groups.values()].reduce(
         (handles, group) => handles + (group.scope ? group.handles.length : 0),
         0,

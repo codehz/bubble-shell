@@ -16,6 +16,8 @@
 //! the node.
 
 use crate::ops::Value;
+use crate::shell::Len;
+use taffy::style::Overflow;
 
 /// Paint properties a `ViewStyle` declaration may patch.
 pub const VIEW_STYLE_PROPS: &[&str] = &[
