@@ -1188,13 +1188,14 @@ const SCRIPT_PAN_APP: &str = r##"
 import * as shell from "bubble-shell";
 
 const viewRef = shell.ref();
+const panRef = shell.ref();
 shell.mount(function App() {
+  const tx = shell.createSharedValue({ source: "gesture.translationX", target: panRef });
   shell.primitive(
     "View",
     { ref: viewRef, backgroundColor: "#ffffff", width: 100, height: 100 },
     () => {
-      const pan = shell.panGesture({ onPanUpdate: () => {} });
-      const tx = shell.createSharedValue({ source: "gesture.translationX", target: pan });
+      shell.primitive("PanGesture", { ref: panRef, onPanUpdate: () => {} });
       shell.primitive("ViewStyle", { target: viewRef, when: true, translateX: tx });
     },
   );
@@ -1296,16 +1297,18 @@ const SCRIPT_PINCH_APP: &str = r##"
 import * as shell from "bubble-shell";
 
 const viewRef = shell.ref();
+const pinchRef = shell.ref();
 shell.mount(function App() {
+  const scale = shell.createSharedValue({ source: "gesture.scale", target: pinchRef });
   shell.primitive(
     "View",
     { ref: viewRef, backgroundColor: "#ffffff", width: 100, height: 100 },
     () => {
-      const pinch = shell.transformGesture({
+      shell.primitive("TransformGesture", {
+        ref: pinchRef,
         mode: ["pinch"],
         onTransformUpdate: () => {},
       });
-      const scale = shell.createSharedValue({ source: "gesture.scale", target: pinch });
       shell.primitive("ViewStyle", { target: viewRef, when: true, scale });
     },
   );

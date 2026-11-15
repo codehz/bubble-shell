@@ -9,13 +9,10 @@ import {
   PanGesture,
   TransformGesture,
   ViewStyle,
+  For,
   createSharedValue,
   scheduleOnUI,
   ref,
-  view,
-  text,
-  panGesture,
-  primitive,
 } from "bubble-shell";
 import { Section } from "./shared";
 
@@ -174,51 +171,64 @@ export function TransformDemo() {
 }
 
 // Gesture and scroll state sources live on the UI thread: no JS runs per
-// frame, so this demo builds its subtree with the plain runtime calls the
-// compiler generates for JSX.
+// frame. The pan card binds its shared values to the recognizer through the
+// gesture ref; the bar mixes scroll.y in a style declaration.
+const SCROLL_ROWS = Array.from({ length: 14 }, (_, index) => index + 1);
+
 export function GestureVarsDemo() {
   const cardRef = ref();
+  const panRef = ref();
   const scrollRef = ref();
   const barRef = ref();
-  return view({ gap: 12 }, () => {
-    view({ backgroundColor: "#1f2937", radius: 8, padding: [12, 12, 12, 14], gap: 8 }, () => {
-      text({ color: "#fbbf24", fontSize: 13, fontWeight: 700 }, "Pan follows gesture-source variables");
-      text(
-        { color: "#9ca3af", fontSize: 13 },
-        "The card reads gesture.translationX/Y straight from the recognizer — it never lags a frame behind.",
-      );
-      view(
-        { backgroundColor: 0xff8b5cf6, radius: 8, width: 150, height: 72, justifyContent: "center", alignItems: "center", ref: cardRef },
-        () => {
-          const pan = panGesture({ onPanUpdate: () => {}, onPanEnd: () => {} });
-          const tx = createSharedValue({ source: "gesture.translationX", target: pan });
-          const ty = createSharedValue({ source: "gesture.translationY", target: pan });
-          primitive("ViewStyle", { target: cardRef, when: true, translateX: tx, translateY: ty });
-          text({ color: "#ffffff", fontSize: 14 }, "drag me");
-        },
-      );
-    });
-    view({ backgroundColor: "#1f2937", radius: 8, padding: [12, 12, 12, 14], gap: 8 }, () => {
-      text({ color: "#fbbf24", fontSize: 13, fontWeight: 700 }, "Bar color tracks scroll.y");
-      text(
-        { color: "#9ca3af", fontSize: 13 },
-        "Scroll the list; the bar mixes blue to green over 200 px of scroll offset.",
-      );
-      const sy = createSharedValue({ source: "scroll.y", target: scrollRef });
-      view(
-        { ref: scrollRef, height: 140, overflowY: "scroll", backgroundColor: 0xff374151, radius: 6, padding: [8, 8, 8, 10], gap: 6 },
-        () => {
-          for (let i = 1; i <= 14; i += 1) {
-            text({ color: "#d1d5db", fontSize: 14 }, "Scroll item " + i);
-          }
-        },
-      );
-      view({ ref: barRef, height: 8, width: 180, radius: 4, backgroundColor: 0xff3b82f6 }, () => {});
-      primitive("ViewStyle", {
-        target: barRef,
-        when: true,
-        backgroundColor: ["mix", 0xff3b82f6, 0xff22c55e, ["clamp", ["div", sy, 200], 0, 1]],
-      });
-    });
-  });
+  const tx = createSharedValue({ source: "gesture.translationX", target: panRef });
+  const ty = createSharedValue({ source: "gesture.translationY", target: panRef });
+  const sy = createSharedValue({ source: "scroll.y", target: scrollRef });
+  return (
+    <View gap={12}>
+      <View backgroundColor="#1f2937" radius={8} padding={[12, 12, 12, 14]} gap={8}>
+        <Text color="#fbbf24" fontSize={13} fontWeight={700}>Pan follows gesture-source variables</Text>
+        <Text color="#9ca3af" fontSize={13}>
+          The card reads gesture.translationX/Y straight from the recognizer — it never lags a frame behind.
+        </Text>
+        <View
+          ref={cardRef}
+          backgroundColor={0xff8b5cf6}
+          radius={8}
+          width={150}
+          height={72}
+          justifyContent="center"
+          alignItems="center"
+        >
+          <PanGesture ref={panRef} onPanUpdate={() => {}} onPanEnd={() => {}} />
+          <ViewStyle target={cardRef} when={true} translateX={tx} translateY={ty} />
+          <Text color="#ffffff" fontSize={14}>drag me</Text>
+        </View>
+      </View>
+      <View backgroundColor="#1f2937" radius={8} padding={[12, 12, 12, 14]} gap={8}>
+        <Text color="#fbbf24" fontSize={13} fontWeight={700}>Bar color tracks scroll.y</Text>
+        <Text color="#9ca3af" fontSize={13}>
+          Scroll the list; the bar mixes blue to green over 200 px of scroll offset.
+        </Text>
+        <View
+          ref={scrollRef}
+          height={140}
+          overflowY="scroll"
+          backgroundColor={0xff374151}
+          radius={6}
+          padding={[8, 8, 8, 10]}
+          gap={6}
+        >
+          <For each={SCROLL_ROWS} by={(row) => row}>
+            {(read) => <Text color="#d1d5db" fontSize={14}>{"Scroll item " + read()}</Text>}
+          </For>
+        </View>
+        <View ref={barRef} height={8} width={180} radius={4} backgroundColor={0xff3b82f6} />
+        <ViewStyle
+          target={barRef}
+          when={true}
+          backgroundColor={mix(0xff3b82f6, 0xff22c55e, clamp(sy / 200, 0, 1))}
+        />
+      </View>
+    </View>
+  );
 }

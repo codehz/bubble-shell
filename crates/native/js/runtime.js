@@ -333,6 +333,26 @@ function applyNodeProps(handle, values, dynamics) {
   for (const [key, run] of dynamicRest) bindProp(handle, key, run);
 }
 
+function refValue(value) {
+  if (typeof value !== "object" || value === null || typeof value.current !== "number") {
+    throw new Error("ref must come from ref()");
+  }
+  return value;
+}
+
+// Point a ref at the declaration it just spawned and flush the shared values
+// created before it existed. View refs resolve to node handles; gesture refs
+// resolve to gesture declaration ids, a separate id space.
+function resolveRef(binding, handle) {
+  binding.current = handle;
+  const pending = binding.pending;
+  if (!pending) return;
+  binding.pending = null;
+  for (const varId of pending) {
+    if (api.bind_var(varId, handle) !== 0) throw new Error(api.error() || "bind_var failed");
+  }
+}
+
 function pack(kind, props, text) {
   props = props ?? {};
   const parentHandle = parent();
@@ -343,10 +363,7 @@ function pack(kind, props, text) {
   for (const key of Object.keys(props)) {
     const value = props[key];
     if (key === "ref") {
-      if (typeof value !== "object" || value === null || typeof value.current !== "number") {
-        throw new Error("ref must come from ref()");
-      }
-      refBinding = value;
+      refBinding = refValue(value);
       continue;
     }
     if (value instanceof Dynamic) dynamics.push([key, value.run]);
@@ -363,16 +380,7 @@ function pack(kind, props, text) {
     if (!handle) throw new Error(api.error() || "spawn failed");
     registerChild(parentHandle, handle);
   }
-  if (refBinding) {
-    refBinding.current = handle;
-    const pending = refBinding.pending;
-    if (pending) {
-      refBinding.pending = null;
-      for (const varId of pending) {
-        if (api.bind_var(varId, handle) !== 0) throw new Error(api.error() || "bind_var failed");
-      }
-    }
-  }
+  if (refBinding) resolveRef(refBinding, handle);
   applyNodeProps(handle, values, dynamics);
   return handle;
 }
@@ -618,12 +626,19 @@ function packGesture(type, props) {
   if (!kind) throw new Error(`unknown gesture ${type}`);
   props = props ?? {};
   const allowed = GESTURE_EVENTS[kind];
+  let refBinding = null;
   for (const key of Object.keys(props)) {
+    if (key === "ref") {
+      refBinding = refValue(props[key]);
+      continue;
+    }
     if (!(key in allowed)) throw new Error(`${type} has no property ${key}`);
   }
   const target = parent();
   const { id } = registerGesture(target, kind);
+  if (refBinding) resolveRef(refBinding, id);
   for (const key of Object.keys(props)) {
+    if (key === "ref") continue;
     const value = props[key];
     if (key in GESTURE_EVENTS[kind] && GESTURE_EVENTS[kind][key]) continue;
     if (value instanceof Dynamic) bindGestureProp(id, key, value.run);
