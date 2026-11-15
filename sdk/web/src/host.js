@@ -421,9 +421,17 @@ setApi({
   bind_gesture_event: exports.bind_gesture_event,
   dispose_gesture: exports.dispose_gesture,
   move_gesture: exports.move_gesture,
-  create_var(source, initialTag, initialNumber, anim, animA, animB, animC) {
-    return exports.create_var(source, initialTag, initialNumber, anim, animA, animB, animC);
+  bind_gesture_program: exports.bind_gesture_program,
+  define_ui_function(params, bytes, reuse) {
+    return withBytes(Uint8Array.from(bytes), (ptr, len) =>
+      exports.define_ui_function(params, ptr, len, reuse));
   },
+  run_ui_function(functionId, bytes) {
+    return withBytes(Uint8Array.from(bytes), (ptr, len) =>
+      exports.run_ui_function(functionId, ptr, len));
+  },
+  cancel_anim: exports.cancel_anim,
+  create_var: exports.create_var,
   bind_var: exports.bind_var,
   set_var(varId, tag, number, anim, animA, animB, animC) {
     return exports.set_var(varId, tag, number, anim, animA, animB, animC);
@@ -454,7 +462,12 @@ setApi({
   // dynamic state styles change paint without any pointer sample.
   layout() {
     const code = exports.layout();
-    if (code === 0) paint();
+    if (code === 0) {
+      paint();
+      // A JS write outside a pointer sample (timer, promise) still needs
+      // frames for its queued UI call or animation.
+      if (exports.pending() !== 0) startTicking();
+    }
     return code;
   },
   visual_pointer: exports.visual_pointer,
