@@ -126,33 +126,7 @@ impl NodeStyle {
 
 impl Default for NodeStyle {
     fn default() -> Self {
-        Self {
-            direction: 0,
-            overflow_x: Overflow::Visible,
-            overflow_y: Overflow::Visible,
-            display: Display::Flex,
-            flex_grow: 0.0,
-            flex_shrink: 0.0,
-            flex_basis: Len::Auto,
-            width: Len::Auto,
-            height: Len::Auto,
-            min_width: Len::Auto,
-            min_height: Len::Auto,
-            max_width: Len::Auto,
-            max_height: Len::Auto,
-            padding: zero_box(),
-            margin: zero_box(),
-            gap_column: zero_len(),
-            gap_row: zero_len(),
-            align_items: 0,
-            align_self: 0,
-            justify_content: 0,
-            align_content: 0,
-            flex_wrap: 0,
-            position: 0,
-            inset: auto_box(),
-            aspect_ratio: None,
-        }
+        Self::from_node(&Node::new_root(NodeId::new(0)))
     }
 }
 
@@ -260,6 +234,109 @@ struct Node {
     h: f32,
 }
 impl Node {
+    /// Single source of truth for a fresh node's defaults.
+    fn new_root(taffy_id: NodeId) -> Self {
+        Self {
+            parent: 0,
+            children: Vec::new(),
+            kind: Kind::View,
+            overflow_x: Overflow::Visible,
+            overflow_y: Overflow::Visible,
+            background: Color::TRANSPARENT,
+            color: Color::WHITE,
+            font_size: 16.0,
+            radius: 0.0,
+            opacity: 1.0,
+            handler: 0,
+            width: Len::Auto,
+            height: Len::Auto,
+            min_width: Len::Auto,
+            min_height: Len::Auto,
+            max_width: Len::Auto,
+            max_height: Len::Auto,
+            flex_basis: Len::Auto,
+            flex_grow: 0.0,
+            flex_shrink: 0.0,
+            direction: 0,
+            padding: zero_box(),
+            margin: zero_box(),
+            gap_column: zero_len(),
+            gap_row: zero_len(),
+            align_items: 0,
+            align_self: 0,
+            justify_content: 0,
+            align_content: 0,
+            flex_wrap: 0,
+            position: 0,
+            inset: auto_box(),
+            aspect_ratio: None,
+            line_height: 0.0,
+            text_align: 0,
+            font_weight: 400,
+            src: String::new(),
+            fit: 0,
+            text: String::new(),
+            taffy: taffy_id,
+            scroll_left: 0.0,
+            scroll_top: 0.0,
+            chain_x: false,
+            chain_y: false,
+            multiline: false,
+            secure: false,
+            max_length: 0,
+            keyboard: String::new(),
+            autofill: String::new(),
+            role: None,
+            label: String::new(),
+            test_id: String::new(),
+            disabled: false,
+            a11y_hidden: false,
+            display_none: false,
+            visibility_hidden: false,
+            focusable: false,
+            modal: false,
+            checked: None,
+            selected: false,
+            expanded: None,
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+        }
+    }
+
+    /// Node from a descriptor: descriptor fields or the new_root defaults.
+    fn from_desc(desc: NodeDesc, taffy_id: NodeId) -> Self {
+        Self {
+            kind: desc.kind,
+            overflow_x: if desc.scroll_x {
+                Overflow::Scroll
+            } else {
+                Overflow::Visible
+            },
+            overflow_y: if desc.scroll_y {
+                Overflow::Scroll
+            } else {
+                Overflow::Visible
+            },
+            background: Color::from_argb(desc.background),
+            color: Color::from_argb(desc.color),
+            font_size: desc.font_size,
+            radius: desc.radius,
+            opacity: desc.opacity,
+            handler: desc.handler,
+            flex_grow: desc.flex_grow,
+            flex_shrink: desc.flex_shrink,
+            direction: desc.direction,
+            width: desc.width.map(Len::Pt).unwrap_or(Len::Auto),
+            height: desc.height.map(Len::Pt).unwrap_or(Len::Auto),
+            padding: desc.padding.map(Len::Pt),
+            text: desc.text,
+            taffy: taffy_id,
+            ..Self::new_root(NodeId::new(0))
+        }
+    }
+
     fn scrolls_x(&self) -> bool {
         self.overflow_x == Overflow::Scroll
     }
@@ -517,76 +594,7 @@ impl Shell {
         let style = style_for(NodeStyle::default());
         let taffy_id = taffy.new_leaf(style).map_err(|err| err.to_string())?;
         Ok(Self {
-            nodes: vec![
-                None,
-                Some(Node {
-                    parent: 0,
-                    children: Vec::new(),
-                    kind: Kind::View,
-                    overflow_x: Overflow::Visible,
-                    overflow_y: Overflow::Visible,
-                    background: Color::TRANSPARENT,
-                    color: Color::WHITE,
-                    font_size: 16.0,
-                    radius: 0.0,
-                    opacity: 1.0,
-                    handler: 0,
-                    width: Len::Auto,
-                    height: Len::Auto,
-                    min_width: Len::Auto,
-                    min_height: Len::Auto,
-                    max_width: Len::Auto,
-                    max_height: Len::Auto,
-                    flex_basis: Len::Auto,
-                    flex_grow: 0.0,
-                    flex_shrink: 0.0,
-                    direction: 0,
-                    padding: zero_box(),
-                    margin: zero_box(),
-                    gap_column: zero_len(),
-                    gap_row: zero_len(),
-                    align_items: 0,
-                    align_self: 0,
-                    justify_content: 0,
-                    align_content: 0,
-                    flex_wrap: 0,
-                    position: 0,
-                    inset: auto_box(),
-                    aspect_ratio: None,
-                    line_height: 0.0,
-                    text_align: 0,
-                    font_weight: 400,
-                    src: String::new(),
-                    fit: 0,
-                    text: String::new(),
-                    taffy: taffy_id,
-                    scroll_left: 0.0,
-                    scroll_top: 0.0,
-                    chain_x: false,
-                    chain_y: false,
-                    multiline: false,
-                    secure: false,
-                    max_length: 0,
-                    keyboard: String::new(),
-                    autofill: String::new(),
-                    role: None,
-                    label: String::new(),
-                    test_id: String::new(),
-                    disabled: false,
-                    a11y_hidden: false,
-                    display_none: false,
-                    visibility_hidden: false,
-                    focusable: false,
-                    modal: false,
-                    checked: None,
-                    selected: false,
-                    expanded: None,
-                    x: 0.0,
-                    y: 0.0,
-                    w: 0.0,
-                    h: 0.0,
-                }),
-            ],
+            nodes: vec![None, Some(Node::new_root(taffy_id))],
             retired: HashSet::new(),
             high_water: 1,
             taffy,
@@ -3102,81 +3110,9 @@ impl Shell {
         if self.nodes.len() <= handle as usize {
             self.nodes.resize_with(handle as usize + 1, || None);
         }
-        self.nodes[handle as usize] = Some(Node {
-            parent,
-            children: Vec::new(),
-            kind: desc.kind,
-            overflow_x: if desc.scroll_x {
-                Overflow::Scroll
-            } else {
-                Overflow::Visible
-            },
-            overflow_y: if desc.scroll_y {
-                Overflow::Scroll
-            } else {
-                Overflow::Visible
-            },
-            background: Color::from_argb(desc.background),
-            color: Color::from_argb(desc.color),
-            font_size: desc.font_size,
-            radius: desc.radius,
-            opacity: desc.opacity,
-            handler: desc.handler,
-            min_width: Len::Auto,
-            min_height: Len::Auto,
-            max_width: Len::Auto,
-            max_height: Len::Auto,
-            flex_basis: Len::Auto,
-            flex_grow: desc.flex_grow,
-            flex_shrink: desc.flex_shrink,
-            direction: desc.direction,
-            width: desc.width.map(Len::Pt).unwrap_or(Len::Auto),
-            height: desc.height.map(Len::Pt).unwrap_or(Len::Auto),
-            padding: desc.padding.map(Len::Pt),
-            margin: zero_box(),
-            gap_column: zero_len(),
-            gap_row: zero_len(),
-            align_items: 0,
-            align_self: 0,
-            justify_content: 0,
-            align_content: 0,
-            flex_wrap: 0,
-            position: 0,
-            inset: auto_box(),
-            aspect_ratio: None,
-            line_height: 0.0,
-            text_align: 0,
-            font_weight: 400,
-            src: String::new(),
-            fit: 0,
-            text: desc.text.clone(),
-            taffy: taffy_id,
-            scroll_left: 0.0,
-            scroll_top: 0.0,
-            chain_x: false,
-            chain_y: false,
-            multiline: false,
-            secure: false,
-            max_length: 0,
-            keyboard: String::new(),
-            autofill: String::new(),
-            role: None,
-            label: String::new(),
-            test_id: String::new(),
-            disabled: false,
-            a11y_hidden: false,
-            display_none: false,
-            visibility_hidden: false,
-            focusable: false,
-            modal: false,
-            checked: None,
-            selected: false,
-            expanded: None,
-            x: 0.0,
-            y: 0.0,
-            w: 0.0,
-            h: 0.0,
-        });
+        let mut node = Node::from_desc(desc.clone(), taffy_id);
+        node.parent = parent;
+        self.nodes[handle as usize] = Some(node);
         self.node_mut(parent)?
             .children
             .insert(index as usize, handle);
