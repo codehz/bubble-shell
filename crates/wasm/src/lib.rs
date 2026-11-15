@@ -1,5 +1,7 @@
 //! Single-threaded wasm ABI. The host copies bytes in and paint/op bytes out.
 //! `host_measure` writes two f32s at `out_ptr` and must not grow wasm memory.
+//! Event batches push out through the `host_*_events` imports at the end of
+//! every export that can produce them.
 //!
 //! The script side (`Turn`) only queues ops. `commit` pushes a batch into the
 //! pending queue; layout/paint/hit-test drain that queue into the `Shell`
@@ -65,6 +67,10 @@ unsafe extern "C" {
     fn host_run(id: u32) -> i32;
     fn host_cleanup(id: u32);
     fn host_body();
+    /// Drained `BSGE`/`BSED`/`BSVE` event batches, encoded in scratch.
+    fn host_gesture_events(ptr: u32, len: u32);
+    fn host_edit_events(ptr: u32, len: u32);
+    fn host_var_events(ptr: u32, len: u32);
 }
 
 struct WasmHost;
@@ -189,6 +195,44 @@ fn collect_events(shell: &mut Shell) {
     }
 }
 
+/// Push drained event batches to the JS host through the `host_*_events`
+/// imports. Called at the end of every export that can produce events, after
+/// the shell borrow is released: dispatched handlers may re-enter exports
+/// like `layout`.
+fn flush_events() {
+    let gestures = GESTURES.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
+    if !gestures.is_empty() {
+        let len = store_scratch(encode_events(&gestures));
+        let ptr = SCRATCH.with(|slot| slot.borrow().as_ptr() as u32);
+        unsafe { host_gesture_events(ptr, len) };
+    }
+    let edits = EDITS.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
+    if !edits.is_empty() {
+        let len = store_scratch(encode_edit_events(&edits));
+        let ptr = SCRATCH.with(|slot| slot.borrow().as_ptr() as u32);
+        unsafe { host_edit_events(ptr, len) };
+    }
+    let vars = VARS.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
+    if !vars.is_empty() {
+        let len = store_scratch(encode_var_events(&vars));
+        let ptr = SCRATCH.with(|slot| slot.borrow().as_ptr() as u32);
+        unsafe { host_var_events(ptr, len) };
+    }
+}
+
+/// Map a `Result<(), String>` export result to its code, then push events.
+fn settle(result: Result<(), String>) -> i32 {
+    let code = match result {
+        Ok(()) => 0,
+        Err(err) => {
+            set_error(err);
+            1
+        }
+    };
+    flush_events();
+    code
+}
+
 /// `action` 0 down, 1 move, 2 up, 3 cancel. Returns 0 on success.
 #[no_mangle]
 pub extern "C" fn pointer(
@@ -220,13 +264,7 @@ pub extern "C" fn pointer(
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 /// Pressed feedback only: no recognition, no tap, no scroll. Editing hosts
@@ -260,13 +298,7 @@ pub extern "C" fn visual_pointer(
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 /// Advance UI-thread gesture timers (long press, double-tap window).
@@ -279,13 +311,7 @@ pub extern "C" fn tick(time_ms: f64) -> i32 {
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 #[no_mangle]
@@ -316,17 +342,6 @@ pub extern "C" fn gesture_pending() -> i32 {
         .unwrap_or(0)
 }
 
-/// Encoded `BSGE` batch of events since the last drain; 0 bytes when empty.
-#[no_mangle]
-pub extern "C" fn take_gesture_events() -> u32 {
-    let events = GESTURES.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
-    if events.is_empty() {
-        store_scratch(Vec::new())
-    } else {
-        store_scratch(encode_events(&events))
-    }
-}
-
 /// Called by the JS runtime when the bundle registers or clears a back handler.
 #[no_mangle]
 pub extern "C" fn set_back_handler(has: i32) {
@@ -355,13 +370,15 @@ pub extern "C" fn key(action: u32, time_ms: f64) -> i32 {
             Ok(handled)
         })
     });
-    match result {
+    let handled = match result {
         Ok(handled) => i32::from(handled),
         Err(err) => {
             set_error(err);
             -1
         }
-    }
+    };
+    flush_events();
+    handled
 }
 
 /// Accessibility semantics snapshot as UTF-8 JSON in scratch.
@@ -405,13 +422,7 @@ pub extern "C" fn a11y_action(handle: u32, action: u32, ptr: *const u8, len: u32
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 /// Edit menu command: 0 cut, 1 copy, 2 paste, 3 select all. Writes any
@@ -437,12 +448,16 @@ pub extern "C" fn edit_menu(action: u32, ptr: *const u8, len: u32) -> i32 {
         with_shell(|shell| {
             let menu = shell.edit_menu(action, &clipboard)?;
             collect_events(shell);
-            store_scratch(menu.clipboard.unwrap_or_default().into_bytes());
-            Ok(menu.changed)
+            Ok((menu.changed, menu.clipboard))
         })
     });
+    // Flush before the clipboard lands in scratch: the event push reuses it.
     match result {
-        Ok(changed) => i32::from(changed),
+        Ok((changed, out)) => {
+            flush_events();
+            store_scratch(out.unwrap_or_default().into_bytes());
+            i32::from(changed)
+        }
         Err(err) => {
             set_error(err);
             -1
@@ -508,13 +523,7 @@ pub extern "C" fn edit(action: u32, ptr: *const u8, len: u32, a: u32, b: u32) ->
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 #[no_mangle]
@@ -527,13 +536,7 @@ pub extern "C" fn edit_batch_begin(session: u64) -> i32 {
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 #[no_mangle]
@@ -546,13 +549,7 @@ pub extern "C" fn edit_batch_end(session: u64) -> i32 {
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 #[no_mangle]
@@ -569,13 +566,7 @@ pub extern "C" fn edit_batch_abort(session: u64) -> i32 {
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 fn wasm_session(shell: &Shell, session: u64) -> Result<(), String> {
@@ -639,13 +630,7 @@ pub extern "C" fn edit_commit(
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 #[no_mangle]
@@ -664,13 +649,7 @@ pub extern "C" fn edit_compose(
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 #[no_mangle]
@@ -692,13 +671,7 @@ pub extern "C" fn edit_replace(
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 #[no_mangle]
@@ -711,13 +684,7 @@ pub extern "C" fn edit_delete_surrounding(session: u64, before: u32, after: u32)
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 #[no_mangle]
@@ -734,13 +701,7 @@ pub extern "C" fn edit_delete_surrounding_code_points(
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 #[no_mangle]
@@ -753,13 +714,7 @@ pub extern "C" fn edit_set_composition(session: u64, start: u32, end: u32) -> i3
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 #[no_mangle]
@@ -772,13 +727,7 @@ pub extern "C" fn edit_finish_composition(session: u64) -> i32 {
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 #[no_mangle]
@@ -794,13 +743,7 @@ pub extern "C" fn edit_select(session: u64, anchor: u32, active: u32) -> i32 {
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 #[no_mangle]
@@ -813,13 +756,7 @@ pub extern "C" fn edit_undo(session: u64) -> i32 {
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 #[no_mangle]
@@ -832,13 +769,7 @@ pub extern "C" fn edit_redo(session: u64) -> i32 {
             Ok(())
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 /// Deepest text field under the point, or `0`.
@@ -858,13 +789,15 @@ pub extern "C" fn focus_at(x: f32, y: f32) -> u32 {
             Ok(handle)
         })
     });
-    match result {
+    let handle = match result {
         Ok(handle) => handle,
         Err(err) => {
             set_error(err);
             0
         }
-    }
+    };
+    flush_events();
+    handle
 }
 
 /// Nearest UTF-16 offset in the focused field. `u32::MAX` when nothing is focused.
@@ -957,29 +890,6 @@ pub extern "C" fn focused_text() -> u32 {
             store_scratch(value.into_bytes())
         }
         _ => store_scratch(Vec::new()),
-    }
-}
-
-/// Encoded `BSED` batch since the last drain; 0 bytes when empty.
-#[no_mangle]
-pub extern "C" fn take_edit_events() -> u32 {
-    let events = EDITS.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
-    if events.is_empty() {
-        store_scratch(Vec::new())
-    } else {
-        store_scratch(encode_edit_events(&events))
-    }
-}
-
-/// Encoded `BSVE` batch of settled variables since the last drain; 0 bytes
-/// when empty.
-#[no_mangle]
-pub extern "C" fn take_var_events() -> u32 {
-    let events = VARS.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
-    if events.is_empty() {
-        store_scratch(Vec::new())
-    } else {
-        store_scratch(encode_var_events(&events))
     }
 }
 
@@ -1795,13 +1705,7 @@ pub extern "C" fn layout() -> i32 {
             shell.refresh_caret(&mut wasm_layout)
         })
     });
-    match result {
-        Ok(()) => 0,
-        Err(err) => {
-            set_error(err);
-            1
-        }
-    }
+    settle(result)
 }
 
 #[no_mangle]

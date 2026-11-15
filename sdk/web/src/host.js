@@ -53,7 +53,6 @@ const A11Y_ROLES = {
 
 function a11yAction(handle, action, text = "") {
   const result = withStr(text, (ptr, len) => exports.a11y_action(handle, action, ptr, len));
-  pumpGestures();
   if (exports.layout() === 0) paint();
   return result === 0;
 }
@@ -217,7 +216,6 @@ document.addEventListener(
     if (event.target === ime && action !== 0 && action !== 1 && action !== 4) return;
     const handled = exports.key(action, performance.now());
     if (handled < 0) return;
-    pumpGestures();
     if (exports.layout() === 0) paint();
     if (handled > 0) {
       event.preventDefault();
@@ -312,6 +310,12 @@ const wasm = await WebAssembly.instantiateStreaming(fetch("./bubble.wasm"), {
     host_run: (id) => globalThis.__bubbleRun?.(id) ?? 0,
     host_cleanup: (id) => globalThis.__bubbleCleanup?.(id),
     host_body: () => globalThis.__bubbleBody?.(),
+    host_gesture_events: (ptr, len) =>
+      dispatchGestureEvents(new Uint8Array(memory().buffer, ptr, len).slice()),
+    host_edit_events: (ptr, len) =>
+      dispatchEditEvents(new Uint8Array(memory().buffer, ptr, len).slice()),
+    host_var_events: (ptr, len) =>
+      dispatchVarEvents(new Uint8Array(memory().buffer, ptr, len).slice()),
   },
 });
 
@@ -440,8 +444,6 @@ setApi({
   pointer: exports.pointer,
   tick: exports.tick,
   gesture_pending: exports.gesture_pending,
-  take_gesture_events: exports.take_gesture_events,
-  take_var_events: exports.take_var_events,
   queue_text(handle, text) {
     return withStr(text, (ptr, len) => exports.queue_text(handle, ptr, len));
   },
@@ -665,30 +667,8 @@ function pointerKind(event) {
   return 0;
 }
 
-function pumpGestures() {
-  let len = exports.take_gesture_events();
-  while (len > 0) {
-    const bytes = new Uint8Array(memory().buffer, exports.scratch_ptr(), len).slice();
-    dispatchGestureEvents(bytes);
-    len = exports.take_gesture_events();
-  }
-  len = exports.take_edit_events();
-  while (len > 0) {
-    const bytes = new Uint8Array(memory().buffer, exports.scratch_ptr(), len).slice();
-    dispatchEditEvents(bytes);
-    len = exports.take_edit_events();
-  }
-  len = exports.take_var_events();
-  while (len > 0) {
-    const bytes = new Uint8Array(memory().buffer, exports.scratch_ptr(), len).slice();
-    dispatchVarEvents(bytes);
-    len = exports.take_var_events();
-  }
-}
-
 function gestureFrame() {
   exports.tick(performance.now());
-  pumpGestures();
   if (exports.layout() === 0) paint();
   if (activePointers.size > 0 || exports.gesture_pending() !== 0) {
     requestAnimationFrame(gestureFrame);
@@ -714,7 +694,6 @@ function sendPointer(action, event) {
     pointerKind(event),
     event.buttons,
   );
-  pumpGestures();
   if (exports.layout() === 0) paint();
 }
 
@@ -875,7 +854,6 @@ function applyEditCommands(commands) {
       }
     });
   }
-  pumpGestures();
   if (exports.layout() === 0) paint();
   syncIme();
 }
@@ -976,7 +954,6 @@ async function runEditMenu(name) {
       try { await navigator.clipboard.writeText(text); } catch { return; }
     }
   }
-  pumpGestures();
   if (exports.layout() === 0) paint();
   syncIme();
   ime.focus();
@@ -998,7 +975,6 @@ function cancelPointers() {
   }
   activePointers.clear();
   selectDrag = null;
-  pumpGestures();
   if (exports.layout() === 0) paint();
 }
 

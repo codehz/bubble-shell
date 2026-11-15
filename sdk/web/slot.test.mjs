@@ -58,6 +58,12 @@ const { instance } = await WebAssembly.instantiate(wasm, {
     host_run: (id) => globalThis.__bubbleRun?.(id) ?? 0,
     host_cleanup: (id) => globalThis.__bubbleCleanup?.(id),
     host_body: () => globalThis.__bubbleBody?.(),
+    host_gesture_events: (ptr, len) =>
+      globalThis.__bubbleGesture?.(new Uint8Array(memory().buffer, ptr, len).slice()),
+    host_edit_events: (ptr, len) =>
+      globalThis.__bubbleEdit?.(new Uint8Array(memory().buffer, ptr, len).slice()),
+    host_var_events: (ptr, len) =>
+      globalThis.__bubbleVar?.(new Uint8Array(memory().buffer, ptr, len).slice()),
   },
 });
 const exports = instance.exports;

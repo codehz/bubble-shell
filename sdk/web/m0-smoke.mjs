@@ -1,5 +1,10 @@
 import { registerHooks } from "node:module";
-import { dispatchGestureEvents, setApi } from "../../crates/native/js/runtime.js";
+import {
+  dispatchEditEvents,
+  dispatchGestureEvents,
+  dispatchVarEvents,
+  setApi,
+} from "../../crates/native/js/runtime.js";
 import { entryUrl, fixture as bundledApp, wasmBytes } from "./fixtures.mjs";
 import { layoutSnapshot } from "./src/textlayout.js";
 
@@ -57,6 +62,12 @@ const { instance } = await WebAssembly.instantiate(wasm, {
     host_run: (id) => globalThis.__bubbleRun?.(id) ?? 0,
     host_cleanup: (id) => globalThis.__bubbleCleanup?.(id),
     host_body: () => globalThis.__bubbleBody?.(),
+    host_gesture_events: (ptr, len) =>
+      dispatchGestureEvents(new Uint8Array(memory().buffer, ptr, len).slice()),
+    host_edit_events: (ptr, len) =>
+      dispatchEditEvents(new Uint8Array(memory().buffer, ptr, len).slice()),
+    host_var_events: (ptr, len) =>
+      dispatchVarEvents(new Uint8Array(memory().buffer, ptr, len).slice()),
   },
 });
 const exports = instance.exports;
@@ -184,7 +195,6 @@ setApi({
   visual_pointer: exports.visual_pointer,
   pointer: exports.pointer,
   tick: exports.tick,
-  take_gesture_events: exports.take_gesture_events,
   queue_text(handle, text) {
     const bytes = encoder.encode(text ?? "");
     const ptr = bytes.length ? copyBytes(bytes) : 0;
@@ -292,21 +302,11 @@ function textOf(cmds, value) {
 const first = paintList();
 const firstFrameMs = performance.now() - started;
 
-function pumpGestures() {
-  let len = exports.take_gesture_events();
-  while (len > 0) {
-    dispatchGestureEvents(new Uint8Array(memory().buffer, exports.scratch_ptr(), len).slice());
-    len = exports.take_gesture_events();
-  }
-}
-
 function sendPointer(action, id, x, y, time) {
   if (exports.pointer(action, id, x, y, time, 0, action === 2 || action === 3 ? 0 : 1) !== 0) {
     throw new Error(error() || "pointer failed");
   }
-  pumpGestures();
 }
-
 if (fixture === "counter") {
   const countText = textOf(first, "Count: 0");
   if (argb(countText.color) !== 0xffffffff) throw new Error("CSS string text color was not applied");
