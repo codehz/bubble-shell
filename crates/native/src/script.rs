@@ -365,7 +365,17 @@ impl Session {
         let Some(vm) = self.vm.as_mut() else {
             return Ok(());
         };
-        guarded(|| vars_in(vm, bytes))
+        match guarded(|| vars_in(vm, bytes)) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                if fatal(&err) {
+                    self.recover()?;
+                } else {
+                    self.note_fault(&err);
+                }
+                Err(err)
+            }
+        }
     }
 
     fn settle(&mut self, id: u32, ok: bool, payload: &str) -> Result<(), String> {
@@ -1137,17 +1147,10 @@ fn api_run_init(scope: &mut Scope<'_>) -> i32 {
 }
 
 fn api_run_updates(scope: &mut Scope<'_>) -> i32 {
-    let result = graph_call(scope, |turn, host| {
+    graph_call(scope, |turn, host| {
         turn.run_scheduled(false, host);
         note_graph(turn)
-    });
-    if result != 0 {
-        let debug: Result<String, RuntimeError> =
-            scope.eval("(globalThis.__bubbleLastError ?? '') + ' @ ' + String(globalThis.__bubbleRunMax) + ' ' + globalThis.__bubbleLastErrorStack")
-                .and_then(|value| Ok(value_string(scope, &value)));
-        eprintln!("DEBUG run_updates js_error={debug:?}");
-    }
-    result
+    })
 }
 
 fn note_graph(turn: &mut Turn) -> Result<(), String> {
