@@ -536,7 +536,7 @@ function paint() {
       offset += textLen;
       ctx.fillStyle = css(color);
       ctx.font = fontOf(fontSize, weight);
-      ctx.textBaseline = "top";
+      ctx.textBaseline = "middle";
       const lineH = lineHeightOf(fontSize, lineHeight);
       const laid = layoutSnapshot({
         text,
@@ -552,7 +552,7 @@ function paint() {
       });
       for (const line of laid.lines) {
         if (line.text && (index === 0 || line.y < h || h <= 0)) {
-          ctx.fillText(line.text, x + (line.x || 0), y + line.y);
+          ctx.fillText(line.text, x + (line.x || 0), y + line.y + lineH / 2);
         }
       }
     } else if (tag === 7) {
