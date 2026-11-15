@@ -1381,6 +1381,26 @@ export function show(whenFn, fallback, render) {
   return anchor;
 }
 
+// Shared For/Index placement. Existing groups sit directly before the anchor,
+// so their move target is a final position: the anchor's index minus every
+// handle still to be placed. New groups render at the running cursor end.
+// `groupOf` returns the existing group for an entry, or undefined; `spawn`
+// renders a missing group at `cursor` and returns its handle count.
+function placeGroups(parentHandle, anchor, entries, existingHandles, groupOf, spawn) {
+  let cursor = anchorIndex(parentHandle, anchor) - existingHandles;
+  for (const entry of entries) {
+    const group = groupOf(entry);
+    if (group === undefined) {
+      cursor += spawn(entry, cursor);
+    } else {
+      for (const handle of group.handles) {
+        moveHandle(handle, parentHandle, cursor);
+        cursor += 1;
+      }
+    }
+  }
+}
+
 export function forEach(items, by, render) {
   if (typeof by !== "function") throw new Error("For requires a by function");
   if (typeof render !== "function") throw new Error("For requires a render function");
@@ -1409,20 +1429,20 @@ export function forEach(items, by, render) {
         live.delete(groupKey);
       }
     }
-    // Existing groups sit directly before the anchor. Their target index is a
-    // final position (anchor's index minus every handle still to be placed),
-    // while new groups insert at the running block end; sharing one cursor is
-    // only valid if existing handles move to that final index.
-    let existingHandles = 0;
-    for (const entry of next) {
-      const placed = groups.get(entry.key);
-      if (placed !== undefined) existingHandles += placed.handles.length;
-    }
-    let cursor = anchorIndex(parentHandle, anchor) - existingHandles;
-    for (const entry of next) {
-      live.set(entry.key, entry.item);
-      let group = groups.get(entry.key);
-      if (group === undefined) {
+    // Existing groups sit directly before the anchor; placeGroups owns the
+    // final-position cursor math.
+    for (const entry of next) live.set(entry.key, entry.item);
+    placeGroups(
+      parentHandle,
+      anchor,
+      next,
+      next.reduce(
+        (handles, entry) => handles + (groups.get(entry.key)?.handles.length ?? 0),
+        0,
+      ),
+      (entry) => groups.get(entry.key),
+      (entry, cursor) => {
+        live.set(entry.key, entry.item);
         const key = entry.key;
         const read = () => {
           itemsFn();
@@ -1430,17 +1450,12 @@ export function forEach(items, by, render) {
         };
         const groupScope = newVirtualScope(parentHandle, scope);
         scope.entries.push(groupScope);
-        group = renderAt(parentHandle, cursor, () => render(read, entry.index), groupScope);
+        const group = renderAt(parentHandle, cursor, () => render(read, entry.index), groupScope);
         group.scope = groupScope;
         groups.set(key, group);
-        cursor += group.handles.length;
-      } else {
-        for (const handle of group.handles) {
-          moveHandle(handle, parentHandle, cursor);
-          cursor += 1;
-        }
-      }
-    }
+        return group.handles.length;
+      },
+    );
     scope.entries.length = 0;
     for (const entry of next) {
       const group = groups.get(entry.key);
@@ -1470,32 +1485,27 @@ export function indexEach(items, render) {
         groups.delete(index);
       }
     }
-    // Same final-position cursor math as forEach: existing groups sit directly
-    // before the anchor, so their move target is the anchor's index minus the
-    // handles still to be placed.
-    let existingHandles = 0;
-    for (const group of groups.values()) {
-      if (group.scope) existingHandles += group.handles.length;
-    }
-    let cursor = anchorIndex(parentHandle, anchor) - existingHandles;
-    for (let index = 0; index < list.length; index += 1) {
-      let group = groups.get(index);
-      if (group === undefined) {
+    // Same final-position cursor math as forEach, shared in placeGroups.
+    placeGroups(
+      parentHandle,
+      anchor,
+      list,
+      [...groups.values()].reduce(
+        (handles, group) => handles + (group.scope ? group.handles.length : 0),
+        0,
+      ),
+      (index) => groups.get(index),
+      (index, cursor) => {
         const at = index;
         const read = () => (itemsFn() ?? [])[at];
         const groupScope = newVirtualScope(parentHandle, scope);
         scope.entries.push(groupScope);
-        group = renderAt(parentHandle, cursor, () => render(read, at), groupScope);
+        const group = renderAt(parentHandle, cursor, () => render(read, at), groupScope);
         group.scope = groupScope;
         groups.set(index, group);
-        cursor += group.handles.length;
-      } else {
-        for (const handle of group.handles) {
-          moveHandle(handle, parentHandle, cursor);
-          cursor += 1;
-        }
-      }
-    }
+        return group.handles.length;
+      },
+    );
     scope.entries.length = 0;
     for (const group of groups.values()) {
       if (group.scope) scope.entries.push(group.scope);
