@@ -308,6 +308,12 @@ impl Shell {
     /// Empty viewport root. Function components append children with `spawn`.
     pub fn blank() -> Result<Self, String> {
         let mut taffy: TaffyTree<MeasureCtx> = TaffyTree::new();
+        // Text measure and paint wrap at the node box width. Taffy's pixel-grid
+        // rounding can shave a box below its intrinsic text width (e.g. a
+        // 79.74 px label rounds to 79), which then re-wraps painted text the
+        // measure pass had already sized for one line. Boxes stay fractional so
+        // measure, layout, and paint agree.
+        taffy.disable_rounding();
         let style = style_for(NodeStyle::default());
         let taffy_id = taffy.new_leaf(style).map_err(|err| err.to_string())?;
         Ok(Self {
