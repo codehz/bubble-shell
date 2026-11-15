@@ -1706,6 +1706,18 @@ fn is_worklet(expression: &Expression<'_>) -> bool {
     })
 }
 
+/// Whether a lowered worklet statement tree produces no stack value. The
+/// statement lowering must not wrap these in `pop`.
+fn is_valueless_worklet_op(expression: &Expression<'_>) -> bool {
+    let Expression::ArrayExpression(array) = expression else {
+        return false;
+    };
+    let Some(ArrayExpressionElement::StringLiteral(name)) = array.elements.first() else {
+        return false;
+    };
+    matches!(name.value.as_str(), Some("scheduleJs" | "cancelAnim"))
+}
+
 /// Per-worklet lowering context.
 struct WorkletCtx<'a> {
     params: Vec<String>,
@@ -1757,8 +1769,6 @@ impl<'a> Lower<'a> {
             self.worklets.push((name.clone(), callees));
         }
         self.current_worklet_name = previous;
-        // The trailing line argument gives runtime faults a source location.
-        let line = locate(self.source, span).0;
         let params_array = self.string_array(span, &params);
         let mut captures_elements = self.ast_vec::<ArrayExpressionElement<'a>>();
         for capture in ctx.captures {
@@ -1772,12 +1782,7 @@ impl<'a> Lower<'a> {
         let body_array = Expression::new_array_expression(span, body_elements, &self.builder);
         self.call(
             RT_UI_FUNCTION,
-            vec![
-                params_array,
-                captures_array,
-                body_array,
-                self.number(SPAN, line as f64),
-            ],
+            vec![params_array, captures_array, body_array],
             span,
         )
     }
@@ -2005,6 +2010,11 @@ impl<'a> Lower<'a> {
             other => {
                 let span = other.span();
                 let value = self.worklet_expr(span, ctx, other);
+                // scheduleOnJS and cancelAnimation leave no stack value;
+                // wrapping them in `pop` would underflow the program.
+                if is_valueless_worklet_op(&value) {
+                    return value;
+                }
                 self.tree_op(span, "pop", vec![value])
             }
         }
@@ -2149,11 +2159,6 @@ impl<'a> Lower<'a> {
 
     /// Register a capture (identifier or string literal) and return its index.
     fn worklet_capture(&mut self, ctx: &mut WorkletCtx<'a>, value: Expression<'a>) -> usize {
-        let key = match &value {
-            Expression::Identifier(id) => format!("id:{}", id.name.as_str()),
-            Expression::StringLiteral(literal) => format!("text:{}", literal.value.as_str().unwrap_or("")),
-            _ => format!("expr:{}", value.span().start),
-        };
         if let Some(index) = ctx.captures.iter().position(|existing| {
             match (existing, &value) {
                 (Expression::Identifier(a), Expression::Identifier(b)) => {
@@ -2167,7 +2172,6 @@ impl<'a> Lower<'a> {
         }) {
             return index;
         }
-        let _ = key;
         ctx.captures.push(value);
         ctx.captures.len() - 1
     }
@@ -2390,6 +2394,10 @@ impl<'a> Lower<'a> {
                     "min" | "max" | "abs" | "floor" | "ceil" | "round" | "sqrt" | "pow"
                 );
                 if math {
+                    let expected = match name.as_str() {
+                        "min" | "max" | "pow" => 2,
+                        _ => 1,
+                    };
                     let mut trees = Vec::new();
                     for argument in arguments {
                         let argument = match argument {
@@ -2406,6 +2414,13 @@ impl<'a> Lower<'a> {
                             },
                         };
                         trees.push(self.worklet_expr(span, ctx, argument));
+                    }
+                    if trees.len() != expected {
+                        self.error(
+                            span,
+                            format!("Math.{name} takes {expected} argument(s) in a worklet"),
+                        );
+                        return self.null(span);
                     }
                     return self.tree_op(span, &name, trees);
                 }
@@ -2557,6 +2572,20 @@ impl<'a> VisitMut<'a> for Lower<'a> {
     }
 
     fn visit_function(&mut self, function: &mut Function<'a>, flags: ScopeFlags) {
+        // Only expressions are replaced in place; a declaration would keep
+        // its plain-JS body and fail later at scheduleOnUI.
+        if function.r#type == FunctionType::FunctionDeclaration
+            && function.body.as_ref().is_some_and(|body| {
+                body.directives
+                    .iter()
+                    .any(|directive| directive.expression.value.as_str() == Some("worklet"))
+            })
+        {
+            self.error(
+                function.span,
+                "worklet function declarations are not supported; use an arrow or function expression",
+            );
+        }
         let bindings = function
             .body
             .as_ref()

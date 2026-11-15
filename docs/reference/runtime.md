@@ -129,15 +129,19 @@ assets/
 | `CreateVar` | var, source, initial | UI 线程共享变量；`source` 0 为脚本驱动，其他为状态源 |
 | `BindVar` | var, target | 关联状态源目标节点；0 解绑 |
 | `DisposeVar` | var | 变量退役，依赖它的声明转为不匹配 |
-| `SetVar` | var, value | 脚本驱动的变量写入，帧边界生效；写状态源变量报错 |
+| `SetVar` | var, value, anim | 脚本驱动的变量写入，帧边界生效；写状态源变量报错。`anim` 0 立即、2 tween（时长 f32 + easing u8）、3 spring（刚度 f32 + 阻尼 f32） |
 | `SettleVar` | var | 请求收敛通知；无动画时随批次立即发 `BSVE` 事件 |
+| `DefineUiFunction` | id, params, program | 注册 UI 程序（u32 长度前缀的捕获/常量/字节码载荷）；校验失败则该批次失败 |
+| `BindGestureProgram` | gesture, slot, function | 把手势事件槽绑定到 UI 程序；与脚本 handler 互斥，0 清除 |
+| `RunUiFunction` | function, args | JS 线程请求在 UI 线程执行一次 worklet |
+| `CancelVarAnim` | var | 停止变量的在途动画，显示值保持不变 |
 | `SpawnStyleDecl` | decl, target, component, index | 虚拟样式声明（1 ViewStyle、2 TextStyle）；`index` 是该目标内的声明序号 |
 | `SetStyleDeclProp` | decl, key, value | `when` / patch 项；值为静态值或表达式程序 |
 | `MoveStyleDecl` | decl, target, index | `index` 是移除自身后的最终位置 |
 | `DisposeStyleDecl` | decl | 目标销毁时声明随之销毁 |
 | `SetAsset` | handle, contentHash | 预留；当前 `Image` 通过 `SetProp src` 交给宿主解析 |
 
-当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`、`Focus`、`SetEditingValue`，以及手势声明 op、共享变量 op 和样式声明 op。`TextField`（kind 4）的编辑状态在 UI 线程，由 `EditSession` 持有 UTF-16 文档位置、方向性选区、独立组合区、`revision` 与撤销历史；`BSED` v2 每批向脚本投递有序 delta 和最终快照。iOS `UITextInput`、Android `InputConnection`、Web 隐藏 textarea 已接入文本编辑。语义树由节点属性派生并经 `bubble_semantics` / wasm `semantics` 输出 JSON；iOS `UIAccessibility`、Android `AccessibilityNodeProvider` 与 Web ARIA 覆盖层读取同一快照。其余 op（含 `InsertNode`、动画、显式 `SetSemantics`）随后续里程碑。
+当前实现覆盖 `Spawn`、`SpawnAt`、`DisposeNode`、`MoveNode`、`SetText`、`SetProp`、`SetPropColor`、`BindEvent`、`ScrollTo`、`Focus`、`SetEditingValue`，以及手势声明 op、共享变量 op、样式声明 op 和 worklet op。`TextField`（kind 4）的编辑状态在 UI 线程，由 `EditSession` 持有 UTF-16 文档位置、方向性选区、独立组合区、`revision` 与撤销历史；`BSED` v2 每批向脚本投递有序 delta 和最终快照。iOS `UITextInput`、Android `InputConnection`、Web 隐藏 textarea 已接入文本编辑。语义树由节点属性派生并经 `bubble_semantics` / wasm `semantics` 输出 JSON；iOS `UIAccessibility`、Android `AccessibilityNodeProvider` 与 Web ARIA 覆盖层读取同一快照。其余 op（含 `InsertNode`、动画、显式 `SetSemantics`）随后续里程碑。
 
 节点创建不再携带描述符：`Spawn` / `SpawnAt` 只有身份和初始文本，其余属性一律是 `SetProp`。`NodeDesc` 保留为 Rust 侧的直接调用构造器，`Turn::spawn` 会把它降级为 `Spawn` 加属性 op；wire 上不存在按类型布局的定长体。滚动、布局和绘制属性因此只有一条解析路径。
 
@@ -145,7 +149,7 @@ assets/
 
 - 手势是虚拟子节点：`TapGesture`、`DoubleTapGesture`、`LongPressGesture`、`PanGesture`、`TransformGesture`。没有 `View onPress`。事件名为 `onTap` / `onTapStart` / `onTapEnd` / `onTapCancel`、`onDoubleTap*`、`onLongPress` / `onLongPressEnd` / `onLongPressCancel`、`onPanStart` / `onPanUpdate` / `onPanEnd` / `onPanCancel`、`onTransformStart` / `onTransformUpdate` / `onTransformEnd` / `onTransformCancel`。Transform 用 `mode`（字符串或字符串数组：`pan` / `pinch` / `rotate`）。`direction` 是方向字符串数组。`captureAxis="none"|"x"|"y"|"both"` 把该轴滚动让给这条手势。
 - 样式声明与共享变量是虚拟子节点。`createSharedValue({ source, target })` 绑定状态源（`pressed` 是 0..1 进度，`focused` / `disabled` / `editing` 是布尔，`gesture.translationX` / `gesture.translationY` / `gesture.scale` / `gesture.rotation` 读目标手势声明的实时值——pan 取已接受候选的平移、pinch 取 transform state，空闲时 scale 为 1、其余为 0，`scroll.x` / `scroll.y` 读目标滚动容器的偏移），`createSharedValue(0)` 建脚本驱动变量，由 `set` / `bind`（signal 重跑编码 `SetVar`）或 `.value =` 写入，`settle()` 返回收敛 Promise（`BSVE` 事件）。JS 线程可以 `sv.value = withTiming(target, { duration, easing: "linear" | "easeInOut" })` 或 `withSpring(target, { stiffness, damping })` 开始动画、`cancelAnimation(sv)` 停止；UI 线程动画在 worklet 里写同样的赋值（编译期展开为 `storeAnim`，spec 默认 tween 300ms / spring 170·26）。声明组件 `<ViewStyle target={view} when={!disabled && press > 0} opacity={1 - press * 0.4} />` 与 `<TextStyle target={label} when={focused} color={accent} />`：`when` 与 patch 值都是表达式（常量折叠为静态值），标识符解析为作用域内变量或常量；可 patch 的只有 `ViewStyle` 的 `backgroundColor`/`radius`/`opacity`/`fit`/`translateX`/`translateY`/`scale`/`rotate` 与 `TextStyle` 的 `color`/`textAlign`，`textAlign`/`fit` 用 `select(cond, a, b)` 在枚举常量间选择。transform 分量在绘制侧以 `PushTransform`/`PopTransform`（tag 9/10）绕节点中心应用，作用于该节点及其子树，单位变换零成本，不进 Taffy。声明不创建盒子、不命中、不进入语义树；`target` 显式必填，同目标多声明按源码顺序覆盖，后者胜出。匹配中的含 `Focused` 源声明接管默认焦点框（空 patch 也算）；`pressed` 反馈由 UI 线程在首指按下、移出 `TAP_SLOP`、抬起、宿主取消、第二指按下或手势胜出时更新。脚本写状态源变量、写未知变量均报错。
-- UI worklet：函数体首条指令是 `"worklet"` 的箭头/函数在编译期替换为 `uiFunction(params, captures, body)` 调用——闭包里的自由标识符与字符串字面量成为按值捕获（共享值对象→tag 4、worklet→tag 5、JS 函数→tag 6、数字/布尔/字符串→原始 tag）。worklet 只支持算术/比较/逻辑/`select`、`if/else`、局部 `let/const`（≤16 个）、对捕获的 `.value` 赋值、`param.field` 事件读取、`Math.min/max/abs/floor/ceil/round/sqrt/pow`、`sv.value = withTiming(...)` / `withSpring(...)`、`cancelAnimation(sv)`、`scheduleOnJS(fn, ...args)`、以及调用同模块的其他 worklet（禁止递归，编译期报错）。JS 线程用 `scheduleOnUI(fn, ...args)`（编译为 `RunUiFunction` op）把 worklet 派发到 UI 线程；`BSUE` 批把 `scheduleOnJS` 调用回送 JS（捕获的回调随所属手势/节点销毁而失效）。手势事件槽是 worklet 或 JS 处理器二选一：worklet 处理器在 UI 线程每帧运行，无 JS 参与。
+- UI worklet：函数体首条指令是 `"worklet"` 的箭头函数或函数表达式在编译期替换为 `uiFunction(params, captures, body)` 调用——闭包里的自由标识符与字符串字面量成为按值捕获（共享值对象→tag 4、worklet→tag 5、JS 函数→tag 6、数字/布尔/字符串→原始 tag）。worklet 只支持算术/比较/逻辑/`select`、`if/else`、局部 `let/const`（≤16 个）、对捕获的 `.value` 赋值、`param.field` 事件读取、`Math.min/max/abs/floor/ceil/round/sqrt/pow`、`sv.value = withTiming(...)` / `withSpring(...)`、`cancelAnimation(sv)`、`scheduleOnJS(fn, ...args)`、以及调用同模块的其他 worklet（禁止递归，编译期报错）。JS 线程用 `scheduleOnUI(fn, ...args)`（编译为 `RunUiFunction` op）把 worklet 派发到 UI 线程；`BSUE` 批把 `scheduleOnJS` 调用回送 JS（捕获的回调随所属手势/节点销毁而失效）。手势事件槽是 worklet 或 JS 处理器二选一：worklet 处理器在 UI 线程每帧运行，无 JS 参与。
 - 属性只有一个入口：`SetProp`。`Prop::parse` 是名称的唯一权威；静态值、动态绑定、简写展开和直接 Rust 调用都走同一条解析路径。`padding` / `margin` / `inset` 数组由 JS 展开为边属性，`gap` 先于 `rowGap` / `columnGap`，`overflow` 先于两轴。
 - 无障碍属性：`role`（`button`、`link`、`textbox`、`checkbox`、`heading`、`dialog` 等）、`label`、`disabled`、`hidden`（仅语义隐藏，不裁切，也不改变布局、绘制、命中或焦点）、`focusable`、`modal`（焦点陷阱）、`checked`、`selected`、`expanded`。`Text`、`Image`、`TextField` 分别派生 text/image/textbox 角色；`TextField` 的语义值在 `secure` 时为空。可滚动容器即使没有角色或标签也会进入语义树，并输出对应方向的滚动 action 位。绘制上的隐藏用 `visibility`、`display` 或 `overflow`。
 

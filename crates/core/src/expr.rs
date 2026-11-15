@@ -165,6 +165,12 @@ fn op_spec(op: u8) -> Result<&'static OpSpec, ProgramError> {
         .ok_or_else(|| ProgramError(format!("unknown program opcode {op}")))
 }
 
+/// Stack inputs consumed by one opcode, from the shared spec table. Every
+/// opcode then pushes one value.
+pub(crate) fn op_pops(op: u8) -> Option<u8> {
+    op_spec(op).ok().map(|spec| spec.pops)
+}
+
 impl Program {
     /// Validate constants and instruction stream. Callers then prove the
     /// slot type with [`Self::result_type`], passing the types of the

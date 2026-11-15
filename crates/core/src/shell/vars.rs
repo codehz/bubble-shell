@@ -404,7 +404,7 @@ impl Shell {
         if self.ui_programs.len() <= id as usize {
             self.ui_programs.resize_with(id as usize + 1, || None);
         }
-        self.ui_programs[id as usize] = Some(program);
+        self.ui_programs[id as usize] = Some(std::sync::Arc::new(program));
         Ok(())
     }
 
@@ -419,7 +419,16 @@ impl Shell {
         }
         for (id, event) in gesture_events {
             self.ui_event = Some(event);
-            let result = self.run_ui_function(id, &[]);
+            // The event itself arrives through `LOAD_EVENT`; its declared
+            // parameter slots get placeholder zeros so the arity check and
+            // local layout match the program.
+            let params = self
+                .ui_programs
+                .get(id as usize)
+                .and_then(Option::as_ref)
+                .map_or(0, |program| usize::from(program.params));
+            let args = vec![ExprValue::Num(0.0); params];
+            let result = self.run_ui_function(id, &args);
             self.ui_event = None;
             let _ = result;
         }

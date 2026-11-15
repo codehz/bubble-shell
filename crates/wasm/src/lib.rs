@@ -214,6 +214,12 @@ fn collect_events(shell: &mut Shell) {
     if !js_calls.is_empty() {
         JS_CALLS.with(|queue| queue.borrow_mut().extend(js_calls));
     }
+    // Worklet faults have no return code; publish the newest through the
+    // shared error slot so the host can show it.
+    let (faults, last_error) = shell.take_ui_faults();
+    if faults != 0 && !last_error.is_empty() {
+        set_error(last_error);
+    }
 }
 
 /// Push drained event batches to the JS host through the `host_*_events`
@@ -352,14 +358,6 @@ pub extern "C" fn take_gesture_trace() -> u32 {
     drain_pending().ok();
     let lines = with_shell(|shell| Ok(shell.take_gesture_trace())).unwrap_or_default();
     store_scratch(lines.join("\n").into_bytes())
-}
-
-#[no_mangle]
-pub extern "C" fn gesture_pending() -> i32 {
-    drain_pending().ok();
-    with_shell(|shell| Ok(shell.gestures_pending()))
-        .map(i32::from)
-        .unwrap_or(0)
 }
 
 /// Called by the JS runtime when the bundle registers or clears a back handler.

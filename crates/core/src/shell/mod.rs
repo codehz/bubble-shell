@@ -165,8 +165,9 @@ pub struct Shell {
     caret_handle: u32,
     caret_box: Option<(f32, f32, f32, f32)>,
     selection_rects: Vec<(f32, f32, f32, f32)>,
-    /// UI-thread programs ("worklets"), by id.
-    pub(crate) ui_programs: Vec<Option<UiProgram>>,
+    /// UI-thread programs ("worklets"), by id. Shared with the running
+    /// frame so a call does not copy the program.
+    pub(crate) ui_programs: Vec<Option<std::sync::Arc<UiProgram>>>,
     /// Variables written in the current UI batch, re-evaluated once at the end.
     pub(crate) ui_dirty: HashSet<u32>,
     /// JS→UI calls waiting for the next `drain_ui_work`.
@@ -496,10 +497,13 @@ impl Shell {
                     slot,
                     function,
                 } => self.recognizer.bind_program(gesture, slot, function)?,
-                Op::RunUiFunction { function, args } => self.queue_ui_call(UiCall {
-                    function,
-                    args: args.iter().map(UiValue::from_value).collect(),
-                }),
+                Op::RunUiFunction { function, args } => {
+                    let args = args
+                        .iter()
+                        .map(UiValue::try_from_value)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.queue_ui_call(UiCall { function, args });
+                }
                 Op::CancelVarAnim { var } => self.cancel_var_anim(var)?,
                 Op::SpawnStyleDecl {
                     decl,

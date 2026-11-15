@@ -1626,7 +1626,7 @@ pub extern "C" fn bubble_pending(shell: *mut BubbleShell) -> i32 {
     let result = catch(|| {
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
+        let shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
         Ok(i32::from(shell.pending()))
     });
     result.unwrap_or(0)
@@ -1658,13 +1658,27 @@ pub extern "C" fn bubble_last_error(shell: *mut BubbleShell) -> *const c_char {
     let Ok(shell) = shell_ref(shell) else {
         return std::ptr::null();
     };
-    match shell.last_error.lock() {
-        Ok(slot) => slot
-            .as_ref()
-            .map(|text| text.as_ptr())
-            .unwrap_or(std::ptr::null()),
-        Err(_) => std::ptr::null(),
+    // UI-thread faults have no return code; the tree drain records the newest
+    // message in the shared slot. Read it before taking the shell slot so the
+    // two locks never nest.
+    let shared_error = shell
+        .shared
+        .last_error
+        .lock()
+        .ok()
+        .filter(|shared| !shared.is_empty())
+        .map(|shared| shared.replace('\0', " "));
+    let Ok(mut slot) = shell.last_error.lock() else {
+        return std::ptr::null();
+    };
+    if slot.is_none() {
+        if let Some(message) = shared_error {
+            *slot = CString::new(message).ok();
+        }
     }
+    slot.as_ref()
+        .map(|text| text.as_ptr())
+        .unwrap_or(std::ptr::null())
 }
 
 /// Returns 1 when the loaded bundle has registered a back handler, 0 otherwise.

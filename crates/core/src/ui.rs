@@ -12,7 +12,7 @@
 use std::collections::HashSet;
 
 use crate::color::Color;
-use crate::expr::{ExprConst, ExprValue, OP_ABS, OP_ADD, OP_NEG, OP_NOT, OP_SELECT};
+use crate::expr::{ExprConst, ExprValue, OP_ABS, OP_ADD};
 use crate::state_style::{AnimSpec, AnimState, EASE_LINEAR};
 
 pub const OP_PUSH_CONST: u8 = 0;
@@ -36,12 +36,17 @@ pub const OP_ROUND: u8 = 47;
 pub const OP_SQRT: u8 = 48;
 pub const OP_POW: u8 = 49;
 
-/// Maximum live stack slots; the static check rejects anything deeper.
+/// Maximum live operand slots per frame; the static check rejects anything
+/// deeper.
 const STACK_LIMIT: usize = 32;
 /// Local slots per call frame.
 const LOCALS: usize = 16;
 /// Call depth cap; deeper nests fault.
 const CALL_DEPTH: usize = 8;
+/// Live slots across every nested frame. Each level owns its arguments, its
+/// locals, and a full operand stack; nesting must not share one frame's
+/// budget.
+const STACK_TOTAL: usize = CALL_DEPTH * (LOCALS + STACK_LIMIT * 2);
 /// Shared-value writes per call, bounding a runaway worklet.
 const STORES_PER_CALL: usize = 64;
 
@@ -77,15 +82,16 @@ impl UiValue {
     }
 
     /// JS→UI call argument. Strings only travel back to `scheduleOnJS`; a
-    /// string arg faults when the worklet consumes it.
-    pub(crate) fn from_value(value: &crate::ops::Value) -> Self {
-        match value {
+    /// string arg faults when the worklet consumes it. Value kinds with no
+    /// UI-thread representation fail the batch.
+    pub(crate) fn try_from_value(value: &crate::ops::Value) -> Result<Self, String> {
+        Ok(match value {
             crate::ops::Value::Bool(value) => UiValue::Bool(*value),
             crate::ops::Value::Int(value) => UiValue::Num(*value as f32),
             crate::ops::Value::Float(value) => UiValue::Num(*value as f32),
             crate::ops::Value::String(value) => UiValue::Text(value.clone()),
-            _ => UiValue::Num(0.0),
-        }
+            other => return Err(format!("ui call argument {other:?} is not supported")),
+        })
     }
 
     fn finite(&self) -> bool {
@@ -120,7 +126,8 @@ pub struct UiCall {
 }
 
 /// `BSUE` version 1: magic, version, count, then `callback u32 + argc u8 +
-/// tagged args` records. Args tags: 1 bool, 2 float, 3 string.
+/// tagged args` records. Args tags: 1 bool, 2 float, 3 string, 4 color
+/// (`0xAARRGGBB` u32).
 pub fn encode_js_calls(calls: &[UiCall]) -> Vec<u8> {
     let mut out = Vec::with_capacity(10 + calls.len() * 16);
     out.extend_from_slice(b"BSUE");
@@ -128,17 +135,28 @@ pub fn encode_js_calls(calls: &[UiCall]) -> Vec<u8> {
     out.extend_from_slice(&(calls.len() as u32).to_le_bytes());
     for call in calls {
         out.extend_from_slice(&call.function.to_le_bytes());
-        let args: Vec<crate::ops::Value> = call
-            .args
-            .iter()
-            .map(|arg| match arg {
-                UiValue::Bool(value) => crate::ops::Value::Bool(*value),
-                UiValue::Num(value) => crate::ops::Value::Float(f64::from(*value)),
-                UiValue::Text(value) => crate::ops::Value::String(value.clone()),
-                UiValue::Color(_) => crate::ops::Value::Null,
-            })
-            .collect();
-        out.extend_from_slice(&crate::ops::encode_ui_args(&args));
+        out.push(call.args.len().min(255) as u8);
+        for arg in &call.args {
+            match arg {
+                UiValue::Bool(value) => {
+                    out.push(1);
+                    out.push(u8::from(*value));
+                }
+                UiValue::Num(value) => {
+                    out.push(2);
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+                UiValue::Text(value) => {
+                    out.push(3);
+                    out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+                    out.extend_from_slice(value.as_bytes());
+                }
+                UiValue::Color(value) => {
+                    out.push(4);
+                    out.extend_from_slice(&value.to_argb().to_le_bytes());
+                }
+            }
+        }
     }
     out
 }
@@ -246,12 +264,16 @@ fn effect_of(instr: &Instr) -> (usize, usize) {
         | Instr::PushCapture(_)
         | Instr::LoadEvent(_)
         | Instr::LoadLocal(_) => (0, 1),
-        Instr::Op(op) => match *op {
-            OP_NEG | OP_NOT | OP_ABS => (1, 1),
-            OP_SELECT => (3, 1),
-            OP_FLOOR..=OP_POW => (1, 1),
-            _ => (2, 1),
-        },
+        Instr::Op(op) => {
+            // The shared expression table stops at OP_ABS; the worklet-only
+            // FLOOR..POW range adds unary math plus a binary POW.
+            let pops = match crate::expr::op_pops(*op) {
+                Some(pops) => usize::from(pops),
+                None if *op == OP_POW => 2,
+                None => 1,
+            };
+            (pops, 1)
+        }
         Instr::StoreShared(_) => (1, 0),
         // to, spec code, and two spec parameters.
         Instr::StoreAnim(_) => (4, 0),
@@ -273,8 +295,8 @@ impl UiProgram {
         if self.code.is_empty() {
             return Err("ui program is empty".into());
         }
-        if self.consts.len() > 256 {
-            return Err("ui program has more than 256 constants".into());
+        if self.consts.len() > 255 {
+            return Err("ui program has more than 255 constants".into());
         }
         for value in &self.consts {
             if let ExprConst::Num(value) = value {
@@ -464,7 +486,7 @@ impl crate::shell::Shell {
             return Err(self.fault(format!("ui call {id} has too many arguments")));
         }
         let base = self.ui_stack.len();
-        if base + args.len() + LOCALS > STACK_LIMIT {
+        if base + args.len() + LOCALS > STACK_TOTAL {
             return Err(self.fault("ui stack limit reached"));
         }
         for arg in args {
@@ -713,7 +735,7 @@ impl crate::shell::Shell {
                     for arg in call_args {
                         frame_args.push(arg.as_expr().map_err(|error| self.fault(error))?);
                     }
-                    if self.ui_stack.len() + frame_args.len() + LOCALS > STACK_LIMIT {
+                    if self.ui_stack.len() + frame_args.len() + LOCALS > STACK_TOTAL {
                         return Err(self.fault("ui stack limit reached"));
                     }
                     let frame_base = self.ui_stack.len();
@@ -722,14 +744,10 @@ impl crate::shell::Shell {
                     }
                     let frame_locals = self.ui_stack.len();
                     self.ui_stack.resize(frame_locals + LOCALS, UiValue::Num(0.0));
-                    let frame_params = self
-                        .ui_programs
-                        .get(callee as usize)
-                        .and_then(Option::as_ref)
-                        .map(|program| program.params)
-                        .unwrap_or(argc);
+                    // The caller's argc is the truth: a callee that declares
+                    // another arity faults instead of reading local slots.
                     let returned =
-                        self.run_frame(callee, frame_params, frame_base, frame_locals, depth + 1)?;
+                        self.run_frame(callee, argc, frame_base, frame_locals, depth + 1)?;
                     self.ui_stack.truncate(frame_base);
                     self.ui_stack.push(UiValue::from_expr(returned));
                 }
@@ -778,7 +796,7 @@ impl crate::shell::Shell {
                 }
                 Instr::Op(op) => self.eval_op(op, base)?,
             }
-            if self.ui_stack.len() > base + STACK_LIMIT {
+            if self.ui_stack.len() > base + usize::from(params) + LOCALS + STACK_LIMIT {
                 return Err(self.fault("ui stack limit reached"));
             }
         }

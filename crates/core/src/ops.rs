@@ -886,7 +886,9 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.push(29);
                 payload.extend_from_slice(&id.to_le_bytes());
                 payload.push(*params);
-                payload.extend_from_slice(&encode_ui_function_payload(captures, consts, code));
+                let program = encode_ui_function_payload(captures, consts, code);
+                payload.extend_from_slice(&(program.len() as u32).to_le_bytes());
+                payload.extend_from_slice(&program);
             }
             Op::SpawnStyleDecl {
                 decl,
@@ -1167,12 +1169,15 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
             29 => {
                 let id = read_u32(&mut payload_cur)?;
                 let params = read_u8(&mut payload_cur)?;
-                let rest = payload_cur
-                    .get_ref()
-                    .get(payload_cur.position() as usize..)
+                let len = read_u32(&mut payload_cur)? as usize;
+                let start = payload_cur.position() as usize;
+                let rest = payload_cur.get_ref();
+                let end = start
+                    .checked_add(len)
+                    .filter(|end| *end <= rest.len())
                     .ok_or("truncated ui program")?;
-                let (captures, consts, code) = decode_ui_function_payload(rest)?;
-                payload_cur.set_position(payload_cur.get_ref().len() as u64);
+                let (captures, consts, code) = decode_ui_function_payload(&rest[start..end])?;
+                payload_cur.set_position(end as u64);
                 ops.push(Op::DefineUiFunction {
                     id,
                     params,

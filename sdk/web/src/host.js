@@ -445,7 +445,7 @@ setApi({
   dispose_style_decl: exports.dispose_style_decl,
   pointer: exports.pointer,
   tick: exports.tick,
-  gesture_pending: exports.gesture_pending,
+  pending: exports.pending,
   queue_text(handle, text) {
     return withStr(text, (ptr, len) => exports.queue_text(handle, ptr, len));
   },
@@ -672,7 +672,7 @@ function pointerKind(event) {
 function gestureFrame() {
   exports.tick(performance.now());
   if (exports.layout() === 0) paint();
-  if (activePointers.size > 0 || exports.gesture_pending() !== 0) {
+  if (activePointers.size > 0 || exports.pending() !== 0) {
     requestAnimationFrame(gestureFrame);
   } else {
     ticking = false;

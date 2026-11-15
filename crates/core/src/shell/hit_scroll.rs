@@ -282,11 +282,6 @@ impl Shell {
         self.recognizer.take_trace()
     }
 
-    /// Whether timers still need `advance_gestures` calls.
-    pub fn gestures_pending(&self) -> bool {
-        self.recognizer.pending()
-    }
-
     pub fn take_gesture_events(&mut self) -> Vec<GestureEvent> {
         self.recognizer.drain_events()
     }

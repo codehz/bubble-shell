@@ -1050,11 +1050,6 @@ export function scheduleOnUI(fn, ...args) {
   if (fn == null || typeof fn.__uiFunction !== "number") {
     throw new Error("scheduleOnUI requires a worklet");
   }
-  for (const arg of args) {
-    if (arg != null && typeof arg === "object" && !("id" in arg) && typeof arg !== "number") {
-      throw new Error("scheduleOnUI arguments must be numbers, bools, or strings");
-    }
-  }
   if (typeof api.run_ui_function !== "function") {
     throw new Error("host does not expose UI worklets");
   }
@@ -1096,6 +1091,9 @@ export function dispatchUiCalls(bytes) {
         offset += 4;
         args.push(decodeUtf8(bytes, offset, offset + len));
         offset += len;
+      } else if (tag === 4) {
+        args.push(view.getUint32(offset, true));
+        offset += 4;
       } else {
         throw new Error(`unknown ui call arg tag ${tag}`);
       }
@@ -1335,6 +1333,11 @@ function encodeUiFunction(params, captures, body) {
     if (op === "pop") {
       emitExpr(args[0]);
       byte(44);
+      return;
+    }
+    if (op === "scheduleJs" || op === "cancelAnim") {
+      // Statement-position calls that leave no stack value.
+      emitExpr(node);
       return;
     }
     if (op === "return") {
