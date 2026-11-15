@@ -4,6 +4,74 @@ use super::paint::{axis_bounds, Bounds};
 use super::tree::Node;
 use super::{ScrollOutcome, Shell, VisualPress};
 
+/// Inverse of one node's paint transform (`PaintCmd::PushTransform`): maps
+/// points and clip rects from the parent's paint frame into the layout
+/// coordinates the node paints with. Paint maps `p` to
+/// `center + translate + R(rotate) * scale * (p - center)`; this undoes it.
+/// Rects go through their corners, so a rotated clip widens to the corner
+/// AABB — that can only over-accept a point, never drop a visible one.
+struct Untransform {
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+    e: f32,
+    f: f32,
+}
+
+impl Untransform {
+    /// `None` when the transform collapses the subtree (zero scale): paint
+    /// draws nothing there, so hit testing must not hit either.
+    fn new(
+        cx: f32,
+        cy: f32,
+        translate_x: f32,
+        translate_y: f32,
+        scale: f32,
+        rotate: f32,
+    ) -> Option<Self> {
+        if !scale.is_finite() || scale == 0.0 {
+            return None;
+        }
+        let (sin, cos) = rotate.sin_cos();
+        let k = 1.0 / scale;
+        let a = k * cos;
+        let b = k * sin;
+        let c = -k * sin;
+        let d = k * cos;
+        let hx = cx + translate_x;
+        let hy = cy + translate_y;
+        Some(Self {
+            a,
+            b,
+            c,
+            d,
+            e: cx - a * hx - b * hy,
+            f: cy - c * hx - d * hy,
+        })
+    }
+
+    fn point(&self, x: f32, y: f32) -> (f32, f32) {
+        (
+            self.a * x + self.b * y + self.e,
+            self.c * x + self.d * y + self.f,
+        )
+    }
+
+    fn bounds(&self, bounds: Bounds) -> Bounds {
+        let (ax, ay) = self.point(bounds.x0, bounds.y0);
+        let (bx, by) = self.point(bounds.x1, bounds.y0);
+        let (cx, cy) = self.point(bounds.x0, bounds.y1);
+        let (dx, dy) = self.point(bounds.x1, bounds.y1);
+        Bounds {
+            x0: ax.min(bx).min(cx).min(dx),
+            y0: ay.min(by).min(cy).min(dy),
+            x1: ax.max(bx).max(cx).max(dx),
+            y1: ay.max(by).max(cy).max(dy),
+        }
+    }
+}
+
 impl Shell {
     /// Handler on the hit node, or the nearest ancestor that has one.
     /// A node without a handler still occludes nodes behind it.
@@ -226,9 +294,6 @@ impl Shell {
         }
     }
 
-    /// Nodes under the point from deepest to root. Hidden and `display: none`
-    /// subtrees miss. A clipped axis stops at the padding box (the outer box);
-    /// a visible axis stays open inside the viewport and ancestor clips.
     pub(super) fn hit_path(&self, id: u32, x: f32, y: f32, out: &mut Vec<u32>) -> bool {
         self.hit_clipped(id, x, y, self.viewport_bounds(), out)
     }
@@ -242,11 +307,47 @@ impl Shell {
         }
     }
 
+    /// Nodes under the point from deepest to root. `(x, y)` and `clip`
+    /// arrive in the parent's paint frame; this node's own transform
+    /// (translate, scale, rotate around the node center, matching
+    /// `PaintCmd::PushTransform`) is undone first, so every bounds test here
+    /// uses the layout coordinates the node paints with. Children receive
+    /// the already-mapped point and clip. Hidden and `display: none`
+    /// subtrees miss. A clipped axis stops at the padding box (the outer
+    /// box); a visible axis stays open inside the viewport and ancestor
+    /// clips.
     fn hit_clipped(&self, id: u32, x: f32, y: f32, clip: Bounds, out: &mut Vec<u32>) -> bool {
         let Some(node) = self.nodes.get(id as usize).and_then(Option::as_ref) else {
             return false;
         };
-        if !node.painted() || !clip.contains(x, y) {
+        if !node.painted() {
+            return false;
+        }
+        let paint = self.effective_paint_style(id, node);
+        let (x, y, clip) = if paint.translate_x != 0.0
+            || paint.translate_y != 0.0
+            || paint.scale != 1.0
+            || paint.rotate != 0.0
+        {
+            match Untransform::new(
+                node.x + node.w / 2.0,
+                node.y + node.h / 2.0,
+                paint.translate_x,
+                paint.translate_y,
+                paint.scale,
+                paint.rotate,
+            ) {
+                Some(map) => {
+                    let (x, y) = map.point(x, y);
+                    (x, y, map.bounds(clip))
+                }
+                // Zero scale collapses the subtree to nothing.
+                None => return false,
+            }
+        } else {
+            (x, y, clip)
+        };
+        if !clip.contains(x, y) {
             return false;
         }
         let next = clip.intersect(axis_bounds(
