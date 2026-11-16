@@ -4,9 +4,9 @@
 //! mouse press never drags them — it re-creates the selection, or long-presses
 //! the selection body to move its content.
 
-use crate::editing::EditCommand;
+use crate::editing::{display_text, utf16_len, EditCommand};
 use crate::gesture::{PointerAction, PointerInput, LONG_PRESS_DIST, LONG_PRESS_MS};
-use crate::layout::{LayoutRequest, LayoutSnapshot};
+use crate::layout::{LayoutKey, LayoutRequest, LayoutSnapshot};
 
 use super::focus_edit::utf16_slice;
 use super::Shell;
@@ -58,6 +58,16 @@ pub(super) struct FieldPointerState {
     hit_path: Vec<u32>,
     /// Set when the down sample landed in an existing selection body.
     content_drag: Option<(u32, u32)>,
+    /// UTF-16 offset under the pointer while dragging field content.
+    drop_unit: Option<u32>,
+    /// False when the pointer is inside the original selection.
+    drop_valid: bool,
+}
+
+impl FieldPointerState {
+    pub(super) fn content_drop_valid(&self) -> bool {
+        matches!(self.mode, FieldPointerMode::DraggingContent { .. }) && self.drop_valid
+    }
 }
 
 impl Shell {
@@ -199,12 +209,15 @@ impl Shell {
                     original_start: start,
                     original_end: end,
                 };
+                state.drop_unit = None;
+                state.drop_valid = false;
             }
+            self.arm_drag_ghost(start, end, host);
             return;
         }
         let claimed = self.focus_point_with(x, y, host).unwrap_or(0);
         if claimed == 0 {
-            self.field_pointer = None;
+            self.end_field_pointer();
             return;
         }
         let anchor = self
@@ -234,7 +247,7 @@ impl Shell {
                 self.abort_edit_batch();
             }
         }
-        self.field_pointer = None;
+        self.end_field_pointer();
     }
 
     fn begin_field_pointer(
@@ -244,6 +257,7 @@ impl Shell {
         mode: FieldPointerMode,
         content_drag: Option<(u32, u32)>,
     ) {
+        self.clear_drag_visual();
         self.field_pointer = Some(FieldPointerState {
             pointer_id: input.id,
             field_handle,
@@ -255,6 +269,8 @@ impl Shell {
             timer_deadline: input.time_ms + LONG_PRESS_MS,
             hit_path: input.path.clone(),
             content_drag,
+            drop_unit: None,
+            drop_valid: false,
         });
     }
 
@@ -277,7 +293,7 @@ impl Shell {
         (input.x - state.start_x).hypot(input.y - state.start_y) > LONG_PRESS_DIST
     }
 
-    fn move_field_pointer(&mut self, input: &PointerInput, host: Option<LayoutHost<'_>>) {
+    fn move_field_pointer(&mut self, input: &PointerInput, mut host: Option<LayoutHost<'_>>) {
         let Some(state) = self.field_pointer.as_ref() else {
             return;
         };
@@ -334,7 +350,41 @@ impl Shell {
                 }
                 self.select_field(fixed_start, unit);
             }
-            FieldPointerMode::DraggingContent { .. } => self.note_field_point(input),
+            FieldPointerMode::DraggingContent {
+                original_start,
+                original_end,
+            } => {
+                self.note_field_point(input);
+                self.drag_ghost_pos = Some((input.x, input.y));
+                if self.drag_ghost_size == (0.0, 0.0) && !self.drag_ghost_text.is_empty() {
+                    if let Some(measure_host) = host.as_mut() {
+                        self.drag_ghost_size = self.measure_drag_ghost(&mut **measure_host);
+                    }
+                }
+                let unit = host
+                    .as_mut()
+                    .and_then(|hit_host| self.field_unit(input.x, input.y, Some(&mut **hit_host)));
+                let valid = unit.is_some_and(|at| !(at >= original_start && at <= original_end));
+                let previous = self
+                    .field_pointer
+                    .as_ref()
+                    .map(|state| (state.drop_unit, state.drop_valid));
+                if let Some(state) = self.field_pointer.as_mut() {
+                    state.drop_unit = unit;
+                    state.drop_valid = valid;
+                }
+                if previous != Some((unit, valid)) {
+                    self.drop_caret_box = match (unit.filter(|_| valid), host) {
+                        (Some(unit), Some(caret_host)) => self
+                            .caret_rect_at_with(unit, caret_host)
+                            .ok()
+                            .flatten()
+                            .map(|(x, y, _, h)| (x, y, 2.0, h)),
+                        _ => None,
+                    };
+                }
+                self.paint_dirty.set(true);
+            }
         }
     }
 
@@ -349,16 +399,16 @@ impl Shell {
                 if let Some(host) = host {
                     let _ = self.focus_point_with(start_x, start_y, host);
                 }
-                self.field_pointer = None;
+                self.end_field_pointer();
             }
             FieldPointerMode::DraggingContent {
                 original_start,
                 original_end,
             } => {
                 self.finish_content_drag(input.x, input.y, original_start, original_end, host);
-                self.field_pointer = None;
+                self.end_field_pointer();
             }
-            _ => self.field_pointer = None,
+            _ => self.end_field_pointer(),
         }
     }
 
@@ -420,6 +470,81 @@ impl Shell {
         if self.end_edit_batch().is_err() {
             self.abort_edit_batch();
         }
+    }
+
+    fn end_field_pointer(&mut self) {
+        self.clear_drag_visual();
+        self.field_pointer = None;
+    }
+
+    fn clear_drag_visual(&mut self) {
+        let showing = self.drop_caret_box.is_some()
+            || self.drag_ghost_pos.is_some()
+            || !self.drag_ghost_text.is_empty();
+        self.drop_caret_box = None;
+        self.drag_ghost_text.clear();
+        self.drag_ghost_pos = None;
+        self.drag_ghost_size = (0.0, 0.0);
+        if showing {
+            self.paint_dirty.set(true);
+        }
+    }
+
+    fn arm_drag_ghost(&mut self, start: u32, end: u32, host: LayoutHost<'_>) {
+        let text = self
+            .field(self.focused)
+            .ok()
+            .map(|(value, _)| utf16_slice(&value, start, end))
+            .unwrap_or_default();
+        let secure = self.node(self.focused).is_ok_and(|node| node.secure);
+        self.drag_ghost_text = display_text(&text, secure);
+        self.drag_ghost_pos = self
+            .field_pointer
+            .as_ref()
+            .map(|state| (state.start_x, state.start_y));
+        self.drag_ghost_size = self.measure_drag_ghost(host);
+        self.drop_caret_box = None;
+        self.paint_dirty.set(true);
+    }
+
+    fn measure_drag_ghost(&mut self, host: LayoutHost<'_>) -> (f32, f32) {
+        if self.drag_ghost_text.is_empty() {
+            return (0.0, 0.0);
+        }
+        let Some(key) = self.ghost_layout_key() else {
+            return (0.0, 0.0);
+        };
+        let req = LayoutRequest {
+            text: &self.drag_ghost_text,
+            key,
+        };
+        let measured = host(&req).ok().map(|snapshot| ghost_extent(&snapshot));
+        match measured {
+            Some((width, height)) if width > 0.0 || height > 0.0 => (width, height),
+            _ => {
+                let units = utf16_len(&self.drag_ghost_text) as f32;
+                (units * key.font_size * 0.6, key.line_height)
+            }
+        }
+    }
+
+    fn ghost_layout_key(&self) -> Option<LayoutKey> {
+        let node = self.node(self.focused).ok()?;
+        let font_size = node.font_size;
+        let line_height = if node.line_height > 0.0 {
+            node.line_height
+        } else {
+            font_size * 1.2
+        };
+        Some(LayoutKey {
+            revision: 0,
+            width: 1.0e6,
+            font_size,
+            font_weight: node.font_weight,
+            line_height,
+            align: 0,
+            density: 1.0,
+        })
     }
 
     fn note_field_point(&mut self, input: &PointerInput) {
@@ -533,4 +658,26 @@ impl Shell {
         }
         true
     }
+}
+
+fn ghost_extent(snapshot: &LayoutSnapshot) -> (f32, f32) {
+    if snapshot.runs.is_empty() {
+        let height = snapshot
+            .carets
+            .last()
+            .map(|caret| caret.y + caret.h)
+            .unwrap_or(0.0);
+        return (0.0, height.max(0.0));
+    }
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = 0.0f32;
+    let mut max_y = 0.0f32;
+    for run in &snapshot.runs {
+        min_x = min_x.min(run.x);
+        min_y = min_y.min(run.y);
+        max_x = max_x.max(run.x + run.w);
+        max_y = max_y.max(run.y + run.h);
+    }
+    ((max_x - min_x).max(0.0), (max_y - min_y).max(0.0))
 }

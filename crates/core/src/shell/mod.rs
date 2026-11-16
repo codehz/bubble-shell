@@ -169,6 +169,14 @@ pub struct Shell {
     edit_batch: Option<EditBatch>,
     caret_handle: u32,
     caret_box: Option<(f32, f32, f32, f32)>,
+    /// Viewport rect of the content-drag insertion caret.
+    drop_caret_box: Option<(f32, f32, f32, f32)>,
+    /// Masked selection shown while dragging field content.
+    drag_ghost_text: String,
+    /// Viewport point the drag ghost is centered on.
+    drag_ghost_pos: Option<(f32, f32)>,
+    /// Measured ghost text size before padding. `(0, 0)` until measured.
+    drag_ghost_size: (f32, f32),
     /// Last auto-revealed caret: handle, offset, content-space x/y. A fresh
     /// frame only scrolls to the caret again when this changes, so free
     /// scrolling is never snapped back.
@@ -378,6 +386,10 @@ impl Shell {
             edit_batch: None,
             caret_handle: 0,
             caret_box: None,
+            drop_caret_box: None,
+            drag_ghost_text: String::new(),
+            drag_ghost_pos: None,
+            drag_ghost_size: (0.0, 0.0),
             caret_reveal: None,
             selection_rects: Vec::new(),
             ui_programs: Vec::new(),

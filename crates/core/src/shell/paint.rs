@@ -216,11 +216,75 @@ impl Shell {
             let mut out = Vec::new();
             if self.viewport.width > 0.0 {
                 self.paint_node(1, &mut out);
+                self.paint_drag_ghost(&mut out);
             }
             *self.paint_cache.borrow_mut() = out;
             self.paint_dirty.set(false);
         }
         self.paint_cache.borrow()
+    }
+
+    fn paint_drag_ghost(&self, out: &mut Vec<PaintCmd>) {
+        let Some((gx, gy)) = self.drag_ghost_pos else {
+            return;
+        };
+        if self.drag_ghost_text.is_empty() {
+            return;
+        }
+        let Ok(node) = self.node(self.focused) else {
+            return;
+        };
+        let font_size = node.font_size;
+        let line_height = if node.line_height > 0.0 {
+            node.line_height
+        } else {
+            font_size * 1.2
+        };
+        let weight = node.font_weight;
+        let color = self.effective_paint_style(self.focused, node).color;
+        let text_w = self.drag_ghost_size.0;
+        let text_h = if self.drag_ghost_size.1 > 0.0 {
+            self.drag_ghost_size.1
+        } else {
+            line_height
+        };
+        let pad_x = 8.0;
+        let pad_y = 4.0;
+        let box_w = text_w + pad_x * 2.0;
+        let box_h = text_h + pad_y * 2.0;
+        let x = gx - box_w * 0.5;
+        let y = gy - box_h * 0.5;
+        out.push(PaintCmd::PushOpacity { opacity: 0.65 });
+        out.push(PaintCmd::PushTransform {
+            cx: gx,
+            cy: gy,
+            translate_x: 0.0,
+            translate_y: 0.0,
+            scale: 0.85,
+            rotate: 0.0,
+        });
+        out.push(PaintCmd::Fill {
+            x,
+            y,
+            w: box_w,
+            h: box_h,
+            radius: 4.0,
+            color: Color::new(0.95, 0.95, 0.95, 1.0),
+        });
+        out.push(PaintCmd::Text {
+            x: x + pad_x,
+            y: y + pad_y,
+            w: text_w,
+            h: text_h,
+            font_size,
+            color,
+            line_height,
+            weight,
+            align: 0,
+            text: self.drag_ghost_text.clone(),
+        });
+        out.push(PaintCmd::PopTransform);
+        out.push(PaintCmd::PopOpacity);
     }
 
     fn place(&mut self, id: u32, origin_x: f32, origin_y: f32) -> Result<(), String> {
@@ -389,6 +453,22 @@ impl Shell {
                     radius: 0.0,
                     color,
                 });
+            }
+            if let Some((dx, dy, dw, dh)) = self.drop_caret_box {
+                if self
+                    .field_pointer
+                    .as_ref()
+                    .is_some_and(|state| state.content_drop_valid())
+                {
+                    out.push(PaintCmd::Fill {
+                        x: dx,
+                        y: dy,
+                        w: dw,
+                        h: dh,
+                        radius: 0.0,
+                        color: Color::new(0.0, 0.8, 0.4, 0.85),
+                    });
+                }
             }
         }
         for index in 0..child_count {
