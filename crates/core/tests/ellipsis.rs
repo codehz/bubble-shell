@@ -1,4 +1,4 @@
-use bubble_core::{encode, Kind, NodeDesc, Op, PaintCmd, Shell, Value};
+use bubble_core::{encode, NodeDesc, Op, PaintCmd, Shell, Value};
 
 fn measure(text: &str, font: f32, _: f32, _: u16, _: Option<f32>) -> (f32, f32) {
     (text.chars().count() as f32 * font * 0.5, font)
@@ -95,28 +95,3 @@ fn line_clamp_puts_ellipsis_on_the_last_visible_line() {
     assert_eq!(painted(&shell), "abcd\nefg…");
 }
 
-#[test]
-fn field_ellipsis_is_visual_and_clears_while_focused() {
-    let mut shell = Shell::blank().unwrap();
-    let mut desc = NodeDesc::view(2, 1);
-    desc.kind = Kind::Field;
-    desc.text = "abcdefghij".into();
-    desc.width = Some(40.0);
-    desc.height = Some(20.0);
-    desc.font_size = 10.0;
-    desc.flex_shrink = 0.0;
-    shell.spawn(desc).unwrap();
-    prop(
-        &mut shell,
-        2,
-        "textOverflow",
-        Value::String("ellipsis".into()),
-    );
-    layout(&mut shell);
-    assert_eq!(painted(&shell), "abcdefg…");
-    assert_eq!(shell.text(2).unwrap(), "abcdefghij");
-
-    shell.focus(2).unwrap();
-    layout(&mut shell);
-    assert_eq!(painted(&shell), "abcdefghij");
-}

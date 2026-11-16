@@ -731,43 +731,24 @@ impl Shell {
 
     fn ellipsis_text_for(&self, id: u32, measure: Measure<'_>) -> Option<String> {
         let node = self.node(id).ok()?;
-        if node.text_overflow != 1 {
+        if node.kind != Kind::Text || node.text_overflow != 1 {
             return None;
         }
-        if node.kind == Kind::Field && id == self.caret_handle {
-            return None;
-        }
-        let shown = if node.kind == Kind::Field {
-            display_text(&node.text, node.secure)
-        } else {
-            node.text.clone()
-        };
+        let shown = node.text.clone();
         if shown.is_empty() {
             return None;
         }
-        let pads = self.pads(id);
-        let width = if node.kind == Kind::Field {
-            (node.w - pads[0] - pads[1]).max(0.0)
-        } else {
-            node.w.max(0.0)
-        };
+        let width = node.w.max(0.0);
         let font_size = node.font_size;
         let line_height = node.line_height;
         let weight = node.font_weight;
         let clamp = node.line_clamp;
-        let multiline = node.multiline;
-        let kind = node.kind;
         let mut advance = |text: &str| measure(text, font_size, line_height, weight, None).0;
-        match kind {
-            Kind::Text if clamp >= 2 => clamp_lines(&shown, clamp, width, &mut advance),
-            Kind::Field if multiline && clamp > 0 => {
-                clamp_lines(&shown, clamp, width, &mut advance)
-            }
-            Kind::Field if multiline => None,
-            _ => {
-                let truncated = truncate_with_ellipsis(&shown, width, &mut advance);
-                (truncated != shown).then_some(truncated)
-            }
+        if clamp >= 2 {
+            clamp_lines(&shown, clamp, width, &mut advance)
+        } else {
+            let truncated = truncate_with_ellipsis(&shown, width, &mut advance);
+            (truncated != shown).then_some(truncated)
         }
     }
 }

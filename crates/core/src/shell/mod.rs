@@ -38,13 +38,12 @@ struct MeasureCtx {
 }
 
 /// Layout line cap. `lineClamp` wins. Ellipsis with no clamp is one line for
-/// text, and for a field that is not multiline; paint already draws those as
-/// one line. A multiline field without `lineClamp` is not ellipsized.
-fn layout_max_lines(kind: Kind, text_overflow: u8, line_clamp: u32, multiline: bool) -> u32 {
+/// `Text` only; paint draws that as one line. Fields are not ellipsized.
+fn layout_max_lines(kind: Kind, text_overflow: u8, line_clamp: u32) -> u32 {
     if line_clamp > 0 {
         return line_clamp;
     }
-    if text_overflow == 1 && !(kind == Kind::Field && multiline) {
+    if kind == Kind::Text && text_overflow == 1 {
         1
     } else {
         0
@@ -447,7 +446,6 @@ impl Shell {
                         node.kind,
                         node.text_overflow,
                         node.line_clamp,
-                        node.multiline,
                     );
                     let taffy_id = node.taffy;
                     self.taffy

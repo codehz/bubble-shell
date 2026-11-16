@@ -158,9 +158,6 @@ export function TextFieldDemo() {
         <Field label="Digits" keyboard="number" maxLength={12} onChange={(e) => email.set(e.value)} />
         <Text color="#9ca3af" fontSize={14}>Echo: {email()}</Text>
       </Section>
-      <Section title="Ellipsis while blurred">
-        <Field label="Long" width={150} textOverflow="ellipsis" value="Long placeholder text here" />
-      </Section>
     </View>
   );
 }

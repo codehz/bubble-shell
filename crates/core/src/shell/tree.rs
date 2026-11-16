@@ -54,8 +54,8 @@ pub(super) struct Node {
     pub(super) aspect_ratio: Option<f32>,
     pub(super) line_height: f32,
     pub(super) text_align: u8,
-    /// `0` clip, `1` ellipsis. The drawn string is shortened after layout.
-    /// With no `lineClamp`, text and single-line fields lay out as one line.
+    /// `0` clip, `1` ellipsis. The drawn `Text` string is shortened after layout.
+    /// With no `lineClamp`, that text lays out as one line. Fields ignore this.
     pub(super) text_overflow: u8,
     /// `0` is no limit. Ellipsis treats `1` as a single line. Above 0, layout
     /// height is at most this many wrapped lines.
@@ -500,7 +500,6 @@ impl Shell {
                 node.kind,
                 node.text_overflow,
                 node.line_clamp,
-                node.multiline,
             );
             let text = if node.kind == Kind::Field {
                 display_text(&node.text, node.secure)

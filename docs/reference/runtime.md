@@ -287,7 +287,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
   - Android：StaticLayout / Paint。
   - Web：Canvas2D `measureText` + 浏览器整形。
 - `PaintCmd::Text` 携带节点盒、行高、字重与对齐；三端用同一组参数换行并绘制。
-- `textOverflow: "ellipsis"` 在布局和光标刷新之后，用同一次测量把绘制字符串截成容器宽度并追加 `…`。`lineClamp` 为 0 或 1 时整段按单行截断，布局高度也是一行；大于等于 2 时保留前 N−1 行换行结果，只截断第 N 行，布局高度为 `min(换行数, lineClamp)` 行。未设置 `lineHeight` 时行高取宿主对单行的测量。多行 `TextField` 未设 `lineClamp` 时不截断、高度仍按全文。`TextField` 失焦才截断；聚焦（`caret` 所在字段）绘制全文。
+- `textOverflow: "ellipsis"` 只作用于 `Text`。布局之后，用同一次测量把绘制字符串截成容器宽度并追加 `…`。`lineClamp` 为 0 或 1 时整段按单行截断，布局高度也是一行；大于等于 2 时保留前 N−1 行换行结果，只截断第 N 行，布局高度为 `min(换行数, lineClamp)` 行。未设置 `lineHeight` 时行高取宿主对单行的测量。`TextField` 不截断：单行横向滚动，多行纵向滚动。
 - 文本的 min-content 宽度是最长单词，不是整段不换行宽度。定宽父级里的段落因此换行，而不会把父级撑出视口。
 - 静态 JSX 文本按 HTML 折叠空白：连续空白变成一个空格，首尾空白去掉。表达式产生的字符串保持原样。
 - 缓存 key：`(text, style, maxWidth, fontEpoch)`。

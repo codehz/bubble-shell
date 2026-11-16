@@ -42,7 +42,6 @@ export function Field(props) {
       autofill={props.autofill ? props.autofill() : ""}
       keyboard={props.keyboard ? props.keyboard() : ""}
       maxLength={props.maxLength ? props.maxLength() : 0}
-      textOverflow={props.textOverflow ? props.textOverflow() : "clip"}
       onChange={props.onChange}
     />
   );
