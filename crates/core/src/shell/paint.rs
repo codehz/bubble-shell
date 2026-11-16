@@ -208,7 +208,7 @@ impl Shell {
                             ctx.font_size,
                             ctx.line_height,
                             ctx.font_weight,
-                            ctx.line_clamp,
+                            ctx.max_lines,
                         )
                     });
                     compute_leaf_layout(
@@ -216,7 +216,7 @@ impl Shell {
                         style,
                         |_, _| 0.0,
                         |known, available| {
-                            let Some((text, font_size, line_height, font_weight, line_clamp)) =
+                            let Some((text, font_size, line_height, font_weight, max_lines)) =
                                 measured.as_ref()
                             else {
                                 return Size::ZERO;
@@ -230,7 +230,7 @@ impl Shell {
                             };
                             let (width, mut height) =
                                 measure(text, *font_size, *line_height, *font_weight, max_width);
-                            if *line_clamp > 0 {
+                            if *max_lines > 0 {
                                 if let Some(limit) =
                                     max_width.filter(|limit| limit.is_finite() && *limit > 0.0)
                                 {
@@ -247,7 +247,7 @@ impl Shell {
                                         };
                                         wrapped_lines(text, limit, &mut advance)
                                             .len()
-                                            .min(*line_clamp as usize)
+                                            .min(*max_lines as usize)
                                     };
                                     // `line_height` 0 is the host's natural line box.
                                     let line = if *line_height > 0.0 {

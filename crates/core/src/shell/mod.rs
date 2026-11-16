@@ -32,8 +32,23 @@ struct MeasureCtx {
     font_size: f32,
     line_height: f32,
     font_weight: u16,
-    /// `0` means no clamp. Above 0, layout height is at most this many lines.
-    line_clamp: u32,
+    /// `0` means no limit. Above 0, layout height is at most this many lines.
+    /// Single-line ellipsis is stored as 1 even when the prop was left at 0.
+    max_lines: u32,
+}
+
+/// Layout line cap. `lineClamp` wins. Ellipsis with no clamp is one line for
+/// text, and for a field that is not multiline; paint already draws those as
+/// one line. A multiline field without `lineClamp` is not ellipsized.
+fn layout_max_lines(kind: Kind, text_overflow: u8, line_clamp: u32, multiline: bool) -> u32 {
+    if line_clamp > 0 {
+        return line_clamp;
+    }
+    if text_overflow == 1 && !(kind == Kind::Field && multiline) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Host text measurement: `(text, font size, line height, weight, max width)`
@@ -428,7 +443,12 @@ impl Shell {
                     let font_size = node.font_size;
                     let line_height = node.line_height;
                     let font_weight = node.font_weight;
-                    let line_clamp = node.line_clamp;
+                    let max_lines = layout_max_lines(
+                        node.kind,
+                        node.text_overflow,
+                        node.line_clamp,
+                        node.multiline,
+                    );
                     let taffy_id = node.taffy;
                     self.taffy
                         .set_node_context(
@@ -438,7 +458,7 @@ impl Shell {
                                 font_size,
                                 line_height,
                                 font_weight,
-                                line_clamp,
+                                max_lines,
                             }),
                         )
                         .map_err(|err| err.to_string())?;

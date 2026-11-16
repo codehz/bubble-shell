@@ -55,6 +55,7 @@ pub(super) struct Node {
     pub(super) line_height: f32,
     pub(super) text_align: u8,
     /// `0` clip, `1` ellipsis. The drawn string is shortened after layout.
+    /// With no `lineClamp`, text and single-line fields lay out as one line.
     pub(super) text_overflow: u8,
     /// `0` is no limit. Ellipsis treats `1` as a single line. Above 0, layout
     /// height is at most this many wrapped lines.
@@ -427,6 +428,7 @@ impl Shell {
             Prop::Multiline => {
                 self.node_mut(id)?.multiline = value.as_bool()?;
                 self.refresh_field_overflow(id)?;
+                self.refresh_measure(id)?;
             }
             Prop::Secure => {
                 self.node_mut(id)?.secure = value.as_bool()?;
@@ -489,11 +491,17 @@ impl Shell {
     }
 
     pub(super) fn refresh_measure(&mut self, id: u32) -> Result<(), String> {
-        let (taffy, text, font_size, line_height, font_weight, line_clamp) = {
+        let (taffy, text, font_size, line_height, font_weight, max_lines) = {
             let node = self.node(id)?;
             if !matches!(node.kind, Kind::Text | Kind::Field) {
                 return Ok(());
             }
+            let max_lines = super::layout_max_lines(
+                node.kind,
+                node.text_overflow,
+                node.line_clamp,
+                node.multiline,
+            );
             let text = if node.kind == Kind::Field {
                 display_text(&node.text, node.secure)
             } else {
@@ -505,7 +513,7 @@ impl Shell {
                 node.font_size,
                 node.line_height,
                 node.font_weight,
-                node.line_clamp,
+                max_lines,
             )
         };
         self.taffy
@@ -516,7 +524,7 @@ impl Shell {
                     font_size,
                     line_height,
                     font_weight,
-                    line_clamp,
+                    max_lines,
                 }),
             )
             .map_err(|err| err.to_string())
@@ -597,7 +605,7 @@ impl Shell {
                         font_size: desc.font_size,
                         line_height: 0.0,
                         font_weight: 400,
-                        line_clamp: 0,
+                        max_lines: 0,
                     },
                 )
                 .map_err(|err| err.to_string())?
