@@ -116,6 +116,7 @@ impl Shell {
         if input.action == PointerAction::Down {
             input.path.clear();
             self.hit_path(1, input.x, input.y, &mut input.path);
+            self.last_pointer_kind = input.pointer_kind;
         }
         let field_claimed = if self.field_owns(input.id) && input.action != PointerAction::Down {
             match host {
@@ -167,6 +168,7 @@ impl Shell {
         if input.action == PointerAction::Down {
             input.path.clear();
             self.hit_path(1, input.x, input.y, &mut input.path);
+            self.last_pointer_kind = input.pointer_kind;
         }
         if self.track_press(&input, false) {
             self.sample_sources();

@@ -385,7 +385,8 @@ impl Shell {
     }
 
     /// Start and end selection handle boxes (viewport coordinates), ordered
-    /// as document start and document end. `None` for a collapsed selection.
+    /// as document start and document end. `None` for a collapsed selection
+    /// and while the last press came from a mouse, which gets no handles.
     pub fn selection_handles(&self) -> Option<[(f32, f32, f32, f32); 2]> {
         self.selection_handles
     }
@@ -968,7 +969,7 @@ impl Shell {
             caret.h,
         ));
         let (start, end) = (state.sel_start(), state.sel_end());
-        if start != end {
+        if start != end && self.last_pointer_kind != 1 {
             let start = snap_unit(&geom.text, start).min(snapshot.units);
             let end = snap_unit(&geom.text, end).min(snapshot.units);
             if let (Some(a), Some(b)) = (snapshot.caret(start), snapshot.caret(end)) {

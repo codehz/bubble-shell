@@ -1,6 +1,8 @@
 //! Touch and pen field gestures. Mouse selects on the down sample; touch and
-//! pen wait for a long press so a drag can scroll. Selection handles and the
-//! caret handle claim the pointer immediately on every kind.
+//! pen wait for a long press so a drag can scroll. On touch and pen the
+//! selection handles and the caret handle claim the pointer immediately; a
+//! mouse press never drags them — it re-creates the selection, or long-presses
+//! the selection body to move its content.
 
 use crate::editing::EditCommand;
 use crate::gesture::{PointerAction, PointerInput, LONG_PRESS_DIST, LONG_PRESS_MS};
@@ -80,7 +82,25 @@ impl Shell {
             return false;
         }
 
-        if let Some(which) = self.hit_selection_handle(input.x, input.y) {
+        // Mouse never drags the caret or the selection handles. A press on
+        // the selection body arms the same long-press content drag touch
+        // uses; anywhere else it re-creates the selection from the anchor.
+        if direct {
+            if self.hit_selection_body(input.x, input.y) {
+                if let Ok(field) = self.focused_state() {
+                    let (start, end) = (field.sel_start(), field.sel_end());
+                    if start != end {
+                        self.begin_field_pointer(
+                            input,
+                            self.focused,
+                            FieldPointerMode::WaitingLongPress,
+                            Some((start, end)),
+                        );
+                        return true;
+                    }
+                }
+            }
+        } else if let Some(which) = self.hit_selection_handle(input.x, input.y) {
             let Ok(field) = self.focused_state() else {
                 return false;
             };
@@ -94,14 +114,10 @@ impl Shell {
             };
             self.begin_field_pointer(input, self.focused, mode, None);
             return true;
-        }
-
-        if self.hit_cursor_handle(input.x, input.y) {
+        } else if self.hit_cursor_handle(input.x, input.y) {
             self.begin_field_pointer(input, self.focused, FieldPointerMode::DraggingCursor, None);
             return true;
-        }
-
-        if !direct && self.hit_selection_body(input.x, input.y) {
+        } else if self.hit_selection_body(input.x, input.y) {
             if let Ok(field) = self.focused_state() {
                 let (start, end) = (field.sel_start(), field.sel_end());
                 if start != end {
@@ -489,12 +505,11 @@ impl Shell {
         best.map(|(id, _)| id)
     }
 
-    /// True when `(x, y)` is inside a selection highlight and outside both
-    /// handle touch margins on that line.
+    /// True when `(x, y)` is inside a selection highlight and, when the
+    /// handles are drawn (touch and pen), outside both handle touch margins
+    /// on that line. The mouse draws no handles, so its whole highlight is
+    /// body.
     fn hit_selection_body(&self, x: f32, y: f32) -> bool {
-        let Some(handles) = self.selection_handles() else {
-            return false;
-        };
         let rects = self.selection_rects();
         let Some(index) = rects.iter().position(|(rect_x, rect_y, rect_w, rect_h)| {
             x >= *rect_x && y >= *rect_y && x < rect_x + rect_w && y < rect_y + rect_h
@@ -502,6 +517,9 @@ impl Shell {
             return false;
         };
         let rect = rects[index];
+        let Some(handles) = self.selection_handles() else {
+            return true;
+        };
         for (hx, hy, _hw, _hh) in &handles {
             let caret_x = hx + 8.0;
             let caret_bottom_y = hy + 4.0;

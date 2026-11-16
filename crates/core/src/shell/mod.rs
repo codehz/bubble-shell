@@ -158,6 +158,9 @@ pub struct Shell {
     state_styles: StyleDecls,
     visual: VisualPress,
     field_pointer: Option<field_gesture::FieldPointerState>,
+    /// Pointer kind of the last press sample (0 touch, 1 mouse, 2 pen).
+    /// Mouse presses never draw the selection handles.
+    last_pointer_kind: u8,
     fields: HashMap<u32, EditSession>,
     focused: u32,
     selection_handles: Option<[(f32, f32, f32, f32); 2]>,
@@ -366,6 +369,7 @@ impl Shell {
             state_styles: StyleDecls::new(),
             visual: VisualPress::default(),
             field_pointer: None,
+            last_pointer_kind: 0,
             fields: HashMap::new(),
             focused: 0,
             selection_handles: None,
