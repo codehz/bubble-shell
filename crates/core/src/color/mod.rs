@@ -667,10 +667,7 @@ mod tests {
     fn relative_luminance_matches_wcag() {
         let assert_lum = |color: Color, expected: f32| {
             let actual = color.relative_luminance();
-            assert!(
-                (actual - expected).abs() < 0.001,
-                "{actual} != {expected}"
-            );
+            assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
         };
         assert_lum(Color::new(0.0, 0.0, 0.0, 1.0), 0.0);
         assert_lum(Color::new(1.0, 1.0, 1.0, 1.0), 1.0);

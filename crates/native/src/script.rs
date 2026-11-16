@@ -9,7 +9,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use bubble_core::{validate_bundle_hashes, AnimSpec, ComputationKind, GestureKind, Kind, NodeDesc, Op, Sched, Turn, Value};
+use bubble_core::{
+    validate_bundle_hashes, AnimSpec, ComputationKind, GestureKind, Kind, NodeDesc, Op, Sched,
+    Turn, Value,
+};
 use quickjs_oxide::engine::api::core::{
     CallableRef, Context, HeapLimits, Host, Js, JsString, ModuleImportAttributes, ModuleLoader,
     ModuleScope, ModuleSource, NativeErrorKind, ObjectRef, PromiseState, PropertyKey, Runtime,
@@ -1408,12 +1411,7 @@ fn api_dispose_var(var: f64) -> i32 {
 }
 
 /// Program bytes arrive as a JS array of byte numbers; programs are small.
-fn api_define_ui_function(
-    scope: &mut Scope<'_>,
-    params: f64,
-    bytes: JsValue,
-    reuse: f64,
-) -> u32 {
+fn api_define_ui_function(scope: &mut Scope<'_>, params: f64, bytes: JsValue, reuse: f64) -> u32 {
     if params.fract() != 0.0 || !(0.0..=255.0).contains(&params) {
         set_api_error(format!("bad worklet parameter count {params}"));
         return 0;
