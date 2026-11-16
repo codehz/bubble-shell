@@ -1097,37 +1097,45 @@ impl Shell {
         caret_h: f32,
     ) -> Result<(), String> {
         let pads = self.pads(handle);
-        let node = self.node_mut(handle)?;
-        if node.kind != Kind::Field {
-            return Ok(());
-        }
-        let viewport_w = (node.w - pads[0] - pads[1]).max(0.0);
-        let viewport_h = (node.h - pads[2] - pads[3]).max(0.0);
-        node.content_w = node.content_w.max(caret_x + 1.0);
-        node.content_h = node.content_h.max(caret_y + caret_h);
-        if !node.multiline && node.scrolls_x() {
-            let visible_end = node.scroll_left + viewport_w;
-            if caret_x < node.scroll_left {
-                node.scroll_left = (caret_x - 20.0).max(0.0);
-            } else if caret_x > visible_end {
-                node.scroll_left = caret_x - viewport_w + 20.0;
+        let changed = {
+            let node = self.node_mut(handle)?;
+            if node.kind != Kind::Field {
+                return Ok(());
             }
-        } else if node.multiline && node.scrolls_y() {
-            let caret_bottom = caret_y + caret_h;
-            let visible_end = node.scroll_top + viewport_h;
-            if caret_y < node.scroll_top {
-                node.scroll_top = (caret_y - 4.0).max(0.0);
-            } else if caret_bottom > visible_end {
-                node.scroll_top = caret_bottom - viewport_h + 4.0;
+            let before_left = node.scroll_left;
+            let before_top = node.scroll_top;
+            let viewport_w = (node.w - pads[0] - pads[1]).max(0.0);
+            let viewport_h = (node.h - pads[2] - pads[3]).max(0.0);
+            node.content_w = node.content_w.max(caret_x + 1.0);
+            node.content_h = node.content_h.max(caret_y + caret_h);
+            if !node.multiline && node.scrolls_x() {
+                let visible_end = node.scroll_left + viewport_w;
+                if caret_x < node.scroll_left {
+                    node.scroll_left = (caret_x - 20.0).max(0.0);
+                } else if caret_x > visible_end {
+                    node.scroll_left = caret_x - viewport_w + 20.0;
+                }
+            } else if node.multiline && node.scrolls_y() {
+                let caret_bottom = caret_y + caret_h;
+                let visible_end = node.scroll_top + viewport_h;
+                if caret_y < node.scroll_top {
+                    node.scroll_top = (caret_y - 4.0).max(0.0);
+                } else if caret_bottom > visible_end {
+                    node.scroll_top = caret_bottom - viewport_h + 4.0;
+                }
             }
-        }
-        if node.scrolls_x() {
-            let max_scroll = (node.content_w - viewport_w).max(0.0);
-            node.scroll_left = node.scroll_left.clamp(0.0, max_scroll);
-        }
-        if node.scrolls_y() {
-            let max_scroll = (node.content_h - viewport_h).max(0.0);
-            node.scroll_top = node.scroll_top.clamp(0.0, max_scroll);
+            if node.scrolls_x() {
+                let max_scroll = (node.content_w - viewport_w).max(0.0);
+                node.scroll_left = node.scroll_left.clamp(0.0, max_scroll);
+            }
+            if node.scrolls_y() {
+                let max_scroll = (node.content_h - viewport_h).max(0.0);
+                node.scroll_top = node.scroll_top.clamp(0.0, max_scroll);
+            }
+            node.scroll_left != before_left || node.scroll_top != before_top
+        };
+        if changed {
+            self.last_scroll_time.insert(handle, self.now_ms);
         }
         Ok(())
     }

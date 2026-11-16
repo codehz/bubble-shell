@@ -542,7 +542,35 @@ impl<'a> Lower<'a> {
                             args.push(builder);
                         }
                         self.call(RT_PRIMITIVE, args, span)
-                    } else if other == "Image" || other == "TextField" || other == "ScrollBar" {
+                    } else if other == "TextField" {
+                        let (styles, rest) = self.split_style_children(children);
+                        if !scrollbar_children_only(&rest) {
+                            self.error(
+                                span,
+                                "<TextField> children must be style declarations or ScrollBar",
+                            );
+                        }
+                        let mut args = vec![self.string_of(other), props];
+                        let styles = self.style_children_block(span, styles);
+                        let bars = if scrollbar_children_only(&rest) && has_children(&rest) {
+                            Some(self.children_block(span, rest))
+                        } else {
+                            None
+                        };
+                        match (styles, bars) {
+                            (None, None) => {}
+                            (Some(styles), None) => args.push(styles),
+                            (None, Some(bars)) => {
+                                args.push(self.null(span));
+                                args.push(bars);
+                            }
+                            (Some(styles), Some(bars)) => {
+                                args.push(styles);
+                                args.push(bars);
+                            }
+                        }
+                        self.call(RT_PRIMITIVE, args, span)
+                    } else if other == "Image" || other == "ScrollBar" {
                         let (styles, rest) = self.split_style_children(children);
                         if has_children(&rest) {
                             self.error(
@@ -1601,6 +1629,23 @@ fn has_children(children: &ArenaVec<'_, JSXChild<'_>>) -> bool {
     children.iter().any(|child| match child {
         JSXChild::Text(text) => !text.value.trim().is_empty(),
         _ => true,
+    })
+}
+fn is_scrollbar_element(element: &JSXElement<'_>) -> bool {
+    match &element.opening_element.name {
+        JSXElementName::Identifier(id) => id.name.as_str() == "ScrollBar",
+        JSXElementName::IdentifierReference(id) => id.name.as_str() == "ScrollBar",
+        _ => false,
+    }
+}
+
+/// TextField may host `<ScrollBar>` next to style declarations. Whitespace is
+/// not a child. Anything else is rejected.
+fn scrollbar_children_only(children: &ArenaVec<'_, JSXChild<'_>>) -> bool {
+    children.iter().all(|child| match child {
+        JSXChild::Text(text) => text.value.trim().is_empty(),
+        JSXChild::Element(element) => is_scrollbar_element(element),
+        _ => false,
     })
 }
 

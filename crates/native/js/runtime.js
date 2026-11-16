@@ -421,7 +421,7 @@ export function image(props, buildStyles) {
   return handle;
 }
 
-export function textField(props, buildStyles) {
+export function textField(props, buildStyles, build) {
   props = props ?? {};
   const onChange = props.onChange;
   const value = props.value;
@@ -442,6 +442,17 @@ export function textField(props, buildStyles) {
     }
   }
   buildLeafStyles(handle, buildStyles);
+  if (typeof build === "function") {
+    const scope = currentVirtualScope;
+    currentVirtualScope = rootVirtualScope(handle);
+    parents.push(handle);
+    try {
+      build();
+    } finally {
+      parents.pop();
+      currentVirtualScope = scope;
+    }
+  }
   return handle;
 }
 
