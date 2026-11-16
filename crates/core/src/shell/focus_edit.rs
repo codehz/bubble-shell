@@ -919,9 +919,11 @@ impl Shell {
         self.selection_handles = None;
         let handle = self.focused;
         if handle == 0 {
+            self.caret_reveal = None;
             return Ok(());
         }
         let Some(state) = self.fields.get(&handle).cloned() else {
+            self.caret_reveal = None;
             return Ok(());
         };
         if self
@@ -930,12 +932,27 @@ impl Shell {
             .filter(|node| node.kind == Kind::Field)
             .is_none()
         {
+            self.caret_reveal = None;
             return Ok(());
         }
         let (geom, snapshot) = self.field_snapshot(handle, host)?;
         let active = snap_unit(&geom.text, state.sel_end()).min(snapshot.units);
         let caret = snapshot.caret(active).ok_or("layout has no caret")?;
-        self.reveal_field_caret(handle, caret.x, caret.y, caret.h)?;
+        // Auto-scroll follows the caret only when it appears or moves; a
+        // scrolled-away caret must not be snapped back on every layout.
+        let reveal = match self.caret_reveal {
+            Some((last_handle, last_offset, last_x, last_y)) => {
+                last_handle != handle
+                    || last_offset != active
+                    || (last_x - caret.x).abs() > 0.5
+                    || (last_y - caret.y).abs() > 0.5
+            }
+            None => true,
+        };
+        if reveal {
+            self.reveal_field_caret(handle, caret.x, caret.y, caret.h)?;
+            self.caret_reveal = Some((handle, active, caret.x, caret.y));
+        }
         let geom = self.field_geom(handle)?;
         self.caret_handle = handle;
         self.selection_rects = snapshot

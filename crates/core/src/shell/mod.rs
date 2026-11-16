@@ -164,6 +164,10 @@ pub struct Shell {
     edit_batch: Option<EditBatch>,
     caret_handle: u32,
     caret_box: Option<(f32, f32, f32, f32)>,
+    /// Last auto-revealed caret: handle, offset, content-space x/y. A fresh
+    /// frame only scrolls to the caret again when this changes, so free
+    /// scrolling is never snapped back.
+    caret_reveal: Option<(u32, u32, f32, f32)>,
     selection_rects: Vec<(f32, f32, f32, f32)>,
     /// UI-thread programs ("worklets"), by id. Shared with the running
     /// frame so a call does not copy the program.
@@ -367,6 +371,7 @@ impl Shell {
             edit_batch: None,
             caret_handle: 0,
             caret_box: None,
+            caret_reveal: None,
             selection_rects: Vec::new(),
             ui_programs: Vec::new(),
             ui_dirty: HashSet::new(),
