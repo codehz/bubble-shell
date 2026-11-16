@@ -1,4 +1,4 @@
-// ScrollBar demos: virtual thumbs on scroll containers and text fields.
+// ScrollBar demos: thumbs stay solid; fadeEdges only fades overflowing content.
 import { signal, View, Text, TextField, ScrollBar, For } from "bubble-shell";
 import { Section, Btn } from "./shared";
 
@@ -19,6 +19,7 @@ export function ScrollBarDemo() {
         <View
           height={180}
           overflowY="scroll"
+          fadeEdges={24}
           backgroundColor={0xff374151}
           radius={6}
           padding={[8, 8, 8, 8]}
@@ -57,7 +58,7 @@ export function ScrollBarDemo() {
           />
         </View>
         <Text color="#6b7280" fontSize={12}>
-          The thumb shows only while this axis is scroll and the content overflows. autoHide hides it 1s after the last scroll. Drag maps thumb travel onto the scroll offset; interactive false still paints it. The left sidebar list uses the same component, pinned.
+          The thumb shows only while this axis is scroll and the content overflows. fadeEdges 24 fades that content at the edges; the thumb is painted after the fade and stays solid. autoHide hides it 1s after the last scroll. Drag maps thumb travel onto the scroll offset; interactive false still paints it. The left sidebar list uses the same component, pinned.
         </Text>
       </Section>
       <Section title="Horizontal — axis horizontal">
@@ -65,6 +66,7 @@ export function ScrollBarDemo() {
           height={56}
           width={280}
           overflowX="scroll"
+          fadeEdges={24}
           flexDirection="row"
           alignItems="center"
           gap={6}
@@ -88,7 +90,7 @@ export function ScrollBarDemo() {
             )}
           </For>
         </View>
-        <Text color="#6b7280" fontSize={12}>A horizontal declaration ignores vertical overflow.</Text>
+        <Text color="#6b7280" fontSize={12}>A horizontal declaration ignores vertical overflow. fadeEdges 24 fades the content, not the thumb.</Text>
       </Section>
       <Section title="Both axes — two declarations on one view">
         <View
@@ -96,6 +98,7 @@ export function ScrollBarDemo() {
           width={320}
           overflowX="scroll"
           overflowY="scroll"
+          fadeEdges={24}
           backgroundColor={0xff374151}
           radius={6}
         >
@@ -125,6 +128,7 @@ export function ScrollBarDemo() {
             </For>
           </View>
         </View>
+        <Text color="#6b7280" fontSize={12}>fadeEdges 24 fades both axes. Both thumbs stay solid where they cross the fade.</Text>
       </Section>
       <Section title="TextField — bar axis must match the field">
         <TextField
@@ -137,6 +141,7 @@ export function ScrollBarDemo() {
           radius={6}
           padding={[8, 8, 8, 8]}
           label="Single line"
+          fadeEdges={16}
         >
           <ScrollBar
             axis="horizontal"
@@ -157,6 +162,7 @@ export function ScrollBarDemo() {
           radius={6}
           padding={[8, 8, 8, 8]}
           label="Multiline"
+          fadeEdges={16}
         >
           <ScrollBar
             axis="vertical"
@@ -176,6 +182,7 @@ export function ScrollBarDemo() {
           radius={6}
           padding={[8, 8, 8, 8]}
           label="Mismatched axis"
+          fadeEdges={16}
         >
           <ScrollBar
             axis="vertical"
@@ -186,7 +193,7 @@ export function ScrollBarDemo() {
           />
         </TextField>
         <Text color="#6b7280" fontSize={12}>
-          Single-line fields scroll on x, multiline fields on y. The red vertical bar on the last field stays hidden because that axis does not scroll.
+          Single-line fields scroll on x, multiline fields on y. fadeEdges 16 fades field content, not the thumb. The red vertical bar on the last field stays hidden because that axis does not scroll.
         </Text>
       </Section>
     </View>
