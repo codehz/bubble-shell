@@ -157,7 +157,7 @@ assets/
 
 `color` / `backgroundColor` 一律作为 `SetProp` 下发，由 Rust 统一解析：数字按 `0xAARRGGBB`（alpha 在高字节），字符串按 CSS 颜色语法。支持命名色、`transparent`、`#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa`、`rgb()`/`rgba()`、`hsl()`/`hsla()`、`hwb()`、`lab()`、`lch()`、`oklab()`、`oklch()`，以及 `color()` 的 `srgb`、`srgb-linear`、`display-p3`、`a98-rgb`、`prophoto-rgb`、`rec2020`、`xyz`、`xyz-d50`、`xyz-d65` 空间；逗号与空格/斜杠语法都接受。`currentColor`、相对颜色、`color-mix()`、系统色与 CSS 变量不支持——这些依赖级联或计算样式，请在脚本里用 `computed()` 求值。所有颜色归一为扩展非线性 sRGB 交给宿主：支持广色域的宿主保留越界分量，只画 sRGB 的宿主自行裁剪。
 
-`overflow` / `overflowX` / `overflowY` 各自取值 `"visible"`、`"hidden"` 或 `"scroll"`，两轴独立。`"scroll"` 在该轴裁切并可滚动；`"hidden"` 在该轴裁切且不可滚动；`"visible"` 不裁切该轴，内容在视口内保持无界。裁切矩形是 padding box（当前没有 border，即节点外框），复用已有 `PushClip` / `PopClip`。`fadeEdges` 是逻辑像素，默认 0。仅当对应轴为 `scroll` 且内容确实溢出时，背景和裁剪之后用 `PushLayer` / `PopLayer`（tag 12/13）把内容包进独立层，再在 `PopClip` 之前发出 `FadeEdges`（tag 11）：四边长度是 `min(fadeEdges, 该侧剩余可滚距离)`，贴边时该侧为 0。宿主在该层内用 destination-out 渐变淡出内容；容器背景留在层外，避免擦穿到页面底色。`hidden` 与 `visible` 不虚化。作者对象里的简写 `overflow` 先作用于两轴，再由已声明的 `overflowX` / `overflowY` 覆盖对应轴，与对象键顺序无关。简写是动态绑定时，已声明的轴并入同一条绑定：简写信号变化会先重算简写，再重算这些轴，轴覆盖保持优先；未声明的轴不会被恢复。简写是静态值或省略时，动态轴仍是各自的绑定，只更新该轴。节点创建之后的显式 `setProp` 不加入该绑定，保持调用顺序；下一次作者绑定重跑会按简写然后已声明的轴再次写回。`display` 为 `"flex"`（默认）或 `"none"`；`"none"` 将整棵子树排除出布局、绘制、命中、焦点和语义 action。`visibility` 为 `"visible"`（默认）或 `"hidden"`；`"hidden"` 不绘制、不命中、不聚焦、不发布语义 action，但保留布局占位，后代不能覆盖为可见。动态改为 `display="none"` 或 `visibility="hidden"` 时，清除该子树内的焦点，并取消其中活动的和待决的手势。`flexDirection` 为 `"column"`（默认）、`"row"`、`"column-reverse"` 或 `"row-reverse"`。`flexShrink` 默认 0。`flexBasis` 默认 auto，`alignSelf` 默认 auto，`flexWrap` 默认 `"nowrap"`，`alignContent` 默认 `"flex-start"`。长度是数字（pt）或 `"50%"` 字符串；宽高、min/max、flexBasis 的百分比相对父级对应轴，padding、margin、inset 的百分比相对父级宽度。`gap` 的百分比按该节点自身对应轴的内容区解析。`gap` 先写两轴，`rowGap` / `columnGap` 再覆盖，规则与 overflow 简写相同。`overscrollX` / `overscrollY` 为布尔：`true`（默认）把剩余增量交给外层，`false` 在当前容器截断。`padding` / `margin` / `inset` 按 1、2 或 4 个数，4 个数为上、end、下、start。单边是 `start` / `end`，没有 RTL 时 start 为左。两边尺寸都已确定时忽略 `aspectRatio`。显式 min 覆盖 scroll 和 `flexGrow` 使用的 min 0。
+`overflow` / `overflowX` / `overflowY` 各自取值 `"visible"`、`"hidden"` 或 `"scroll"`，两轴独立。`"scroll"` 在该轴裁切并可滚动；`"hidden"` 在该轴裁切且不可滚动；`"visible"` 不裁切该轴，内容在视口内保持无界。裁切区域是 padding box（当前没有 border，即节点外框）。节点 `radius` 大于 0 时，裁切和命中都沿这个圆角：`PushClip`（tag 3）在 x y w h 之后带一个 f32 `radius`，为 0 时仍是矩形。`fadeEdges` 是逻辑像素，默认 0。仅当对应轴为 `scroll` 且内容确实溢出时，背景和裁剪之后用 `PushLayer` / `PopLayer`（tag 12/13）把内容包进独立层，再在 `PopClip` 之前发出 `FadeEdges`（tag 11）：四边长度是 `min(fadeEdges, 该侧剩余可滚距离)`，贴边时该侧为 0。宿主在该层内用 destination-out 渐变淡出内容；容器背景留在层外，避免擦穿到页面底色。`hidden` 与 `visible` 不虚化。作者对象里的简写 `overflow` 先作用于两轴，再由已声明的 `overflowX` / `overflowY` 覆盖对应轴，与对象键顺序无关。简写是动态绑定时，已声明的轴并入同一条绑定：简写信号变化会先重算简写，再重算这些轴，轴覆盖保持优先；未声明的轴不会被恢复。简写是静态值或省略时，动态轴仍是各自的绑定，只更新该轴。节点创建之后的显式 `setProp` 不加入该绑定，保持调用顺序；下一次作者绑定重跑会按简写然后已声明的轴再次写回。`display` 为 `"flex"`（默认）或 `"none"`；`"none"` 将整棵子树排除出布局、绘制、命中、焦点和语义 action。`visibility` 为 `"visible"`（默认）或 `"hidden"`；`"hidden"` 不绘制、不命中、不聚焦、不发布语义 action，但保留布局占位，后代不能覆盖为可见。动态改为 `display="none"` 或 `visibility="hidden"` 时，清除该子树内的焦点，并取消其中活动的和待决的手势。`flexDirection` 为 `"column"`（默认）、`"row"`、`"column-reverse"` 或 `"row-reverse"`。`flexShrink` 默认 0。`flexBasis` 默认 auto，`alignSelf` 默认 auto，`flexWrap` 默认 `"nowrap"`，`alignContent` 默认 `"flex-start"`。长度是数字（pt）或 `"50%"` 字符串；宽高、min/max、flexBasis 的百分比相对父级对应轴，padding、margin、inset 的百分比相对父级宽度。`gap` 的百分比按该节点自身对应轴的内容区解析。`gap` 先写两轴，`rowGap` / `columnGap` 再覆盖，规则与 overflow 简写相同。`overscrollX` / `overscrollY` 为布尔：`true`（默认）把剩余增量交给外层，`false` 在当前容器截断。`padding` / `margin` / `inset` 按 1、2 或 4 个数，4 个数为上、end、下、start。单边是 `start` / `end`，没有 RTL 时 start 为左。两边尺寸都已确定时忽略 `aspectRatio`。显式 min 覆盖 scroll 和 `flexGrow` 使用的 min 0。
 
 基础原语为 `View`、`Text`、`Image`、`ScrollBar`。`Image` 的 `src` 是宿主可解析的路径/URL，`fit` 为 `contain`、`cover` 或 `fill`；解析失败时该帧跳过图片，不阻断其他绘制。`ScrollBar` 是虚拟子节点，挂在滚动容器上，不进入 taffy，也不能 `Spawn` 成 kind 5 节点。`TextField` 接受 `ScrollBar` 子节点，和样式声明可以并列；单行字段横向滚动，多行字段纵向滚动，轴不匹配时滑块不出现。父节点在内容淡出之后、裁剪弹出之前按轴画滑块。仅当该轴为 `scroll` 且内容溢出时出现。`axis` 为 `vertical`（默认）或 `horizontal`。属性走 `SetScrollBarProp`，不走 `SetProp`：`scrollbarWidth` 默认 4，`scrollbarMargin` 默认 2，`scrollbarColor` 默认白且 alpha 0.5，`scrollbarRadius` 默认 -1（等于宽度的一半），`scrollbarOpacity` 默认 0.5，`scrollbarMinLength` 默认 20。`autoHide` 默认 true：以壳的 `now_ms` 计，距该容器最后一次滚动不足 1000ms 时显示。光标滚入 `TextField` 视口也记为这次滚动。`interactive` 默认 true 时，按在滑块上拖动，指针位移按 `(轨道长度 - 滑块长度)` 线性映射到滚动偏移。滑块没有节点，不进入无障碍树。
 
@@ -267,11 +267,11 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 | 尺寸 | width/height/min/max、padding、margin |
 | flex | direction、wrap、grow/shrink/basis、align/justify、gap |
 | 定位 | relative、absolute、z-index |
-| 溢出 | `overflow` / `overflowX` / `overflowY` 独立取 `visible`、`hidden` 或 `scroll`。`hidden` 裁切且不滚动；`scroll` 裁切并可滚动；`visible` 该轴不裁切。裁切在 padding box（无 border 时即节点外框）。`fadeEdges` 只虚化仍可滚动的边 |
+| 溢出 | `overflow` / `overflowX` / `overflowY` 独立取 `visible`、`hidden` 或 `scroll`。`hidden` 裁切且不滚动；`scroll` 裁切并可滚动；`visible` 该轴不裁切。裁切在 padding box（无 border 时即节点外框）；节点 `radius` 大于 0 时裁切和命中沿这个圆角。`fadeEdges` 只虚化仍可滚动的边 |
 | 视觉 | `backgroundColor`、border、radius、opacity、2D transform |
 | 文本 | font-family/size/weight/style、line-height、letter-spacing、text-align、color、`textOverflow`、`lineClamp` |
 
-不支持：grid、选择器、级联、伪类、隐式继承、CSS 变量。样式是显式 props/tokens，不解析 CSS 样式表；只有颜色值的字面量按 CSS 颜色语法解析。当前已实现 flex 方向、grow/shrink、尺寸、padding、margin、gap、align/justify、relative/absolute 定位与 inset、`display`、`visibility`，按轴独立的 `overflow`（`visible` / `hidden` / `scroll`，裁切在 padding box），以及 `fadeEdges`。border、transform、min/max 仍在路线图。
+不支持：grid、选择器、级联、伪类、隐式继承、CSS 变量。样式是显式 props/tokens，不解析 CSS 样式表；只有颜色值的字面量按 CSS 颜色语法解析。当前已实现 flex 方向、grow/shrink、尺寸、padding、margin、gap、align/justify、relative/absolute 定位与 inset、`display`、`visibility`，按轴独立的 `overflow`（`visible` / `hidden` / `scroll`，裁切在 padding box，`radius` 大于 0 时为圆角），以及 `fadeEdges`。border、transform、min/max 仍在路线图。
 
 ### 布局
 
@@ -298,12 +298,12 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 
 - 每个实例一个平台画布：iOS `UIView.draw` + CoreGraphics，Android `onDraw(Canvas)`，Web Canvas2D。
 - 脏矩形 + 静态子树缓存；全量重绘作为兜底。
-- `PaintCmd` 当前包含填充、文本、图片、裁剪、透明度、transform、内容层（`PushLayer` / `PopLayer`，tag 12/13）与滚动边缘虚化（`FadeEdges`，tag 11，八个 f32：x y w h top right bottom left）；图片按宿主可解析的 `src` 解码，离屏缓存。
+- `PaintCmd` 当前包含填充、文本、图片、裁剪（`PushClip` tag 3：x y w h radius 五个 f32，radius 为 0 时是矩形）、透明度、transform、内容层（`PushLayer` / `PopLayer`，tag 12/13）与滚动边缘虚化（`FadeEdges`，tag 11，八个 f32：x y w h top right bottom left）；图片按宿主可解析的 `src` 解码，离屏缓存。
 - v1 不做模糊、滤镜、液态玻璃等高级合成。
 
 ### 命中与滚动
 
-- 命中按绘制逆序，考虑 transform、clip、z-index。`display="none"` 与 `visibility="hidden"` 的子树不参与命中。`overflow` 为 `hidden` 或 `scroll` 的轴把命中限制在该节点 padding box 内；`visible` 轴在视口内不另加裁切。
+- 命中按绘制逆序，考虑 transform、clip、z-index。`display="none"` 与 `visibility="hidden"` 的子树不参与命中。`overflow` 为 `hidden` 或 `scroll` 的轴把命中限制在该节点 padding box 内，`radius` 大于 0 时角上超出圆弧的点不命中；`visible` 轴在视口内不另加裁切。
 - 指针捕获、手势识别在 UI 线程。
 - 滚动由 UI 线程本地执行，不依赖脚本线程。横纵两轴各自维护偏移与范围；只有 `overflowX` / `overflowY` 为 `"scroll"` 的轴启用滚动。`"hidden"` 裁切且不可滚动，`"visible"` 不裁切也不滚动；这两种轴上 `ScrollTo` 归零。最大偏移是可滚动溢出超出 padding box 的部分：溢出矩形从 padding 边缘量起并已含末尾 padding，视口按 padding box 扣除，不再把 padding 从可视高度里减第二次。
 - 滚轮/拖拽按实际命中路径逐轴消费 `(dx, dy)`：内层先 clamp，未消费部分在同次输入继续交给祖先；`overscrollX/Y={false}` 在对应轴截断剩余量。触摸识别时冻结该轴策略，wheel 每次读取最新已提交配置。

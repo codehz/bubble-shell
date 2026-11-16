@@ -738,9 +738,10 @@ function paint() {
       const y = f32();
       const w = f32();
       const h = f32();
+      const radius = f32();
       ctx.save();
       ctx.beginPath();
-      ctx.rect(x, y, w, h);
+      ctx.roundRect(x, y, w, h, Math.max(0, radius));
       ctx.clip();
     } else if (tag === 4) {
       ctx.restore();

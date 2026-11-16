@@ -73,12 +73,13 @@ pub fn encode_paint(cmds: &[PaintCmd]) -> Vec<u8> {
                 out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
                 out.extend_from_slice(bytes);
             }
-            PaintCmd::PushClip { x, y, w, h } => {
+            PaintCmd::PushClip { x, y, w, h, radius } => {
                 out.push(3);
                 push_f32(&mut out, *x);
                 push_f32(&mut out, *y);
                 push_f32(&mut out, *w);
                 push_f32(&mut out, *h);
+                push_f32(&mut out, *radius);
             }
             PaintCmd::PopClip => out.push(4),
             PaintCmd::PushOpacity { opacity } => {

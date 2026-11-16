@@ -592,8 +592,15 @@ class BubbleView(context: Context) : View(context) {
                     val y = buffer.float
                     val w = buffer.float
                     val h = buffer.float
+                    val radius = buffer.float
                     canvas.save()
-                    canvas.clipRect(x, y, x + w, y + h)
+                    if (radius > 0f) {
+                        path.reset()
+                        path.addRoundRect(x, y, x + w, y + h, radius, radius, Path.Direction.CW)
+                        canvas.clipPath(path)
+                    } else {
+                        canvas.clipRect(x, y, x + w, y + h)
+                    }
                     clips.addLast(1)
                 }
                 4 -> if (clips.isNotEmpty()) {

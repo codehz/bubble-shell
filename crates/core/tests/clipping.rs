@@ -108,8 +108,8 @@ fn overflow_clips_each_axis_at_the_padding_box_and_resets_scroll() {
         "visible y overflows parent"
     );
     assert!(shell.paint().iter().any(|cmd| matches!(cmd,
-        PaintCmd::PushClip { x, y, w, h }
-        if (*x, *y, *w, *h) == (0.0, 0.0, 60.0, 200.0)
+        PaintCmd::PushClip { x, y, w, h, radius }
+        if (*x, *y, *w, *h, *radius) == (0.0, 0.0, 60.0, 200.0, 0.0)
     )));
     assert!(!shell.scroll_wheel(20.0, 20.0, 30.0, 30.0));
     set(&mut shell, 2, "overflowY", "scroll");
@@ -383,7 +383,7 @@ fn nested_axis_clips_intersect_for_pointer_hits_and_paint() {
     let mut visible_child = None;
     for cmd in paint.iter() {
         match cmd {
-            PaintCmd::PushClip { x, y, w, h } => clips.push((*x, *y, *x + *w, *y + *h)),
+            PaintCmd::PushClip { x, y, w, h, .. } => clips.push((*x, *y, *x + *w, *y + *h)),
             PaintCmd::PopClip => {
                 clips.pop().unwrap();
             }
@@ -467,4 +467,181 @@ fn text_field_hits_respect_clips_and_hidden_overlays() {
         3,
         "hidden overlay stops occluding"
     );
+}
+
+fn set_float(shell: &mut Shell, handle: u32, key: &str, value: f32) {
+    shell
+        .apply_ops(&encode(
+            1,
+            &[Op::SetProp {
+                handle,
+                key: key.into(),
+                value: Value::Float(value as f64),
+            }],
+        ))
+        .unwrap();
+}
+
+fn rounded_clip_shell() -> Shell {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(200.0, 200.0);
+    let mut parent = NodeDesc::view(2, 1);
+    parent.flex_shrink = 0.0;
+    parent.handler = 88;
+    parent.radius = 8.0;
+    let mut child = NodeDesc::view(3, 2);
+    child.flex_shrink = 0.0;
+    child.handler = 77;
+    child.background = 0xff00_ff00;
+    shell
+        .apply_ops(&encode(
+            1,
+            &[
+                spawn_ops(parent),
+                spawn_ops(child),
+                vec![
+                    Op::SetProp {
+                        handle: 2,
+                        key: "width".into(),
+                        value: Value::Float(40.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "height".into(),
+                        value: Value::Float(40.0),
+                    },
+                    Op::SetProp {
+                        handle: 2,
+                        key: "overflow".into(),
+                        value: Value::String("hidden".into()),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "width".into(),
+                        value: Value::Float(80.0),
+                    },
+                    Op::SetProp {
+                        handle: 3,
+                        key: "height".into(),
+                        value: Value::Float(80.0),
+                    },
+                ],
+            ]
+            .concat(),
+        ))
+        .unwrap();
+    set(&mut shell, 3, "position", "absolute");
+    layout(&mut shell);
+    shell
+}
+
+fn clip_radius(shell: &Shell) -> Option<f32> {
+    shell.paint().iter().find_map(|cmd| match cmd {
+        PaintCmd::PushClip { radius, .. } => Some(*radius),
+        _ => None,
+    })
+}
+
+#[test]
+fn rounded_overflow_clips_paint_and_corner_hits() {
+    let mut shell = rounded_clip_shell();
+    assert_eq!(clip_radius(&shell), Some(8.0));
+    assert!(shell.paint().iter().any(|cmd| matches!(
+        cmd,
+        PaintCmd::PushClip { x, y, w, h, radius }
+        if (*x, *y, *w, *h, *radius) == (0.0, 0.0, 40.0, 40.0, 8.0)
+    )));
+    // Inside the bounding box, outside the quarter-circle.
+    assert_eq!(
+        shell.tap(1.0, 1.0),
+        None,
+        "rounded corner rejects the cutout"
+    );
+    // Inside the quarter-circle, outside the inscribed central cross.
+    assert_eq!(shell.tap(4.0, 4.0), Some(77), "arc still hits the child");
+    assert_eq!(shell.tap(20.0, 20.0), Some(77));
+
+    set_float(&mut shell, 2, "radius", 0.0);
+    assert_eq!(clip_radius(&shell), Some(0.0));
+    assert_eq!(
+        shell.tap(1.0, 1.0),
+        Some(77),
+        "zero radius stays rectangular"
+    );
+
+    set_float(&mut shell, 2, "radius", 100.0);
+    assert_eq!(
+        clip_radius(&shell),
+        Some(20.0),
+        "radius clamps to half the side"
+    );
+    assert_eq!(
+        shell.tap(1.0, 1.0),
+        None,
+        "clamped circle misses the corner"
+    );
+    assert_eq!(
+        shell.tap(20.0, 1.0),
+        Some(77),
+        "clamped circle keeps the edge"
+    );
+}
+
+fn paint_transform(shell: &mut Shell, key: &str, value: f32) {
+    shell
+        .apply_ops(&encode(
+            1,
+            &[
+                Op::SpawnStyleDecl {
+                    decl: 1,
+                    target: 2,
+                    component: 1,
+                    index: 0,
+                },
+                Op::SetStyleDeclProp {
+                    decl: 1,
+                    key: "when".into(),
+                    value: Value::Bool(true),
+                },
+                Op::SetStyleDeclProp {
+                    decl: 1,
+                    key: key.into(),
+                    value: Value::Float(value as f64),
+                },
+            ],
+        ))
+        .unwrap();
+    layout(shell);
+}
+
+#[test]
+fn rounded_clip_follows_translate_and_scale() {
+    let mut shell = rounded_clip_shell();
+    paint_transform(&mut shell, "translateX", 30.0);
+    assert_eq!(clip_radius(&shell), Some(8.0));
+    assert_eq!(shell.tap(31.0, 1.0), None, "translated cutout misses");
+    assert_eq!(shell.tap(34.0, 4.0), Some(77), "translated arc hits");
+
+    let mut shell = rounded_clip_shell();
+    set(&mut shell, 2, "position", "absolute");
+    set_float(&mut shell, 2, "top", 100.0);
+    set_float(&mut shell, 2, "start", 100.0);
+    layout(&mut shell);
+    let (x, y, w, h) = shell.node_box(2).unwrap();
+    assert_eq!((x, y, w, h), (100.0, 100.0, 40.0, 40.0));
+    paint_transform(&mut shell, "scale", 2.0);
+    // Scale 2 around (120, 120): layout (101, 101) → (82, 82), (104, 104) → (88, 88).
+    assert_eq!(shell.tap(82.0, 82.0), None, "scaled cutout misses");
+    assert_eq!(shell.tap(88.0, 88.0), Some(77), "scaled arc hits");
+    assert_eq!(clip_radius(&shell), Some(8.0));
+
+    let mut shell = rounded_clip_shell();
+    paint_transform(&mut shell, "rotate", 0.4);
+    assert_eq!(shell.tap(20.0, 20.0), Some(77), "rotated center still hits");
+    assert_eq!(
+        shell.tap(180.0, 180.0),
+        None,
+        "rotated clip still misses outside"
+    );
+    assert_eq!(clip_radius(&shell), Some(8.0));
 }

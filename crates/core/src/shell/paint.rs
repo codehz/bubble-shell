@@ -65,6 +65,9 @@ pub enum PaintCmd {
         y: f32,
         w: f32,
         h: f32,
+        /// Corner radius in logical px. `0` keeps a rectangular clip.
+        /// Already clamped to half the shorter side of this rect.
+        radius: f32,
     },
     PopClip,
     PushOpacity {
@@ -498,6 +501,7 @@ impl Shell {
             h,
             self.viewport.width,
             self.viewport.height,
+            radius,
         );
         if opacity < 1.0 {
             out.push(PaintCmd::PushOpacity { opacity });
@@ -526,12 +530,13 @@ impl Shell {
                 color: background,
             });
         }
-        if let Some((cx, cy, cw, ch)) = clip {
+        if let Some((cx, cy, cw, ch, cr)) = clip {
             out.push(PaintCmd::PushClip {
                 x: cx,
                 y: cy,
                 w: cw,
                 h: ch,
+                radius: cr,
             });
         }
         let fade = content_fade(
@@ -752,27 +757,19 @@ impl Shell {
         };
         for index in 0..count {
             let bar_id = self.scrollbars.ids(id).expect("scrollbar ids")[index];
-            let Some((
-                vertical,
-                auto_hide,
-                thickness,
-                margin,
-                min_length,
-                color,
-                opacity,
-                radius,
-            )) = self.scrollbars.scrollbar(bar_id).map(|bar| {
-                (
-                    bar.axis == 0,
-                    bar.auto_hide,
-                    bar.width,
-                    bar.margin,
-                    bar.min_length,
-                    bar.color,
-                    bar.opacity,
-                    bar.radius,
-                )
-            })
+            let Some((vertical, auto_hide, thickness, margin, min_length, color, opacity, radius)) =
+                self.scrollbars.scrollbar(bar_id).map(|bar| {
+                    (
+                        bar.axis == 0,
+                        bar.auto_hide,
+                        bar.width,
+                        bar.margin,
+                        bar.min_length,
+                        bar.color,
+                        bar.opacity,
+                        bar.radius,
+                    )
+                })
             else {
                 continue;
             };
@@ -915,25 +912,63 @@ pub(super) struct Bounds {
     pub(super) y0: f32,
     pub(super) x1: f32,
     pub(super) y1: f32,
+    /// Corner radius. `0` is a rectangle. Kept only while this rect is
+    /// exactly one source clip; see [`Bounds::intersect`].
+    pub(super) radius: f32,
 }
 
 impl Bounds {
     pub(super) fn contains(self, x: f32, y: f32) -> bool {
-        x >= self.x0 && y >= self.y0 && x < self.x1 && y < self.y1
+        if self.radius > 0.0 {
+            super::hit_scroll::contains_rounded(
+                x,
+                y,
+                self.x0,
+                self.y0,
+                self.x1 - self.x0,
+                self.y1 - self.y0,
+                self.radius,
+            )
+        } else {
+            x >= self.x0 && y >= self.y0 && x < self.x1 && y < self.y1
+        }
     }
 
+    /// Axis-aligned intersection. A rounded corner belongs to the clip whose
+    /// rect survives unchanged: the viewport's square clip must not wipe a
+    /// smaller rounded box, and a partial overlap is not itself a rounded
+    /// rect (dropping the radius over-accepts rather than rounding the wrong
+    /// box). When both rects are the same, the larger radius is the tighter cut.
     pub(super) fn intersect(self, other: Self) -> Self {
+        let x0 = self.x0.max(other.x0);
+        let y0 = self.y0.max(other.y0);
+        let x1 = self.x1.min(other.x1);
+        let y1 = self.y1.min(other.y1);
+        let same_self = x0 == self.x0 && y0 == self.y0 && x1 == self.x1 && y1 == self.y1;
+        let same_other = x0 == other.x0 && y0 == other.y0 && x1 == other.x1 && y1 == other.y1;
+        let radius = if same_self && same_other {
+            self.radius.max(other.radius)
+        } else if same_self {
+            self.radius
+        } else if same_other {
+            other.radius
+        } else {
+            0.0
+        };
         Self {
-            x0: self.x0.max(other.x0),
-            y0: self.y0.max(other.y0),
-            x1: self.x1.min(other.x1),
-            y1: self.y1.min(other.y1),
+            x0,
+            y0,
+            x1,
+            y1,
+            radius,
         }
     }
 }
 
 /// Clip rect for one node. A visible axis uses the viewport; a hidden or
 /// scroll axis uses the outer box, which is the padding box when there is no border.
+/// `radius` is the node's corner radius. It is clamped to half the shorter
+/// side and ignored when it is not positive.
 pub(super) fn axis_bounds(
     overflow_x: Overflow,
     overflow_y: Overflow,
@@ -943,28 +978,41 @@ pub(super) fn axis_bounds(
     h: f32,
     viewport_w: f32,
     viewport_h: f32,
+    radius: f32,
 ) -> Bounds {
+    let x0 = if overflow_x == Overflow::Visible {
+        0.0
+    } else {
+        x
+    };
+    let y0 = if overflow_y == Overflow::Visible {
+        0.0
+    } else {
+        y
+    };
+    let x1 = if overflow_x == Overflow::Visible {
+        viewport_w
+    } else {
+        x + w
+    };
+    let y1 = if overflow_y == Overflow::Visible {
+        viewport_h
+    } else {
+        y + h
+    };
+    let rw = (x1 - x0).max(0.0);
+    let rh = (y1 - y0).max(0.0);
+    let radius = if radius > 0.0 && rw > 0.0 && rh > 0.0 {
+        radius.min(rw.min(rh) * 0.5)
+    } else {
+        0.0
+    };
     Bounds {
-        x0: if overflow_x == Overflow::Visible {
-            0.0
-        } else {
-            x
-        },
-        y0: if overflow_y == Overflow::Visible {
-            0.0
-        } else {
-            y
-        },
-        x1: if overflow_x == Overflow::Visible {
-            viewport_w
-        } else {
-            x + w
-        },
-        y1: if overflow_y == Overflow::Visible {
-            viewport_h
-        } else {
-            y + h
-        },
+        x0,
+        y0,
+        x1,
+        y1,
+        radius,
     }
 }
 
@@ -1017,15 +1065,19 @@ fn paint_clip(
     h: f32,
     viewport_w: f32,
     viewport_h: f32,
-) -> Option<(f32, f32, f32, f32)> {
+    radius: f32,
+) -> Option<(f32, f32, f32, f32, f32)> {
     if overflow_x == Overflow::Visible && overflow_y == Overflow::Visible {
         return None;
     }
-    let bounds = axis_bounds(overflow_x, overflow_y, x, y, w, h, viewport_w, viewport_h);
+    let bounds = axis_bounds(
+        overflow_x, overflow_y, x, y, w, h, viewport_w, viewport_h, radius,
+    );
     Some((
         bounds.x0,
         bounds.y0,
         (bounds.x1 - bounds.x0).max(0.0),
         (bounds.y1 - bounds.y0).max(0.0),
+        bounds.radius,
     ))
 }

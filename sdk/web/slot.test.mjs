@@ -235,7 +235,8 @@ function paintList() {
       const y = f32();
       const w = f32();
       const h = f32();
-      cmds.push({ tag, x, y, w, h });
+      const radius = f32();
+      cmds.push({ tag, x, y, w, h, radius });
     } else if (tag === 7) {
       const x = f32();
       const y = f32();

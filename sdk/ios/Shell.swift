@@ -671,9 +671,13 @@ final class BubbleView: UIView {
                 image.draw(in: rect)
                 ctx.restoreGState()
             case 3:
-                guard let x = f32(), let y = f32(), let w = f32(), let h = f32() else { return }
+                guard let x = f32(), let y = f32(), let w = f32(), let h = f32(), let radius = f32() else { return }
                 ctx.saveGState()
-                ctx.clip(to: CGRect(x: x, y: y, width: w, height: h))
+                if radius > 0 {
+                    UIBezierPath(roundedRect: CGRect(x: x, y: y, width: w, height: h), cornerRadius: radius).addClip()
+                } else {
+                    ctx.clip(to: CGRect(x: x, y: y, width: w, height: h))
+                }
             case 4:
                 ctx.restoreGState()
             case 5:

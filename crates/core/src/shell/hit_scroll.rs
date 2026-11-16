@@ -12,6 +12,9 @@ use super::{ScrollOutcome, Shell, VisualPress};
 /// `center + translate + R(rotate) * scale * (p - center)`; this undoes it.
 /// Rects go through their corners, so a rotated clip widens to the corner
 /// AABB — that can only over-accept a point, never drop a visible one.
+/// A rounded radius is kept only while that map stays axis-aligned, and
+/// scales with the mapped edge. Rotation drops it so the widened box does
+/// not grow circular corners the source clip never had.
 struct Untransform {
     a: f32,
     b: f32,
@@ -65,13 +68,55 @@ impl Untransform {
         let (bx, by) = self.point(bounds.x1, bounds.y0);
         let (cx, cy) = self.point(bounds.x0, bounds.y1);
         let (dx, dy) = self.point(bounds.x1, bounds.y1);
+        let x0 = ax.min(bx).min(cx).min(dx);
+        let y0 = ay.min(by).min(cy).min(dy);
+        let x1 = ax.max(bx).max(cx).max(dx);
+        let y1 = ay.max(by).max(cy).max(dy);
+        let axis_aligned = (ay - by).abs() <= 1.0e-3 && (ax - cx).abs() <= 1.0e-3;
+        let ow = (bounds.x1 - bounds.x0).abs();
+        let radius = if bounds.radius > 0.0 && axis_aligned && ow > f32::EPSILON {
+            bounds.radius * ((ax - bx).abs() / ow)
+        } else {
+            0.0
+        };
         Bounds {
-            x0: ax.min(bx).min(cx).min(dx),
-            y0: ay.min(by).min(cy).min(dy),
-            x1: ax.max(bx).max(cx).max(dx),
-            y1: ay.max(by).max(cy).max(dy),
+            x0,
+            y0,
+            x1,
+            y1,
+            radius,
         }
     }
+}
+
+/// `true` when `(x, y)` is inside the rounded rectangle at `(rx, ry, rw, rh)`.
+/// `radius` is clamped to half the shorter side. A point in the central cross
+/// is inside; a point in a corner is inside when it falls within that corner's
+/// circle. Far edges are exclusive, matching a rectangular [`Bounds::contains`].
+pub(super) fn contains_rounded(
+    x: f32,
+    y: f32,
+    rx: f32,
+    ry: f32,
+    rw: f32,
+    rh: f32,
+    radius: f32,
+) -> bool {
+    if !(x >= rx && y >= ry && x < rx + rw && y < ry + rh) {
+        return false;
+    }
+    let r = radius.max(0.0).min(rw.min(rh) * 0.5);
+    if r <= 0.0 {
+        return true;
+    }
+    if (x >= rx + r && x < rx + rw - r) || (y >= ry + r && y < ry + rh - r) {
+        return true;
+    }
+    let cx = if x < rx + r { rx + r } else { rx + rw - r };
+    let cy = if y < ry + r { ry + r } else { ry + rh - r };
+    let dx = x - cx;
+    let dy = y - cy;
+    dx * dx + dy * dy <= r * r
 }
 
 impl Shell {
@@ -360,6 +405,7 @@ impl Shell {
             y0: 0.0,
             x1: self.viewport.width,
             y1: self.viewport.height,
+            radius: 0.0,
         }
     }
 
@@ -406,6 +452,15 @@ impl Shell {
         if !clip.contains(x, y) {
             return false;
         }
+        // A fully visible node must not stamp its corner radius onto the
+        // viewport. Radius applies only once an axis actually clips.
+        let clip_radius = if node.overflow_x == taffy::style::Overflow::Visible
+            && node.overflow_y == taffy::style::Overflow::Visible
+        {
+            0.0
+        } else {
+            paint.radius
+        };
         let next = clip.intersect(axis_bounds(
             node.overflow_x,
             node.overflow_y,
@@ -415,6 +470,7 @@ impl Shell {
             node.h,
             self.viewport.width,
             self.viewport.height,
+            clip_radius,
         ));
         let (nx, ny, nw, nh) = (node.x, node.y, node.w, node.h);
         let count = node.children.len();
@@ -422,20 +478,23 @@ impl Shell {
         let scrolls_y = node.scrolls_y();
         let scroll_left = node.scroll_left;
         let scroll_top = node.scroll_top;
-        if (scrolls_x || scrolls_y) && next.contains(x, y) && self.hit_scrollbar(
-            id,
-            x,
-            y,
-            nx,
-            ny,
-            nw,
-            nh,
-            scroll_left,
-            scroll_top,
-            scrolls_x,
-            scrolls_y,
-            out,
-        ) {
+        if (scrolls_x || scrolls_y)
+            && next.contains(x, y)
+            && self.hit_scrollbar(
+                id,
+                x,
+                y,
+                nx,
+                ny,
+                nw,
+                nh,
+                scroll_left,
+                scroll_top,
+                scrolls_x,
+                scrolls_y,
+                out,
+            )
+        {
             return true;
         }
         if next.contains(x, y) {
@@ -450,7 +509,7 @@ impl Shell {
                 }
             }
         }
-        if x >= nx && y >= ny && x < nx + nw && y < ny + nh {
+        if x >= nx && y >= ny && x < nx + nw && y < ny + nh && next.contains(x, y) {
             out.push(id);
             true
         } else {
@@ -635,7 +694,11 @@ impl Shell {
         if !auto_hide {
             return true;
         }
-        let last = self.last_scroll_time.get(&container).copied().unwrap_or(0.0);
+        let last = self
+            .last_scroll_time
+            .get(&container)
+            .copied()
+            .unwrap_or(0.0);
         self.now_ms - last < 1000.0
     }
 
@@ -653,11 +716,7 @@ impl Shell {
             if !auto_hide {
                 continue;
             }
-            let last = self
-                .last_scroll_time
-                .get(&target)
-                .copied()
-                .unwrap_or(0.0);
+            let last = self.last_scroll_time.get(&target).copied().unwrap_or(0.0);
             if (previous - last < 1000.0) != (now - last < 1000.0) {
                 return true;
             }
