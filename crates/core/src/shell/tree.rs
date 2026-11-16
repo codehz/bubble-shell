@@ -54,9 +54,10 @@ pub(super) struct Node {
     pub(super) aspect_ratio: Option<f32>,
     pub(super) line_height: f32,
     pub(super) text_align: u8,
-    /// `0` clip, `1` ellipsis. Layout still measures the full string.
+    /// `0` clip, `1` ellipsis. The drawn string is shortened after layout.
     pub(super) text_overflow: u8,
-    /// `0` is no limit. Ellipsis treats `1` as a single line.
+    /// `0` is no limit. Ellipsis treats `1` as a single line. Above 0, layout
+    /// height is at most this many wrapped lines.
     pub(super) line_clamp: u32,
     pub(super) font_weight: u16,
     pub(super) src: String,
@@ -488,7 +489,7 @@ impl Shell {
     }
 
     pub(super) fn refresh_measure(&mut self, id: u32) -> Result<(), String> {
-        let (taffy, text, font_size, line_height, font_weight) = {
+        let (taffy, text, font_size, line_height, font_weight, line_clamp) = {
             let node = self.node(id)?;
             if !matches!(node.kind, Kind::Text | Kind::Field) {
                 return Ok(());
@@ -504,6 +505,7 @@ impl Shell {
                 node.font_size,
                 node.line_height,
                 node.font_weight,
+                node.line_clamp,
             )
         };
         self.taffy
@@ -514,6 +516,7 @@ impl Shell {
                     font_size,
                     line_height,
                     font_weight,
+                    line_clamp,
                 }),
             )
             .map_err(|err| err.to_string())
@@ -594,6 +597,7 @@ impl Shell {
                         font_size: desc.font_size,
                         line_height: 0.0,
                         font_weight: 400,
+                        line_clamp: 0,
                     },
                 )
                 .map_err(|err| err.to_string())?

@@ -32,6 +32,8 @@ struct MeasureCtx {
     font_size: f32,
     line_height: f32,
     font_weight: u16,
+    /// `0` means no clamp. Above 0, layout height is at most this many lines.
+    line_clamp: u32,
 }
 
 /// Host text measurement: `(text, font size, line height, weight, max width)`
@@ -426,6 +428,7 @@ impl Shell {
                     let font_size = node.font_size;
                     let line_height = node.line_height;
                     let font_weight = node.font_weight;
+                    let line_clamp = node.line_clamp;
                     let taffy_id = node.taffy;
                     self.taffy
                         .set_node_context(
@@ -435,6 +438,7 @@ impl Shell {
                                 font_size,
                                 line_height,
                                 font_weight,
+                                line_clamp,
                             }),
                         )
                         .map_err(|err| err.to_string())?;

@@ -208,6 +208,7 @@ impl Shell {
                             ctx.font_size,
                             ctx.line_height,
                             ctx.font_weight,
+                            ctx.line_clamp,
                         )
                     });
                     compute_leaf_layout(
@@ -215,7 +216,7 @@ impl Shell {
                         style,
                         |_, _| 0.0,
                         |known, available| {
-                            let Some((text, font_size, line_height, font_weight)) =
+                            let Some((text, font_size, line_height, font_weight, line_clamp)) =
                                 measured.as_ref()
                             else {
                                 return Size::ZERO;
@@ -227,8 +228,38 @@ impl Shell {
                                 AvailableSpace::Definite(width) => Some(width),
                                 _ => known.width,
                             };
-                            let (width, height) =
+                            let (width, mut height) =
                                 measure(text, *font_size, *line_height, *font_weight, max_width);
+                            if *line_clamp > 0 {
+                                if let Some(limit) =
+                                    max_width.filter(|limit| limit.is_finite() && *limit > 0.0)
+                                {
+                                    let line_count = {
+                                        let mut advance = |sample: &str| {
+                                            measure(
+                                                sample,
+                                                *font_size,
+                                                *line_height,
+                                                *font_weight,
+                                                None,
+                                            )
+                                            .0
+                                        };
+                                        wrapped_lines(text, limit, &mut advance)
+                                            .len()
+                                            .min(*line_clamp as usize)
+                                    };
+                                    // `line_height` 0 is the host's natural line box.
+                                    let line = if *line_height > 0.0 {
+                                        *line_height
+                                    } else {
+                                        measure("x", *font_size, *line_height, *font_weight, None).1
+                                    };
+                                    if line_count > 0 && line > 0.0 {
+                                        height = line_count as f32 * line;
+                                    }
+                                }
+                            }
                             Size {
                                 width: known.width.unwrap_or(width),
                                 height: known.height.unwrap_or(height),
