@@ -414,6 +414,36 @@ fn wrap_paragraph(
     lines
 }
 
+/// Visual lines from the same breaker as [`wrapping_layout`]. Soft-wrap spaces
+/// are omitted; hard breaks stay as separate entries, including blanks.
+pub(crate) fn wrapped_lines(
+    text: &str,
+    width: f32,
+    mut advance: impl FnMut(&str) -> f32,
+) -> Vec<String> {
+    let limit = if width.is_finite() && width > 0.0 {
+        width
+    } else {
+        f32::MAX
+    };
+    let mut lines = Vec::new();
+    let paragraphs: Vec<&str> = text.split('\n').collect();
+    let paragraphs = if paragraphs.is_empty() {
+        vec![""]
+    } else {
+        paragraphs
+    };
+    for para in paragraphs {
+        for (start, end) in wrap_paragraph(para, limit, &mut advance) {
+            lines.push(para[start..end].to_owned());
+        }
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

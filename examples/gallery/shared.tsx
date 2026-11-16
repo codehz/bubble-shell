@@ -30,6 +30,7 @@ export function Field(props) {
     <TextField
       value={props.value ? props.value() : ""}
       height={props.height ? props.height() : 40}
+      width={props.width ? props.width() : null}
       fontSize={15}
       color="#ffffff"
       backgroundColor={0xff4b5563}
@@ -41,6 +42,7 @@ export function Field(props) {
       autofill={props.autofill ? props.autofill() : ""}
       keyboard={props.keyboard ? props.keyboard() : ""}
       maxLength={props.maxLength ? props.maxLength() : 0}
+      textOverflow={props.textOverflow ? props.textOverflow() : "clip"}
       onChange={props.onChange}
     />
   );

@@ -5,8 +5,8 @@ use crate::ir::{Kind, NodeDesc};
 use crate::ops::Value;
 use crate::props::{
     align_items, align_self, flex_direction, flex_wrap, image_fit, justify_content,
-    parse_display_none, parse_len, parse_overflow, parse_visibility_hidden, position, text_align,
-    Prop,
+    parse_display_none, parse_len, parse_overflow, parse_text_overflow, parse_visibility_hidden,
+    position, text_align, Prop,
 };
 use crate::semantics::Role;
 use crate::state_style::{slot_allowed, slot_of, slot_type, DeclExpr, SlotType};
@@ -54,10 +54,16 @@ pub(super) struct Node {
     pub(super) aspect_ratio: Option<f32>,
     pub(super) line_height: f32,
     pub(super) text_align: u8,
+    /// `0` clip, `1` ellipsis. Layout still measures the full string.
+    pub(super) text_overflow: u8,
+    /// `0` is no limit. Ellipsis treats `1` as a single line.
+    pub(super) line_clamp: u32,
     pub(super) font_weight: u16,
     pub(super) src: String,
     pub(super) fit: u8,
     pub(super) text: String,
+    /// Paint string when ellipsis shortened `text`. `None` paints the full string.
+    pub(super) ellipsis_text: Option<String>,
     pub(super) taffy: NodeId,
     pub(super) scroll_left: f32,
     pub(super) scroll_top: f32,
@@ -131,10 +137,13 @@ impl Node {
             aspect_ratio: None,
             line_height: 0.0,
             text_align: 0,
+            text_overflow: 0,
+            line_clamp: 0,
             font_weight: 400,
             src: String::new(),
             fit: 0,
             text: String::new(),
+            ellipsis_text: None,
             taffy: taffy_id,
             scroll_left: 0.0,
             scroll_top: 0.0,
@@ -365,6 +374,14 @@ impl Shell {
                 self.refresh_measure(id)?;
             }
             Prop::TextAlign => self.node_mut(id)?.text_align = text_align(value)?,
+            Prop::TextOverflow => {
+                self.node_mut(id)?.text_overflow = parse_text_overflow(value)?;
+                self.refresh_measure(id)?;
+            }
+            Prop::LineClamp => {
+                self.node_mut(id)?.line_clamp = value.as_u32()?;
+                self.refresh_measure(id)?;
+            }
             Prop::FontWeight => {
                 self.node_mut(id)?.font_weight = value.as_u32()?.clamp(1, 1000) as u16;
                 self.refresh_measure(id)?;

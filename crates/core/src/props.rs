@@ -47,6 +47,18 @@ pub(crate) fn text_align(value: &Value) -> Result<u8, String> {
     }
 }
 
+/// `0` clip, `1` ellipsis.
+pub(crate) fn parse_text_overflow(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("textOverflow must be a string".into());
+    };
+    match text.as_str() {
+        "clip" => Ok(0),
+        "ellipsis" => Ok(1),
+        other => Err(format!("unsupported textOverflow {other}")),
+    }
+}
+
 /// `0` contain, `1` cover, `2` fill.
 pub(crate) fn image_fit(value: &Value) -> Result<u8, String> {
     let Value::String(text) = value else {
@@ -88,6 +100,8 @@ pub enum Prop {
     Row,
     LineHeight,
     TextAlign,
+    TextOverflow,
+    LineClamp,
     FontWeight,
     MarginStart,
     MarginEnd,
@@ -157,6 +171,8 @@ impl Prop {
             "flexDirection" => Self::Row,
             "lineHeight" => Self::LineHeight,
             "textAlign" => Self::TextAlign,
+            "textOverflow" => Self::TextOverflow,
+            "lineClamp" => Self::LineClamp,
             "fontWeight" => Self::FontWeight,
             "marginStart" => Self::MarginStart,
             "marginEnd" => Self::MarginEnd,

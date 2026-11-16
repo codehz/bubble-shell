@@ -1426,31 +1426,34 @@ pub extern "C" fn commit() -> u32 {
 #[no_mangle]
 pub extern "C" fn layout() -> i32 {
     let _flush = FlushEvents;
-    abi_ok!(drain_pending().and_then(|()| {
-        with_shell(|shell| {
-            shell.compute_layout(
-                &mut |text, font_size, line_height, font_weight, max_width| {
-                    let mut out = [0f32; 2];
-                    unsafe {
-                        host_measure(
-                            text.as_ptr() as u32,
-                            text.len() as u32,
-                            font_size,
-                            line_height,
-                            font_weight as u32,
-                            u32::from(max_width.is_some()),
-                            max_width.unwrap_or(0.0),
-                            out.as_mut_ptr() as u32,
-                        );
-                    }
-                    (out[0], out[1])
-                },
-            )?;
-            shell.refresh_caret(&mut wasm_layout)?;
-            collect_events(shell);
-            Ok(0)
-        })
-    }), 1)
+    abi_ok!(
+        drain_pending().and_then(|()| {
+            with_shell(|shell| {
+                shell.layout_with(
+                    &mut |text, font_size, line_height, font_weight, max_width| {
+                        let mut out = [0f32; 2];
+                        unsafe {
+                            host_measure(
+                                text.as_ptr() as u32,
+                                text.len() as u32,
+                                font_size,
+                                line_height,
+                                font_weight as u32,
+                                u32::from(max_width.is_some()),
+                                max_width.unwrap_or(0.0),
+                                out.as_mut_ptr() as u32,
+                            );
+                        }
+                        (out[0], out[1])
+                    },
+                    &mut wasm_layout,
+                )?;
+                collect_events(shell);
+                Ok(0)
+            })
+        }),
+        1
+    )
 }
 
 #[no_mangle]

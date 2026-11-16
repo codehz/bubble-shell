@@ -555,12 +555,12 @@ pub extern "C" fn bubble_frame(
             let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
             shell.set_viewport(width, height);
             let host = &engine.shared.host;
-            shell.compute_layout(
+            shell.layout_with(
                 &mut |text, font_size, line_height, font_weight, max_width| {
                     host_measure(host, text, font_size, line_height, font_weight, max_width)
                 },
+                &mut |req| field_layout(host, req),
             )?;
-            shell.refresh_caret(&mut |req| field_layout(host, req))?;
             let bytes = encode_paint(&shell.paint());
             let edits = shell.take_edit_events();
             (edits, bytes)

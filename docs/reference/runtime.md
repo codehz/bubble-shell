@@ -269,7 +269,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 | 定位 | relative、absolute、z-index |
 | 溢出 | `overflow` / `overflowX` / `overflowY` 独立取 `visible`、`hidden` 或 `scroll`。`hidden` 裁切且不滚动；`scroll` 裁切并可滚动；`visible` 该轴不裁切。裁切在 padding box（无 border 时即节点外框） |
 | 视觉 | `backgroundColor`、border、radius、opacity、2D transform |
-| 文本 | font-family/size/weight/style、line-height、letter-spacing、text-align、color |
+| 文本 | font-family/size/weight/style、line-height、letter-spacing、text-align、color、`textOverflow`、`lineClamp` |
 
 不支持：grid、选择器、级联、伪类、隐式继承、CSS 变量。样式是显式 props/tokens，不解析 CSS 样式表；只有颜色值的字面量按 CSS 颜色语法解析。当前已实现 flex 方向、grow/shrink、尺寸、padding、margin、gap、align/justify、relative/absolute 定位与 inset、`display`、`visibility`，以及按轴独立的 `overflow`（`visible` / `hidden` / `scroll`，裁切在 padding box）。border、transform、min/max 仍在路线图。
 
@@ -287,6 +287,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
   - Android：StaticLayout / Paint。
   - Web：Canvas2D `measureText` + 浏览器整形。
 - `PaintCmd::Text` 携带节点盒、行高、字重与对齐；三端用同一组参数换行并绘制。
+- `textOverflow: "ellipsis"` 在布局和光标刷新之后，用同一次测量把绘制字符串截成容器宽度并追加 `…`。`lineClamp` 为 0 或 1 时整段按单行截断；大于等于 2 时保留前 N−1 行换行结果，只截断第 N 行。布局仍按全文测量。`TextField` 失焦才截断；聚焦（`caret` 所在字段）绘制全文。
 - 缓存 key：`(text, style, maxWidth, fontEpoch)`。
 - 宿主注入字体时递增 `fontEpoch`，清空文本缓存。
 - 三端换行/基线差异是接受的；内容避免依赖固定文本高度。

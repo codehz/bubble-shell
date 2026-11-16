@@ -93,6 +93,18 @@ export function TextDemo() {
           spacing between the wrapped lines of this paragraph.
         </Text>
       </Section>
+      <Section title="Ellipsis — single line">
+        <Text fontSize={16} width={100} color="#ffffff" textOverflow="ellipsis">
+          This is a very long text that should be truncated
+        </Text>
+      </Section>
+      <Section title="Ellipsis — three line clamp">
+        <Text fontSize={16} width={200} lineClamp={3} color="#d1d5db" textOverflow="ellipsis">
+          This is a very long paragraph that will wrap to multiple lines. We want to
+          see it clamp at exactly three lines with an ellipsis at the end of the
+          third line, not showing the rest of the content.
+        </Text>
+      </Section>
     </View>
   );
 }
@@ -145,6 +157,9 @@ export function TextFieldDemo() {
         <Field label="Email" keyboard="email" onChange={(e) => email.set(e.value)} />
         <Field label="Digits" keyboard="number" maxLength={12} onChange={(e) => email.set(e.value)} />
         <Text color="#9ca3af" fontSize={14}>Echo: {email()}</Text>
+      </Section>
+      <Section title="Ellipsis while blurred">
+        <Field label="Long" width={150} textOverflow="ellipsis" value="Long placeholder text here" />
       </Section>
     </View>
   );

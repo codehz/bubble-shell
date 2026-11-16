@@ -3,7 +3,7 @@ use std::cell::Ref;
 use crate::color::Color;
 use crate::editing::display_text;
 use crate::ir::Kind;
-use crate::layout::{wrapping_layout, LayoutRequest, LayoutSnapshot};
+use crate::layout::{wrapped_lines, wrapping_layout, LayoutRequest, LayoutSnapshot};
 use taffy::compute_leaf_layout;
 use taffy::prelude::*;
 use taffy::style::Overflow;
@@ -83,6 +83,72 @@ pub enum PaintCmd {
     PopTransform,
 }
 
+/// Longest prefix of `text` whose width with a trailing `…` fits. The original
+/// string is returned when it already fits. Empty when even `…` does not fit.
+fn truncate_with_ellipsis(text: &str, width: f32, measure: &mut dyn FnMut(&str) -> f32) -> String {
+    if !width.is_finite() || width <= 0.0 {
+        return String::new();
+    }
+    if measure(text) <= width {
+        return text.to_owned();
+    }
+    prefix_with_ellipsis(text, width, measure)
+}
+
+/// `text` shortened so `prefix + "…"` fits. Always includes the ellipsis when
+/// the mark itself fits, including when `text` was already short enough.
+fn prefix_with_ellipsis(text: &str, width: f32, measure: &mut dyn FnMut(&str) -> f32) -> String {
+    if !width.is_finite() || width <= 0.0 || measure("…") > width {
+        return String::new();
+    }
+    let ends: Vec<usize> = std::iter::once(0)
+        .chain(text.char_indices().map(|(index, ch)| index + ch.len_utf8()))
+        .collect();
+    let mut buf = String::with_capacity(text.len() + "…".len());
+    let mut lo = 0usize;
+    let mut hi = ends.len() - 1;
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        buf.clear();
+        buf.push_str(&text[..ends[mid]]);
+        buf.push('…');
+        if measure(&buf) <= width {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    buf.clear();
+    buf.push_str(&text[..ends[lo]]);
+    buf.push('…');
+    buf
+}
+
+fn clamp_lines(
+    text: &str,
+    clamp: u32,
+    width: f32,
+    advance: &mut dyn FnMut(&str) -> f32,
+) -> Option<String> {
+    let lines = wrapped_lines(text, width, &mut *advance);
+    let clamp = clamp as usize;
+    if clamp == 0 || lines.len() <= clamp {
+        return None;
+    }
+    let mut out = String::new();
+    for (index, line) in lines.iter().take(clamp - 1).enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        out.push_str(line);
+    }
+    if clamp > 1 {
+        out.push('\n');
+    }
+    out.push_str(&prefix_with_ellipsis(&lines[clamp - 1], width, advance));
+    Some(out)
+}
+
 impl Shell {
     pub fn layout(&mut self, measure: Measure<'_>) -> Result<(), String> {
         self.compute_layout(measure)?;
@@ -97,7 +163,8 @@ impl Shell {
                 )
                 .0
             }))
-        })
+        })?;
+        self.apply_text_ellipsis(measure)
     }
 
     /// Lay out, then take editing geometry from `host`. The host snapshot must
@@ -108,7 +175,8 @@ impl Shell {
         host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
     ) -> Result<(), String> {
         self.compute_layout(measure)?;
-        self.refresh_caret(host)
+        self.refresh_caret(host)?;
+        self.apply_text_ellipsis(measure)
     }
 
     pub fn compute_layout(&mut self, measure: Measure<'_>) -> Result<(), String> {
@@ -342,6 +410,7 @@ impl Shell {
         let line_height = node.line_height;
         let weight = node.font_weight;
         let align = paint.text_align;
+        let ellipsis_text = node.ellipsis_text.clone();
         let fit = paint.fit;
         let src = node.src.clone();
         let overflow_x = node.overflow_x;
@@ -405,7 +474,9 @@ impl Shell {
                 });
             }
         }
-        let shown = if kind == Kind::Field {
+        let shown = if let Some(text) = ellipsis_text {
+            text
+        } else if kind == Kind::Field {
             display_text(&text, secure)
         } else {
             text
@@ -584,6 +655,67 @@ impl Shell {
             node.content_h = height;
         }
         Ok(())
+    }
+
+    fn apply_text_ellipsis(&mut self, measure: Measure<'_>) -> Result<(), String> {
+        let ids: Vec<u32> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                node.as_ref()
+                    .filter(|node| matches!(node.kind, Kind::Text | Kind::Field))
+                    .map(|_| index as u32)
+            })
+            .collect();
+        for id in ids {
+            let next = self.ellipsis_text_for(id, measure);
+            self.node_mut(id)?.ellipsis_text = next;
+        }
+        self.paint_dirty.set(true);
+        Ok(())
+    }
+
+    fn ellipsis_text_for(&self, id: u32, measure: Measure<'_>) -> Option<String> {
+        let node = self.node(id).ok()?;
+        if node.text_overflow != 1 {
+            return None;
+        }
+        if node.kind == Kind::Field && id == self.caret_handle {
+            return None;
+        }
+        let shown = if node.kind == Kind::Field {
+            display_text(&node.text, node.secure)
+        } else {
+            node.text.clone()
+        };
+        if shown.is_empty() {
+            return None;
+        }
+        let pads = self.pads(id);
+        let width = if node.kind == Kind::Field {
+            (node.w - pads[0] - pads[1]).max(0.0)
+        } else {
+            node.w.max(0.0)
+        };
+        let font_size = node.font_size;
+        let line_height = node.line_height;
+        let weight = node.font_weight;
+        let clamp = node.line_clamp;
+        let multiline = node.multiline;
+        let kind = node.kind;
+        let mut advance = |text: &str| measure(text, font_size, line_height, weight, None).0;
+        match kind {
+            Kind::Text if clamp >= 2 => clamp_lines(&shown, clamp, width, &mut advance),
+            Kind::Field if multiline && clamp > 0 => {
+                clamp_lines(&shown, clamp, width, &mut advance)
+            }
+            Kind::Field if multiline => None,
+            _ => {
+                let truncated = truncate_with_ellipsis(&shown, width, &mut advance);
+                (truncated != shown).then_some(truncated)
+            }
+        }
     }
 }
 
