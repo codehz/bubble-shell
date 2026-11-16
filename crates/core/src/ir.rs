@@ -11,6 +11,7 @@ pub enum Kind {
     Text = 2,
     Image = 3,
     Field = 4,
+    ScrollBar = 5,
 }
 
 impl Kind {
@@ -20,6 +21,7 @@ impl Kind {
             2 => Ok(Kind::Text),
             3 => Ok(Kind::Image),
             4 => Ok(Kind::Field),
+            5 => Ok(Kind::ScrollBar),
             other => Err(format!("bad node kind {other}")),
         }
     }

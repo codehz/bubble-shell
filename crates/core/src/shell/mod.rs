@@ -158,6 +158,75 @@ struct VisualPress {
     gesture: bool,
 }
 
+#[derive(Clone, Copy)]
+struct ScrollbarDrag {
+    pointer: u32,
+    scrollbar: u32,
+    container: u32,
+    axis: u8,
+    start_pointer: f32,
+    start_scroll: f32,
+    track_length: f32,
+    max_scroll: f32,
+}
+
+/// Thumb rectangle for one scrollbar child. `None` when that axis has nothing
+/// to scroll or the track is too short to draw.
+pub(super) struct ThumbGeom {
+    pub(super) x: f32,
+    pub(super) y: f32,
+    pub(super) w: f32,
+    pub(super) h: f32,
+}
+
+pub(super) fn scrollbar_thumb(
+    vertical: bool,
+    origin_x: f32,
+    origin_y: f32,
+    container_w: f32,
+    container_h: f32,
+    scroll: f32,
+    max_scroll: f32,
+    thickness: f32,
+    margin: f32,
+    min_length: f32,
+) -> Option<ThumbGeom> {
+    if max_scroll <= 0.0 {
+        return None;
+    }
+    let (track, extent) = if vertical {
+        (container_h - 2.0 * margin, container_h)
+    } else {
+        (container_w - 2.0 * margin, container_w)
+    };
+    if track <= 0.0 || extent <= 0.0 {
+        return None;
+    }
+    let content = max_scroll + extent;
+    let ratio = (extent / content).clamp(0.0, 1.0);
+    let length = (track * ratio).max(min_length).min(track);
+    if length <= 0.0 {
+        return None;
+    }
+    let offset = (scroll / max_scroll) * (track - length);
+    let (x, y, w, h) = if vertical {
+        (
+            origin_x + container_w - margin - thickness,
+            origin_y + margin + offset,
+            thickness,
+            length,
+        )
+    } else {
+        (
+            origin_x + margin + offset,
+            origin_y + container_h - margin - thickness,
+            length,
+            thickness,
+        )
+    };
+    Some(ThumbGeom { x, y, w, h })
+}
+
 pub struct Shell {
     nodes: Vec<Option<Node>>,
     retired: HashSet<u32>,
@@ -171,6 +240,9 @@ pub struct Shell {
     var_events: Vec<VarEvent>,
     pending_settle: std::collections::HashSet<u32>,
     pub(crate) now_ms: f64,
+    /// Scroll container handle → `now_ms` of the last offset change.
+    last_scroll_time: HashMap<u32, f64>,
+    scrollbar_drag: Option<ScrollbarDrag>,
     state_styles: StyleDecls,
     visual: VisualPress,
     field_pointer: Option<field_gesture::FieldPointerState>,
@@ -392,6 +464,8 @@ impl Shell {
             var_events: Vec::new(),
             pending_settle: std::collections::HashSet::new(),
             now_ms: 0.0,
+            last_scroll_time: HashMap::new(),
+            scrollbar_drag: None,
             state_styles: StyleDecls::new(),
             visual: VisualPress::default(),
             field_pointer: None,

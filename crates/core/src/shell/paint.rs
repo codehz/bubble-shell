@@ -653,6 +653,18 @@ impl Shell {
             });
             out.push(PaintCmd::PopLayer);
         }
+        self.paint_scrollbars(
+            id,
+            x,
+            y,
+            w,
+            h,
+            scroll_left,
+            scroll_top,
+            scrolls_x,
+            scrolls_y,
+            out,
+        );
         if clip.is_some() {
             out.push(PaintCmd::PopClip);
         }
@@ -705,6 +717,109 @@ impl Shell {
         }
         if opacity < 1.0 {
             out.push(PaintCmd::PopOpacity);
+        }
+    }
+
+    fn paint_scrollbars(
+        &self,
+        id: u32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        scroll_left: f32,
+        scroll_top: f32,
+        scrolls_x: bool,
+        scrolls_y: bool,
+        out: &mut Vec<PaintCmd>,
+    ) {
+        if !scrolls_x && !scrolls_y {
+            return;
+        }
+        let count = self.node(id).expect("scrollbar parent").children.len();
+        let max_x = if scrolls_x {
+            self.max_scroll_x(self.node(id).expect("scrollbar parent"))
+        } else {
+            0.0
+        };
+        let max_y = if scrolls_y {
+            self.max_scroll_y(self.node(id).expect("scrollbar parent"))
+        } else {
+            0.0
+        };
+        for index in 0..count {
+            let child = self.node(id).expect("scrollbar parent").children[index];
+            let props = {
+                let node = self.node(child).expect("scrollbar child");
+                if node.kind != Kind::ScrollBar {
+                    None
+                } else {
+                    Some((
+                        node.scrollbar_axis == 0,
+                        node.scrollbar_auto_hide,
+                        node.scrollbar_width,
+                        node.scrollbar_margin,
+                        node.scrollbar_min_length,
+                        node.scrollbar_color,
+                        node.scrollbar_opacity,
+                        node.scrollbar_radius,
+                    ))
+                }
+            };
+            let Some((
+                vertical,
+                auto_hide,
+                thickness,
+                margin,
+                min_length,
+                color,
+                opacity,
+                radius,
+            )) = props
+            else {
+                continue;
+            };
+            let scrollable = if vertical {
+                scrolls_y && max_y > 0.0
+            } else {
+                scrolls_x && max_x > 0.0
+            };
+            if !scrollable || !self.scrollbar_visible(auto_hide, id) {
+                continue;
+            }
+            let Some(thumb) = super::scrollbar_thumb(
+                vertical,
+                x,
+                y,
+                w,
+                h,
+                if vertical { scroll_top } else { scroll_left },
+                if vertical { max_y } else { max_x },
+                thickness,
+                margin,
+                min_length,
+            ) else {
+                continue;
+            };
+            let radius = if radius < 0.0 {
+                thickness / 2.0
+            } else {
+                radius
+            };
+            if opacity < 1.0 {
+                out.push(PaintCmd::PushOpacity { opacity });
+            }
+            out.push(PaintCmd::Fill {
+                x: thumb.x,
+                y: thumb.y,
+                w: thumb.w,
+                h: thumb.h,
+                radius,
+                color,
+            });
+            if opacity < 1.0 {
+                out.push(PaintCmd::PopOpacity);
+            }
         }
     }
 

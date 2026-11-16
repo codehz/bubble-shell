@@ -141,8 +141,16 @@ pub enum Prop {
     Selected,
     Expanded,
     FadeEdges,
+    ScrollbarAxis,
+    ScrollbarWidth,
+    ScrollbarMargin,
+    ScrollbarColor,
+    ScrollbarRadius,
+    ScrollbarOpacity,
+    ScrollbarMinLength,
+    ScrollbarInteractive,
+    ScrollbarAutoHide,
 }
-
 impl Prop {
     pub fn parse(key: &str) -> Option<Self> {
         Some(match key {
@@ -213,8 +221,28 @@ impl Prop {
             "selected" => Self::Selected,
             "expanded" => Self::Expanded,
             "fadeEdges" => Self::FadeEdges,
+            "axis" => Self::ScrollbarAxis,
+            "scrollbarWidth" => Self::ScrollbarWidth,
+            "scrollbarMargin" => Self::ScrollbarMargin,
+            "scrollbarColor" => Self::ScrollbarColor,
+            "scrollbarRadius" => Self::ScrollbarRadius,
+            "scrollbarOpacity" => Self::ScrollbarOpacity,
+            "scrollbarMinLength" => Self::ScrollbarMinLength,
+            "interactive" => Self::ScrollbarInteractive,
+            "autoHide" => Self::ScrollbarAutoHide,
             _ => return None,
         })
+    }
+}
+
+pub(crate) fn parse_scrollbar_axis(value: &Value) -> Result<u8, String> {
+    let Value::String(text) = value else {
+        return Err("axis must be a string".into());
+    };
+    match text.as_str() {
+        "vertical" => Ok(0),
+        "horizontal" => Ok(1),
+        _ => Err(format!("axis must be vertical or horizontal, got {text}")),
     }
 }
 

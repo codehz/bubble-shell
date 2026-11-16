@@ -52,6 +52,7 @@ const PRIMITIVES: &[&str] = &[
     "Text",
     "Image",
     "TextField",
+    "ScrollBar",
     "TapGesture",
     "DoubleTapGesture",
     "LongPressGesture",
@@ -541,7 +542,7 @@ impl<'a> Lower<'a> {
                             args.push(builder);
                         }
                         self.call(RT_PRIMITIVE, args, span)
-                    } else if other == "Image" || other == "TextField" {
+                    } else if other == "Image" || other == "TextField" || other == "ScrollBar" {
                         let (styles, rest) = self.split_style_children(children);
                         if has_children(&rest) {
                             self.error(
@@ -575,7 +576,7 @@ impl<'a> Lower<'a> {
                     self.error(
                         span,
                         format!(
-                            "unknown primitive <{other}>; use View, Text, TextField, Image, a gesture, or a capitalized component"
+                            "unknown primitive <{other}>; use View, Text, TextField, Image, ScrollBar, a gesture, or a capitalized component"
                         ),
                     );
                     self.null(span)

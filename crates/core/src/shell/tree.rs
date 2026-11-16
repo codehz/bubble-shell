@@ -5,8 +5,8 @@ use crate::ir::{Kind, NodeDesc};
 use crate::ops::Value;
 use crate::props::{
     align_items, align_self, flex_direction, flex_wrap, image_fit, justify_content,
-    parse_display_none, parse_len, parse_overflow, parse_text_overflow, parse_visibility_hidden,
-    position, text_align, Prop,
+    parse_display_none, parse_len, parse_overflow, parse_scrollbar_axis, parse_text_overflow,
+    parse_visibility_hidden, position, text_align, Prop,
 };
 use crate::semantics::Role;
 use crate::state_style::{slot_allowed, slot_of, slot_type, DeclExpr, SlotType};
@@ -100,8 +100,16 @@ pub(super) struct Node {
     pub(super) y: f32,
     pub(super) w: f32,
     pub(super) h: f32,
+    pub(super) scrollbar_axis: u8,
+    pub(super) scrollbar_width: f32,
+    pub(super) scrollbar_margin: f32,
+    pub(super) scrollbar_color: Color,
+    pub(super) scrollbar_radius: f32,
+    pub(super) scrollbar_opacity: f32,
+    pub(super) scrollbar_min_length: f32,
+    pub(super) scrollbar_interactive: bool,
+    pub(super) scrollbar_auto_hide: bool,
 }
-
 impl Node {
     /// Single source of truth for a fresh node's defaults.
     pub(super) fn new_root(taffy_id: NodeId) -> Self {
@@ -177,6 +185,15 @@ impl Node {
             y: 0.0,
             w: 0.0,
             h: 0.0,
+            scrollbar_axis: 0,
+            scrollbar_width: 4.0,
+            scrollbar_margin: 2.0,
+            scrollbar_color: Color::new(1.0, 1.0, 1.0, 0.5),
+            scrollbar_radius: -1.0,
+            scrollbar_opacity: 0.5,
+            scrollbar_min_length: 20.0,
+            scrollbar_interactive: true,
+            scrollbar_auto_hide: true,
         }
     }
 
@@ -483,6 +500,27 @@ impl Shell {
             Prop::FadeEdges => {
                 self.node_mut(id)?.fade_edges = value.as_f32()?.max(0.0);
             }
+            Prop::ScrollbarAxis => {
+                self.node_mut(id)?.scrollbar_axis = parse_scrollbar_axis(value)?;
+            }
+            Prop::ScrollbarWidth => {
+                self.node_mut(id)?.scrollbar_width = value.as_f32()?.max(0.0);
+            }
+            Prop::ScrollbarMargin => {
+                self.node_mut(id)?.scrollbar_margin = value.as_f32()?.max(0.0);
+            }
+            Prop::ScrollbarColor => self.node_mut(id)?.scrollbar_color = value.as_color()?,
+            Prop::ScrollbarRadius => self.node_mut(id)?.scrollbar_radius = value.as_f32()?,
+            Prop::ScrollbarOpacity => {
+                self.node_mut(id)?.scrollbar_opacity = value.as_f32()?.clamp(0.0, 1.0);
+            }
+            Prop::ScrollbarMinLength => {
+                self.node_mut(id)?.scrollbar_min_length = value.as_f32()?.max(0.0);
+            }
+            Prop::ScrollbarInteractive => {
+                self.node_mut(id)?.scrollbar_interactive = value.as_bool()?;
+            }
+            Prop::ScrollbarAutoHide => self.node_mut(id)?.scrollbar_auto_hide = value.as_bool()?,
         }
         self.restyle(id)
     }
@@ -802,6 +840,13 @@ impl Shell {
         }
         if self.focused == handle {
             self.focused = 0;
+        }
+        self.last_scroll_time.remove(&handle);
+        if self
+            .scrollbar_drag
+            .is_some_and(|drag| drag.scrollbar == handle || drag.container == handle)
+        {
+            self.scrollbar_drag = None;
         }
         self.retired.insert(handle);
         Ok(())

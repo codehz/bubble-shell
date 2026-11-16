@@ -441,6 +441,12 @@ export function textField(props, buildStyles) {
   return handle;
 }
 
+export function scrollBar(props, buildStyles) {
+  const handle = pack(5, props, "");
+  buildLeafStyles(handle, buildStyles);
+  return handle;
+}
+
 export function setEditingValue(handle, epoch, value, start, end, cancel) {
   if (api.set_editing_value(handle, epoch, String(value ?? ""), start ?? 0, end ?? 0, cancel ? 1 : 0) !== 0) {
     throw new Error(api.error() || "set_editing_value failed");
@@ -669,6 +675,7 @@ registerPrimitive("View", view);
 registerPrimitive("Text", text);
 registerPrimitive("Image", image);
 registerPrimitive("TextField", textField);
+registerPrimitive("ScrollBar", scrollBar);
 registerPrimitive("TapGesture", tapGesture);
 registerPrimitive("DoubleTapGesture", doubleTapGesture);
 registerPrimitive("LongPressGesture", longPressGesture);

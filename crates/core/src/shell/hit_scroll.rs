@@ -112,11 +112,18 @@ impl Shell {
         mut input: PointerInput,
         host: Option<&mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>>,
     ) {
+        let previous = self.now_ms;
         self.now_ms = input.time_ms;
+        if self.scrollbar_visibility_changed(previous, self.now_ms) {
+            self.paint_dirty.set(true);
+        }
         if input.action == PointerAction::Down {
             input.path.clear();
             self.hit_path(1, input.x, input.y, &mut input.path);
             self.last_pointer_kind = input.pointer_kind;
+        }
+        if self.claim_scrollbar(&input) {
+            return;
         }
         let field_claimed = if self.field_owns(input.id) && input.action != PointerAction::Down {
             match host {
@@ -176,11 +183,14 @@ impl Shell {
         }
     }
 
-    /// UI-thread timer tick for long press and the double-tap window.
     pub fn advance_gestures(&mut self, now_ms: f64) {
+        let previous = self.now_ms;
         self.recognizer.advance(now_ms);
         self.advance_field_pointer(now_ms);
         self.advance_animations(now_ms);
+        if self.scrollbar_visibility_changed(previous, self.now_ms) {
+            self.paint_dirty.set(true);
+        }
         let mut changed = false;
         if self.visual.gesture
             && self.visual.target != 0
@@ -200,6 +210,7 @@ impl Shell {
     /// script thread; nothing here calls JS.
     /// Host pause/focus loss: drop touches, timers, reserves, and ownership.
     pub fn cancel_gestures(&mut self, reason: u8) -> Vec<GestureEvent> {
+        self.scrollbar_drag = None;
         self.cancel_field_pointer();
         self.recognizer.cancel(reason);
         self.flush_gesture_scroll();
@@ -407,6 +418,27 @@ impl Shell {
         ));
         let (nx, ny, nw, nh) = (node.x, node.y, node.w, node.h);
         let count = node.children.len();
+        let scrolls_x = node.scrolls_x();
+        let scrolls_y = node.scrolls_y();
+        let scroll_left = node.scroll_left;
+        let scroll_top = node.scroll_top;
+        if (scrolls_x || scrolls_y) && next.contains(x, y) && self.hit_scrollbar(
+            id,
+            x,
+            y,
+            nx,
+            ny,
+            nw,
+            nh,
+            scroll_left,
+            scroll_top,
+            scrolls_x,
+            scrolls_y,
+            count,
+            out,
+        ) {
+            return true;
+        }
         if next.contains(x, y) {
             for index in (0..count).rev() {
                 let child = self.nodes[id as usize]
@@ -474,6 +506,7 @@ impl Shell {
             } else {
                 0.0
             };
+            let mut moved = false;
             if scroll_x && outcome.remaining_x != 0.0 {
                 let node = self.node_mut(*id).expect("scroll node");
                 let before = node.scroll_left;
@@ -482,6 +515,9 @@ impl Shell {
                 let consumed = next - before;
                 outcome.consumed_x += consumed;
                 outcome.remaining_x -= consumed;
+                if consumed != 0.0 {
+                    moved = true;
+                }
             }
             if scroll_y && outcome.remaining_y != 0.0 {
                 let node = self.node_mut(*id).expect("scroll node");
@@ -491,6 +527,12 @@ impl Shell {
                 let consumed = next - before;
                 outcome.consumed_y += consumed;
                 outcome.remaining_y -= consumed;
+                if consumed != 0.0 {
+                    moved = true;
+                }
+            }
+            if moved {
+                self.last_scroll_time.insert(*id, self.now_ms);
             }
             if chain_x && scroll_x {
                 outcome.truncated_x = true;
@@ -540,9 +582,18 @@ impl Shell {
         } else {
             0.0
         };
-        let node = self.node_mut(id)?;
-        node.scroll_left = x.clamp(0.0, limit_x);
-        node.scroll_top = y.clamp(0.0, limit_y);
+        let changed = {
+            let node = self.node_mut(id)?;
+            let next_x = x.clamp(0.0, limit_x);
+            let next_y = y.clamp(0.0, limit_y);
+            let changed = node.scroll_left != next_x || node.scroll_top != next_y;
+            node.scroll_left = next_x;
+            node.scroll_top = next_y;
+            changed
+        };
+        if changed {
+            self.last_scroll_time.insert(id, self.now_ms);
+        }
         self.sample_sources();
         self.paint_dirty.set(true);
         Ok(())
@@ -579,5 +630,228 @@ impl Shell {
             (layout.size.width - layout.padding.left - layout.padding.right).max(0.0),
             (layout.size.height - layout.padding.top - layout.padding.bottom).max(0.0),
         )
+    }
+
+    pub(super) fn scrollbar_visible(&self, auto_hide: bool, container: u32) -> bool {
+        if !auto_hide {
+            return true;
+        }
+        let last = self.last_scroll_time.get(&container).copied().unwrap_or(0.0);
+        self.now_ms - last < 1000.0
+    }
+
+    fn scrollbar_visibility_changed(&self, previous: f64, now: f64) -> bool {
+        if previous == now {
+            return false;
+        }
+        self.nodes.iter().flatten().any(|node| {
+            if node.kind != Kind::ScrollBar || !node.scrollbar_auto_hide {
+                return false;
+            }
+            let last = self
+                .last_scroll_time
+                .get(&node.parent)
+                .copied()
+                .unwrap_or(0.0);
+            (previous - last < 1000.0) != (now - last < 1000.0)
+        })
+    }
+
+    fn claim_scrollbar(&mut self, input: &PointerInput) -> bool {
+        if let Some(drag) = self.scrollbar_drag {
+            if drag.pointer != input.id {
+                return false;
+            }
+            match input.action {
+                PointerAction::Move => {
+                    self.apply_scrollbar_drag(drag, input.x, input.y);
+                    true
+                }
+                PointerAction::Up | PointerAction::Cancel => {
+                    self.scrollbar_drag = None;
+                    true
+                }
+                PointerAction::Down => true,
+            }
+        } else if input.action == PointerAction::Down {
+            self.begin_scrollbar_drag(input)
+        } else {
+            false
+        }
+    }
+
+    fn begin_scrollbar_drag(&mut self, input: &PointerInput) -> bool {
+        let Some(&handle) = input.path.first() else {
+            return false;
+        };
+        let Ok(bar) = self.node(handle) else {
+            return false;
+        };
+        if bar.kind != Kind::ScrollBar || !bar.scrollbar_interactive {
+            return false;
+        }
+        let container = bar.parent;
+        let axis = bar.scrollbar_axis;
+        let margin = bar.scrollbar_margin;
+        let vertical = axis == 0;
+        let (extent, start_scroll, scrolls) = {
+            let Ok(parent) = self.node(container) else {
+                return false;
+            };
+            if vertical {
+                (parent.h, parent.scroll_top, parent.scrolls_y())
+            } else {
+                (parent.w, parent.scroll_left, parent.scrolls_x())
+            }
+        };
+        if !scrolls {
+            return false;
+        }
+        let max_scroll = match self.node(container) {
+            Ok(node) if vertical => self.max_scroll_y(node),
+            Ok(node) => self.max_scroll_x(node),
+            Err(_) => return false,
+        };
+        let track = extent - 2.0 * margin;
+        if track <= 0.0 || max_scroll <= 0.0 {
+            return false;
+        }
+        self.scrollbar_drag = Some(super::ScrollbarDrag {
+            pointer: input.id,
+            scrollbar: handle,
+            container,
+            axis,
+            start_pointer: if vertical { input.y } else { input.x },
+            start_scroll,
+            track_length: track,
+            max_scroll,
+        });
+        self.last_scroll_time.insert(container, self.now_ms);
+        self.paint_dirty.set(true);
+        true
+    }
+
+    fn apply_scrollbar_drag(&mut self, drag: super::ScrollbarDrag, x: f32, y: f32) {
+        let Ok(container) = self.node(drag.container) else {
+            self.scrollbar_drag = None;
+            return;
+        };
+        let extent = if drag.axis == 0 {
+            container.h
+        } else {
+            container.w
+        };
+        let scroll_left = container.scroll_left;
+        let scroll_top = container.scroll_top;
+        let min_length = self
+            .node(drag.scrollbar)
+            .map(|node| node.scrollbar_min_length)
+            .unwrap_or(0.0);
+        let content = drag.max_scroll + extent;
+        let ratio = if content > 0.0 {
+            (extent / content).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let thumb = (drag.track_length * ratio)
+            .max(min_length)
+            .min(drag.track_length.max(0.0));
+        let scrollable = drag.track_length - thumb;
+        let pointer = if drag.axis == 0 { y } else { x };
+        let delta = pointer - drag.start_pointer;
+        let scroll_delta = if scrollable > 0.0 {
+            delta * drag.max_scroll / scrollable
+        } else {
+            0.0
+        };
+        let new_scroll = (drag.start_scroll + scroll_delta).clamp(0.0, drag.max_scroll);
+        self.last_scroll_time.insert(drag.container, self.now_ms);
+        if drag.axis == 0 {
+            let _ = self.scroll_to(drag.container, scroll_left, new_scroll);
+        } else {
+            let _ = self.scroll_to(drag.container, new_scroll, scroll_top);
+        }
+    }
+
+    fn hit_scrollbar(
+        &self,
+        id: u32,
+        x: f32,
+        y: f32,
+        origin_x: f32,
+        origin_y: f32,
+        width: f32,
+        height: f32,
+        scroll_left: f32,
+        scroll_top: f32,
+        scrolls_x: bool,
+        scrolls_y: bool,
+        count: usize,
+        out: &mut Vec<u32>,
+    ) -> bool {
+        let max_x = if scrolls_x {
+            self.max_scroll_x(self.node(id).expect("scrollbar parent"))
+        } else {
+            0.0
+        };
+        let max_y = if scrolls_y {
+            self.max_scroll_y(self.node(id).expect("scrollbar parent"))
+        } else {
+            0.0
+        };
+        for index in (0..count).rev() {
+            let child_handle = self.nodes[id as usize]
+                .as_ref()
+                .expect("hit child")
+                .children[index];
+            let props = {
+                let Some(child) = self
+                    .nodes
+                    .get(child_handle as usize)
+                    .and_then(Option::as_ref)
+                else {
+                    continue;
+                };
+                if child.kind != Kind::ScrollBar || !child.scrollbar_interactive {
+                    continue;
+                }
+                (
+                    child.scrollbar_axis == 0,
+                    child.scrollbar_auto_hide,
+                    child.scrollbar_width,
+                    child.scrollbar_margin,
+                    child.scrollbar_min_length,
+                )
+            };
+            let (vertical, auto_hide, thickness, margin, min_length) = props;
+            let scrollable = if vertical {
+                scrolls_y && max_y > 0.0
+            } else {
+                scrolls_x && max_x > 0.0
+            };
+            if !scrollable || !self.scrollbar_visible(auto_hide, id) {
+                continue;
+            }
+            let Some(thumb) = super::scrollbar_thumb(
+                vertical,
+                origin_x,
+                origin_y,
+                width,
+                height,
+                if vertical { scroll_top } else { scroll_left },
+                if vertical { max_y } else { max_x },
+                thickness,
+                margin,
+                min_length,
+            ) else {
+                continue;
+            };
+            if x >= thumb.x && x < thumb.x + thumb.w && y >= thumb.y && y < thumb.y + thumb.h {
+                out.push(child_handle);
+                out.push(id);
+                return true;
+            }
+        }
+        false
     }
 }

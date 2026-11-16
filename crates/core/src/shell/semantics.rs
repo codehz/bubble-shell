@@ -48,7 +48,7 @@ impl Shell {
         // A modal must not remain under an aria-hidden/background ancestor.
         let (parent, depth) = if id == modal { (0, 0) } else { (parent, depth) };
         let role = self.node_role(node);
-        let semantic = node.kind != Kind::View
+        let semantic = !matches!(node.kind, Kind::View | Kind::ScrollBar)
             || node.role.is_some()
             || !node.label.is_empty()
             || !node.test_id.is_empty()
@@ -142,7 +142,7 @@ impl Shell {
             Kind::Text => Role::Text,
             Kind::Field => Role::Textbox,
             Kind::Image => Role::Image,
-            Kind::View => Role::Generic,
+            Kind::View | Kind::ScrollBar => Role::Generic,
         })
     }
 
