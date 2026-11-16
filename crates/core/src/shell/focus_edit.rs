@@ -413,7 +413,16 @@ impl Shell {
         y: f32,
         host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
     ) -> Result<Option<u32>, String> {
-        let handle = self.focused;
+        self.unit_at_handle(self.focused, x, y, host)
+    }
+
+    pub(super) fn unit_at_handle(
+        &self,
+        handle: u32,
+        x: f32,
+        y: f32,
+        host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
+    ) -> Result<Option<u32>, String> {
         if handle == 0 {
             return Ok(None);
         }
@@ -449,7 +458,15 @@ impl Shell {
         unit: u32,
         host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
     ) -> Result<Option<(f32, f32, f32, f32)>, String> {
-        let handle = self.focused;
+        self.caret_rect_at_handle(self.focused, unit, host)
+    }
+
+    pub(super) fn caret_rect_at_handle(
+        &self,
+        handle: u32,
+        unit: u32,
+        host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
+    ) -> Result<Option<(f32, f32, f32, f32)>, String> {
         if handle == 0 {
             return Ok(None);
         }
@@ -672,6 +689,17 @@ impl Shell {
         self.apply_focused_session(|session| session.commit_text(text, new_cursor_position))
     }
 
+    pub(super) fn commit_text_handle(
+        &mut self,
+        handle: u32,
+        text: &str,
+        new_cursor_position: i32,
+    ) -> Result<(), String> {
+        self.apply_session(handle, |session| {
+            session.commit_text(text, new_cursor_position)
+        })
+    }
+
     pub fn compose_text(&mut self, text: &str, new_cursor_position: i32) -> Result<(), String> {
         self.apply_focused_session(|session| session.compose_text(text, new_cursor_position))
     }
@@ -725,6 +753,14 @@ impl Shell {
         if handle == 0 {
             return Err("no focused field".into());
         }
+        self.apply_session(handle, op)
+    }
+
+    fn apply_session(
+        &mut self,
+        handle: u32,
+        op: impl FnOnce(&mut EditSession) -> Result<EditOutcome, EditError>,
+    ) -> Result<(), String> {
         let (handler, config) = {
             let node = self.node(handle)?;
             if node.kind != Kind::Field {
@@ -773,7 +809,7 @@ impl Shell {
         self.edit_batch = None;
     }
 
-    fn edit_handle(&mut self, handle: u32, command: EditCommand) -> Result<(), String> {
+    pub(super) fn edit_handle(&mut self, handle: u32, command: EditCommand) -> Result<(), String> {
         let (handler, config) = {
             let node = self.node(handle)?;
             if node.kind != Kind::Field {

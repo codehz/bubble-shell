@@ -2,7 +2,7 @@
 //! pen wait for a long press so a drag can scroll. On touch and pen the
 //! selection handles and the caret handle claim the pointer immediately; a
 //! mouse press never drags them — it re-creates the selection, or long-presses
-//! the selection body to move its content.
+//! the selection body to move its content, including into another field.
 
 use crate::editing::{display_text, utf16_len, EditCommand};
 use crate::gesture::{PointerAction, PointerInput, LONG_PRESS_DIST, LONG_PRESS_MS};
@@ -38,6 +38,7 @@ pub(super) enum FieldPointerMode {
         fixed_start: u32,
     },
     DraggingContent {
+        source_field: u32,
         original_start: u32,
         original_end: u32,
     },
@@ -204,15 +205,17 @@ impl Shell {
         let (x, y) = (state.start_x, state.start_y);
         let content = state.content_drag;
         if let Some((start, end)) = content {
+            let source_field = self.focused;
             if let Some(state) = self.field_pointer.as_mut() {
                 state.mode = FieldPointerMode::DraggingContent {
+                    source_field,
                     original_start: start,
                     original_end: end,
                 };
                 state.drop_unit = None;
                 state.drop_valid = false;
             }
-            self.arm_drag_ghost(start, end, host);
+            self.arm_drag_ghost(source_field, start, end, host);
             return;
         }
         let claimed = self.focus_point_with(x, y, host).unwrap_or(0);
@@ -236,13 +239,14 @@ impl Shell {
             .as_ref()
             .and_then(|state| match state.mode {
                 FieldPointerMode::DraggingContent {
+                    source_field,
                     original_start,
                     original_end,
-                } => Some((original_start, original_end)),
+                } => Some((source_field, original_start, original_end)),
                 _ => None,
             });
-        if let Some((start, end)) = content {
-            let _ = self.edit(EditCommand::SetSelection { start, end });
+        if let Some((source_field, start, end)) = content {
+            let _ = self.edit_handle(source_field, EditCommand::SetSelection { start, end });
             if self.edit_batch_active() {
                 self.abort_edit_batch();
             }
@@ -312,19 +316,19 @@ impl Shell {
             }
             FieldPointerMode::SelectingText { anchor } => {
                 self.note_field_point(input);
-                if let Some(unit) = self.field_unit(input.x, input.y, host) {
+                if let Some(unit) = self.field_unit(self.focused, input.x, input.y, host) {
                     self.select_field(anchor, unit);
                 }
             }
             FieldPointerMode::DraggingCursor => {
                 self.note_field_point(input);
-                if let Some(unit) = self.field_unit(input.x, input.y, host) {
+                if let Some(unit) = self.field_unit(self.focused, input.x, input.y, host) {
                     self.select_field(unit, unit);
                 }
             }
             FieldPointerMode::DraggingSelectionStart { fixed_end } => {
                 self.note_field_point(input);
-                let Some(unit) = self.field_unit(input.x, input.y, host) else {
+                let Some(unit) = self.field_unit(self.focused, input.x, input.y, host) else {
                     return;
                 };
                 if unit > fixed_end {
@@ -338,7 +342,7 @@ impl Shell {
             }
             FieldPointerMode::DraggingSelectionEnd { fixed_start } => {
                 self.note_field_point(input);
-                let Some(unit) = self.field_unit(input.x, input.y, host) else {
+                let Some(unit) = self.field_unit(self.focused, input.x, input.y, host) else {
                     return;
                 };
                 if unit < fixed_start {
@@ -351,6 +355,7 @@ impl Shell {
                 self.select_field(fixed_start, unit);
             }
             FieldPointerMode::DraggingContent {
+                source_field,
                 original_start,
                 original_end,
             } => {
@@ -358,13 +363,19 @@ impl Shell {
                 self.drag_ghost_pos = Some((input.x, input.y));
                 if self.drag_ghost_size == (0.0, 0.0) && !self.drag_ghost_text.is_empty() {
                     if let Some(measure_host) = host.as_mut() {
-                        self.drag_ghost_size = self.measure_drag_ghost(&mut **measure_host);
+                        self.drag_ghost_size =
+                            self.measure_drag_ghost(source_field, &mut **measure_host);
                     }
                 }
-                let unit = host
-                    .as_mut()
-                    .and_then(|hit_host| self.field_unit(input.x, input.y, Some(&mut **hit_host)));
-                let valid = unit.is_some_and(|at| !(at >= original_start && at <= original_end));
+                let target = self.field_at(input.x, input.y);
+                let unit = host.as_mut().and_then(|hit_host| {
+                    self.field_unit(target, input.x, input.y, Some(&mut **hit_host))
+                });
+                let inside_source = target == source_field
+                    && unit.is_some_and(|at| at >= original_start && at <= original_end);
+                let blocked =
+                    target != 0 && target != source_field && !self.field_accepts_drop(target);
+                let valid = unit.is_some() && target != 0 && !inside_source && !blocked;
                 let previous = self
                     .field_pointer
                     .as_ref()
@@ -376,7 +387,7 @@ impl Shell {
                 if previous != Some((unit, valid)) {
                     self.drop_caret_box = match (unit.filter(|_| valid), host) {
                         (Some(unit), Some(caret_host)) => self
-                            .caret_rect_at_with(unit, caret_host)
+                            .caret_rect_at_handle(target, unit, caret_host)
                             .ok()
                             .flatten()
                             .map(|(x, y, _, h)| (x, y, 2.0, h)),
@@ -402,10 +413,18 @@ impl Shell {
                 self.end_field_pointer();
             }
             FieldPointerMode::DraggingContent {
+                source_field,
                 original_start,
                 original_end,
             } => {
-                self.finish_content_drag(input.x, input.y, original_start, original_end, host);
+                self.finish_content_drag(
+                    input.x,
+                    input.y,
+                    source_field,
+                    original_start,
+                    original_end,
+                    host,
+                );
                 self.end_field_pointer();
             }
             _ => self.end_field_pointer(),
@@ -416,31 +435,81 @@ impl Shell {
         &mut self,
         x: f32,
         y: f32,
+        source_field: u32,
         original_start: u32,
         original_end: u32,
-        host: Option<LayoutHost<'_>>,
+        mut host: Option<LayoutHost<'_>>,
     ) {
-        let restore = EditCommand::SetSelection {
-            start: original_start,
-            end: original_end,
-        };
-        let Some(host) = host else {
-            let _ = self.edit(restore);
+        if self.edit_batch_active() {
+            self.abort_edit_batch();
+        }
+        let Some(host) = host.as_mut() else {
+            self.restore_content_selection(source_field, original_start, original_end);
             return;
         };
-        let Some(drop_unit) = self.unit_at_with(x, y, host).ok().flatten() else {
-            let _ = self.edit(restore);
+        let target = self.field_at(x, y);
+        if target == 0 {
+            self.restore_content_selection(source_field, original_start, original_end);
+            return;
+        }
+        if target == source_field {
+            self.finish_same_field_content_drag(
+                source_field,
+                original_start,
+                original_end,
+                x,
+                y,
+                &mut **host,
+            );
+            return;
+        }
+        self.finish_cross_field_content_drag(
+            source_field,
+            target,
+            original_start,
+            original_end,
+            x,
+            y,
+            &mut **host,
+        );
+    }
+
+    fn finish_same_field_content_drag(
+        &mut self,
+        source_field: u32,
+        original_start: u32,
+        original_end: u32,
+        x: f32,
+        y: f32,
+        host: LayoutHost<'_>,
+    ) {
+        let Some(drop_unit) = self.unit_at_handle(source_field, x, y, host).ok().flatten() else {
+            self.restore_content_selection(source_field, original_start, original_end);
             return;
         };
         if drop_unit >= original_start && drop_unit <= original_end {
-            let _ = self.edit(restore);
+            self.restore_content_selection(source_field, original_start, original_end);
             return;
         }
-        let text = match self.field(self.focused) {
+        let text = match self.field(source_field) {
             Ok((value, _)) => utf16_slice(&value, original_start, original_end),
             Err(_) => return,
         };
         if text.is_empty() {
+            return;
+        }
+        if self.focused != source_field && self.focus(source_field).is_err() {
+            self.restore_content_selection(source_field, original_start, original_end);
+            return;
+        }
+        if self
+            .edit(EditCommand::SetSelection {
+                start: original_start,
+                end: original_end,
+            })
+            .is_err()
+        {
+            self.restore_content_selection(source_field, original_start, original_end);
             return;
         }
         if self.begin_edit_batch().is_err() {
@@ -472,6 +541,85 @@ impl Shell {
         }
     }
 
+    fn finish_cross_field_content_drag(
+        &mut self,
+        source_field: u32,
+        target: u32,
+        original_start: u32,
+        original_end: u32,
+        x: f32,
+        y: f32,
+        host: LayoutHost<'_>,
+    ) {
+        let Some(drop_unit) = self.unit_at_handle(target, x, y, host).ok().flatten() else {
+            self.restore_content_selection(source_field, original_start, original_end);
+            return;
+        };
+        if !self.field_accepts_drop(target) {
+            self.restore_content_selection(source_field, original_start, original_end);
+            return;
+        }
+        let text = match self.field(source_field) {
+            Ok((value, _)) => utf16_slice(&value, original_start, original_end),
+            Err(_) => return,
+        };
+        if text.is_empty() {
+            return;
+        }
+        let multiline = self.node(target).is_ok_and(|node| node.multiline);
+        let drop_text = text_for_drop(&text, multiline);
+        let deleted = self
+            .edit_handle(
+                source_field,
+                EditCommand::SetSelection {
+                    start: original_start,
+                    end: original_end,
+                },
+            )
+            .is_ok()
+            && self.commit_text_handle(source_field, "", 1).is_ok();
+        if !deleted {
+            self.restore_content_selection(source_field, original_start, original_end);
+            return;
+        }
+        let inserted = self.focus(target).is_ok()
+            && self
+                .edit_handle(
+                    target,
+                    EditCommand::SetSelection {
+                        start: drop_unit,
+                        end: drop_unit,
+                    },
+                )
+                .is_ok()
+            && self.commit_text(&drop_text, 1).is_ok();
+        if !inserted {
+            self.restore_dragged_text(source_field, original_start, original_end, &text);
+        }
+    }
+
+    fn restore_content_selection(&mut self, source_field: u32, start: u32, end: u32) {
+        let _ = self.edit_handle(source_field, EditCommand::SetSelection { start, end });
+    }
+
+    fn restore_dragged_text(&mut self, source_field: u32, start: u32, end: u32, text: &str) {
+        let _ = self.edit_handle(
+            source_field,
+            EditCommand::SetSelection { start, end: start },
+        );
+        let _ = self.commit_text_handle(source_field, text, 1);
+        let _ = self.edit_handle(source_field, EditCommand::SetSelection { start, end });
+        if self.focused != source_field {
+            let _ = self.focus(source_field);
+        }
+    }
+
+    fn field_accepts_drop(&self, handle: u32) -> bool {
+        self.fields
+            .get(&handle)
+            .is_some_and(|session| !session.field_state().composing)
+    }
+
     fn end_field_pointer(&mut self) {
         self.clear_drag_visual();
         self.field_pointer = None;
@@ -490,28 +638,28 @@ impl Shell {
         }
     }
 
-    fn arm_drag_ghost(&mut self, start: u32, end: u32, host: LayoutHost<'_>) {
+    fn arm_drag_ghost(&mut self, handle: u32, start: u32, end: u32, host: LayoutHost<'_>) {
         let text = self
-            .field(self.focused)
+            .field(handle)
             .ok()
             .map(|(value, _)| utf16_slice(&value, start, end))
             .unwrap_or_default();
-        let secure = self.node(self.focused).is_ok_and(|node| node.secure);
+        let secure = self.node(handle).is_ok_and(|node| node.secure);
         self.drag_ghost_text = display_text(&text, secure);
         self.drag_ghost_pos = self
             .field_pointer
             .as_ref()
             .map(|state| (state.start_x, state.start_y));
-        self.drag_ghost_size = self.measure_drag_ghost(host);
+        self.drag_ghost_size = self.measure_drag_ghost(handle, host);
         self.drop_caret_box = None;
         self.paint_dirty.set(true);
     }
 
-    fn measure_drag_ghost(&mut self, host: LayoutHost<'_>) -> (f32, f32) {
+    fn measure_drag_ghost(&mut self, handle: u32, host: LayoutHost<'_>) -> (f32, f32) {
         if self.drag_ghost_text.is_empty() {
             return (0.0, 0.0);
         }
-        let Some(key) = self.ghost_layout_key() else {
+        let Some(key) = self.ghost_layout_key(handle) else {
             return (0.0, 0.0);
         };
         let req = LayoutRequest {
@@ -528,8 +676,8 @@ impl Shell {
         }
     }
 
-    fn ghost_layout_key(&self) -> Option<LayoutKey> {
-        let node = self.node(self.focused).ok()?;
+    fn ghost_layout_key(&self, handle: u32) -> Option<LayoutKey> {
+        let node = self.node(handle).ok()?;
         let font_size = node.font_size;
         let line_height = if node.line_height > 0.0 {
             node.line_height
@@ -565,13 +713,17 @@ impl Shell {
         }
     }
 
-    fn field_unit(&mut self, x: f32, y: f32, host: Option<LayoutHost<'_>>) -> Option<u32> {
+    fn field_unit(
+        &mut self,
+        target_handle: u32,
+        x: f32,
+        y: f32,
+        host: Option<LayoutHost<'_>>,
+    ) -> Option<u32> {
         let host = host?;
-        let handle = self.field_pointer.as_ref()?.field_handle;
-        if self.focused != handle {
-            return None;
-        }
-        self.unit_at_with(x, y, host).ok().flatten()
+        self.unit_at_handle(target_handle, x, y, host)
+            .ok()
+            .flatten()
     }
 
     fn select_field(&mut self, anchor: u32, active: u32) {
@@ -680,4 +832,14 @@ fn ghost_extent(snapshot: &LayoutSnapshot) -> (f32, f32) {
         max_y = max_y.max(run.y + run.h);
     }
     ((max_x - min_x).max(0.0), (max_y - min_y).max(0.0))
+}
+
+fn text_for_drop(text: &str, multiline: bool) -> String {
+    if multiline {
+        text.to_owned()
+    } else {
+        text.chars()
+            .map(|ch| if ch == '\n' || ch == '\r' { ' ' } else { ch })
+            .collect()
+    }
 }

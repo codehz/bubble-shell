@@ -1,8 +1,8 @@
 //! Consumer-visible gesture and scroll-negotiation behavior.
 
 use bubble_core::{
-    encode, encode_events, spawn_ops, GestureEvent, NodeDesc, Op, PointerAction, PointerInput,
-    Shell, Value,
+    encode, encode_events, spawn_ops, wrapping_layout, EditCommand, GestureEvent, Kind,
+    LayoutRequest, LayoutSnapshot, NodeDesc, Op, PointerAction, PointerInput, Shell, Value,
 };
 
 fn measure(
@@ -861,4 +861,241 @@ fn pan_second_finger_cancel_has_no_end_on_the_other_lift() {
         assert_eq!(slot_count(&again, 15, 6), 1);
         assert_eq!(slot_count(&again, 15, 8), 0);
     }
+}
+
+const CHAR_PX: f32 = 10.0;
+const LINE_PX: f32 = 24.0;
+
+fn char_measure(
+    text: &str,
+    _font: f32,
+    line_height: f32,
+    _weight: u16,
+    _max: Option<f32>,
+) -> (f32, f32) {
+    let height = if line_height > 0.0 {
+        line_height
+    } else {
+        LINE_PX
+    };
+    (text.chars().count() as f32 * CHAR_PX, height)
+}
+
+fn char_layout(req: &LayoutRequest<'_>) -> Result<LayoutSnapshot, String> {
+    Ok(wrapping_layout(req, |line| {
+        line.chars().count() as f32 * CHAR_PX
+    }))
+}
+
+fn set_prop(shell: &mut Shell, epoch: &mut u32, handle: u32, key: &str, value: Value) {
+    *epoch += 1;
+    shell
+        .apply_ops(&encode(
+            *epoch,
+            &[Op::SetProp {
+                handle,
+                key: key.into(),
+                value,
+            }],
+        ))
+        .unwrap();
+}
+
+fn place_field(shell: &mut Shell, epoch: &mut u32, text: &str, top: f32, height: f32) -> u32 {
+    let mut desc = NodeDesc::view(0, 1);
+    desc.kind = Kind::Field;
+    desc.text = text.into();
+    desc.width = Some(220.0);
+    desc.height = Some(height);
+    let handle = shell.next_handle();
+    desc.id = handle;
+    shell.spawn(desc).unwrap();
+    set_prop(
+        shell,
+        epoch,
+        handle,
+        "position",
+        Value::String("absolute".into()),
+    );
+    set_prop(shell, epoch, handle, "top", Value::Float(top as f64));
+    set_prop(shell, epoch, handle, "start", Value::Float(0.0));
+    set_prop(
+        shell,
+        epoch,
+        handle,
+        "lineHeight",
+        Value::Float(LINE_PX as f64),
+    );
+    handle
+}
+
+fn select_range(shell: &mut Shell, handle: u32, start: u32, end: u32) {
+    shell.focus(handle).unwrap();
+    shell
+        .edit(EditCommand::SetSelection { start, end })
+        .unwrap();
+    shell.layout(&mut char_measure).unwrap();
+}
+
+fn field_sample(action: PointerAction, x: f32, y: f32, time_ms: f64) -> PointerInput {
+    PointerInput {
+        action,
+        id: 1,
+        x,
+        y,
+        time_ms,
+        buttons: if action == PointerAction::Up { 0 } else { 1 },
+        pointer_kind: 0,
+        path: Vec::new(),
+    }
+}
+
+fn handle_margin(handles: [(f32, f32, f32, f32); 2], rect: (f32, f32, f32, f32), x: f32) -> bool {
+    for (hx, hy, _, _) in handles {
+        let caret_x = hx + 8.0;
+        let caret_bottom = hy + 4.0;
+        if caret_bottom >= rect.1
+            && caret_bottom <= rect.1 + rect.3
+            && x >= caret_x - 22.0
+            && x < caret_x + 22.0
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn selection_body_point(shell: &Shell) -> (f32, f32) {
+    let handles = shell.selection_handles().expect("touch selection handles");
+    for &(x, y, w, h) in shell.selection_rects() {
+        let mut sample = x + 0.5;
+        while sample < x + w {
+            if !handle_margin(handles, (x, y, w, h), sample) {
+                return (sample, y + h * 0.5);
+            }
+            sample += 1.0;
+        }
+    }
+    panic!("selection has no touch body");
+}
+
+fn drag_content(shell: &mut Shell, from: (f32, f32), to: (f32, f32)) {
+    let mut host = char_layout;
+    shell.pointer_with_layout(
+        field_sample(PointerAction::Down, from.0, from.1, 0.0),
+        Some(&mut host),
+    );
+    shell.advance_gestures(500.0);
+    shell.pointer_with_layout(
+        field_sample(PointerAction::Move, to.0, to.1, 520.0),
+        Some(&mut host),
+    );
+    shell.pointer_with_layout(
+        field_sample(PointerAction::Up, to.0, to.1, 540.0),
+        Some(&mut host),
+    );
+}
+
+fn two_fields(top_text: &str, bottom_text: &str) -> (Shell, u32, u32) {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(240.0, 200.0);
+    let mut epoch = 0;
+    let source = place_field(&mut shell, &mut epoch, top_text, 0.0, 40.0);
+    let target = place_field(&mut shell, &mut epoch, bottom_text, 50.0, 40.0);
+    (shell, source, target)
+}
+
+#[test]
+fn cross_field_drag_moves_selected_text() {
+    let (mut shell, source, target) = two_fields("hello world", "");
+    assert_eq!((source, target), (2, 3));
+    select_range(&mut shell, source, 6, 11);
+    let (sx, sy, _, sh) = shell.node_box(source).unwrap();
+    let (tx, ty, _, th) = shell.node_box(target).unwrap();
+    assert!(
+        (sy - 0.0).abs() < 0.01 && (sh - 40.0).abs() < 0.01,
+        "source box"
+    );
+    assert!(
+        (ty - 50.0).abs() < 0.01 && (th - 40.0).abs() < 0.01,
+        "target box"
+    );
+    assert!(shell
+        .selection_rects()
+        .iter()
+        .any(|(x, y, w, h)| { *x <= 60.0 && 60.0 < x + w && *y <= 20.0 && 20.0 < y + h }));
+    let from = selection_body_point(&shell);
+    assert!(from.0 >= sx && from.1 >= sy && from.1 < sy + sh);
+    drag_content(&mut shell, from, (60.0, 70.0));
+    assert!(tx <= 60.0 && 70.0 >= ty && 70.0 < ty + th);
+    assert_eq!(shell.field(source).unwrap().0, "hello ");
+    assert_eq!(shell.field(target).unwrap().0, "world");
+    assert_eq!(shell.focused(), target);
+    let state = shell.field(target).unwrap().1;
+    assert_eq!((state.sel_start(), state.sel_end()), (5, 5));
+}
+
+#[test]
+fn cross_field_same_field_drop_still_moves_text() {
+    let (mut shell, source, _target) = two_fields("hello world", "");
+    select_range(&mut shell, source, 6, 11);
+    let from = selection_body_point(&shell);
+    drag_content(&mut shell, from, (4.0, 12.0));
+    assert_eq!(shell.field(source).unwrap().0, "worldhello ");
+    assert_eq!(shell.focused(), source);
+}
+
+#[test]
+fn cross_field_drop_inside_the_selection_restores_it() {
+    let (mut shell, source, _target) = two_fields("hello world", "");
+    select_range(&mut shell, source, 6, 11);
+    let from = selection_body_point(&shell);
+    drag_content(&mut shell, from, (90.0, 12.0));
+    assert_eq!(shell.field(source).unwrap().0, "hello world");
+    let state = shell.field(source).unwrap().1;
+    assert_eq!((state.sel_start(), state.sel_end()), (6, 11));
+}
+
+#[test]
+fn cross_field_drag_replaces_newlines_on_a_single_line_target() {
+    let (mut shell, source, target) = two_fields("line1\nline2", "");
+    let mut epoch = 0;
+    set_prop(
+        &mut shell,
+        &mut epoch,
+        source,
+        "multiline",
+        Value::Bool(true),
+    );
+    select_range(&mut shell, source, 0, 11);
+    let from = selection_body_point(&shell);
+    drag_content(&mut shell, from, (60.0, 70.0));
+    assert_eq!(shell.field(source).unwrap().0, "");
+    assert_eq!(shell.field(target).unwrap().0, "line1 line2");
+    assert_eq!(shell.focused(), target);
+}
+
+#[test]
+fn cross_field_drag_truncates_to_max_length() {
+    let (mut shell, source, target) = two_fields("hello", "ab");
+    let mut epoch = 0;
+    set_prop(&mut shell, &mut epoch, target, "maxLength", Value::Int(5));
+    select_range(&mut shell, source, 0, 5);
+    let from = selection_body_point(&shell);
+    drag_content(&mut shell, from, (60.0, 70.0));
+    assert_eq!(shell.field(source).unwrap().0, "");
+    assert_eq!(shell.field(target).unwrap().0, "abhel");
+    assert_eq!(shell.focused(), target);
+}
+
+#[test]
+fn cross_field_drop_off_a_field_restores_the_selection() {
+    let (mut shell, source, _target) = two_fields("hello world", "");
+    select_range(&mut shell, source, 6, 11);
+    let from = selection_body_point(&shell);
+    drag_content(&mut shell, from, (60.0, 160.0));
+    assert_eq!(shell.field(source).unwrap().0, "hello world");
+    let state = shell.field(source).unwrap().1;
+    assert_eq!((state.sel_start(), state.sel_end()), (6, 11));
+    assert_eq!(shell.focused(), source);
 }
