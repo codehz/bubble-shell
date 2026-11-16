@@ -418,6 +418,13 @@ class BubbleView(context: Context) : View(context) {
     }
 
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        if (event.isCtrlPressed && keyCode == android.view.KeyEvent.KEYCODE_A) {
+            if (BubbleNative.key(handle, 13, SystemClock.uptimeMillis().toDouble()) > 0) {
+                afterKey()
+                return true
+            }
+            return super.onKeyDown(keyCode, event)
+        }
         val action = when (keyCode) {
             android.view.KeyEvent.KEYCODE_TAB -> if (event.isShiftPressed) 1 else 0
             android.view.KeyEvent.KEYCODE_ENTER,
@@ -425,10 +432,10 @@ class BubbleView(context: Context) : View(context) {
             -> 2
             android.view.KeyEvent.KEYCODE_SPACE -> 3
             android.view.KeyEvent.KEYCODE_ESCAPE -> 4
-            android.view.KeyEvent.KEYCODE_DPAD_LEFT -> 5
-            android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> 6
-            android.view.KeyEvent.KEYCODE_MOVE_HOME -> 7
-            android.view.KeyEvent.KEYCODE_MOVE_END -> 8
+            android.view.KeyEvent.KEYCODE_DPAD_LEFT -> if (event.isShiftPressed) 9 else 5
+            android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> if (event.isShiftPressed) 10 else 6
+            android.view.KeyEvent.KEYCODE_MOVE_HOME -> if (event.isShiftPressed) 11 else 7
+            android.view.KeyEvent.KEYCODE_MOVE_END -> if (event.isShiftPressed) 12 else 8
             else -> return super.onKeyDown(keyCode, event)
         }
         val handled = BubbleNative.key(handle, action, SystemClock.uptimeMillis().toDouble())

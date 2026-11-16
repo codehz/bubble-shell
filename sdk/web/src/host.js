@@ -182,13 +182,6 @@ function selectionHandleHit(x, y) {
   return null;
 }
 
-const KEY_ACTIONS = {
-  ArrowLeft: 5,
-  ArrowRight: 6,
-  Home: 7,
-  End: 8,
-};
-
 document.addEventListener(
   "keydown",
   (event) => {
@@ -207,13 +200,33 @@ document.addEventListener(
       }
     }
     let action;
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      if (exports.focused()) {
+        event.preventDefault();
+        if (moveCaretVertical(event.key === "ArrowDown", event.shiftKey)) {
+          if (exports.layout() === 0) paint();
+          placeCaret(exports.focused());
+        }
+      }
+      return;
+    }
     if (event.key === "Tab") action = event.shiftKey ? 1 : 0;
     else if (event.key === "Enter") action = 2;
     else if (event.key === " " || event.key === "Spacebar") action = 3;
     else if (event.key === "Escape") action = 4;
-    else action = KEY_ACTIONS[event.key];
+    else if (event.key === "ArrowLeft") action = event.shiftKey ? 9 : 5;
+    else if (event.key === "ArrowRight") action = event.shiftKey ? 10 : 6;
+    else if (event.key === "Home") action = event.shiftKey ? 11 : 7;
+    else if (event.key === "End") action = event.shiftKey ? 12 : 8;
+    else if ((event.ctrlKey || event.metaKey) && event.key === "a") action = 13;
     if (action === undefined) return;
-    if (event.target === ime && action !== 0 && action !== 1 && action !== 4) return;
+    if (event.target === ime) {
+      // Enter and Space stay with the IME beforeinput path; caret keys must
+      // never let the hidden textarea navigate on its own (it is 1px wide, so
+      // its native Home/End wrap every character).
+      if (action === 2 || action === 3) return;
+      if (action >= 5) event.preventDefault();
+    }
     const handled = exports.key(action, performance.now());
     if (handled < 0) return;
     if (exports.layout() === 0) paint();
@@ -839,6 +852,35 @@ function syncIme() {
   if (ime.value !== value) ime.value = value;
   ime.selectionStart = Math.min(snapshot.anchor, snapshot.active);
   ime.selectionEnd = Math.max(snapshot.anchor, snapshot.active);
+}
+
+/** Vertical caret/selection move: returns true when the shell state changed. */
+function moveCaretVertical(down, extend) {
+  const snapshot = editSnapshot();
+  if (!snapshot) return false;
+  const len = exports.caret_rect(snapshot.active);
+  if (len < 16) return false;
+  const view = new DataView(memory().buffer, exports.scratch_ptr(), 16);
+  const x = view.getFloat32(0, true);
+  const y = view.getFloat32(4, true);
+  const h = view.getFloat32(12, true);
+  // Aim at the middle of the target line: `hit` scores distance to caret
+  // bands, and y + h lands exactly on the next line's top edge, where the
+  // current line's carets tie and win by index order.
+  const targetY = down ? y + h * 1.5 : y - h * 0.5;
+  const unit = exports.unit_at(x, targetY);
+  if (unit === 4294967295) return false;
+  const targetLen = exports.caret_rect(unit);
+  if (targetLen < 16) return false;
+  const targetView = new DataView(memory().buffer, exports.scratch_ptr(), 16);
+  const landedY = targetView.getFloat32(4, true);
+  // `unit_at` snaps to the nearest caret; reject horizontal drift when the
+  // target line does not exist (top or bottom edge).
+  if (down ? landedY <= y + 0.5 : landedY >= y - 0.5) return false;
+  applyEditCommands([
+    { op: "select", anchor: extend ? snapshot.anchor : unit, active: unit },
+  ]);
+  return true;
 }
 
 function applyEditCommands(commands) {

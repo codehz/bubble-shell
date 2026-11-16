@@ -373,7 +373,8 @@ pub extern "C" fn has_back_handler() -> i32 {
 }
 
 /// UI-thread keyboard intent. Actions match the native ABI: 0 Tab,
-/// 1 Shift+Tab, 2 Enter, 3 Space, 4 Escape, 5 Left, 6 Right, 7 Home, 8 End.
+/// 1 Shift+Tab, 2 Enter, 3 Space, 4 Escape, 5 Left, 6 Right, 7 Home, 8 End,
+/// 9 Shift+Left, 10 Shift+Right, 11 Shift+Home, 12 Shift+End, 13 Select All.
 /// Returns 1 handled, 0 not, -1 error.
 #[no_mangle]
 pub extern "C" fn key(action: u32, time_ms: f64) -> i32 {
@@ -771,6 +772,23 @@ pub extern "C" fn caret_box() -> u32 {
     })
     .ok()
     .flatten() else {
+        return store_scratch(Vec::new());
+    };
+    let mut bytes = Vec::with_capacity(16);
+    for value in [x, y, w, h] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    store_scratch(bytes)
+}
+
+/// Caret rect for a UTF-16 offset in the focused field: x, y, width, height in
+/// scratch. Returns 16, or 0 when nothing is focused.
+#[no_mangle]
+pub extern "C" fn caret_rect(unit: u32) -> u32 {
+    drain_pending().ok();
+    let Some((x, y, w, h)) = with_shell(|shell| shell.caret_rect_at_with(unit, &mut wasm_layout))
+        .ok()
+        .flatten() else {
         return store_scratch(Vec::new());
     };
     let mut bytes = Vec::with_capacity(16);

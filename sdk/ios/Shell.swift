@@ -1059,6 +1059,7 @@ extension BubbleView: UITextInput {
         let commands = [
             UIKeyCommand(input: "z", modifierFlags: .command, action: #selector(undoEditing)),
             UIKeyCommand(input: "z", modifierFlags: [.command, .shift], action: #selector(redoEditing)),
+            UIKeyCommand(input: "a", modifierFlags: .command, action: #selector(selectAllEditing)),
         ]
         for command in commands { command.wantsPriorityOverSystemBehavior = true }
         return commands
@@ -1075,6 +1076,12 @@ extension BubbleView: UITextInput {
         changeText {
             guard let snapshot = editSnapshot() else { return }
             _ = bubble_edit_redo(shell, snapshot.session)
+        }
+    }
+
+    @objc func selectAllEditing() {
+        changeText {
+            _ = bubble_key(shell, 13, CACurrentMediaTime() * 1000)
         }
     }
 

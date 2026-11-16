@@ -182,10 +182,24 @@ impl Shell {
                     self.activate_focused(time_ms)
                 }
             }
-            Key::Left => self.move_caret(false, false),
-            Key::Right => self.move_caret(true, false),
-            Key::Home => self.move_caret(false, true),
-            Key::End => self.move_caret(true, true),
+            Key::Left => self.move_caret(false, false, false),
+            Key::Right => self.move_caret(true, false, false),
+            Key::Home => self.move_caret(false, true, false),
+            Key::End => self.move_caret(true, true, false),
+            Key::ShiftLeft => self.move_caret(false, false, true),
+            Key::ShiftRight => self.move_caret(true, false, true),
+            Key::ShiftHome => self.move_caret(false, true, true),
+            Key::ShiftEnd => self.move_caret(true, true, true),
+            Key::SelectAll => {
+                if self.focused == 0
+                    || !self
+                        .node(self.focused)
+                        .is_ok_and(|node| node.kind == Kind::Field)
+                {
+                    return false;
+                }
+                self.edit_menu(EditMenuAction::SelectAll, "").is_ok()
+            }
         }
     }
 
@@ -204,7 +218,7 @@ impl Shell {
         self.recognizer.activate(handle, cx, cy, time_ms)
     }
 
-    fn move_caret(&mut self, forward: bool, line: bool) -> bool {
+    fn move_caret(&mut self, forward: bool, line: bool, extend: bool) -> bool {
         let handle = self.focused;
         if handle == 0 || !self.node(handle).is_ok_and(|node| node.kind == Kind::Field) {
             return false;
@@ -212,6 +226,23 @@ impl Shell {
         let Ok((value, state)) = self.field(handle) else {
             return false;
         };
+        if extend {
+            let (anchor, active) = (state.anchor(), state.active());
+            let target = if line {
+                line_edge(&value, active, forward)
+            } else {
+                caret_step(&value, active, forward)
+            };
+            if target == active {
+                return false;
+            }
+            return self
+                .edit(EditCommand::SetSelection {
+                    start: anchor,
+                    end: target,
+                })
+                .is_ok();
+        }
         let (start, end) = (state.sel_start(), state.sel_end());
         let target = if line {
             line_edge(&value, state.active(), forward)

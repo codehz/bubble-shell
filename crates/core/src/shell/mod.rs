@@ -206,6 +206,11 @@ pub enum Key {
     Right,
     Home,
     End,
+    ShiftLeft,
+    ShiftRight,
+    ShiftHome,
+    ShiftEnd,
+    SelectAll,
 }
 
 impl Key {
@@ -220,6 +225,11 @@ impl Key {
             6 => Self::Right,
             7 => Self::Home,
             8 => Self::End,
+            9 => Self::ShiftLeft,
+            10 => Self::ShiftRight,
+            11 => Self::ShiftHome,
+            12 => Self::ShiftEnd,
+            13 => Self::SelectAll,
             _ => return None,
         })
     }
