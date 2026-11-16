@@ -78,16 +78,16 @@ export function AnimatedDemo() {
   const slide = createSharedValue(0);
   const glide = createSharedValue(0);
   // Animations start on the UI thread: a JS tap schedules a worklet whose
-  // assignment of withTiming/withSpring drives the value without any JS
-  // running per frame.
+  // assignment of withTiming/withSpring drives the value. The destination is
+  // a worklet parameter — scheduleOnUI's extra args must match that arity.
   const springTo = (target) => {
-    scheduleOnUI(() => {
+    scheduleOnUI((target) => {
       "worklet";
       slide.value = withSpring(target, { stiffness: 200, damping: 18 });
     }, target);
   };
   const tweenTo = (target) => {
-    scheduleOnUI(() => {
+    scheduleOnUI((target) => {
       "worklet";
       glide.value = withTiming(target, { duration: 400, easing: "easeInOut" });
     }, target);
