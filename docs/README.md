@@ -2,6 +2,8 @@
 
 可嵌入 web / Android / iOS 宿主的自绘 UI 运行时：远程下发签名内容包，提供带交互的动态界面，不依赖 Web 渲染。
 
+构建与开发命令见根目录 [README.md](../README.md)。
+
 ## 文档结构
 
 ### 参考文档 (reference/)
