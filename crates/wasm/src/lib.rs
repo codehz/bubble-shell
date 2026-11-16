@@ -279,15 +279,18 @@ pub extern "C" fn pointer(
     let _flush = FlushEvents;
     abi_ok!(drain_pending().and_then(|()| {
         with_shell(|shell| {
-            shell.pointer(PointerInput::from_abi(
-                action,
-                id,
-                x,
-                y,
-                time_ms,
-                pointer_kind,
-                buttons,
-            ));
+            shell.pointer_with_layout(
+                PointerInput::from_abi(
+                    action,
+                    id,
+                    x,
+                    y,
+                    time_ms,
+                    pointer_kind,
+                    buttons,
+                ),
+                Some(&mut wasm_layout),
+            );
             collect_events(shell);
             Ok(0)
         })
@@ -1444,6 +1447,7 @@ pub extern "C" fn layout() -> i32 {
                 },
             )?;
             shell.refresh_caret(&mut wasm_layout)?;
+            collect_events(shell);
             Ok(0)
         })
     }), 1)

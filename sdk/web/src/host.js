@@ -1,5 +1,5 @@
 import { scrollActionForKey } from "./a11y.js";
-import { commandsForDom, dragSelection } from "./ime.js";
+import { commandsForDom } from "./ime.js";
 import { dispatchEditEvents, dispatchGestureEvents, dispatchUiCalls, dispatchVarEvents, setApi } from "bubble-shell";
 import { layoutSnapshot, wrapLines } from "./textlayout.js";
 
@@ -180,6 +180,18 @@ function selectionHandleHit(x, y) {
     if (Math.hypot(x - cx, y - cy) <= 16) return index;
   }
   return null;
+}
+
+function fieldPointerTarget(x, y) {
+  if (exports.field_at(x, y) !== 0 || selectionHandleHit(x, y) !== null) return true;
+  if (exports.selection_handles() === 32) return false;
+  const len = exports.caret_box();
+  if (len < 16) return false;
+  const view = new DataView(memory().buffer, exports.scratch_ptr(), 16);
+  const cx = view.getFloat32(0, true);
+  const cy = view.getFloat32(4, true);
+  const ch = view.getFloat32(12, true);
+  return x >= cx - 22 && x < cx + 22 && y >= cy && y < cy + ch;
 }
 
 document.addEventListener(
@@ -702,8 +714,14 @@ function pointerKind(event) {
 }
 
 function gestureFrame() {
+  const before = fieldGesture ? exports.focused() : 0;
   exports.tick(performance.now());
   if (exports.layout() === 0) paint();
+  const focused = exports.focused();
+  if (fieldGesture && focused && focused !== before) {
+    imePlacedFor = 0;
+    placeFieldIme();
+  }
   if (activePointers.size > 0 || exports.pending() !== 0) {
     requestAnimationFrame(gestureFrame);
   } else {
@@ -731,22 +749,20 @@ function sendPointer(action, event) {
   if (exports.layout() === 0) paint();
 }
 
-let selectDrag = null;
-
-// Editing paths own their pointer samples, so they deliver pressed feedback
-// through the visual entry point only. One physical sample never reaches both.
-function sendVisual(action, event) {
-  const [x, y] = point(event);
-  exports.visual_pointer(
-    action,
-    event.pointerId,
-    x,
-    y,
-    performance.now(),
-    pointerKind(event),
-    event.buttons,
-  );
-  if (exports.layout() === 0) paint();
+let fieldGesture = false;
+let imePlacedFor = 0;
+let focusAtDown = 0;
+let fieldDown = null;
+let fieldMoved = false;
+function placeFieldIme() {
+  const handle = exports.focused();
+  if (!handle) {
+    imePlacedFor = 0;
+    return;
+  }
+  if (handle === imePlacedFor) return;
+  imePlacedFor = handle;
+  placeCaret(handle);
 }
 
 canvas.addEventListener("pointerdown", (event) => {
@@ -757,56 +773,34 @@ canvas.addEventListener("pointerdown", (event) => {
   editMenu.style.display = "none";
   activePointers.add(event.pointerId);
   const [x, y] = point(event);
-  if (event.button === 0 && exports.focused() && selectionHandleHit(x, y) !== null) {
-    const which = selectionHandleHit(x, y);
-    const len = exports.selection();
-    const view = new DataView(memory().buffer, exports.scratch_ptr(), len);
-    const start = view.getUint32(0, true);
-    const end = view.getUint32(4, true);
-    selectDrag = { id: event.pointerId, anchor: which === 0 ? end : start };
-    sendVisual(0, event);
-    return;
-  }
-  if (event.button === 0 && exports.field_at(x, y)) {
-    const handle = exports.focus_at(x, y);
-    let anchor = 0;
-    if (exports.selection() >= 16) {
-      const view = new DataView(memory().buffer, exports.scratch_ptr(), 16);
-      anchor = view.getUint32(0, true);
-    }
-    selectDrag = { id: event.pointerId, anchor };
-    if (handle) placeCaret(handle);
-    sendVisual(0, event);
-    return;
-  }
-  selectDrag = null;
+  focusAtDown = exports.focused();
+  fieldDown = { x, y };
+  fieldMoved = false;
+  const onField = fieldPointerTarget(x, y);
   canvas.focus({ preventScroll: true });
   sendPointer(0, event);
+  fieldGesture = onField;
+  if (onField && exports.focused() && (exports.focused() !== focusAtDown || event.pointerType === "mouse")) {
+    imePlacedFor = 0;
+    placeFieldIme();
+  }
   startTicking();
 });
 
 canvas.addEventListener("pointermove", (event) => {
-  if (selectDrag && selectDrag.id === event.pointerId) {
-    sendVisual(1, event);
-    const [x, y] = point(event);
-    const unit = exports.unit_at(x, y);
-    const command = dragSelection(selectDrag.anchor, unit === 4294967295 ? -1 : unit);
-    if (command) applyEditCommands([command]);
-    return;
-  }
   if (!activePointers.has(event.pointerId)) return;
+  if (fieldGesture && fieldDown) {
+    const [x, y] = point(event);
+    if (Math.hypot(x - fieldDown.x, y - fieldDown.y) > 10) fieldMoved = true;
+  }
   sendPointer(1, event);
 });
 
 function releasePointer(action, event) {
-  if (selectDrag && selectDrag.id === event.pointerId) {
-    sendVisual(action, event);
-    activePointers.delete(event.pointerId);
-    return;
-  }
   if (!activePointers.has(event.pointerId)) return;
   sendPointer(action, event);
   activePointers.delete(event.pointerId);
+  if (action === 3) fieldGesture = false;
 }
 
 canvas.addEventListener("pointerup", (event) => {
@@ -966,17 +960,13 @@ function placeCaret(handle) {
 }
 
 canvas.addEventListener("pointerup", (event) => {
-  if (event.button !== 0) return;
-  if (selectDrag && selectDrag.id === event.pointerId) {
-    selectDrag = null;
-    const handle = exports.focused();
-    if (handle) placeCaret(handle);
-    return;
+  if (event.button !== 0 || !fieldGesture) return;
+  fieldGesture = false;
+  const handle = exports.focused();
+  if (handle && (handle !== focusAtDown || !fieldMoved)) {
+    imePlacedFor = 0;
+    placeCaret(handle);
   }
-  const [x, y] = point(event);
-  const handle = exports.focus_at(x, y);
-  if (!handle) return;
-  placeCaret(handle);
 });
 
 const editMenu = document.createElement("div");
@@ -1053,7 +1043,7 @@ function cancelPointers() {
     exports.pointer(3, id, 0, 0, performance.now(), 0, 0);
   }
   activePointers.clear();
-  selectDrag = null;
+  fieldGesture = false;
   if (exports.layout() === 0) paint();
 }
 

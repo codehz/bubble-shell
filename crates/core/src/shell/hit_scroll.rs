@@ -1,6 +1,6 @@
-use crate::ir::Kind;
-
 use crate::gesture::{GestureEvent, PointerAction, PointerInput, TAP_SLOP};
+use crate::ir::Kind;
+use crate::layout::{LayoutRequest, LayoutSnapshot};
 
 use super::paint::{axis_bounds, Bounds};
 use super::tree::Node;
@@ -95,11 +95,54 @@ impl Shell {
     /// Feed one normalized pointer sample. `Down` fixes the real hit path;
     /// move/up/cancel reuse it. Scroll deltas produced by the recognizer are
     /// applied to the frozen chain immediately, before the host reads paint.
-    pub fn pointer(&mut self, mut input: PointerInput) {
+    ///
+    /// Field hits are not recognized here. Call [`Self::pointer_with_layout`]
+    /// when the host can answer text layout.
+    pub fn pointer(&mut self, input: PointerInput) {
+        let host: Option<&mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>> =
+            None;
+        self.pointer_with_layout(input, host);
+    }
+
+    /// [`Self::pointer`] plus the layout host field gestures need to place a
+    /// caret or hit-test a text offset. `None` leaves field samples on the
+    /// recognizer path.
+    pub fn pointer_with_layout(
+        &mut self,
+        mut input: PointerInput,
+        host: Option<&mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>>,
+    ) {
         self.now_ms = input.time_ms;
         if input.action == PointerAction::Down {
             input.path.clear();
             self.hit_path(1, input.x, input.y, &mut input.path);
+        }
+        let field_claimed = if self.field_owns(input.id) && input.action != PointerAction::Down {
+            match host {
+                Some(host) => self.handle_field_pointer(&input, host),
+                None => {
+                    let mut missing = |_: &LayoutRequest<'_>| Err(String::from("no layout host"));
+                    self.handle_field_pointer(&input, &mut missing);
+                }
+            }
+            true
+        } else if input.action == PointerAction::Down {
+            match host {
+                Some(host) => self.try_field_pointer(&input, host),
+                None => false,
+            }
+        } else {
+            false
+        };
+        if field_claimed {
+            let changed = self.track_press(&input, false);
+            self.flush_gesture_scroll();
+            self.sample_sources();
+            self.drain_ui_work();
+            if changed {
+                self.paint_dirty.set(true);
+            }
+            return;
         }
         let mut changed = self.track_press(&input, true);
         self.recognizer.pointer(input);
@@ -110,10 +153,7 @@ impl Shell {
             changed |= self.clear_press();
         }
         self.flush_gesture_scroll();
-        // Gesture and scroll vars track every sample, not just press edges.
         self.sample_sources();
-        // UI worklets answer gesture events after recognition and before the
-        // host paints; one dependent pass covers every write in the batch.
         self.drain_ui_work();
         if changed {
             self.paint_dirty.set(true);
@@ -137,6 +177,7 @@ impl Shell {
     /// UI-thread timer tick for long press and the double-tap window.
     pub fn advance_gestures(&mut self, now_ms: f64) {
         self.recognizer.advance(now_ms);
+        self.advance_field_pointer(now_ms);
         self.advance_animations(now_ms);
         let mut changed = false;
         if self.visual.gesture
@@ -157,6 +198,7 @@ impl Shell {
     /// script thread; nothing here calls JS.
     /// Host pause/focus loss: drop touches, timers, reserves, and ownership.
     pub fn cancel_gestures(&mut self, reason: u8) -> Vec<GestureEvent> {
+        self.cancel_field_pointer();
         self.recognizer.cancel(reason);
         self.flush_gesture_scroll();
         if self.reset_press() {

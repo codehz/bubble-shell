@@ -27,8 +27,8 @@ import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import kotlin.math.hypot
 import kotlin.math.roundToInt
+import kotlin.math.hypot
 import android.os.Bundle
 import android.text.InputType
 import org.json.JSONArray
@@ -57,12 +57,16 @@ class BubbleView(context: Context) : View(context) {
     private var paintBytes = ByteArray(0)
     private var family: Typeface = Typeface.DEFAULT
     private val activePointers = LinkedHashSet<Int>()
+    private var textGesture = false
+    private var focusAtDown = 0
+    private var downX = 0f
+    private var downY = 0f
+    private var movedPastSlop = false
     private var semanticNodes: Map<Int, JSONObject> = emptyMap()
     private var semanticChildren: Map<Int, List<Int>> = emptyMap()
     private var semanticRoots: List<Int> = emptyList()
     private var accessibilityFocus = 0
     private var semanticSnapshot = ""
-    private var selectionDrag: Pair<Int, Int>? = null
     private var handle = 0L
     private var engine = false
     private var devUrl: String? = null
@@ -647,20 +651,6 @@ class BubbleView(context: Context) : View(context) {
         refresh()
     }
 
-    private fun sendVisualPointer(action: Int, index: Int, event: MotionEvent) {
-        val id = event.getPointerId(index)
-        if (action == 2 || action == 3) activePointers.remove(id) else activePointers.add(id)
-        BubbleNative.visualPointer(handle, 
-            action,
-            id,
-            localX(event.getX(index)),
-            localY(event.getY(index)),
-            event.eventTime.toDouble(),
-            0,
-            if (action == 2 || action == 3) 0 else 1,
-        )
-        refresh()
-    }
 
     private data class EditSnapshot(
         val session: Long,
@@ -935,7 +925,7 @@ class BubbleView(context: Context) : View(context) {
     }
 
     fun cancelActivePointers(timeMs: Double) {
-        selectionDrag = null
+
         if (!engine || activePointers.isEmpty()) return
         val ids = activePointers.toList()
         activePointers.clear()
@@ -959,41 +949,23 @@ class BubbleView(context: Context) : View(context) {
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                val x = localX(event.x)
-                val y = localY(event.y)
-                val handles = BubbleNative.selectionHandles(handle, )
-                if (handles.size >= 8) {
-                    val startHit = hypot(x - (handles[0] + handles[2] / 2), y - (handles[1] + handles[3] / 2)) <= 16f
-                    val endHit = hypot(x - (handles[4] + handles[6] / 2), y - (handles[5] + handles[7] / 2)) <= 16f
-                    if (startHit || endHit) {
-                        val selection = BubbleNative.selection(handle, )
-                        if (selection.size >= 2) {
-                            val anchor = if (startHit) selection[1] else selection[0]
-                            selectionDrag = event.getPointerId(0) to anchor
-                            sendVisualPointer(0, event.actionIndex, event)
-                            return true
-                        }
-                    }
-                }
+                focusAtDown = BubbleNative.focused(handle)
+                downX = localX(event.x)
+                downY = localY(event.y)
+                movedPastSlop = false
+                textGesture = BubbleNative.fieldAt(handle, downX, downY) != 0
                 sendPointer(0, event.actionIndex, event)
             }
             MotionEvent.ACTION_POINTER_DOWN -> sendPointer(0, event.actionIndex, event)
             MotionEvent.ACTION_MOVE -> {
-                val drag = selectionDrag
-                val dragId = if (drag != null && drag.first == event.getPointerId(0)) drag.first else -1
-                if (drag != null && dragId >= 0) {
-                    sendVisualPointer(1, event.actionIndex, event)
-                    val unit = BubbleNative.unitAt(handle, localX(event.x), localY(event.y))
-                    val snapshot = editSnapshot()
-                    if (unit >= 0 && snapshot != null) {
-                        BubbleNative.editSelect(handle, snapshot.session, drag.second, unit)
-                    }
+                if (textGesture && hypot(localX(event.x) - downX, localY(event.y) - downY) > 10f) {
+                    movedPastSlop = true
                 }
                 for (index in 0 until event.pointerCount) {
                     val id = event.getPointerId(index)
-                    if (id == dragId) continue
                     if (!activePointers.contains(id)) continue
-                    BubbleNative.pointer(handle, 
+                    BubbleNative.pointer(
+                        handle,
                         1,
                         id,
                         localX(event.getX(index)),
@@ -1005,32 +977,20 @@ class BubbleView(context: Context) : View(context) {
                 }
                 refresh()
             }
-            MotionEvent.ACTION_POINTER_UP -> {
-                if (selectionDrag?.first == event.getPointerId(event.actionIndex)) {
-                    selectionDrag = null
-                    sendVisualPointer(2, event.actionIndex, event)
-                } else {
-                    sendPointer(2, event.actionIndex, event)
-                }
-            }
+            MotionEvent.ACTION_POINTER_UP -> sendPointer(2, event.actionIndex, event)
             MotionEvent.ACTION_UP -> {
-                if (selectionDrag?.first == event.getPointerId(event.actionIndex)) {
-                    selectionDrag = null
-                    sendVisualPointer(2, event.actionIndex, event)
-                    return true
-                }
                 sendPointer(2, event.actionIndex, event)
-                val handle = BubbleNative.focusAt(handle, localX(event.x), localY(event.y))
-                if (handle != 0) {
-                    refresh()
+                val focused = BubbleNative.focused(handle)
+                if (textGesture && focused != 0 && (focused != focusAtDown || !movedPastSlop)) {
                     importantForAutofill = IMPORTANT_FOR_AUTOFILL_YES
                     requestFocus()
                     val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                     imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
                 }
+                textGesture = false
             }
             MotionEvent.ACTION_CANCEL -> {
-                selectionDrag = null
+                textGesture = false
                 cancelActivePointers(event.eventTime.toDouble())
             }
         }

@@ -54,8 +54,6 @@ func bubble_edit_batch_end(_ shell: OpaquePointer?, _ session: UInt64) -> Int32
 func bubble_edit_batch_abort(_ shell: OpaquePointer?, _ session: UInt64) -> Int32
 @_silgen_name("bubble_field_at")
 func bubble_field_at(_ shell: OpaquePointer?, _ x: Float, _ y: Float) -> UInt32
-@_silgen_name("bubble_focus_at")
-func bubble_focus_at(_ shell: OpaquePointer?, _ x: Float, _ y: Float) -> UInt32
 @_silgen_name("bubble_field_flags")
 func bubble_field_flags(_ shell: OpaquePointer?, _ handle: UInt32) -> UInt32
 @_silgen_name("bubble_focused")
@@ -85,8 +83,6 @@ func bubble_caret_at(_ shell: OpaquePointer?, _ unit: UInt32, _ x: UnsafeMutable
 func bubble_selection_count(_ shell: OpaquePointer?) -> UInt32
 @_silgen_name("bubble_selection_rect")
 func bubble_selection_rect(_ shell: OpaquePointer?, _ index: UInt32, _ x: UnsafeMutablePointer<Float>?, _ y: UnsafeMutablePointer<Float>?, _ w: UnsafeMutablePointer<Float>?, _ h: UnsafeMutablePointer<Float>?) -> Int32
-@_silgen_name("bubble_visual_pointer")
-func bubble_visual_pointer(_ shell: OpaquePointer?, _ action: UInt32, _ id: UInt32, _ x: Float, _ y: Float, _ timeMs: Double, _ pointerKind: UInt32, _ buttons: UInt32) -> Int32
 @_silgen_name("bubble_tick")
 func bubble_tick(_ shell: OpaquePointer?, _ timeMs: Double) -> Int32
 @_silgen_name("bubble_scroll")
@@ -373,7 +369,10 @@ final class BubbleView: UIView {
         isAccessibilityElement = false
     }
 
-    deinit { bubble_destroy(shell) }
+    deinit {
+        touchLink?.invalidate()
+        bubble_destroy(shell)
+    }
     func loadBundle(manifest: String, entry: Data) throws {
         try manifest.withCString { manifestPtr in
             try entry.withUnsafeBytes { raw in
@@ -432,7 +431,11 @@ final class BubbleView: UIView {
     private var traceOrigin: [UInt32: CGPoint] = [:]
     private var traceLast: [UInt32: CGPoint] = [:]
     private var traceMoves: [UInt32: Int] = [:]
-    private var selectionDrag: (touch: ObjectIdentifier, anchor: Int)?
+    private var touchLink: CADisplayLink?
+    private var textGesture = false
+    private var focusAtDown: UInt32 = 0
+    private var downPoint = CGPoint.zero
+    private var movedPastSlop = false
     private var semanticElements: [UIAccessibilityElement] = []
     private var semanticSnapshot = Data()
     private var modalHandle: UInt32 = 0
@@ -501,19 +504,6 @@ final class BubbleView: UIView {
         )
     }
 
-    private func sendVisualPointer(_ action: UInt32, _ touch: UITouch, id known: UInt32? = nil) {
-        let id = known ?? pointerId(touch)
-        let point = touch.location(in: self)
-        _ = bubble_visual_pointer(shell, 
-            action,
-            id,
-            Float(point.x - safeAreaInsets.left),
-            Float(point.y - safeAreaInsets.top),
-            CACurrentMediaTime() * 1000,
-            0,
-            action == 2 || action == 3 ? 0 : 1
-        )
-    }
 
     private func logPointerSample(_ action: UInt32, _ id: UInt32, _ x: Float, _ y: Float) {
         let logical = CGPoint(x: CGFloat(x), y: CGFloat(y))
@@ -781,45 +771,32 @@ final class BubbleView: UIView {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         var delivered = false
         for touch in touches {
-            delivered = true
-            let local = contentPoint(touch.location(in: self))
-            var sx: Float = 0, sy: Float = 0, sw: Float = 0, sh: Float = 0
-            var ex: Float = 0, ey: Float = 0, ew: Float = 0, eh: Float = 0
-            if bubble_field_at(shell, Float(local.x), Float(local.y)) != 0,
-               bubble_selection_handles(shell, &sx, &sy, &sw, &sh, &ex, &ey, &ew, &eh) == 0 {
-                var start: UInt32 = 0
-                var end: UInt32 = 0
-                var markStart: UInt32 = 0
-                var markEnd: UInt32 = 0
-                _ = bubble_selection(shell, &start, &end, &markStart, &markEnd)
-                let startHit = hypot(local.x - CGFloat(sx + sw / 2), local.y - CGFloat(sy + sh / 2)) <= 16
-                let endHit = hypot(local.x - CGFloat(ex + ew / 2), local.y - CGFloat(ey + eh / 2)) <= 16
-                if startHit || endHit {
-                    selectionDrag = (ObjectIdentifier(touch), Int(startHit ? end : start))
-                    sendVisualPointer(0, touch)
-                    continue
-                }
+            if pointerIds.isEmpty {
+                focusAtDown = bubble_focused(shell)
+                let local = contentPoint(touch.location(in: self))
+                downPoint = local
+                movedPastSlop = false
+                textGesture = bubble_field_at(shell, Float(local.x), Float(local.y)) != 0
             }
+            delivered = true
             sendPointer(0, touch)
         }
+        syncTouchLink()
         if delivered { refresh() }
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         var delivered = false
         for touch in touches {
-            delivered = true
-            if let drag = selectionDrag, drag.touch == ObjectIdentifier(touch) {
-                sendVisualPointer(1, touch)
-                if let snapshot = editSnapshot() {
-                    let local = contentPoint(touch.location(in: self))
-                    var unit: UInt32 = 0
-                    if bubble_unit_at(shell, Float(local.x), Float(local.y), &unit) == 0 {
-                        _ = bubble_edit_select(shell, snapshot.session, UInt32(drag.anchor), unit)
-                    }
+            if textGesture {
+                let local = contentPoint(touch.location(in: self))
+                let dx = local.x - downPoint.x
+                let dy = local.y - downPoint.y
+                if hypot(dx, dy) > 10 {
+                    movedPastSlop = true
                 }
-                continue
             }
+            delivered = true
             sendPointer(1, touch)
         }
         if delivered { refresh() }
@@ -829,28 +806,18 @@ final class BubbleView: UIView {
         var delivered = false
         for touch in touches {
             let key = ObjectIdentifier(touch)
-            if let drag = selectionDrag, drag.touch == key {
-                selectionDrag = nil
-                sendVisualPointer(2, touch)
-                pointerIds.removeValue(forKey: key)
-                delivered = true
-                showEditMenu()
-                continue
-            }
             guard pointerIds[key] != nil else { continue }
             delivered = true
             sendPointer(2, touch)
-            let point = touch.location(in: self)
-            let handle = bubble_focus_at(shell, 
-                Float(point.x - safeAreaInsets.left),
-                Float(point.y - safeAreaInsets.top)
-            )
-            if handle != 0 {
+            let focused = bubble_focused(shell)
+            if textGesture && focused != 0 && (focused != focusAtDown || !movedPastSlop) {
                 updateInputSession()
                 _ = becomeFirstResponder()
             }
             pointerIds.removeValue(forKey: key)
         }
+        if pointerIds.isEmpty { textGesture = false }
+        syncTouchLink()
         if delivered { refresh() }
     }
 
@@ -858,18 +825,36 @@ final class BubbleView: UIView {
         var delivered = false
         for touch in touches {
             let key = ObjectIdentifier(touch)
-            if let drag = selectionDrag, drag.touch == key {
-                selectionDrag = nil
-                sendVisualPointer(3, touch)
-                pointerIds.removeValue(forKey: key)
-                delivered = true
-                continue
-            }
             guard let id = pointerIds.removeValue(forKey: key) else { continue }
             sendPointer(3, touch, id: id)
             delivered = true
         }
+        if pointerIds.isEmpty { textGesture = false }
+        syncTouchLink()
         if delivered { refresh() }
+    }
+
+    private func syncTouchLink() {
+        if pointerIds.isEmpty {
+            touchLink?.invalidate()
+            touchLink = nil
+        } else if touchLink == nil {
+            let link = CADisplayLink(target: self, selector: #selector(touchFrame))
+            link.add(to: .main, forMode: .common)
+            touchLink = link
+        }
+    }
+
+    @objc private func touchFrame() {
+        refresh()
+    }
+
+    override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        if newWindow == nil {
+            touchLink?.invalidate()
+            touchLink = nil
+        }
     }
 
     private func showEditMenu() {

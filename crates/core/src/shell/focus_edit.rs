@@ -913,6 +913,7 @@ impl Shell {
         &mut self,
         host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
     ) -> Result<(), String> {
+        self.resolve_field_long_press(host);
         self.caret_handle = 0;
         self.caret_box = None;
         self.selection_rects.clear();
@@ -1145,7 +1146,7 @@ fn line_edge(value: &str, offset: u32, forward: bool) -> u32 {
     }
 }
 
-fn utf16_slice(value: &str, start: u32, end: u32) -> String {
+pub(super) fn utf16_slice(value: &str, start: u32, end: u32) -> String {
     let mut out = String::new();
     let mut seen = 0u32;
     for ch in value.chars() {

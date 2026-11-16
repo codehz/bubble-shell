@@ -551,17 +551,21 @@ pub extern "C" fn bubble_frame(
         if let Ok(mut viewport) = engine.shared.viewport.lock() {
             *viewport = (width, height);
         }
-        let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
-        shell.set_viewport(width, height);
-        let host = &engine.shared.host;
-        shell.compute_layout(
-            &mut |text, font_size, line_height, font_weight, max_width| {
-                host_measure(host, text, font_size, line_height, font_weight, max_width)
-            },
-        )?;
-        shell.refresh_caret(&mut |req| field_layout(host, req))?;
-        let bytes = encode_paint(&shell.paint());
-        drop(shell);
+        let (edits, bytes) = {
+            let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
+            shell.set_viewport(width, height);
+            let host = &engine.shared.host;
+            shell.compute_layout(
+                &mut |text, font_size, line_height, font_weight, max_width| {
+                    host_measure(host, text, font_size, line_height, font_weight, max_width)
+                },
+            )?;
+            shell.refresh_caret(&mut |req| field_layout(host, req))?;
+            let bytes = encode_paint(&shell.paint());
+            let edits = shell.take_edit_events();
+            (edits, bytes)
+        };
+        send_edits(&engine.shared, edits);
         let mut slot = engine
             .shared
             .paint
@@ -598,20 +602,17 @@ pub extern "C" fn bubble_pointer(
             PointerAction::parse(action).ok_or_else(|| format!("bad pointer action {action}"))?;
         let engine = engine(shell)?;
         drain_pending(&engine.shared)?;
-        let events = {
+        let (events, edits) = {
             let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
-            shell.pointer(PointerInput::from_abi(
-                action,
-                id,
-                x,
-                y,
-                time_ms,
-                pointer_kind,
-                buttons,
-            ));
-            shell.take_gesture_events()
+            let host = &engine.shared.host;
+            shell.pointer_with_layout(
+                PointerInput::from_abi(action, id, x, y, time_ms, pointer_kind, buttons),
+                Some(&mut |req| field_layout(host, req)),
+            );
+            (shell.take_gesture_events(), shell.take_edit_events())
         };
         send_events(&engine.shared, events);
+        send_edits(&engine.shared, edits);
         Ok(())
     });
     finish(shell, result)

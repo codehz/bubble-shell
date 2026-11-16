@@ -1,5 +1,6 @@
 //! Retained tree. Taffy owns flex; this type owns scroll offsets, hit testing, and paint order.
 
+mod field_gesture;
 mod focus_edit;
 mod hit_scroll;
 mod paint;
@@ -156,6 +157,7 @@ pub struct Shell {
     pub(crate) now_ms: f64,
     state_styles: StyleDecls,
     visual: VisualPress,
+    field_pointer: Option<field_gesture::FieldPointerState>,
     fields: HashMap<u32, EditSession>,
     focused: u32,
     selection_handles: Option<[(f32, f32, f32, f32); 2]>,
@@ -363,6 +365,7 @@ impl Shell {
             now_ms: 0.0,
             state_styles: StyleDecls::new(),
             visual: VisualPress::default(),
+            field_pointer: None,
             fields: HashMap::new(),
             focused: 0,
             selection_handles: None,
