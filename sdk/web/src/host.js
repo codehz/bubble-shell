@@ -221,11 +221,17 @@ document.addEventListener(
     else if ((event.ctrlKey || event.metaKey) && event.key === "a") action = 13;
     if (action === undefined) return;
     if (event.target === ime) {
-      // Enter and Space stay with the IME beforeinput path; caret keys must
-      // never let the hidden textarea navigate on its own (it is 1px wide, so
-      // its native Home/End wrap every character).
-      if (action === 2 || action === 3) return;
-      if (action >= 5) event.preventDefault();
+      if (action === 2) {
+        // Multiline fields take the newline through the IME beforeinput path;
+        // single-line fields activate through the shell key path.
+        if (focusedFieldMultiline()) return;
+      } else if (action === 3) {
+        return;
+      } else if (action >= 5) {
+        // Caret keys must never let the hidden textarea navigate on its own
+        // (it is 1px wide, so its native Home/End wrap every character).
+        event.preventDefault();
+      }
     }
     const handled = exports.key(action, performance.now());
     if (handled < 0) return;
@@ -883,6 +889,11 @@ function moveCaretVertical(down, extend) {
   return true;
 }
 
+function focusedFieldMultiline() {
+  const handle = exports.focused();
+  return !!handle && (exports.field_flags(handle) & 1) !== 0;
+}
+
 function applyEditCommands(commands) {
   const snapshot = editSnapshot();
   if (!snapshot) return;
@@ -917,6 +928,17 @@ function applyEditCommands(commands) {
 
 for (const type of ["beforeinput", "compositionstart", "compositionupdate", "compositionend"]) {
   ime.addEventListener(type, (event) => {
+    if (
+      event.type === "beforeinput" &&
+      (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph")
+    ) {
+      // Enter in the hidden textarea: multiline fields commit a newline here;
+      // single-line fields take activation through the keydown path, so only
+      // block the textarea default (it would corrupt ime.value).
+      event.preventDefault();
+      if (focusedFieldMultiline()) applyEditCommands([{ op: "commit", text: "\n" }]);
+      return;
+    }
     const commands = commandsForDom(event);
     if (commands.length === 0) return;
     event.preventDefault();
