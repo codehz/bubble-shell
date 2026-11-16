@@ -556,9 +556,8 @@ impl Shell {
         let Ok(layout) = self.taffy.layout(node.taffy) else {
             return 0.0;
         };
-        let visible = (layout.size.width - layout.padding.left - layout.padding.right).max(0.0);
-        let content = layout.scrollable_overflow_rect.right.max(0.0);
-        (content - visible).max(0.0)
+        // Rect origin is the padding edge and already includes end padding.
+        layout.scroll_width()
     }
 
     pub(super) fn max_scroll_y(&self, node: &Node) -> f32 {
@@ -569,9 +568,7 @@ impl Shell {
         let Ok(layout) = self.taffy.layout(node.taffy) else {
             return 0.0;
         };
-        let visible = (layout.size.height - layout.padding.top - layout.padding.bottom).max(0.0);
-        let content = layout.scrollable_overflow_rect.bottom.max(0.0);
-        (content - visible).max(0.0)
+        layout.scroll_height()
     }
 
     fn field_viewport(&self, node: &Node) -> (f32, f32) {

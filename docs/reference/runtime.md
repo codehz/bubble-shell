@@ -305,7 +305,7 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 
 - 命中按绘制逆序，考虑 transform、clip、z-index。`display="none"` 与 `visibility="hidden"` 的子树不参与命中。`overflow` 为 `hidden` 或 `scroll` 的轴把命中限制在该节点 padding box 内；`visible` 轴在视口内不另加裁切。
 - 指针捕获、手势识别在 UI 线程。
-- 滚动由 UI 线程本地执行，不依赖脚本线程。横纵两轴各自维护偏移与范围；只有 `overflowX` / `overflowY` 为 `"scroll"` 的轴启用滚动。`"hidden"` 裁切且不可滚动，`"visible"` 不裁切也不滚动；这两种轴上 `ScrollTo` 归零。
+- 滚动由 UI 线程本地执行，不依赖脚本线程。横纵两轴各自维护偏移与范围；只有 `overflowX` / `overflowY` 为 `"scroll"` 的轴启用滚动。`"hidden"` 裁切且不可滚动，`"visible"` 不裁切也不滚动；这两种轴上 `ScrollTo` 归零。最大偏移是可滚动溢出超出 padding box 的部分：溢出矩形从 padding 边缘量起并已含末尾 padding，视口按 padding box 扣除，不再把 padding 从可视高度里减第二次。
 - 滚轮/拖拽按实际命中路径逐轴消费 `(dx, dy)`：内层先 clamp，未消费部分在同次输入继续交给祖先；`overscrollX/Y={false}` 在对应轴截断剩余量。触摸识别时冻结该轴策略，wheel 每次读取最新已提交配置。
 - `Shell::scroll_of` 返回 `(left, top)`；宿主分别通过 `bubble_scroll_x_of` / `bubble_scroll_y_of` 读取。
 - 读屏滚动 action 复用同一 `scroll_path`：目标为语义节点最近的、接受该轴的可滚动祖先，步长为可见范围的 80%；无可用祖先或轴时返回错误，平台不得自行累加像素。
