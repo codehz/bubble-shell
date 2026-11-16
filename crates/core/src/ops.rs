@@ -337,6 +337,9 @@ fn push_desc_props(ops: &mut Vec<Op>, handle: u32, desc: &NodeDesc) {
     if desc.scroll_y {
         prop("overflowY", Value::String("scroll".into()));
     }
+    if desc.fade_edges != 0.0 {
+        prop("fadeEdges", Value::Float(desc.fade_edges as f64));
+    }
     if let Some(width) = desc.width {
         prop("width", Value::Float(width as f64));
     }

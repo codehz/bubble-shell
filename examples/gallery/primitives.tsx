@@ -30,10 +30,11 @@ export function ViewDemo() {
           <View backgroundColor={0xff8b5cf6} width={80} height={24} radius={4} />
         </View>
       </Section>
-      <Section title="Scroll — overflowY scroll over 20 items">
+      <Section title="Scroll — overflowY scroll, fadeEdges 24">
         <View
           height={160}
           overflowY="scroll"
+          fadeEdges={24}
           backgroundColor={0xff374151}
           radius={6}
           padding={[8, 8, 8, 8]}
@@ -149,8 +150,8 @@ export function TextFieldDemo() {
         <Field label="Password" secure autofill="password" onChange={(e) => secret.set("*".repeat(e.value.length))} />
         <Text color="#9ca3af" fontSize={14}>Echo: {secret()}</Text>
       </Section>
-      <Section title="Multiline">
-        <Field label="Note" multiline height={88} onChange={(e) => note.set(e.value)} />
+      <Section title="Multiline — fadeEdges 16">
+        <Field label="Note" multiline height={88} fadeEdges={16} value={"overflow line\n".repeat(12)} onChange={(e) => note.set(e.value)} />
         <Text color="#9ca3af" fontSize={14}>Echo: {note()}</Text>
       </Section>
       <Section title="Keyboard types + maxLength">

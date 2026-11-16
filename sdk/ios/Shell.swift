@@ -695,6 +695,33 @@ final class BubbleView: UIView {
                 ctx.translateBy(x: -cx, y: -cy)
             case 10:
                 ctx.restoreGState()
+            case 11:
+                guard let x = f32(), let y = f32(), let w = f32(), let h = f32(), let top = f32(), let right = f32(), let bottom = f32(), let left = f32() else { return }
+                ctx.saveGState()
+                ctx.clip(to: CGRect(x: x, y: y, width: w, height: h))
+                ctx.setBlendMode(.destinationOut)
+                let space = CGColorSpaceCreateDeviceGray()
+                let opaque = CGColor(colorSpace: space, components: [0, 1])
+                let clear = CGColor(colorSpace: space, components: [0, 0])
+                if let opaque, let clear {
+                    if top > 0, let gradient = CGGradient(colorsSpace: space, colors: [opaque, clear] as CFArray, locations: [0, 1]) {
+                        ctx.drawLinearGradient(gradient, start: CGPoint(x: x, y: y), end: CGPoint(x: x, y: y + top), options: [])
+                    }
+                    if bottom > 0, let gradient = CGGradient(colorsSpace: space, colors: [clear, opaque] as CFArray, locations: [0, 1]) {
+                        ctx.drawLinearGradient(gradient, start: CGPoint(x: x, y: y + h - bottom), end: CGPoint(x: x, y: y + h), options: [])
+                    }
+                    if left > 0, let gradient = CGGradient(colorsSpace: space, colors: [opaque, clear] as CFArray, locations: [0, 1]) {
+                        ctx.drawLinearGradient(gradient, start: CGPoint(x: x, y: y), end: CGPoint(x: x + left, y: y), options: [])
+                    }
+                    if right > 0, let gradient = CGGradient(colorsSpace: space, colors: [clear, opaque] as CFArray, locations: [0, 1]) {
+                        ctx.drawLinearGradient(gradient, start: CGPoint(x: x + w - right, y: y), end: CGPoint(x: x + w, y: y), options: [])
+                    }
+                }
+                ctx.restoreGState()
+            case 12:
+                ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+            case 13:
+                ctx.endTransparencyLayer()
             default:
                 return
             }

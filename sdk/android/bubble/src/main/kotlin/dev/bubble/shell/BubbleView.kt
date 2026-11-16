@@ -11,6 +11,10 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
+import android.graphics.LinearGradient
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.Shader
 import android.graphics.RectF
 import java.io.File
 import android.text.TextPaint
@@ -52,6 +56,9 @@ class BubbleView(context: Context) : View(context) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
     private val imagePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFilterBitmap = true }
+    private val fadePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
+    }
     private val path = Path()
     private val images = HashMap<String, Bitmap?>()
     private var paintBytes = ByteArray(0)
@@ -618,6 +625,50 @@ class BubbleView(context: Context) : View(context) {
                     canvas.translate(-cx, -cy)
                 }
                 10 -> canvas.restore()
+                11 -> {
+                    val x = buffer.float
+                    val y = buffer.float
+                    val w = buffer.float
+                    val h = buffer.float
+                    val top = buffer.float
+                    val right = buffer.float
+                    val bottom = buffer.float
+                    val left = buffer.float
+                    if (top > 0f) {
+                        fadePaint.shader = LinearGradient(
+                            x, y, x, y + top,
+                            Color.BLACK, Color.TRANSPARENT,
+                            Shader.TileMode.CLAMP,
+                        )
+                        canvas.drawRect(x, y, x + w, y + top, fadePaint)
+                    }
+                    if (bottom > 0f) {
+                        fadePaint.shader = LinearGradient(
+                            x, y + h - bottom, x, y + h,
+                            Color.TRANSPARENT, Color.BLACK,
+                            Shader.TileMode.CLAMP,
+                        )
+                        canvas.drawRect(x, y + h - bottom, x + w, y + h, fadePaint)
+                    }
+                    if (left > 0f) {
+                        fadePaint.shader = LinearGradient(
+                            x, y, x + left, y,
+                            Color.BLACK, Color.TRANSPARENT,
+                            Shader.TileMode.CLAMP,
+                        )
+                        canvas.drawRect(x, y, x + left, y + h, fadePaint)
+                    }
+                    if (right > 0f) {
+                        fadePaint.shader = LinearGradient(
+                            x + w - right, y, x + w, y,
+                            Color.TRANSPARENT, Color.BLACK,
+                            Shader.TileMode.CLAMP,
+                        )
+                        canvas.drawRect(x + w - right, y, x + w, y + h, fadePaint)
+                    }
+                }
+                12 -> canvas.saveLayer(null, null)
+                13 -> canvas.restore()
                 else -> return
             }
         }

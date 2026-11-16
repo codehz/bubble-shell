@@ -5,7 +5,10 @@ import { layoutSnapshot, wrapLines } from "./textlayout.js";
 
 const dev = window.__bubbleDev ?? null;
 const canvas = document.querySelector("canvas");
-const ctx = canvas.getContext("2d");
+let ctx = canvas.getContext("2d");
+const mainCtx = ctx;
+const layerCanvases = [];
+const paintStack = [];
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 const images = new Map();
@@ -531,7 +534,39 @@ function resize() {
 // `bubble dev` remounts the tree outside this page's event loop.
 globalThis.__bubbleRepaint = () => paint();
 
+function pushPaintLayer() {
+  const depth = paintStack.length;
+  let layer = layerCanvases[depth];
+  if (!layer) {
+    layer = document.createElement("canvas");
+    layerCanvases[depth] = layer;
+  }
+  if (layer.width !== canvas.width || layer.height !== canvas.height) {
+    layer.width = canvas.width;
+    layer.height = canvas.height;
+  }
+  const lctx = layer.getContext("2d");
+  lctx.setTransform(1, 0, 0, 1, 0, 0);
+  lctx.clearRect(0, 0, layer.width, layer.height);
+  lctx.setTransform(ctx.getTransform());
+  paintStack.push(ctx);
+  ctx = lctx;
+}
+
+function popPaintLayer() {
+  const parent = paintStack.pop();
+  if (!parent) return;
+  const layer = layerCanvases[paintStack.length];
+  parent.save();
+  parent.setTransform(1, 0, 0, 1, 0, 0);
+  parent.drawImage(layer, 0, 0);
+  parent.restore();
+  ctx = parent;
+}
+
 function paint() {
+  ctx = mainCtx;
+  paintStack.length = 0;
   const len = exports.paint();
   const view = scratch(len);
   let offset = 0;
@@ -646,6 +681,50 @@ function paint() {
       ctx.translate(-cx, -cy);
     } else if (tag === 10) {
       ctx.restore();
+    } else if (tag === 11) {
+      const x = f32();
+      const y = f32();
+      const w = f32();
+      const h = f32();
+      const top = f32();
+      const right = f32();
+      const bottom = f32();
+      const left = f32();
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-out";
+      if (top > 0) {
+        const grad = ctx.createLinearGradient(x, y, x, y + top);
+        grad.addColorStop(0, "rgba(0,0,0,1)");
+        grad.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, y, w, top);
+      }
+      if (bottom > 0) {
+        const grad = ctx.createLinearGradient(x, y + h - bottom, x, y + h);
+        grad.addColorStop(0, "rgba(0,0,0,0)");
+        grad.addColorStop(1, "rgba(0,0,0,1)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, y + h - bottom, w, bottom);
+      }
+      if (left > 0) {
+        const grad = ctx.createLinearGradient(x, y, x + left, y);
+        grad.addColorStop(0, "rgba(0,0,0,1)");
+        grad.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, y, left, h);
+      }
+      if (right > 0) {
+        const grad = ctx.createLinearGradient(x + w - right, y, x + w, y);
+        grad.addColorStop(0, "rgba(0,0,0,0)");
+        grad.addColorStop(1, "rgba(0,0,0,1)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(x + w - right, y, right, h);
+      }
+      ctx.restore();
+    } else if (tag === 12) {
+      pushPaintLayer();
+    } else if (tag === 13) {
+      popPaintLayer();
     } else if (tag === 3) {
       const x = f32();
       const y = f32();

@@ -52,6 +52,8 @@ pub struct NodeDesc {
     /// 0 column, 1 row, 2 column-reverse, 3 row-reverse.
     pub direction: u8,
     pub text: String,
+    /// Scroll-edge fade in logical px. `0` disables it.
+    pub fade_edges: f32,
 }
 
 impl NodeDesc {
@@ -75,6 +77,7 @@ impl NodeDesc {
             flex_shrink: 0.0,
             direction: 0,
             text: String::new(),
+            fade_edges: 0.0,
         }
     }
 

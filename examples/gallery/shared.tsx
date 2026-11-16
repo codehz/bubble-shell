@@ -42,6 +42,7 @@ export function Field(props) {
       autofill={props.autofill ? props.autofill() : ""}
       keyboard={props.keyboard ? props.keyboard() : ""}
       maxLength={props.maxLength ? props.maxLength() : 0}
+      fadeEdges={props.fadeEdges ? props.fadeEdges() : 0}
       onChange={props.onChange}
     />
   );

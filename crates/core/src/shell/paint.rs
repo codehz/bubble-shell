@@ -83,6 +83,22 @@ pub enum PaintCmd {
         rotate: f32,
     },
     PopTransform,
+    /// Scrollport edge fade in logical px. A side of `0` is not drawn.
+    /// Hosts erase already painted pixels with destination-out.
+    FadeEdges {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+        left: f32,
+    },
+    /// Offscreen group. Scroll-edge fade erases inside it so pixels drawn
+    /// before `PushLayer` (the container background) stay in place.
+    PushLayer,
+    PopLayer,
 }
 
 /// Longest prefix of `text` whose width with a trailing `…` fits. The original
@@ -455,6 +471,9 @@ impl Shell {
         let multiline = node.multiline;
         let scroll_left = node.scroll_left;
         let scroll_top = node.scroll_top;
+        let fade_edges = node.fade_edges;
+        let scrolls_x = node.scrolls_x();
+        let scrolls_y = node.scrolls_y();
         let content_w = node.content_w;
         let content_h = node.content_h;
         let color = paint.color;
@@ -514,6 +533,18 @@ impl Shell {
                 w: cw,
                 h: ch,
             });
+        }
+        let fade = content_fade(
+            self,
+            id,
+            fade_edges,
+            scrolls_x,
+            scrolls_y,
+            scroll_left,
+            scroll_top,
+        );
+        if fade.is_some() {
+            out.push(PaintCmd::PushLayer);
         }
         if kind == Kind::Field && id == self.caret_handle {
             for (sx, sy, sw, sh) in &self.selection_rects {
@@ -608,6 +639,19 @@ impl Shell {
         for index in 0..child_count {
             let child = self.node(id).expect("paint child").children[index];
             self.paint_node(child, out);
+        }
+        if let Some((top, right, bottom, left)) = fade {
+            out.push(PaintCmd::FadeEdges {
+                x,
+                y,
+                w,
+                h,
+                top,
+                right,
+                bottom,
+                left,
+            });
+            out.push(PaintCmd::PopLayer);
         }
         if clip.is_some() {
             out.push(PaintCmd::PopClip);
@@ -809,6 +853,46 @@ pub(super) fn axis_bounds(
         } else {
             y + h
         },
+    }
+}
+
+/// Edge lengths for a scroll fade, or `None` when nothing would be drawn.
+/// Background stays outside the content layer; only these insets are erased.
+fn content_fade(
+    shell: &Shell,
+    id: u32,
+    fade_edges: f32,
+    scrolls_x: bool,
+    scrolls_y: bool,
+    scroll_left: f32,
+    scroll_top: f32,
+) -> Option<(f32, f32, f32, f32)> {
+    if fade_edges <= 0.0 || (!scrolls_x && !scrolls_y) {
+        return None;
+    }
+    let node = shell.node(id).expect("paint handle");
+    let mut top = 0.0;
+    let mut right = 0.0;
+    let mut bottom = 0.0;
+    let mut left = 0.0;
+    if scrolls_x {
+        let max_scroll = shell.max_scroll_x(node);
+        if max_scroll > 0.0 {
+            left = fade_edges.min(scroll_left).max(0.0);
+            right = fade_edges.min((max_scroll - scroll_left).max(0.0));
+        }
+    }
+    if scrolls_y {
+        let max_scroll = shell.max_scroll_y(node);
+        if max_scroll > 0.0 {
+            top = fade_edges.min(scroll_top).max(0.0);
+            bottom = fade_edges.min((max_scroll - scroll_top).max(0.0));
+        }
+    }
+    if top > 0.0 || right > 0.0 || bottom > 0.0 || left > 0.0 {
+        Some((top, right, bottom, left))
+    } else {
+        None
     }
 }
 

@@ -102,6 +102,28 @@ pub fn encode_paint(cmds: &[PaintCmd]) -> Vec<u8> {
                 push_f32(&mut out, *scale);
                 push_f32(&mut out, *rotate);
             }
+            PaintCmd::FadeEdges {
+                x,
+                y,
+                w,
+                h,
+                top,
+                right,
+                bottom,
+                left,
+            } => {
+                out.push(11);
+                push_f32(&mut out, *x);
+                push_f32(&mut out, *y);
+                push_f32(&mut out, *w);
+                push_f32(&mut out, *h);
+                push_f32(&mut out, *top);
+                push_f32(&mut out, *right);
+                push_f32(&mut out, *bottom);
+                push_f32(&mut out, *left);
+            }
+            PaintCmd::PushLayer => out.push(12),
+            PaintCmd::PopLayer => out.push(13),
             PaintCmd::PopTransform => out.push(10),
         }
     }

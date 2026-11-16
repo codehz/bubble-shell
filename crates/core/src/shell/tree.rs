@@ -69,6 +69,8 @@ pub(super) struct Node {
     pub(super) taffy: NodeId,
     pub(super) scroll_left: f32,
     pub(super) scroll_top: f32,
+    /// Scroll-edge fade length in logical px. `0` draws nothing.
+    pub(super) fade_edges: f32,
     pub(super) chain_x: bool,
     pub(super) chain_y: bool,
     pub(super) multiline: bool,
@@ -149,6 +151,7 @@ impl Node {
             taffy: taffy_id,
             scroll_left: 0.0,
             scroll_top: 0.0,
+            fade_edges: 0.0,
             content_w: 0.0,
             content_h: 0.0,
             chain_x: false,
@@ -205,6 +208,7 @@ impl Node {
             padding: desc.padding.map(Len::Pt),
             text: desc.text,
             taffy: taffy_id,
+            fade_edges: desc.fade_edges.max(0.0),
             ..Self::new_root(NodeId::new(0))
         }
     }
@@ -476,6 +480,9 @@ impl Shell {
             Prop::Checked => self.node_mut(id)?.checked = Some(value.as_bool()?),
             Prop::Selected => self.node_mut(id)?.selected = value.as_bool()?,
             Prop::Expanded => self.node_mut(id)?.expanded = Some(value.as_bool()?),
+            Prop::FadeEdges => {
+                self.node_mut(id)?.fade_edges = value.as_f32()?.max(0.0);
+            }
         }
         self.restyle(id)
     }

@@ -140,6 +140,7 @@ pub enum Prop {
     Checked,
     Selected,
     Expanded,
+    FadeEdges,
 }
 
 impl Prop {
@@ -211,6 +212,7 @@ impl Prop {
             "checked" => Self::Checked,
             "selected" => Self::Selected,
             "expanded" => Self::Expanded,
+            "fadeEdges" => Self::FadeEdges,
             _ => return None,
         })
     }
