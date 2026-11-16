@@ -569,6 +569,9 @@ fn a11y_scroll_primary_axis_follows_vertical_then_horizontal() {
 #[test]
 fn a11y_scroll_requires_a_scrollable_ancestor() {
     let mut shell = Shell::blank().unwrap();
-    let field = field(&mut shell, "plain");
-    assert!(shell.a11y_action(field, A11yAction::ScrollForward).is_err());
+    let button = view(&mut shell, 80.0, 32.0);
+    set(&mut shell, 1, button, "focusable", Value::Bool(true));
+    assert!(shell
+        .a11y_action(button, A11yAction::ScrollForward)
+        .is_err());
 }

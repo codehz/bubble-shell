@@ -171,6 +171,7 @@ impl Shell {
             )
             .map_err(|err| err.to_string())?;
         self.place(1, 0.0, 0.0)?;
+        self.sync_field_content(measure)?;
         let limits: Vec<(usize, f32, f32)> = self
             .nodes
             .iter()
@@ -258,6 +259,11 @@ impl Shell {
         let kind = node.kind;
         let text = node.text.clone();
         let secure = node.secure;
+        let multiline = node.multiline;
+        let scroll_left = node.scroll_left;
+        let scroll_top = node.scroll_top;
+        let content_w = node.content_w;
+        let content_h = node.content_h;
         let color = paint.color;
         let font_size = node.font_size;
         let opacity = paint.opacity.clamp(0.0, 1.0);
@@ -334,11 +340,18 @@ impl Shell {
         };
         if matches!(kind, Kind::Text | Kind::Field) && !shown.is_empty() {
             let (text_x, text_y, text_w, text_h) = if kind == Kind::Field {
+                let viewport_w = (w - pads[0] - pads[1]).max(0.0);
+                let viewport_h = (h - pads[2] - pads[3]).max(0.0);
+                let (layout_w, layout_h) = if multiline {
+                    (viewport_w, content_h.max(viewport_h))
+                } else {
+                    (content_w.max(viewport_w), viewport_h.max(content_h))
+                };
                 (
-                    x + pads[0],
-                    y + pads[2],
-                    (w - pads[0] - pads[1]).max(0.0),
-                    (h - pads[2] - pads[3]).max(0.0),
+                    x + pads[0] - scroll_left,
+                    y + pads[2] - scroll_top,
+                    layout_w,
+                    layout_h,
                 )
             } else {
                 (x, y, w, h)
@@ -448,6 +461,39 @@ impl Shell {
             ],
             Err(_) => [0.0; 4],
         }
+    }
+    /// Text extent used as the field's scrollable overflow. Taffy only sees a leaf.
+    fn sync_field_content(&mut self, measure: Measure<'_>) -> Result<(), String> {
+        let ids: Vec<u32> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                node.as_ref()
+                    .filter(|node| node.kind == Kind::Field)
+                    .map(|_| index as u32)
+            })
+            .collect();
+        for id in ids {
+            let (text, font_size, line_height, font_weight, multiline, viewport_w) = {
+                let node = self.node(id)?;
+                let pads = self.pads(id);
+                (
+                    display_text(&node.text, node.secure),
+                    node.font_size,
+                    node.line_height,
+                    node.font_weight,
+                    node.multiline,
+                    (node.w - pads[0] - pads[1]).max(0.0),
+                )
+            };
+            let max_width = if multiline { Some(viewport_w) } else { None };
+            let (width, height) = measure(&text, font_size, line_height, font_weight, max_width);
+            let node = self.node_mut(id)?;
+            node.content_w = width;
+            node.content_h = height;
+        }
+        Ok(())
     }
 }
 

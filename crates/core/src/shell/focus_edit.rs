@@ -935,6 +935,8 @@ impl Shell {
         let (geom, snapshot) = self.field_snapshot(handle, host)?;
         let active = snap_unit(&geom.text, state.sel_end()).min(snapshot.units);
         let caret = snapshot.caret(active).ok_or("layout has no caret")?;
+        self.reveal_field_caret(handle, caret.x, caret.y, caret.h)?;
+        let geom = self.field_geom(handle)?;
         self.caret_handle = handle;
         self.selection_rects = snapshot
             .selection_rects(state.sel_start(), state.sel_end())
@@ -1010,13 +1012,19 @@ impl Shell {
             .get(&handle)
             .map(|state| state.revision())
             .unwrap_or(0);
+        let viewport_w = (node.w - pads[0] - pads[1]).max(0.0);
+        let width = if node.multiline {
+            viewport_w
+        } else {
+            node.content_w.max(viewport_w)
+        };
         Ok(FieldGeom {
             text: display_text(&node.text, node.secure),
-            origin_x: node.x + pads[0],
-            origin_y: node.y + pads[2],
+            origin_x: node.x + pads[0] - node.scroll_left,
+            origin_y: node.y + pads[2] - node.scroll_top,
             key: LayoutKey {
                 revision,
-                width: (node.w - pads[0] - pads[1]).max(0.0),
+                width,
                 font_size,
                 font_weight: node.font_weight,
                 line_height,
@@ -1024,6 +1032,49 @@ impl Shell {
                 density: 1.0,
             },
         })
+    }
+    /// Bring the caret into the field viewport and clamp to the measured text.
+    fn reveal_field_caret(
+        &mut self,
+        handle: u32,
+        caret_x: f32,
+        caret_y: f32,
+        caret_h: f32,
+    ) -> Result<(), String> {
+        let pads = self.pads(handle);
+        let node = self.node_mut(handle)?;
+        if node.kind != Kind::Field {
+            return Ok(());
+        }
+        let viewport_w = (node.w - pads[0] - pads[1]).max(0.0);
+        let viewport_h = (node.h - pads[2] - pads[3]).max(0.0);
+        node.content_w = node.content_w.max(caret_x + 1.0);
+        node.content_h = node.content_h.max(caret_y + caret_h);
+        if !node.multiline && node.scrolls_x() {
+            let visible_end = node.scroll_left + viewport_w;
+            if caret_x < node.scroll_left {
+                node.scroll_left = (caret_x - 20.0).max(0.0);
+            } else if caret_x > visible_end {
+                node.scroll_left = caret_x - viewport_w + 20.0;
+            }
+        } else if node.multiline && node.scrolls_y() {
+            let caret_bottom = caret_y + caret_h;
+            let visible_end = node.scroll_top + viewport_h;
+            if caret_y < node.scroll_top {
+                node.scroll_top = (caret_y - 4.0).max(0.0);
+            } else if caret_bottom > visible_end {
+                node.scroll_top = caret_bottom - viewport_h + 4.0;
+            }
+        }
+        if node.scrolls_x() {
+            let max_scroll = (node.content_w - viewport_w).max(0.0);
+            node.scroll_left = node.scroll_left.clamp(0.0, max_scroll);
+        }
+        if node.scrolls_y() {
+            let max_scroll = (node.content_h - viewport_h).max(0.0);
+            node.scroll_top = node.scroll_top.clamp(0.0, max_scroll);
+        }
+        Ok(())
     }
 }
 

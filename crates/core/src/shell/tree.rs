@@ -64,6 +64,10 @@ pub(super) struct Node {
     pub(super) chain_x: bool,
     pub(super) chain_y: bool,
     pub(super) multiline: bool,
+    /// Last measured text extent. Scroll limits for a field come from this,
+    /// not from taffy, because the text is a leaf rather than a child.
+    pub(super) content_w: f32,
+    pub(super) content_h: f32,
     pub(super) secure: bool,
     pub(super) max_length: u32,
     pub(super) keyboard: String,
@@ -134,6 +138,8 @@ impl Node {
             taffy: taffy_id,
             scroll_left: 0.0,
             scroll_top: 0.0,
+            content_w: 0.0,
+            content_h: 0.0,
             chain_x: false,
             chain_y: false,
             multiline: false,
@@ -395,7 +401,10 @@ impl Shell {
                 self.node_mut(id)?.src = source.clone();
             }
             Prop::Fit => self.node_mut(id)?.fit = image_fit(value)?,
-            Prop::Multiline => self.node_mut(id)?.multiline = value.as_bool()?,
+            Prop::Multiline => {
+                self.node_mut(id)?.multiline = value.as_bool()?;
+                self.refresh_field_overflow(id)?;
+            }
             Prop::Secure => {
                 self.node_mut(id)?.secure = value.as_bool()?;
                 self.refresh_measure(id)?;
@@ -586,6 +595,8 @@ impl Shell {
                     },
                 ),
             );
+            self.refresh_field_overflow(handle)?;
+            self.restyle(handle)?;
         }
         Ok(())
     }
@@ -658,6 +669,24 @@ impl Shell {
             if mode != Overflow::Scroll {
                 node.scroll_top = 0.0;
             }
+        }
+        Ok(())
+    }
+    /// Single-line fields scroll horizontally. Multiline fields scroll vertically.
+    pub(super) fn refresh_field_overflow(&mut self, id: u32) -> Result<(), String> {
+        let kind_multiline = {
+            let node = self.node(id)?;
+            if node.kind != Kind::Field {
+                return Ok(());
+            }
+            node.multiline
+        };
+        if kind_multiline {
+            self.assign_overflow(id, true, Overflow::Hidden)?;
+            self.assign_overflow(id, false, Overflow::Scroll)?;
+        } else {
+            self.assign_overflow(id, true, Overflow::Scroll)?;
+            self.assign_overflow(id, false, Overflow::Hidden)?;
         }
         Ok(())
     }

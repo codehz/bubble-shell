@@ -1,3 +1,5 @@
+use crate::ir::Kind;
+
 use crate::gesture::{GestureEvent, PointerAction, PointerInput, TAP_SLOP};
 
 use super::paint::{axis_bounds, Bounds};
@@ -503,6 +505,10 @@ impl Shell {
     }
 
     pub(super) fn max_scroll_x(&self, node: &Node) -> f32 {
+        if node.kind == Kind::Field {
+            let (visible, _) = self.field_viewport(node);
+            return (node.content_w - visible).max(0.0);
+        }
         let Ok(layout) = self.taffy.layout(node.taffy) else {
             return 0.0;
         };
@@ -512,11 +518,25 @@ impl Shell {
     }
 
     pub(super) fn max_scroll_y(&self, node: &Node) -> f32 {
+        if node.kind == Kind::Field {
+            let (_, visible) = self.field_viewport(node);
+            return (node.content_h - visible).max(0.0);
+        }
         let Ok(layout) = self.taffy.layout(node.taffy) else {
             return 0.0;
         };
         let visible = (layout.size.height - layout.padding.top - layout.padding.bottom).max(0.0);
         let content = layout.scrollable_overflow_rect.bottom.max(0.0);
         (content - visible).max(0.0)
+    }
+
+    fn field_viewport(&self, node: &Node) -> (f32, f32) {
+        let Ok(layout) = self.taffy.layout(node.taffy) else {
+            return (0.0, 0.0);
+        };
+        (
+            (layout.size.width - layout.padding.left - layout.padding.right).max(0.0),
+            (layout.size.height - layout.padding.top - layout.padding.bottom).max(0.0),
+        )
     }
 }
