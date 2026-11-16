@@ -3,7 +3,9 @@ use std::cell::Ref;
 use crate::color::Color;
 use crate::editing::display_text;
 use crate::ir::Kind;
-use crate::layout::{wrapped_lines, wrapping_layout, LayoutRequest, LayoutSnapshot};
+use crate::layout::{
+    min_content_width, wrapped_lines, wrapping_layout, LayoutRequest, LayoutSnapshot,
+};
 use taffy::compute_leaf_layout;
 use taffy::prelude::*;
 use taffy::style::Overflow;
@@ -224,15 +226,35 @@ impl Shell {
                             if let (Some(width), Some(height)) = (known.width, known.height) {
                                 return Size { width, height };
                             }
-                            let max_width = match available.width {
+                            // Min-content is the longest word. Max-content and an
+                            // indefinite width are the unwrapped string. A definite
+                            // width wraps, which is what keeps a paragraph inside
+                            // a sized parent instead of overflowing it.
+                            let limit = match available.width {
                                 AvailableSpace::Definite(width) => Some(width),
-                                _ => known.width,
+                                AvailableSpace::MinContent => {
+                                    let mut advance = |sample: &str| {
+                                        measure(
+                                            sample,
+                                            *font_size,
+                                            *line_height,
+                                            *font_weight,
+                                            None,
+                                        )
+                                        .0
+                                    };
+                                    let min_width = min_content_width(text, &mut advance);
+                                    (min_width > 0.0).then_some(min_width)
+                                }
+                                AvailableSpace::MaxContent => known
+                                    .width
+                                    .filter(|width| width.is_finite() && *width > 0.0),
                             };
                             let (width, mut height) =
-                                measure(text, *font_size, *line_height, *font_weight, max_width);
+                                measure(text, *font_size, *line_height, *font_weight, limit);
                             if *max_lines > 0 {
                                 if let Some(limit) =
-                                    max_width.filter(|limit| limit.is_finite() && *limit > 0.0)
+                                    limit.filter(|limit| limit.is_finite() && *limit > 0.0)
                                 {
                                     let line_count = {
                                         let mut advance = |sample: &str| {

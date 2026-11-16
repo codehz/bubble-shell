@@ -1496,16 +1496,20 @@ impl<'a> Lower<'a> {
             let mut text = String::new();
             for part in parts {
                 if let TextPart::Text(value) = part {
-                    text.push_str(value.as_str());
+                    let (_, collapsed, _) = jsx_static_text(value.as_str());
+                    if !text.is_empty() && !collapsed.is_empty() {
+                        text.push(' ');
+                    }
+                    text.push_str(&collapsed);
                 }
             }
             return self.string_of(&text);
         }
-        let mut iter = parts.into_iter();
-        let first = iter.next().expect("parts is not empty");
-        let mut expression = self.text_part(first);
-        for part in iter {
-            let right = self.text_part(part);
+        let count = parts.len();
+        let mut iter = parts.into_iter().enumerate();
+        let mut expression = self.text_part_at(iter.next().expect("parts").1, 0, count);
+        for (index, part) in iter {
+            let right = self.text_part_at(part, index, count);
             expression = Expression::new_binary_expression(
                 span,
                 expression,
@@ -1517,11 +1521,25 @@ impl<'a> Lower<'a> {
         self.arrow_expr(span, expression)
     }
 
-    fn text_part(&mut self, part: TextPart<'a>) -> Expression<'a> {
+    fn text_part_at(&mut self, part: TextPart<'a>, index: usize, count: usize) -> Expression<'a> {
         match part {
             TextPart::Text(value) => {
-                let value = self.allocator.alloc_str(value.as_str());
-                self.string(value, SPAN)
+                let (mut leading, text, mut trailing) = jsx_static_text(value.as_str());
+                if index == 0 {
+                    leading = false;
+                }
+                if index + 1 == count {
+                    trailing = false;
+                }
+                let mut collapsed = String::new();
+                if leading {
+                    collapsed.push(' ');
+                }
+                collapsed.push_str(&text);
+                if trailing {
+                    collapsed.push(' ');
+                }
+                self.string_of(&collapsed)
             }
             TextPart::Expression(mut expression) => {
                 self.visit_expression(&mut expression);
@@ -1529,6 +1547,28 @@ impl<'a> Lower<'a> {
             }
         }
     }
+}
+
+/// Source indentation is not content. A whitespace run is one space. The
+/// caller drops a leading space on the first piece and a trailing space on
+/// the last, and keeps a space that sits against an expression.
+fn jsx_static_text(value: &str) -> (bool, String, bool) {
+    let leading = value.chars().next().is_some_and(char::is_whitespace);
+    let trailing = value.chars().next_back().is_some_and(char::is_whitespace);
+    let mut text = String::new();
+    let mut spaced = false;
+    for ch in value.chars() {
+        if ch.is_whitespace() {
+            spaced = true;
+            continue;
+        }
+        if spaced && !text.is_empty() {
+            text.push(' ');
+        }
+        spaced = false;
+        text.push(ch);
+    }
+    (leading, text, trailing)
 }
 
 enum TextPart<'a> {

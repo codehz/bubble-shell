@@ -414,6 +414,14 @@ fn wrap_paragraph(
     lines
 }
 
+/// Longest word. Flex uses this as the min-content width, so a wrapping
+/// paragraph does not stretch its parent to the unwrapped string.
+pub(crate) fn min_content_width(text: &str, advance: &mut impl FnMut(&str) -> f32) -> f32 {
+    text.split_whitespace()
+        .map(|word| advance(word))
+        .fold(0.0, f32::max)
+}
+
 /// Visual lines from the same breaker as [`wrapping_layout`]. Soft-wrap spaces
 /// are omitted; hard breaks stay as separate entries, including blanks.
 pub(crate) fn wrapped_lines(
