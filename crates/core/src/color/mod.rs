@@ -66,6 +66,13 @@ impl Color {
             blend(self.a, other.a).clamp(0.0, 1.0),
         )
     }
+
+    /// WCAG 2 relative luminance in `[0.0, 1.0]`. Alpha is ignored;
+    /// channels outside `[0, 1]` are clamped before the sRGB transfer.
+    pub fn relative_luminance(self) -> f32 {
+        let channel = |value: f32| srgb_to_linear(f64::from(value.clamp(0.0, 1.0))) as f32;
+        0.2126 * channel(self.r) + 0.7152 * channel(self.g) + 0.0722 * channel(self.b)
+    }
 }
 
 impl Default for Color {
@@ -654,5 +661,24 @@ mod tests {
     fn argb_roundtrip() {
         assert_eq!(Color::from_argb(0xff123456).to_argb(), 0xff123456);
         assert_eq!(Color::from_argb(0x00000000).to_argb(), 0);
+    }
+
+    #[test]
+    fn relative_luminance_matches_wcag() {
+        let assert_lum = |color: Color, expected: f32| {
+            let actual = color.relative_luminance();
+            assert!(
+                (actual - expected).abs() < 0.001,
+                "{actual} != {expected}"
+            );
+        };
+        assert_lum(Color::new(0.0, 0.0, 0.0, 1.0), 0.0);
+        assert_lum(Color::new(1.0, 1.0, 1.0, 1.0), 1.0);
+        // Gamma makes mid-gray darker than 0.5.
+        assert_lum(Color::new(0.5, 0.5, 0.5, 1.0), 0.214);
+        // Below the 0.5 split: dark text, light drag-ghost plate.
+        assert_lum(Color::new(0.2, 0.45, 1.0, 1.0), 0.201);
+        // Above the 0.5 split: light text, dark drag-ghost plate.
+        assert_lum(Color::new(0.9, 0.9, 0.9, 1.0), 0.787);
     }
 }

@@ -242,6 +242,14 @@ impl Shell {
         };
         let weight = node.font_weight;
         let color = self.effective_paint_style(self.focused, node).color;
+        // Light text needs a dark plate. Faint alpha has no reliable luminance.
+        const LUMINANCE_SPLIT: f32 = 0.5;
+        const FAINT_ALPHA: f32 = 0.1;
+        let bg_color = if color.a <= FAINT_ALPHA || color.relative_luminance() < LUMINANCE_SPLIT {
+            Color::new(0.95, 0.95, 0.95, 1.0)
+        } else {
+            Color::new(0.1, 0.1, 0.1, 1.0)
+        };
         let text_w = self.drag_ghost_size.0;
         let text_h = if self.drag_ghost_size.1 > 0.0 {
             self.drag_ghost_size.1
@@ -269,7 +277,7 @@ impl Shell {
             w: box_w,
             h: box_h,
             radius: 4.0,
-            color: Color::new(0.95, 0.95, 0.95, 1.0),
+            color: bg_color,
         });
         out.push(PaintCmd::Text {
             x: x + pad_x,
