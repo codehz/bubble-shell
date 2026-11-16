@@ -809,8 +809,6 @@ globalThis.appStep = (fn) => {
 
 #[test]
 fn style_decl_scopes_keep_authored_order_and_cleanup() {
-    const RED: [u8; 4] = [0xff, 0x00, 0x00, 0xff];
-    const GREEN: [u8; 4] = [0x00, 0xff, 0x00, 0xff];
     const BLUE: [u8; 4] = [0x00, 0x00, 0xff, 0xff];
     const YELLOW: [u8; 4] = [0xff, 0xff, 0x00, 0xff];
     const RING: [u8; 4] = [77, 163, 255, 242];
