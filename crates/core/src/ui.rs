@@ -366,9 +366,7 @@ impl UiProgram {
             };
             match instr {
                 Instr::Return => reachable_return = true,
-                Instr::Jump(target) => {
-                    next(&mut heights, &mut queue, *target as usize, height)?
-                }
+                Instr::Jump(target) => next(&mut heights, &mut queue, *target as usize, height)?,
                 Instr::JumpIfFalse(target) => {
                     next(&mut heights, &mut queue, *target as usize, height)?;
                     next(&mut heights, &mut queue, *end, height)?;
@@ -403,7 +401,9 @@ impl UiProgram {
                             | UiCapture::Shared(_)
                             | UiCapture::Text(_)
                     ) {
-                        return Err("only shared values, strings, and primitives can be pushed".into());
+                        return Err(
+                            "only shared values, strings, and primitives can be pushed".into()
+                        );
                     }
                 }
                 Instr::StoreShared(index) | Instr::StoreAnim(index) | Instr::CancelAnim(index) => {
@@ -508,9 +508,11 @@ impl crate::shell::Shell {
                 return Err(self.fault(format!("ui call {id} argument is not finite")));
             }
         }
-        self.ui_stack.extend(args.iter().map(|arg| UiValue::from_expr(*arg)));
+        self.ui_stack
+            .extend(args.iter().map(|arg| UiValue::from_expr(*arg)));
         let locals_start = self.ui_stack.len();
-        self.ui_stack.resize(locals_start + LOCALS, UiValue::Num(0.0));
+        self.ui_stack
+            .resize(locals_start + LOCALS, UiValue::Num(0.0));
         let result = self.run_frame(id, args.len() as u8, base, locals_start, 0);
         self.ui_stack.truncate(base);
         result
@@ -574,10 +576,11 @@ impl crate::shell::Shell {
                         ExprConst::Num(value) => UiValue::Num(*value),
                         ExprConst::Color(value) => UiValue::Color(*value),
                         ExprConst::Bool(value) => UiValue::Bool(*value),
-                        ExprConst::ColorString(text) => UiValue::Color(
-                            crate::color::parse(text)
-                                .map_err(|error| self.fault(format!("bad color constant: {error}")))?,
-                        ),
+                        ExprConst::ColorString(text) => {
+                            UiValue::Color(crate::color::parse(text).map_err(|error| {
+                                self.fault(format!("bad color constant: {error}"))
+                            })?)
+                        }
                     };
                     self.ui_stack.push(value);
                 }
@@ -598,11 +601,10 @@ impl crate::shell::Shell {
                         UiCapture::Bool(value) => UiValue::Bool(*value),
                         UiCapture::Text(value) => UiValue::Text(value.clone()),
                         UiCapture::Shared(var) => {
-                            let value = self
-                                .vars
-                                .get(*var)
-                                .map(|var| var.value)
-                                .ok_or_else(|| self.fault(format!("unknown shared value {var}")))?;
+                            let value =
+                                self.vars.get(*var).map(|var| var.value).ok_or_else(|| {
+                                    self.fault(format!("unknown shared value {var}"))
+                                })?;
                             UiValue::from_expr(value)
                         }
                         UiCapture::Function(_) | UiCapture::JsCallback(_) => {
@@ -757,7 +759,8 @@ impl crate::shell::Shell {
                         self.ui_stack.push(UiValue::from_expr(arg));
                     }
                     let frame_locals = self.ui_stack.len();
-                    self.ui_stack.resize(frame_locals + LOCALS, UiValue::Num(0.0));
+                    self.ui_stack
+                        .resize(frame_locals + LOCALS, UiValue::Num(0.0));
                     // The caller's argc is the truth: a callee that declares
                     // another arity faults instead of reading local slots.
                     let returned =
@@ -820,7 +823,12 @@ impl crate::shell::Shell {
 
     /// Shared-value write shared by STORE_SHARED and STORE_ANIM. A
     /// source-driven target records a fault and ends the call.
-    fn store_shared(&mut self, target: Option<u32>, to: UiValue, store: Store) -> Result<(), String> {
+    fn store_shared(
+        &mut self,
+        target: Option<u32>,
+        to: UiValue,
+        store: Store,
+    ) -> Result<(), String> {
         let Some(var) = target else {
             return Err(self.fault("store target is not a shared value"));
         };

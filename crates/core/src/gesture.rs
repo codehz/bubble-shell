@@ -819,11 +819,20 @@ impl Recognizer {
                 .and_then(Option::as_ref)
                 .map(|decl| decl.target)
                 .unwrap_or(0);
-            push_event(events, ui_events, decls, id, SLOT_START, sequence, now_ms, |event| {
-                event.target = target;
-                event.x = x;
-                event.y = y;
-            });
+            push_event(
+                events,
+                ui_events,
+                decls,
+                id,
+                SLOT_START,
+                sequence,
+                now_ms,
+                |event| {
+                    event.target = target;
+                    event.x = x;
+                    event.y = y;
+                },
+            );
             seq.axes_owned |= 3;
         }
         let (x, y) = (seq.last_x, seq.last_y);
@@ -1238,15 +1247,24 @@ impl Recognizer {
                 .and_then(Option::as_ref)
                 .map(|decl| decl.target)
                 .unwrap_or(0);
-            push_event(events, ui_events, decls, id, SLOT_START, seq.id, time_ms, |event| {
-                event.target = target;
-                event.x = x;
-                event.y = y;
-                event.translation_x = x - start_x;
-                event.translation_y = y - start_y;
-                event.velocity_x = vx;
-                event.velocity_y = vy;
-            });
+            push_event(
+                events,
+                ui_events,
+                decls,
+                id,
+                SLOT_START,
+                seq.id,
+                time_ms,
+                |event| {
+                    event.target = target;
+                    event.x = x;
+                    event.y = y;
+                    event.translation_x = x - start_x;
+                    event.translation_y = y - start_y;
+                    event.velocity_x = vx;
+                    event.velocity_y = vy;
+                },
+            );
             if trace_on {
                 trace_lines.push(format!(
                     "seq {} gesture {id} target {target} accept axes={}",
@@ -1290,17 +1308,26 @@ impl Recognizer {
                 .and_then(Option::as_ref)
                 .map(|decl| decl.target)
                 .unwrap_or(0);
-            push_event(events, ui_events, decls, id, SLOT_UPDATE, seq.id, time_ms, |event| {
-                event.target = target;
-                event.x = x;
-                event.y = y;
-                event.translation_x = tx;
-                event.translation_y = ty;
-                event.delta_x = dx;
-                event.delta_y = dy;
-                event.velocity_x = vx;
-                event.velocity_y = vy;
-            });
+            push_event(
+                events,
+                ui_events,
+                decls,
+                id,
+                SLOT_UPDATE,
+                seq.id,
+                time_ms,
+                |event| {
+                    event.target = target;
+                    event.x = x;
+                    event.y = y;
+                    event.translation_x = tx;
+                    event.translation_y = ty;
+                    event.delta_x = dx;
+                    event.delta_y = dy;
+                    event.velocity_x = vx;
+                    event.velocity_y = vy;
+                },
+            );
         }
         let won = seq
             .cands
@@ -1382,10 +1409,19 @@ impl Recognizer {
                 .and_then(Option::as_ref)
                 .map(|decl| decl.target)
                 .unwrap_or(0);
-            push_event(events, ui_events, decls, decl, SLOT_CANCEL, seq.id, time_ms, |event| {
-                event.target = target;
-                event.reason = REASON_UPGRADE;
-            });
+            push_event(
+                events,
+                ui_events,
+                decls,
+                decl,
+                SLOT_CANCEL,
+                seq.id,
+                time_ms,
+                |event| {
+                    event.target = target;
+                    event.reason = REASON_UPGRADE;
+                },
+            );
         }
         for cand in &mut seq.cands {
             if cand.decl == id {
@@ -1404,11 +1440,20 @@ impl Recognizer {
             .and_then(Option::as_ref)
             .map(|decl| decl.target)
             .unwrap_or(0);
-        push_event(events, ui_events, decls, id, SLOT_START, seq.id, time_ms, |event| {
-            event.target = target;
-            event.x = cx;
-            event.y = cy;
-        });
+        push_event(
+            events,
+            ui_events,
+            decls,
+            id,
+            SLOT_START,
+            seq.id,
+            time_ms,
+            |event| {
+                event.target = target;
+                event.x = cx;
+                event.y = cy;
+            },
+        );
         self.fail_tap(REASON_UPGRADE, time_ms, cx, cy);
     }
 
@@ -1561,19 +1606,28 @@ impl Recognizer {
             .and_then(Option::as_ref)
             .map(|decl| decl.target)
             .unwrap_or(0);
-        push_event(events, ui_events, decls, id, SLOT_UPDATE, seq.id, time_ms, |event| {
-            event.target = target;
-            event.x = cx;
-            event.y = cy;
-            event.translation_x = translation_x;
-            event.translation_y = translation_y;
-            event.delta_x = delta_x;
-            event.delta_y = delta_y;
-            event.scale = scale;
-            event.rotation = rotation as f32;
-            event.velocity_x = vx;
-            event.velocity_y = vy;
-        });
+        push_event(
+            events,
+            ui_events,
+            decls,
+            id,
+            SLOT_UPDATE,
+            seq.id,
+            time_ms,
+            |event| {
+                event.target = target;
+                event.x = cx;
+                event.y = cy;
+                event.translation_x = translation_x;
+                event.translation_y = translation_y;
+                event.delta_x = delta_x;
+                event.delta_y = delta_y;
+                event.scale = scale;
+                event.rotation = rotation as f32;
+                event.velocity_x = vx;
+                event.velocity_y = vy;
+            },
+        );
     }
 
     fn up(&mut self, input: PointerInput) {
@@ -1701,17 +1755,26 @@ impl Recognizer {
                 .and_then(Option::as_ref)
                 .map(|decl| decl.target)
                 .unwrap_or(0);
-            push_event(events, ui_events, decls, id, SLOT_END, seq.id, time_ms, |event| {
-                event.target = target;
-                event.x = x;
-                event.y = y;
-                event.translation_x = x - start_x;
-                event.translation_y = y - start_y;
-                event.delta_x = x - last_x;
-                event.delta_y = y - last_y;
-                event.velocity_x = vx;
-                event.velocity_y = vy;
-            });
+            push_event(
+                events,
+                ui_events,
+                decls,
+                id,
+                SLOT_END,
+                seq.id,
+                time_ms,
+                |event| {
+                    event.target = target;
+                    event.x = x;
+                    event.y = y;
+                    event.translation_x = x - start_x;
+                    event.translation_y = y - start_y;
+                    event.delta_x = x - last_x;
+                    event.delta_y = y - last_y;
+                    event.velocity_x = vx;
+                    event.velocity_y = vy;
+                },
+            );
         }
         let tap_ok = !seq.tap_failed
             && !seq.scroll_used
@@ -1825,17 +1888,26 @@ impl Recognizer {
             .and_then(Option::as_ref)
             .map(|decl| decl.target)
             .unwrap_or(0);
-        push_event(events, ui_events, decls, id, SLOT_END, sequence, time_ms, |event| {
-            event.target = target;
-            event.x = x;
-            event.y = y;
-            event.translation_x = tx;
-            event.translation_y = ty;
-            event.scale = scale;
-            event.rotation = rotation as f32;
-            event.velocity_x = vx;
-            event.velocity_y = vy;
-        });
+        push_event(
+            events,
+            ui_events,
+            decls,
+            id,
+            SLOT_END,
+            sequence,
+            time_ms,
+            |event| {
+                event.target = target;
+                event.x = x;
+                event.y = y;
+                event.translation_x = tx;
+                event.translation_y = ty;
+                event.scale = scale;
+                event.rotation = rotation as f32;
+                event.velocity_x = vx;
+                event.velocity_y = vy;
+            },
+        );
         if let Some(cand) = seq.cands.iter_mut().find(|cand| cand.decl == id) {
             cand.state = CandState::Failed;
         }
@@ -1913,12 +1985,21 @@ impl Recognizer {
                 .and_then(Option::as_ref)
                 .map(|decl| decl.target)
                 .unwrap_or(0);
-            push_event(events, ui_events, decls, id, SLOT_CANCEL, seq.id, time, |event| {
-                event.target = target;
-                event.x = x;
-                event.y = y;
-                event.reason = reason;
-            });
+            push_event(
+                events,
+                ui_events,
+                decls,
+                id,
+                SLOT_CANCEL,
+                seq.id,
+                time,
+                |event| {
+                    event.target = target;
+                    event.x = x;
+                    event.y = y;
+                    event.reason = reason;
+                },
+            );
         }
         let mut press_cancel = false;
         if seq
@@ -1938,10 +2019,19 @@ impl Recognizer {
                     .and_then(Option::as_ref)
                     .map(|decl| decl.target)
                     .unwrap_or(0);
-                push_event(events, ui_events, decls, id, SLOT_CANCEL, seq.id, time, |event| {
-                    event.target = target;
-                    event.reason = reason;
-                });
+                push_event(
+                    events,
+                    ui_events,
+                    decls,
+                    id,
+                    SLOT_CANCEL,
+                    seq.id,
+                    time,
+                    |event| {
+                        event.target = target;
+                        event.reason = reason;
+                    },
+                );
             }
         }
         if press_cancel {
@@ -2145,12 +2235,21 @@ fn emit_for(
     reason: u8,
     target: u32,
 ) {
-    push_event(events, ui_events, decls, id, slot, sequence, time_ms, |event| {
-        event.target = target;
-        event.x = x;
-        event.y = y;
-        event.reason = reason;
-    });
+    push_event(
+        events,
+        ui_events,
+        decls,
+        id,
+        slot,
+        sequence,
+        time_ms,
+        |event| {
+            event.target = target;
+            event.x = x;
+            event.y = y;
+            event.reason = reason;
+        },
+    );
 }
 
 fn push_event(

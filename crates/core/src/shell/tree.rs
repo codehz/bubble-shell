@@ -239,7 +239,12 @@ impl Shell {
     /// Apply one declaration value: `when` or a paint slot. Programs are
     /// validated and evaluated once here, so a type or range error fails the
     /// batch instead of painting a wrong value.
-    pub(super) fn set_style_decl_prop(&mut self, decl: u32, key: &str, value: &Value) -> Result<(), String> {
+    pub(super) fn set_style_decl_prop(
+        &mut self,
+        decl: u32,
+        key: &str,
+        value: &Value,
+    ) -> Result<(), String> {
         let slot = if key == "when" {
             None
         } else {
@@ -530,7 +535,12 @@ impl Shell {
             .ok_or_else(|| format!("bad handle {id}"))
     }
 
-    pub(super) fn insert_node(&mut self, desc: NodeDesc, parent: u32, index: u32) -> Result<(), String> {
+    pub(super) fn insert_node(
+        &mut self,
+        desc: NodeDesc,
+        parent: u32,
+        index: u32,
+    ) -> Result<(), String> {
         let handle = desc.id;
         if handle == 0 || self.retired.contains(&handle) || self.node(handle).is_ok() {
             return Err(format!("handle {handle} is not free"));

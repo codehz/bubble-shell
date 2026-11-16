@@ -49,7 +49,8 @@ pub use layout::{
 pub use manifest::validate_bundle_hashes;
 pub use ops::{
     decode_ops, decode_ui_args, decode_ui_function_payload, encode, encode_set_prop_color,
-    encode_set_text, encode_ui_args, encode_ui_function_payload, spawn_at_ops, spawn_ops, Op, Value,
+    encode_set_text, encode_ui_args, encode_ui_function_payload, spawn_at_ops, spawn_ops, Op,
+    Value,
 };
 pub use paint::encode_paint;
 pub use props::{Prop, TEXT_STYLE_PROPS, VIEW_STYLE_PROPS};
@@ -61,8 +62,8 @@ pub use semantics::{
 };
 pub use shell::{A11yAction, EditMenuAction, Key, MenuResult, PaintCmd, ScrollOutcome, Shell};
 pub use state_style::{
-    encode_var_events, AnimSpec, VarEvent, EASE_LINEAR, SOURCE_DISABLED,
-    SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED,
+    encode_var_events, AnimSpec, VarEvent, EASE_LINEAR, SOURCE_DISABLED, SOURCE_EDITING,
+    SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED,
 };
 pub use turn::Turn;
 pub use ui::{encode_js_calls, UiCall, UiCapture, UiProgram, UiValue};

@@ -4,9 +4,9 @@ use crate::color::Color;
 use crate::editing::display_text;
 use crate::ir::Kind;
 use crate::layout::{wrapping_layout, LayoutRequest, LayoutSnapshot};
+use taffy::compute_leaf_layout;
 use taffy::prelude::*;
 use taffy::style::Overflow;
-use taffy::compute_leaf_layout;
 
 use super::tree::style_for;
 use super::{Len, Measure, NodeStyle, Shell};

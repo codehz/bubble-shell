@@ -3,16 +3,16 @@ use crate::expr::ExprValue;
 use crate::gesture::GestureEvent;
 use crate::ops::Value;
 use crate::state_style::{
-    AnimSpec, AnimState, DeclExpr, ResolvedPatch, SlotType, VarEvent,
-    VarTable, SOURCE_DISABLED, SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_GESTURE_ROTATION,
-    SOURCE_GESTURE_SCALE, SOURCE_GESTURE_TX, SOURCE_GESTURE_TY, SOURCE_NONE, SOURCE_PRESSED,
-    SOURCE_SCROLL_X, SOURCE_SCROLL_Y,
+    AnimSpec, AnimState, DeclExpr, ResolvedPatch, SlotType, VarEvent, VarTable, SOURCE_DISABLED,
+    SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_GESTURE_ROTATION, SOURCE_GESTURE_SCALE,
+    SOURCE_GESTURE_TX, SOURCE_GESTURE_TY, SOURCE_NONE, SOURCE_PRESSED, SOURCE_SCROLL_X,
+    SOURCE_SCROLL_Y,
 };
 
-use crate::ui::UiCall;
 use super::paint::EffectivePaintStyle;
 use super::tree::Node;
 use super::Shell;
+use crate::ui::UiCall;
 
 impl Shell {
     /// Base paint values with the currently matching style declaration
@@ -68,7 +68,12 @@ impl Shell {
     /// Create a variable. Script-driven variables take their value from
     /// `initial`; source-driven ones start at the source's zero value and are
     /// attached to their target node by a later `BindVar`.
-    pub(super) fn create_var(&mut self, var: u32, source: u8, initial: &Value) -> Result<(), String> {
+    pub(super) fn create_var(
+        &mut self,
+        var: u32,
+        source: u8,
+        initial: &Value,
+    ) -> Result<(), String> {
         if source > SOURCE_SCROLL_Y {
             return Err(format!("var {var} has unknown source {source}"));
         }
@@ -113,7 +118,12 @@ impl Shell {
     /// owned by the UI thread, so the script may not write them. `anim`
     /// carries a tween or spring started from the current displayed value;
     /// `None` lands immediately.
-    pub(super) fn set_var(&mut self, var: u32, value: &Value, anim: Option<AnimSpec>) -> Result<(), String> {
+    pub(super) fn set_var(
+        &mut self,
+        var: u32,
+        value: &Value,
+        anim: Option<AnimSpec>,
+    ) -> Result<(), String> {
         let next = parse_expr_value(value)
             .ok_or_else(|| format!("var {var} value must be a number, color, or bool"))?;
         let Some(var_slot) = self.vars.get_mut(var) else {
@@ -128,11 +138,15 @@ impl Shell {
         }
         // Bool animates instantly, and so does anything the engine cannot
         // interpolate; only Num and Color transitions actually run.
-        let animatable =
-            matches!(next, ExprValue::Num(_) | ExprValue::Color(_)) && anim.is_some();
+        let animatable = matches!(next, ExprValue::Num(_) | ExprValue::Color(_)) && anim.is_some();
         if animatable {
             let from = var_slot.value.clone();
-            var_slot.anim_state = Some(AnimState::new(anim.expect("checked"), from, next, self.now_ms));
+            var_slot.anim_state = Some(AnimState::new(
+                anim.expect("checked"),
+                from,
+                next,
+                self.now_ms,
+            ));
         } else {
             var_slot.anim_state = None;
             var_slot.value = next;

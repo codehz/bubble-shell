@@ -135,27 +135,162 @@ enum OpRule {
 }
 
 const OP_SPECS: &[OpSpec] = &[
-    OpSpec { what: "arithmetic", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_ADD
-    OpSpec { what: "arithmetic", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_SUB
-    OpSpec { what: "arithmetic", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_MUL
-    OpSpec { what: "arithmetic", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_DIV
-    OpSpec { what: "neg", pops: 1, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_NEG
-    OpSpec { what: "comparison", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::B } }, // OP_LT
-    OpSpec { what: "comparison", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::B } }, // OP_LE
-    OpSpec { what: "comparison", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::B } }, // OP_GT
-    OpSpec { what: "comparison", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::B } }, // OP_GE
-    OpSpec { what: "equality", pops: 2, rule: OpRule::Equality }, // OP_EQ
-    OpSpec { what: "equality", pops: 2, rule: OpRule::Equality }, // OP_NE
-    OpSpec { what: "logical", pops: 2, rule: OpRule::Fixed { operand: Type::B, result: Type::B } }, // OP_AND
-    OpSpec { what: "logical", pops: 2, rule: OpRule::Fixed { operand: Type::B, result: Type::B } }, // OP_OR
-    OpSpec { what: "not", pops: 1, rule: OpRule::Fixed { operand: Type::B, result: Type::B } }, // OP_NOT
-    OpSpec { what: "select", pops: 3, rule: OpRule::Branches }, // OP_SELECT
-    OpSpec { what: "mix", pops: 3, rule: OpRule::Mix }, // OP_MIX
-    OpSpec { what: "lerp", pops: 3, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_LERP
-    OpSpec { what: "lerp", pops: 3, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_CLAMP
-    OpSpec { what: "min", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_MIN
-    OpSpec { what: "min", pops: 2, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_MAX
-    OpSpec { what: "neg", pops: 1, rule: OpRule::Fixed { operand: Type::N, result: Type::N } }, // OP_ABS
+    OpSpec {
+        what: "arithmetic",
+        pops: 2,
+        rule: OpRule::Fixed {
+            operand: Type::N,
+            result: Type::N,
+        },
+    }, // OP_ADD
+    OpSpec {
+        what: "arithmetic",
+        pops: 2,
+        rule: OpRule::Fixed {
+            operand: Type::N,
+            result: Type::N,
+        },
+    }, // OP_SUB
+    OpSpec {
+        what: "arithmetic",
+        pops: 2,
+        rule: OpRule::Fixed {
+            operand: Type::N,
+            result: Type::N,
+        },
+    }, // OP_MUL
+    OpSpec {
+        what: "arithmetic",
+        pops: 2,
+        rule: OpRule::Fixed {
+            operand: Type::N,
+            result: Type::N,
+        },
+    }, // OP_DIV
+    OpSpec {
+        what: "neg",
+        pops: 1,
+        rule: OpRule::Fixed {
+            operand: Type::N,
+            result: Type::N,
+        },
+    }, // OP_NEG
+    OpSpec {
+        what: "comparison",
+        pops: 2,
+        rule: OpRule::Fixed {
+            operand: Type::N,
+            result: Type::B,
+        },
+    }, // OP_LT
+    OpSpec {
+        what: "comparison",
+        pops: 2,
+        rule: OpRule::Fixed {
+            operand: Type::N,
+            result: Type::B,
+        },
+    }, // OP_LE
+    OpSpec {
+        what: "comparison",
+        pops: 2,
+        rule: OpRule::Fixed {
+            operand: Type::N,
+            result: Type::B,
+        },
+    }, // OP_GT
+    OpSpec {
+        what: "comparison",
+        pops: 2,
+        rule: OpRule::Fixed {
+            operand: Type::N,
+            result: Type::B,
+        },
+    }, // OP_GE
+    OpSpec {
+        what: "equality",
+        pops: 2,
+        rule: OpRule::Equality,
+    }, // OP_EQ
+    OpSpec {
+        what: "equality",
+        pops: 2,
+        rule: OpRule::Equality,
+    }, // OP_NE
+    OpSpec {
+        what: "logical",
+        pops: 2,
+        rule: OpRule::Fixed {
+            operand: Type::B,
+            result: Type::B,
+        },
+    }, // OP_AND
+    OpSpec {
+        what: "logical",
+        pops: 2,
+        rule: OpRule::Fixed {
+            operand: Type::B,
+            result: Type::B,
+        },
+    }, // OP_OR
+    OpSpec {
+        what: "not",
+        pops: 1,
+        rule: OpRule::Fixed {
+            operand: Type::B,
+            result: Type::B,
+        },
+    }, // OP_NOT
+    OpSpec {
+        what: "select",
+        pops: 3,
+        rule: OpRule::Branches,
+    }, // OP_SELECT
+    OpSpec {
+        what: "mix",
+        pops: 3,
+        rule: OpRule::Mix,
+    }, // OP_MIX
+    OpSpec {
+        what: "lerp",
+        pops: 3,
+        rule: OpRule::Fixed {
+            operand: Type::N,
+            result: Type::N,
+        },
+    }, // OP_LERP
+    OpSpec {
+        what: "lerp",
+        pops: 3,
+        rule: OpRule::Fixed {
+            operand: Type::N,
+            result: Type::N,
+        },
+    }, // OP_CLAMP
+    OpSpec {
+        what: "min",
+        pops: 2,
+        rule: OpRule::Fixed {
+            operand: Type::N,
+            result: Type::N,
+        },
+    }, // OP_MIN
+    OpSpec {
+        what: "min",
+        pops: 2,
+        rule: OpRule::Fixed {
+            operand: Type::N,
+            result: Type::N,
+        },
+    }, // OP_MAX
+    OpSpec {
+        what: "neg",
+        pops: 1,
+        rule: OpRule::Fixed {
+            operand: Type::N,
+            result: Type::N,
+        },
+    }, // OP_ABS
 ];
 
 /// Opcodes `OP_ADD..=OP_MAX` are contiguous and table order matches.
@@ -271,9 +406,7 @@ pub(crate) fn eval_op(op: u8, stack: &mut Vec<ExprValue>) -> Result<(), ProgramE
                 (Type::N, Type::N) => {
                     ExprValue::Num(num(a, "mix")? + (num(b, "mix")? - num(a, "mix")?) * t)
                 }
-                (Type::C, Type::C) => {
-                    ExprValue::Color(color(a, "mix")?.mix(&color(b, "mix")?, t))
-                }
+                (Type::C, Type::C) => ExprValue::Color(color(a, "mix")?.mix(&color(b, "mix")?, t)),
                 _ => return err("mix interpolates two numbers or two colors"),
             };
             stack.push(value);
@@ -429,9 +562,9 @@ impl Program {
                     let spec = op_spec(*op)?;
                     let mut popped: Vec<Type> = Vec::with_capacity(spec.pops as usize);
                     for _ in 0..spec.pops {
-                        let got = stack
-                            .pop()
-                            .ok_or_else(|| ProgramError(format!("{} underflows the stack", spec.what)))?;
+                        let got = stack.pop().ok_or_else(|| {
+                            ProgramError(format!("{} underflows the stack", spec.what))
+                        })?;
                         popped.push(got);
                     }
                     match spec.rule {

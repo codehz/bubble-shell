@@ -69,14 +69,8 @@ pub const EASE_IN_OUT: u8 = 1;
 /// started it: styles that read the variable get the motion for free.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AnimSpec {
-    Tween {
-        duration_ms: f32,
-        easing: u8,
-    },
-    Spring {
-        stiffness: f32,
-        damping: f32,
-    },
+    Tween { duration_ms: f32, easing: u8 },
+    Spring { stiffness: f32, damping: f32 },
 }
 
 /// Easing in `[0, 1] -> [0, 1]`.
@@ -296,7 +290,13 @@ impl VarTable {
     }
 
     /// Claim `id`. Variables are never reused; a retired id stays retired.
-    pub fn create(&mut self, id: u32, source: u8, target: u32, value: ExprValue) -> Result<(), String> {
+    pub fn create(
+        &mut self,
+        id: u32,
+        source: u8,
+        target: u32,
+        value: ExprValue,
+    ) -> Result<(), String> {
         if id == 0 || self.retired.contains(&id) || self.get(id).is_some() {
             return Err(format!("var {id} is not free"));
         }
