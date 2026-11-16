@@ -93,6 +93,22 @@ workspace crates (like nsh's `crates/*-host`), never projects under
 - Platform-specific code is acceptable only for the demo targets that ship now.
 - Do not add defensive code just to satisfy a hypothetical acceptance run.
 
+## Commit messages
+
+Subject is `area: description` — an area, a colon, a space, an imperative
+description. No Conventional-Commit type prefixes (`fix:`, `feat(core):`,
+`refactor(x):`).
+
+- Area is lowercase, short, and names the slice the change touches: crate
+  (`core`, `compiler`, `wasm`, `ffi`, `native`), sdk surface (`web`),
+  fixture (`gallery`), feature (`textfield`, `gestures`, `worklets`), or
+  build scope (`workspace`). Cross-cutting fixes pick the dominant slice.
+- Description states what the change does, not what was wrong:
+  `core: hit-test through node paint transforms`, not `fix: hit-test bug`.
+- Optional body: blank line after the subject, then free-form paragraphs or
+  `- ` bullets. Bodies explain scope, API/protocol changes, and test notes;
+  do not restate the subject.
+
 ## Documentation
 
 - Do not record verification runs, screenshots, frame numbers, or acceptance
