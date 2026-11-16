@@ -454,6 +454,8 @@ impl Shell {
                     color,
                 });
             }
+        }
+        if kind == Kind::Field && id == self.drop_caret_field {
             if let Some((dx, dy, dw, dh)) = self.drop_caret_box {
                 if self
                     .field_pointer

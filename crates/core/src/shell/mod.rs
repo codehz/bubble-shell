@@ -171,6 +171,8 @@ pub struct Shell {
     caret_box: Option<(f32, f32, f32, f32)>,
     /// Viewport rect of the content-drag insertion caret.
     drop_caret_box: Option<(f32, f32, f32, f32)>,
+    /// Field that owns `drop_caret_box`. `0` when there is no drop indicator.
+    drop_caret_field: u32,
     /// Masked selection shown while dragging field content.
     drag_ghost_text: String,
     /// Viewport point the drag ghost is centered on.
@@ -387,6 +389,7 @@ impl Shell {
             caret_handle: 0,
             caret_box: None,
             drop_caret_box: None,
+            drop_caret_field: 0,
             drag_ghost_text: String::new(),
             drag_ghost_pos: None,
             drag_ghost_size: (0.0, 0.0),

@@ -384,7 +384,8 @@ impl Shell {
                     state.drop_unit = unit;
                     state.drop_valid = valid;
                 }
-                if previous != Some((unit, valid)) {
+                let next_drop_field = if valid { target } else { 0 };
+                if previous != Some((unit, valid)) || self.drop_caret_field != next_drop_field {
                     self.drop_caret_box = match (unit.filter(|_| valid), host) {
                         (Some(unit), Some(caret_host)) => self
                             .caret_rect_at_handle(target, unit, caret_host)
@@ -392,6 +393,11 @@ impl Shell {
                             .flatten()
                             .map(|(x, y, _, h)| (x, y, 2.0, h)),
                         _ => None,
+                    };
+                    self.drop_caret_field = if self.drop_caret_box.is_some() {
+                        next_drop_field
+                    } else {
+                        0
                     };
                 }
                 self.paint_dirty.set(true);
@@ -627,9 +633,11 @@ impl Shell {
 
     fn clear_drag_visual(&mut self) {
         let showing = self.drop_caret_box.is_some()
+            || self.drop_caret_field != 0
             || self.drag_ghost_pos.is_some()
             || !self.drag_ghost_text.is_empty();
         self.drop_caret_box = None;
+        self.drop_caret_field = 0;
         self.drag_ghost_text.clear();
         self.drag_ghost_pos = None;
         self.drag_ghost_size = (0.0, 0.0);
@@ -652,6 +660,7 @@ impl Shell {
             .map(|state| (state.start_x, state.start_y));
         self.drag_ghost_size = self.measure_drag_ghost(handle, host);
         self.drop_caret_box = None;
+        self.drop_caret_field = 0;
         self.paint_dirty.set(true);
     }
 
