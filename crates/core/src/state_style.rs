@@ -73,14 +73,16 @@ pub enum AnimSpec {
     Spring { stiffness: f32, damping: f32 },
 }
 
-/// Easing in `[0, 1] -> [0, 1]`.
+/// Easing in `[0, 1] -> [0, 1]`. `easeInOut` is easeInOutQuad: the second
+/// half eases out of the remaining distance (`1 - 2*(1-t)^2`). Using
+/// `(2t-1)` there peaks at 1 halfway through and runs to -1 at the end.
 pub fn ease(easing: u8, t: f32) -> f32 {
     match easing {
         EASE_IN_OUT => {
             if t < 0.5 {
                 2.0 * t * t
             } else {
-                let u = 2.0 * t - 1.0;
+                let u = 1.0 - t;
                 1.0 - 2.0 * u * u
             }
         }
