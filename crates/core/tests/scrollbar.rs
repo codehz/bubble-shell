@@ -8,9 +8,9 @@ fn layout(shell: &mut Shell) {
     shell.layout(&mut |_, _, _, _, _| (0.0, 0.0)).unwrap();
 }
 
-fn prop(handle: u32, key: &str, value: Value) -> Op {
-    Op::SetProp {
-        handle,
+fn prop(scrollbar: u32, key: &str, value: Value) -> Op {
+    Op::SetScrollBarProp {
+        scrollbar,
         key: key.into(),
         value,
     }
@@ -63,9 +63,11 @@ fn vertical_shell(auto_hide: bool) -> (Shell, u32) {
         child.flex_shrink = 0.0;
         ops.extend(spawn_ops(child));
     }
-    let mut bar = NodeDesc::view(6, 2);
-    bar.kind = Kind::ScrollBar;
-    ops.extend(spawn_ops(bar));
+    ops.push(Op::SpawnScrollBar {
+        scrollbar: 6,
+        target: 2,
+        index: 0,
+    });
     ops.push(prop(6, "scrollbarWidth", Value::Float(6.0)));
     ops.push(prop(6, "scrollbarColor", Value::Int(0xff00_00ff)));
     ops.push(prop(6, "autoHide", Value::Bool(auto_hide)));
@@ -233,11 +235,13 @@ fn horizontal_thumb_sits_on_the_bottom_edge() {
     child.width = Some(600.0);
     child.height = Some(40.0);
     child.flex_shrink = 0.0;
-    let mut bar = NodeDesc::view(4, 2);
-    bar.kind = Kind::ScrollBar;
     let mut ops = spawn_ops(root);
     ops.extend(spawn_ops(child));
-    ops.extend(spawn_ops(bar));
+    ops.push(Op::SpawnScrollBar {
+        scrollbar: 4,
+        target: 2,
+        index: 0,
+    });
     ops.push(prop(4, "axis", Value::String("horizontal".into())));
     ops.push(prop(4, "scrollbarWidth", Value::Float(6.0)));
     ops.push(prop(4, "scrollbarColor", Value::Int(0xff00_00ff)));
@@ -303,11 +307,13 @@ fn no_thumb_when_content_fits() {
     child.width = Some(100.0);
     child.height = Some(80.0);
     child.flex_shrink = 0.0;
-    let mut bar = NodeDesc::view(4, 2);
-    bar.kind = Kind::ScrollBar;
     let mut ops = spawn_ops(root);
     ops.extend(spawn_ops(child));
-    ops.extend(spawn_ops(bar));
+    ops.push(Op::SpawnScrollBar {
+        scrollbar: 4,
+        target: 2,
+        index: 0,
+    });
     ops.push(prop(4, "scrollbarColor", Value::Int(0xff00_00ff)));
     ops.push(prop(4, "autoHide", Value::Bool(false)));
     shell.apply_ops(&encode(1, &ops)).unwrap();
@@ -329,14 +335,18 @@ fn both_axes_track_independently() {
     child.width = Some(600.0);
     child.height = Some(600.0);
     child.flex_shrink = 0.0;
-    let mut vertical = NodeDesc::view(4, 2);
-    vertical.kind = Kind::ScrollBar;
-    let mut horizontal = NodeDesc::view(5, 2);
-    horizontal.kind = Kind::ScrollBar;
     let mut ops = spawn_ops(root);
     ops.extend(spawn_ops(child));
-    ops.extend(spawn_ops(vertical));
-    ops.extend(spawn_ops(horizontal));
+    ops.push(Op::SpawnScrollBar {
+        scrollbar: 4,
+        target: 2,
+        index: 0,
+    });
+    ops.push(Op::SpawnScrollBar {
+        scrollbar: 5,
+        target: 2,
+        index: 1,
+    });
     ops.push(prop(4, "scrollbarWidth", Value::Float(6.0)));
     ops.push(prop(4, "scrollbarColor", Value::Int(0xff00_00ff)));
     ops.push(prop(4, "autoHide", Value::Bool(false)));
@@ -371,4 +381,14 @@ fn both_axes_track_independently() {
         near(horizontal_next.0, horizontal_thumb.0),
         "horizontal thumb stays put when only y scrolls"
     );
+}
+
+#[test]
+fn scrollbar_kind_spawn_rejected() {
+    let mut shell = Shell::blank().unwrap();
+    shell.set_viewport(100.0, 100.0);
+    let mut bar = NodeDesc::view(2, 1);
+    bar.kind = Kind::ScrollBar;
+    let err = shell.spawn(bar).unwrap_err();
+    assert!(err.contains("SpawnScrollBar op"), "got: {err}");
 }

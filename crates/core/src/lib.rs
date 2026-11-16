@@ -16,6 +16,7 @@ mod layout;
 mod manifest;
 mod ops;
 mod ordered;
+mod scrollbar;
 mod paint;
 mod props;
 mod reactive;

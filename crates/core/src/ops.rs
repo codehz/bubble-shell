@@ -244,6 +244,26 @@ pub enum Op {
     DisposeStyleDecl {
         decl: u32,
     },
+    /// Virtual scrollbar attached to `target`; `index` is its position among
+    /// that target's scrollbars.
+    SpawnScrollBar {
+        scrollbar: u32,
+        target: u32,
+        index: u32,
+    },
+    SetScrollBarProp {
+        scrollbar: u32,
+        key: String,
+        value: Value,
+    },
+    MoveScrollBar {
+        scrollbar: u32,
+        target: u32,
+        index: u32,
+    },
+    DisposeScrollBar {
+        scrollbar: u32,
+    },
 }
 
 pub fn encode_set_text(seq: u32, handle: u32, text: &str) -> Vec<u8> {
@@ -926,6 +946,41 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.push(21);
                 payload.extend_from_slice(&decl.to_le_bytes());
             }
+            Op::SpawnScrollBar {
+                scrollbar,
+                target,
+                index,
+            } => {
+                payload.push(31);
+                payload.extend_from_slice(&scrollbar.to_le_bytes());
+                payload.extend_from_slice(&target.to_le_bytes());
+                payload.extend_from_slice(&index.to_le_bytes());
+            }
+            Op::SetScrollBarProp {
+                scrollbar,
+                key,
+                value,
+            } => {
+                let key_id = intern(key);
+                payload.push(32);
+                payload.extend_from_slice(&scrollbar.to_le_bytes());
+                payload.extend_from_slice(&key_id.to_le_bytes());
+                write_value(&mut payload, value, &mut intern);
+            }
+            Op::MoveScrollBar {
+                scrollbar,
+                target,
+                index,
+            } => {
+                payload.push(33);
+                payload.extend_from_slice(&scrollbar.to_le_bytes());
+                payload.extend_from_slice(&target.to_le_bytes());
+                payload.extend_from_slice(&index.to_le_bytes());
+            }
+            Op::DisposeScrollBar { scrollbar } => {
+                payload.push(34);
+                payload.extend_from_slice(&scrollbar.to_le_bytes());
+            }
         }
     }
 
@@ -1212,6 +1267,33 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
             }),
             21 => ops.push(Op::DisposeStyleDecl {
                 decl: read_u32(&mut payload_cur)?,
+            }),
+            31 => ops.push(Op::SpawnScrollBar {
+                scrollbar: read_u32(&mut payload_cur)?,
+                target: read_u32(&mut payload_cur)?,
+                index: read_u32(&mut payload_cur)?,
+            }),
+            32 => {
+                let scrollbar = read_u32(&mut payload_cur)?;
+                let key_id = read_u32(&mut payload_cur)? as usize;
+                let key = strings
+                    .get(key_id)
+                    .ok_or("scrollbar key out of range")?
+                    .clone();
+                let value = read_value(&mut payload_cur, &strings)?;
+                ops.push(Op::SetScrollBarProp {
+                    scrollbar,
+                    key,
+                    value,
+                });
+            }
+            33 => ops.push(Op::MoveScrollBar {
+                scrollbar: read_u32(&mut payload_cur)?,
+                target: read_u32(&mut payload_cur)?,
+                index: read_u32(&mut payload_cur)?,
+            }),
+            34 => ops.push(Op::DisposeScrollBar {
+                scrollbar: read_u32(&mut payload_cur)?,
             }),
             other => return Err(format!("unknown op tag {other}")),
         }

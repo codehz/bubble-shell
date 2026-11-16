@@ -1,9 +1,9 @@
 //! Ordered slots for virtual child declarations.
 //!
-//! Gestures and state styles are both virtual children: they attach to a real
-//! node, never lay out, and are ordered per target. This owns the id slots, the
-//! per-target order, and retirement; each registry keeps only its payload and
-//! its own validation.
+//! Gestures, state styles, and scrollbars are virtual children: they attach
+//! to a real node, never lay out, and are ordered per target. This owns the
+//! id slots, the per-target order, and retirement; each registry keeps only
+//! its payload and its own validation.
 
 use std::collections::{HashMap, HashSet};
 

@@ -167,6 +167,19 @@ setApi({
   bind_gesture_event: exports.bind_gesture_event,
   dispose_gesture: exports.dispose_gesture,
   move_gesture: exports.move_gesture,
+  spawn_scrollbar: exports.spawn_scrollbar,
+  set_scrollbar_prop(handle, key, tag, number, text) {
+    const keyBytes = encoder.encode(key);
+    const textBytes = tag === 4 ? encoder.encode(text) : new Uint8Array(0);
+    const keyPtr = copyBytes(keyBytes);
+    const textPtr = textBytes.length ? copyBytes(textBytes) : 0;
+    const code = exports.set_scrollbar_prop(handle, keyPtr, keyBytes.length, tag, number, textPtr, textBytes.length);
+    exports.dealloc(keyPtr, keyBytes.length);
+    if (textBytes.length) exports.dealloc(textPtr, textBytes.length);
+    return code;
+  },
+  dispose_scrollbar: exports.dispose_scrollbar,
+  move_scrollbar: exports.move_scrollbar,
   create_var(...args) {
     return exports.create_var(...args);
   },

@@ -434,7 +434,6 @@ impl Shell {
             scroll_top,
             scrolls_x,
             scrolls_y,
-            count,
             out,
         ) {
             return true;
@@ -644,17 +643,26 @@ impl Shell {
         if previous == now {
             return false;
         }
-        self.nodes.iter().flatten().any(|node| {
-            if node.kind != Kind::ScrollBar || !node.scrollbar_auto_hide {
-                return false;
+        for index in 0..self.scrollbars.decl_slots() {
+            let (auto_hide, target) = {
+                let Some(bar) = self.scrollbars.at(index) else {
+                    continue;
+                };
+                (bar.auto_hide, bar.target)
+            };
+            if !auto_hide {
+                continue;
             }
             let last = self
                 .last_scroll_time
-                .get(&node.parent)
+                .get(&target)
                 .copied()
                 .unwrap_or(0.0);
-            (previous - last < 1000.0) != (now - last < 1000.0)
-        })
+            if (previous - last < 1000.0) != (now - last < 1000.0) {
+                return true;
+            }
+        }
+        false
     }
 
     fn claim_scrollbar(&mut self, input: &PointerInput) -> bool {
@@ -681,30 +689,54 @@ impl Shell {
     }
 
     fn begin_scrollbar_drag(&mut self, input: &PointerInput) -> bool {
-        let Some(&handle) = input.path.first() else {
+        let Some(&id) = input.path.first() else {
             return false;
         };
-        let Ok(bar) = self.node(handle) else {
+        // `id` is a declaration when the thumb was hit. A node handle that
+        // happens to share the number is rejected unless the point is on that
+        // declaration's thumb.
+        let Some((container, axis, margin, thickness, min_length, auto_hide, interactive)) =
+            self.scrollbars.scrollbar(id).map(|bar| {
+                (
+                    bar.target,
+                    bar.axis,
+                    bar.margin,
+                    bar.width,
+                    bar.min_length,
+                    bar.auto_hide,
+                    bar.interactive,
+                )
+            })
+        else {
             return false;
         };
-        if bar.kind != Kind::ScrollBar || !bar.scrollbar_interactive {
+        if !interactive {
             return false;
         }
-        let container = bar.parent;
-        let axis = bar.scrollbar_axis;
-        let margin = bar.scrollbar_margin;
         let vertical = axis == 0;
-        let (extent, start_scroll, scrolls) = {
+        let (extent, start_scroll, scrolls, origin_x, origin_y, width, height) = {
             let Ok(parent) = self.node(container) else {
                 return false;
             };
-            if vertical {
-                (parent.h, parent.scroll_top, parent.scrolls_y())
-            } else {
-                (parent.w, parent.scroll_left, parent.scrolls_x())
-            }
+            (
+                if vertical { parent.h } else { parent.w },
+                if vertical {
+                    parent.scroll_top
+                } else {
+                    parent.scroll_left
+                },
+                if vertical {
+                    parent.scrolls_y()
+                } else {
+                    parent.scrolls_x()
+                },
+                parent.x,
+                parent.y,
+                parent.w,
+                parent.h,
+            )
         };
-        if !scrolls {
+        if !scrolls || !self.scrollbar_visible(auto_hide, container) {
             return false;
         }
         let max_scroll = match self.node(container) {
@@ -716,9 +748,30 @@ impl Shell {
         if track <= 0.0 || max_scroll <= 0.0 {
             return false;
         }
+        let Some(thumb) = super::scrollbar_thumb(
+            vertical,
+            origin_x,
+            origin_y,
+            width,
+            height,
+            start_scroll,
+            max_scroll,
+            thickness,
+            margin,
+            min_length,
+        ) else {
+            return false;
+        };
+        if input.x < thumb.x
+            || input.x >= thumb.x + thumb.w
+            || input.y < thumb.y
+            || input.y >= thumb.y + thumb.h
+        {
+            return false;
+        }
         self.scrollbar_drag = Some(super::ScrollbarDrag {
             pointer: input.id,
-            scrollbar: handle,
+            scrollbar: id,
             container,
             axis,
             start_pointer: if vertical { input.y } else { input.x },
@@ -744,8 +797,9 @@ impl Shell {
         let scroll_left = container.scroll_left;
         let scroll_top = container.scroll_top;
         let min_length = self
-            .node(drag.scrollbar)
-            .map(|node| node.scrollbar_min_length)
+            .scrollbars
+            .scrollbar(drag.scrollbar)
+            .map(|bar| bar.min_length)
             .unwrap_or(0.0);
         let content = drag.max_scroll + extent;
         let ratio = if content > 0.0 {
@@ -786,9 +840,12 @@ impl Shell {
         scroll_top: f32,
         scrolls_x: bool,
         scrolls_y: bool,
-        count: usize,
         out: &mut Vec<u32>,
     ) -> bool {
+        let count = self.scrollbars.ids(id).map(|ids| ids.len()).unwrap_or(0);
+        if count == 0 {
+            return false;
+        }
         let max_x = if scrolls_x {
             self.max_scroll_x(self.node(id).expect("scrollbar parent"))
         } else {
@@ -800,30 +857,24 @@ impl Shell {
             0.0
         };
         for index in (0..count).rev() {
-            let child_handle = self.nodes[id as usize]
-                .as_ref()
-                .expect("hit child")
-                .children[index];
-            let props = {
-                let Some(child) = self
-                    .nodes
-                    .get(child_handle as usize)
-                    .and_then(Option::as_ref)
-                else {
-                    continue;
-                };
-                if child.kind != Kind::ScrollBar || !child.scrollbar_interactive {
-                    continue;
-                }
-                (
-                    child.scrollbar_axis == 0,
-                    child.scrollbar_auto_hide,
-                    child.scrollbar_width,
-                    child.scrollbar_margin,
-                    child.scrollbar_min_length,
-                )
+            let bar_id = self.scrollbars.ids(id).expect("scrollbar ids")[index];
+            let Some((vertical, auto_hide, thickness, margin, min_length)) =
+                self.scrollbars.scrollbar(bar_id).and_then(|bar| {
+                    if !bar.interactive {
+                        None
+                    } else {
+                        Some((
+                            bar.axis == 0,
+                            bar.auto_hide,
+                            bar.width,
+                            bar.margin,
+                            bar.min_length,
+                        ))
+                    }
+                })
+            else {
+                continue;
             };
-            let (vertical, auto_hide, thickness, margin, min_length) = props;
             let scrollable = if vertical {
                 scrolls_y && max_y > 0.0
             } else {
@@ -847,7 +898,7 @@ impl Shell {
                 continue;
             };
             if x >= thumb.x && x < thumb.x + thumb.w && y >= thumb.y && y < thumb.y + thumb.h {
-                out.push(child_handle);
+                out.push(bar_id);
                 out.push(id);
                 return true;
             }

@@ -16,6 +16,8 @@ const gestureBindings = new Map();
 const gestureHandlerIds = new Map();
 const retiredGestureHandlers = new Map();
 const styleOrderOfTarget = new Map();
+const scrollbarOrderOfTarget = new Map();
+const scrollbarBindings = new Map();
 const virtualTargetOf = new Map();
 const virtualScopeOf = new Map();
 const virtualRoots = new Map();
@@ -112,6 +114,8 @@ function resetRenderState() {
   gestureHandlerIds.clear();
   retiredGestureHandlers.clear();
   styleOrderOfTarget.clear();
+  scrollbarOrderOfTarget.clear();
+  scrollbarBindings.clear();
   resetUiPrograms();
   virtualTargetOf.clear();
   virtualScopeOf.clear();
@@ -441,10 +445,94 @@ export function textField(props, buildStyles) {
   return handle;
 }
 
-export function scrollBar(props, buildStyles) {
-  const handle = pack(5, props, "");
-  buildLeafStyles(handle, buildStyles);
-  return handle;
+const SCROLLBAR_PROPS = {
+  axis: 0,
+  scrollbarWidth: 0,
+  scrollbarMargin: 0,
+  scrollbarColor: 0,
+  scrollbarRadius: 0,
+  scrollbarOpacity: 0,
+  scrollbarMinLength: 0,
+  interactive: 0,
+  autoHide: 0,
+};
+
+function setScrollbarProp(id, key, value) {
+  const [tag, number, text] = propParts(value);
+  if (api.set_scrollbar_prop(id, key, tag, number, text) !== 0) {
+    throw new Error(api.error() || "set_scrollbar_prop failed");
+  }
+}
+
+function bindScrollbarProp(id, key, fn) {
+  let set = scrollbarBindings.get(id);
+  if (!set) {
+    set = new Set();
+    scrollbarBindings.set(id, set);
+  }
+  set.add(addBinding(() => setScrollbarProp(id, key, fn()), null));
+}
+
+function deactivateScrollbarBindings(id) {
+  const set = scrollbarBindings.get(id);
+  if (!set) return;
+  for (const binding of set) {
+    if (api.dispose_node(binding) !== 0) throw new Error(api.error() || "dispose_node failed");
+  }
+  scrollbarBindings.delete(id);
+}
+
+function registerScrollbar(target) {
+  if (typeof api.spawn_scrollbar !== "function") {
+    throw new Error("host does not expose scrollbar declarations");
+  }
+  let order = scrollbarOrderOfTarget.get(target);
+  if (!order) {
+    order = [];
+    scrollbarOrderOfTarget.set(target, order);
+  }
+  const index = order.length;
+  const id = api.spawn_scrollbar(target, index);
+  if (!id) throw new Error(api.error() || "spawn_scrollbar failed");
+  order.push(id);
+  registerVirtual("scrollbar", id, target);
+  return id;
+}
+
+function disposeScrollbar(id) {
+  const key = virtualKey("scrollbar", id);
+  if (!virtualTargetOf.has(key)) return;
+  const target = virtualTargetOf.get(key);
+  unlinkVirtual(key);
+  deactivateScrollbarBindings(id);
+  const order = scrollbarOrderOfTarget.get(target);
+  if (order) {
+    const index = order.indexOf(id);
+    if (index >= 0) order.splice(index, 1);
+    if (order.length === 0) scrollbarOrderOfTarget.delete(target);
+  }
+  if (api.dispose_scrollbar(id) !== 0) throw new Error(api.error() || "dispose scrollbar failed");
+}
+
+export function scrollBar(props) {
+  props = props ?? {};
+  let refBinding = null;
+  for (const key of Object.keys(props)) {
+    if (key === "ref") {
+      refBinding = refValue(props[key]);
+      continue;
+    }
+    if (!(key in SCROLLBAR_PROPS)) throw new Error(`ScrollBar has no property ${key}`);
+  }
+  const id = registerScrollbar(parent());
+  if (refBinding) resolveRef(refBinding, id);
+  for (const key of Object.keys(props)) {
+    if (key === "ref") continue;
+    const value = props[key];
+    if (value instanceof Dynamic) bindScrollbarProp(id, key, value.run);
+    else setScrollbarProp(id, key, value);
+  }
+  return id;
 }
 
 export function setEditingValue(handle, epoch, value, start, end, cancel) {
@@ -1682,14 +1770,15 @@ function rootVirtualScope(target) {
   return scope;
 }
 
-function flattenVirtualScope(scope, gestures, styles) {
+function flattenVirtualScope(scope, gestures, styles, scrollbars) {
   for (const entry of scope.entries) {
     if (typeof entry === "string") {
       const id = virtualId(entry);
       if (entry.startsWith("gesture:")) gestures.push(id);
+      else if (entry.startsWith("scrollbar:")) scrollbars.push(id);
       else styles.push(id);
     } else {
-      flattenVirtualScope(entry, gestures, styles);
+      flattenVirtualScope(entry, gestures, styles, scrollbars);
     }
   }
 }
@@ -1730,6 +1819,7 @@ function disposeStyleDecl(id) {
 function disposeVirtual(key) {
   const id = virtualId(key);
   if (key.startsWith("gesture:")) disposeGesture(id);
+  else if (key.startsWith("scrollbar:")) disposeScrollbar(id);
   else disposeStyleDecl(id);
 }
 
@@ -1759,6 +1849,9 @@ function disposeTargetVirtuals(handle) {
   const styles = styleOrderOfTarget.get(handle);
   if (styles) for (const id of [...styles]) disposeStyleDecl(id);
   styleOrderOfTarget.delete(handle);
+  const scrollbars = scrollbarOrderOfTarget.get(handle);
+  if (scrollbars) for (const id of [...scrollbars]) disposeScrollbar(id);
+  scrollbarOrderOfTarget.delete(handle);
   const root = virtualRoots.get(handle);
   if (root) {
     root.entries.length = 0;
@@ -1766,15 +1859,15 @@ function disposeTargetVirtuals(handle) {
   }
 }
 
-// Flatten every target's virtual order and move only the declarations that
-// disagree with it. `index` is the final position after removal.
 function syncVirtualOrders() {
   for (const [target, root] of virtualRoots) {
     const gestures = [];
     const styles = [];
-    flattenVirtualScope(root, gestures, styles);
+    const scrollbars = [];
+    flattenVirtualScope(root, gestures, styles, scrollbars);
     syncOrder(target, gestures, gestureOrderOfTarget, "gesture");
     syncOrder(target, styles, styleOrderOfTarget, "state style");
+    syncOrder(target, scrollbars, scrollbarOrderOfTarget, "scrollbar");
   }
 }
 
@@ -1790,7 +1883,9 @@ function syncOrder(target, desired, orders, label) {
     const code =
       label === "gesture"
         ? api.move_gesture(desired[index], target, index)
-        : api.move_style_decl(desired[index], target, index);
+        : label === "scrollbar"
+          ? api.move_scrollbar(desired[index], target, index)
+          : api.move_style_decl(desired[index], target, index);
     if (code !== 0) throw new Error(api.error() || `move ${label} failed`);
   }
 }

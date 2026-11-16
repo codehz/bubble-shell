@@ -841,6 +841,10 @@ fn bind_api(ctx: &Context) -> Result<(), RuntimeError> {
     def!(ctx, &api, "bind_gesture_event", 3, (handle: f64, slot: f64, handler: f64) => api_bind_gesture_event(handle, slot, handler));
     def!(ctx, &api, "dispose_gesture", 1, (handle: f64) => api_dispose_gesture(handle));
     def!(ctx, &api, "move_gesture", 3, (handle: f64, target: f64, index: f64) => api_move_gesture(handle, target, index));
+    def!(ctx, &api, "spawn_scrollbar", 2, (target: f64, index: f64) => api_spawn_scrollbar(target, index));
+    def!(ctx, &api, "set_scrollbar_prop", 5, (handle: f64, key: String, tag: f64, number: f64, text: String) => api_set_scrollbar_prop(handle, key, tag, number, text));
+    def!(ctx, &api, "dispose_scrollbar", 1, (handle: f64) => api_dispose_scrollbar(handle));
+    def!(ctx, &api, "move_scrollbar", 3, (handle: f64, target: f64, index: f64) => api_move_scrollbar(handle, target, index));
     def!(ctx, &api, "create_var", 3, (source: f64, initial_tag: f64, initial_number: f64) => api_create_var(source, initial_tag, initial_number));
     def!(ctx, &api, "bind_var", 2, (var: f64, target: f64) => api_bind_var(var, target));
     def!(ctx, &api, "set_var", 7, (var: f64, tag: f64, number: f64, anim: f64, a: f64, b: f64, c: f64) => api_set_var(var, tag, number, anim, a, b, c));
@@ -1293,6 +1297,65 @@ fn api_dispose_gesture(handle: f64) -> i32 {
 fn api_move_gesture(handle: f64, target: f64, index: f64) -> i32 {
     match with_turn(|turn| {
         turn.move_gesture(handle as u32, target as u32, index as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+fn api_spawn_scrollbar(target: f64, index: f64) -> u32 {
+    match with_turn(|turn| turn.spawn_scrollbar(target as u32, index as u32)) {
+        Ok(id) => id,
+        Err(err) => {
+            set_api_error(err);
+            0
+        }
+    }
+}
+
+fn api_set_scrollbar_prop(handle: f64, key: String, tag: f64, number: f64, text: String) -> i32 {
+    let value = match tag as u32 {
+        0 => Value::Null,
+        1 => Value::Bool(number != 0.0),
+        2 => Value::Int(number as i64),
+        3 => Value::Float(number),
+        4 => Value::String(text),
+        other => {
+            set_api_error(format!("unsupported prop tag {other}"));
+            return 1;
+        }
+    };
+    match with_turn(|turn| {
+        turn.set_scrollbar_prop(handle as u32, key, value.clone());
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_dispose_scrollbar(handle: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.dispose_scrollbar(handle as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_move_scrollbar(handle: f64, target: f64, index: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.move_scrollbar(handle as u32, target as u32, index as u32);
         Ok(())
     }) {
         Ok(()) => 0,

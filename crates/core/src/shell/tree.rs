@@ -100,15 +100,6 @@ pub(super) struct Node {
     pub(super) y: f32,
     pub(super) w: f32,
     pub(super) h: f32,
-    pub(super) scrollbar_axis: u8,
-    pub(super) scrollbar_width: f32,
-    pub(super) scrollbar_margin: f32,
-    pub(super) scrollbar_color: Color,
-    pub(super) scrollbar_radius: f32,
-    pub(super) scrollbar_opacity: f32,
-    pub(super) scrollbar_min_length: f32,
-    pub(super) scrollbar_interactive: bool,
-    pub(super) scrollbar_auto_hide: bool,
 }
 impl Node {
     /// Single source of truth for a fresh node's defaults.
@@ -185,15 +176,6 @@ impl Node {
             y: 0.0,
             w: 0.0,
             h: 0.0,
-            scrollbar_axis: 0,
-            scrollbar_width: 4.0,
-            scrollbar_margin: 2.0,
-            scrollbar_color: Color::new(1.0, 1.0, 1.0, 0.5),
-            scrollbar_radius: -1.0,
-            scrollbar_opacity: 0.5,
-            scrollbar_min_length: 20.0,
-            scrollbar_interactive: true,
-            scrollbar_auto_hide: true,
         }
     }
 
@@ -336,6 +318,32 @@ impl Shell {
         self.state_styles.set_slot(decl, slot, expr)?;
         self.state_styles.register_deps(decl, &self.vars);
         self.eval_decl(decl);
+        self.paint_dirty.set(true);
+        Ok(())
+    }
+
+    pub(super) fn set_scrollbar_prop(
+        &mut self,
+        id: u32,
+        key: &str,
+        value: &Value,
+    ) -> Result<(), String> {
+        let bar = self
+            .scrollbars
+            .scrollbar_mut(id)
+            .ok_or_else(|| format!("unknown scrollbar {id}"))?;
+        match key {
+            "axis" => bar.axis = parse_scrollbar_axis(value)?,
+            "scrollbarWidth" => bar.width = value.as_f32()?.max(0.0),
+            "scrollbarMargin" => bar.margin = value.as_f32()?.max(0.0),
+            "scrollbarColor" => bar.color = value.as_color()?,
+            "scrollbarRadius" => bar.radius = value.as_f32()?,
+            "scrollbarOpacity" => bar.opacity = value.as_f32()?.clamp(0.0, 1.0),
+            "scrollbarMinLength" => bar.min_length = value.as_f32()?.max(0.0),
+            "interactive" => bar.interactive = value.as_bool()?,
+            "autoHide" => bar.auto_hide = value.as_bool()?,
+            other => return Err(format!("unknown scrollbar prop {other}")),
+        }
         self.paint_dirty.set(true);
         Ok(())
     }
@@ -500,27 +508,6 @@ impl Shell {
             Prop::FadeEdges => {
                 self.node_mut(id)?.fade_edges = value.as_f32()?.max(0.0);
             }
-            Prop::ScrollbarAxis => {
-                self.node_mut(id)?.scrollbar_axis = parse_scrollbar_axis(value)?;
-            }
-            Prop::ScrollbarWidth => {
-                self.node_mut(id)?.scrollbar_width = value.as_f32()?.max(0.0);
-            }
-            Prop::ScrollbarMargin => {
-                self.node_mut(id)?.scrollbar_margin = value.as_f32()?.max(0.0);
-            }
-            Prop::ScrollbarColor => self.node_mut(id)?.scrollbar_color = value.as_color()?,
-            Prop::ScrollbarRadius => self.node_mut(id)?.scrollbar_radius = value.as_f32()?,
-            Prop::ScrollbarOpacity => {
-                self.node_mut(id)?.scrollbar_opacity = value.as_f32()?.clamp(0.0, 1.0);
-            }
-            Prop::ScrollbarMinLength => {
-                self.node_mut(id)?.scrollbar_min_length = value.as_f32()?.max(0.0);
-            }
-            Prop::ScrollbarInteractive => {
-                self.node_mut(id)?.scrollbar_interactive = value.as_bool()?;
-            }
-            Prop::ScrollbarAutoHide => self.node_mut(id)?.scrollbar_auto_hide = value.as_bool()?,
         }
         self.restyle(id)
     }
@@ -616,6 +603,9 @@ impl Shell {
         let handle = desc.id;
         if handle == 0 || self.retired.contains(&handle) || self.node(handle).is_ok() {
             return Err(format!("handle {handle} is not free"));
+        }
+        if desc.kind == Kind::ScrollBar {
+            return Err("ScrollBar must use SpawnScrollBar op".into());
         }
         let parent_len = self.node(parent)?.children.len() as u32;
         if index > parent_len {
@@ -823,6 +813,15 @@ impl Shell {
         self.taffy.remove(taffy_id).map_err(|err| err.to_string())?;
         self.nodes[handle as usize] = None;
         self.state_styles.target_disposed(handle);
+        let retired_bars = self.scrollbars.target_disposed(handle);
+        for id in retired_bars {
+            if self
+                .scrollbar_drag
+                .is_some_and(|drag| drag.scrollbar == id)
+            {
+                self.scrollbar_drag = None;
+            }
+        }
         // Variables sourced at the destroyed node retire; declarations that
         // read them stop matching.
         let retired_vars = self.vars.retire_target(handle);
@@ -842,12 +841,6 @@ impl Shell {
             self.focused = 0;
         }
         self.last_scroll_time.remove(&handle);
-        if self
-            .scrollbar_drag
-            .is_some_and(|drag| drag.scrollbar == handle || drag.container == handle)
-        {
-            self.scrollbar_drag = None;
-        }
         self.retired.insert(handle);
         Ok(())
     }

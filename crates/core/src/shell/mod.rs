@@ -17,6 +17,7 @@ use crate::editing::{EditError, EditEvent, EditSession, SessionId};
 use crate::gesture::{GestureEvent, GestureKind, Recognizer};
 use crate::ir::{Kind, NodeDesc};
 use crate::ops::{decode_ops, Op, Value};
+use crate::scrollbar::ScrollBarDecls;
 use crate::state_style::{StyleDecls, VarEvent, VarTable};
 use crate::ui::{UiCall, UiProgram, UiValue};
 use std::collections::VecDeque;
@@ -161,6 +162,8 @@ struct VisualPress {
 #[derive(Clone, Copy)]
 struct ScrollbarDrag {
     pointer: u32,
+    /// Scrollbar declaration id, not a node handle. Declaration ids start at 1,
+    /// the same as node handles, so the two spaces are not comparable.
     scrollbar: u32,
     container: u32,
     axis: u8,
@@ -170,8 +173,8 @@ struct ScrollbarDrag {
     max_scroll: f32,
 }
 
-/// Thumb rectangle for one scrollbar child. `None` when that axis has nothing
-/// to scroll or the track is too short to draw.
+/// Thumb rectangle for one scrollbar declaration. `None` when that axis has
+/// nothing to scroll or the track is too short to draw.
 pub(super) struct ThumbGeom {
     pub(super) x: f32,
     pub(super) y: f32,
@@ -243,6 +246,7 @@ pub struct Shell {
     /// Scroll container handle → `now_ms` of the last offset change.
     last_scroll_time: HashMap<u32, f64>,
     scrollbar_drag: Option<ScrollbarDrag>,
+    scrollbars: ScrollBarDecls,
     state_styles: StyleDecls,
     visual: VisualPress,
     field_pointer: Option<field_gesture::FieldPointerState>,
@@ -466,6 +470,7 @@ impl Shell {
             now_ms: 0.0,
             last_scroll_time: HashMap::new(),
             scrollbar_drag: None,
+            scrollbars: ScrollBarDecls::new(),
             state_styles: StyleDecls::new(),
             visual: VisualPress::default(),
             field_pointer: None,
@@ -659,6 +664,39 @@ impl Shell {
                     self.state_styles.move_decl(decl, target, index)?;
                 }
                 Op::DisposeStyleDecl { decl } => self.state_styles.dispose(decl)?,
+                Op::SpawnScrollBar {
+                    scrollbar,
+                    target,
+                    index,
+                } => {
+                    self.node(target)?;
+                    self.scrollbars.spawn(scrollbar, target, index)?;
+                    self.paint_dirty.set(true);
+                }
+                Op::SetScrollBarProp {
+                    scrollbar,
+                    key,
+                    value,
+                } => self.set_scrollbar_prop(scrollbar, &key, &value)?,
+                Op::MoveScrollBar {
+                    scrollbar,
+                    target,
+                    index,
+                } => {
+                    self.node(target)?;
+                    self.scrollbars.move_decl(scrollbar, target, index)?;
+                    self.paint_dirty.set(true);
+                }
+                Op::DisposeScrollBar { scrollbar } => {
+                    self.scrollbars.dispose(scrollbar)?;
+                    self.paint_dirty.set(true);
+                    if self
+                        .scrollbar_drag
+                        .is_some_and(|drag| drag.scrollbar == scrollbar)
+                    {
+                        self.scrollbar_drag = None;
+                    }
+                }
             }
         }
         if self.focused != 0

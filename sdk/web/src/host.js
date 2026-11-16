@@ -455,6 +455,14 @@ setApi({
   bind_gesture_event: exports.bind_gesture_event,
   dispose_gesture: exports.dispose_gesture,
   move_gesture: exports.move_gesture,
+  spawn_scrollbar: exports.spawn_scrollbar,
+  set_scrollbar_prop(handle, key, tag, number, text) {
+    return withStr(key, (keyPtr, keyLen) =>
+      withStr(tag === 4 ? text : "", (textPtr, textLen) =>
+        exports.set_scrollbar_prop(handle, keyPtr, keyLen, tag, number, textPtr, textLen)));
+  },
+  dispose_scrollbar: exports.dispose_scrollbar,
+  move_scrollbar: exports.move_scrollbar,
   bind_gesture_program: exports.bind_gesture_program,
   define_ui_function(params, bytes, reuse) {
     return withBytes(Uint8Array.from(bytes), (ptr, len) =>

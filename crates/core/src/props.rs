@@ -141,15 +141,6 @@ pub enum Prop {
     Selected,
     Expanded,
     FadeEdges,
-    ScrollbarAxis,
-    ScrollbarWidth,
-    ScrollbarMargin,
-    ScrollbarColor,
-    ScrollbarRadius,
-    ScrollbarOpacity,
-    ScrollbarMinLength,
-    ScrollbarInteractive,
-    ScrollbarAutoHide,
 }
 impl Prop {
     pub fn parse(key: &str) -> Option<Self> {
@@ -221,15 +212,6 @@ impl Prop {
             "selected" => Self::Selected,
             "expanded" => Self::Expanded,
             "fadeEdges" => Self::FadeEdges,
-            "axis" => Self::ScrollbarAxis,
-            "scrollbarWidth" => Self::ScrollbarWidth,
-            "scrollbarMargin" => Self::ScrollbarMargin,
-            "scrollbarColor" => Self::ScrollbarColor,
-            "scrollbarRadius" => Self::ScrollbarRadius,
-            "scrollbarOpacity" => Self::ScrollbarOpacity,
-            "scrollbarMinLength" => Self::ScrollbarMinLength,
-            "interactive" => Self::ScrollbarInteractive,
-            "autoHide" => Self::ScrollbarAutoHide,
             _ => return None,
         })
     }

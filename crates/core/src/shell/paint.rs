@@ -736,7 +736,10 @@ impl Shell {
         if !scrolls_x && !scrolls_y {
             return;
         }
-        let count = self.node(id).expect("scrollbar parent").children.len();
+        let count = self.scrollbars.ids(id).map(|ids| ids.len()).unwrap_or(0);
+        if count == 0 {
+            return;
+        }
         let max_x = if scrolls_x {
             self.max_scroll_x(self.node(id).expect("scrollbar parent"))
         } else {
@@ -748,24 +751,7 @@ impl Shell {
             0.0
         };
         for index in 0..count {
-            let child = self.node(id).expect("scrollbar parent").children[index];
-            let props = {
-                let node = self.node(child).expect("scrollbar child");
-                if node.kind != Kind::ScrollBar {
-                    None
-                } else {
-                    Some((
-                        node.scrollbar_axis == 0,
-                        node.scrollbar_auto_hide,
-                        node.scrollbar_width,
-                        node.scrollbar_margin,
-                        node.scrollbar_min_length,
-                        node.scrollbar_color,
-                        node.scrollbar_opacity,
-                        node.scrollbar_radius,
-                    ))
-                }
-            };
+            let bar_id = self.scrollbars.ids(id).expect("scrollbar ids")[index];
             let Some((
                 vertical,
                 auto_hide,
@@ -775,7 +761,18 @@ impl Shell {
                 color,
                 opacity,
                 radius,
-            )) = props
+            )) = self.scrollbars.scrollbar(bar_id).map(|bar| {
+                (
+                    bar.axis == 0,
+                    bar.auto_hide,
+                    bar.width,
+                    bar.margin,
+                    bar.min_length,
+                    bar.color,
+                    bar.opacity,
+                    bar.radius,
+                )
+            })
             else {
                 continue;
             };
