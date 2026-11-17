@@ -488,6 +488,7 @@ fn text_props() -> Vec<PropDef> {
         opt("textAlign", union(&["left", "center", "right"])),
         opt("textOverflow", union(&["clip", "ellipsis"])),
         opt("lineClamp", PropType::Number),
+        opt("width", PropType::Len),
         opt("testID", PropType::String),
     ]
 }
