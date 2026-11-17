@@ -29,7 +29,7 @@
 | 7 | settle 通知 | 复用现有 UI→脚本事件批次，新增 var-settle 事件 |
 | 8 | 条件形式 | 全显式变量：`when` 只读作用域内变量；移除 `enabled`（`when={false}` 或绑定布尔变量覆盖） |
 | 9 | 组件划分 | 两个组件：`ViewStyle`（backgroundColor/radius/opacity/fit/transform）、`TextStyle`（color/textAlign） |
-| 10 | 目标解析 | 显式 `target` 属性，与变量关联同一风格，无隐式规则 |
+| 10 | 目标解析 | 样式声明不接受 `target`，只作用于正在构建的父节点。共享变量的 `target` 仍显式给出 |
 | 11 | 首批状态源 | Pressed、Focused、Disabled（读现有 `node.disabled`）、Editing（读 EditSession） |
 
 ## 3. 当前实现证据
@@ -37,7 +37,7 @@
 | 位置 | 现状 | 本计划影响 |
 |---|---|---|
 | `crates/core/src/state_style.rs` | `StateStylePatch` 是 6 个 `Option` 静态值；`when` 是 `u8` 位集合，只接受 `pressed`/`focused`；`enabled` 布尔门控 | 文件重写：声明的 `when` 与 patch 项为表达式程序；位集合、字符串解析、`enabled` 全部删除 |
-| `crates/compiler/src/lib.rs` | `<StateStyle>` 不接受子节点、`when` 必填字符串、直接子节点拆分（`is_state_style`） | 拆为 `ViewStyle`/`TextStyle` 两个组件；属性白名单与表达式编译；无字符串 `when` |
+| `crates/compiler/src/lib.rs` | `<StateStyle>` 不接受子节点、`when` 必填字符串、直接子节点拆分（`is_state_style`） | 拆为 `ViewStyle`/`TextStyle` 两个组件；属性白名单与表达式编译；无字符串 `when`；声明不接受 `target`，只作用于正在构建的父节点 |
 | `crates/core/src/props.rs` | `STATE_STYLE_PROPS` 六属性单表 | 拆为两个白名单常量，分别属于两个组件 |
 | `crates/core/src/shell.rs`：`state_bits` / `effective_paint_style` | 每帧读 `focused == id` 与 `visual.target == id` 两个位，再合并静态 patch | 位查询改为对 per-decl 缓存值的读取；位的产生下沉为状态源采样 |
 | 同文件：`press_target` / `pressed_interest` / `focus_style_taken` | 用位集合做 O(声明数) 的快速判断 | 依赖编译期对程序的静态来源分析预计算 interest 位（第 7 节），命中路径不跑表达式 |
@@ -146,7 +146,7 @@ MIN MAX ABS | EASE(fn, t)                       // 内建函数（EASE 为动画
 
 ```rust
 StyleDecl {
-    target: u32,              // 显式 target 引用的节点句柄
+    target: u32,              // 构建期解析出的父节点句柄，不是公开属性
     index: u32,               // 保持 OrderedDecls 序模型（同目标内按源码顺序，后者胜出）
     when: Program,            // Bool 程序（或折叠后的常量 true/false）
     patch: [Option<PatchSlot>; N],  // PatchSlot = 静态值 | Program；None = 未声明该项
@@ -167,25 +167,24 @@ function Button() {
   return (
     <View ref={view}>
       {/* 组合逻辑自由表达：disabled 优先，压过 pressed */}
-      <ViewStyle target={view}
-                 when={!disabled && press > 0}
+      <ViewStyle when={!disabled && press > 0}
                  backgroundColor={mix(baseColor, pressedColor, press)}
                  opacity={1 - press * 0.4} />
-      <ViewStyle target={view}
-                 when={disabled}
+      <ViewStyle when={disabled}
                  opacity={0.5} />
-      <TextStyle target={label}
-                 when={focused}
-                 color={accentColor} />
+      <Text>
+        <TextStyle when={focused}
+                   color={accentColor} />
+      </Text>
     </View>
   );
 }
 ```
 
 - `when` 只接受表达式程序；无字符串形式、无 `enabled`。
-- `target` 显式给出，与 `createVar` 的 target 参数同一风格；指向非存在/已销毁节点是构建期可查的引用错误。
+- 声明不接受 `target`，只作用于正在构建的父节点，包括叶子节点自己的样式子构建。不能把声明重定向到另一个节点。`SpawnStyleDecl.target` 仍是当时解析出的节点句柄，不是公开属性。
 - 标识符解析为作用域内的 `VarRef` 与编译期常量；解析不到即编译错误。
-- 同目标多条匹配声明按源码顺序覆盖，后者胜出；语义与今天一致，但不再有「挂错目标静默失效」的歧义。
+- 同一父节点上多条匹配声明按源码顺序覆盖，后者胜出。声明不能指向别的节点，因此没有「挂错目标」这条路径。
 - 默认焦点框接管：目标上存在 `when` 当前为真且含 `Focused` 源的 `TextStyle`/`ViewStyle` 声明（含空 patch）时，接管默认焦点框——行为契约与今天一致，判断改为读兴趣位 + `resolved.when`。
 
 ## 7. 命中路径快速判断（不跑表达式）
@@ -251,7 +250,7 @@ t.bind(() => someSignal());      // signal 结合：render effect 重跑 → Set
 |---|---|
 | 程序字节码撑大 op 批次 | 常量折叠消除大部分程序；不做跨声明去重（收益小、复杂度高），批次体积监控留给 post-MVP |
 | 静态来源分析漏判导致按压反馈失效 | 保守规则（第 7 节）：不可判定按「关注」处理；阶段 1 用重写后的契约测试锁定 `pressed_interest` 行为 |
-| 显式 target 书写冗长 | `createVar` 与样式组件共用同一 target 引用，一次声明多处使用；不做隐式解析回退 |
+| 样式声明指向错误节点 | 声明不接受 `target`，只能作用于正在构建的父节点；编译期拒绝显式 `target`。共享变量仍显式关联 `target` |
 | 每帧求值退化 | 依赖索引 + 声明级结果缓存；绘制合并保持纯合并；不引入跨帧 memo 之外的机制 |
 | settle 事件风暴 | 仅动画写入产生；批次压缩后只报最后一次；无动画路径零事件 |
 | `SELECT` 枚举类型检查漏网 | 编译期类型检查把 `textAlign`/`fit` 限定为「枚举常量或 SELECT 于枚举常量」，运行期再做一次性校验并 fail fast |
