@@ -739,14 +739,15 @@ fn match_requires_when_prop() {
 
 #[test]
 fn style_expr_rejects_unknown_function() {
-    let src = r#"function App() { return <ViewStyle target={1} opacity={unknown()} />; } export default App;"#;
+    let src = r#"function App() { return <ViewStyle opacity={unknown()} />; } export default App;"#;
     let err = errors("style-fn.tsx", src);
     assert!(err.contains("is not a style expression function"), "{err}");
 }
 
 #[test]
 fn style_expr_rejects_non_builtin_callee() {
-    let src = r#"function App() { return <ViewStyle target={1} opacity={Math.min(1, 2)} />; } export default App;"#;
+    let src =
+        r#"function App() { return <ViewStyle opacity={Math.min(1, 2)} />; } export default App;"#;
     let err = errors("style-call.tsx", src);
     assert!(
         err.contains("style expressions only support builtin functions"),
@@ -756,7 +757,8 @@ fn style_expr_rejects_non_builtin_callee() {
 
 #[test]
 fn style_expr_rejects_spread() {
-    let src = r#"function App() { return <ViewStyle target={1} opacity={min(...[1])} />; } export default App;"#;
+    let src =
+        r#"function App() { return <ViewStyle opacity={min(...[1])} />; } export default App;"#;
     let err = errors("style-spread.tsx", src);
     assert!(
         err.contains("spread arguments are not style expressions"),
@@ -766,7 +768,7 @@ fn style_expr_rejects_spread() {
 
 #[test]
 fn style_expr_rejects_signal_read() {
-    let src = r#"import { signal } from "bubble-shell"; function App() { const s = signal(1); return <ViewStyle target={1} opacity={s()} />; } export default App;"#;
+    let src = r#"import { signal } from "bubble-shell"; function App() { const s = signal(1); return <ViewStyle opacity={s()} />; } export default App;"#;
     let err = errors("style-sig.tsx", src);
     assert!(
         err.contains("read signals; declare a shared value"),
@@ -775,10 +777,26 @@ fn style_expr_rejects_signal_read() {
 }
 
 #[test]
-fn style_requires_target() {
-    let src = r#"function App() { return <ViewStyle />; } export default App;"#;
+fn style_rejects_explicit_target() {
+    let src = r#"function App() { return <ViewStyle target={1} />; } export default App;"#;
     let err = errors("style-tgt.tsx", src);
-    assert!(err.contains("requires a target prop"), "{err}");
+    assert!(
+        err.contains("style declarations apply to their parent"),
+        "{err}"
+    );
+}
+
+#[test]
+fn style_declaration_compiles_without_target() {
+    let src =
+        r#"function App() { return <View><ViewStyle opacity={1} /></View>; } export default App;"#;
+    let code = compile("style-ok.tsx", src);
+    assert!(
+        code.contains("__bubble_rt_primitive(\"ViewStyle\""),
+        "{code}"
+    );
+    assert!(code.contains("opacity"), "{code}");
+    assert!(!code.contains("target"), "{code}");
 }
 
 #[test]

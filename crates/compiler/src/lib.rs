@@ -1183,9 +1183,10 @@ impl<'a> Lower<'a> {
         self.call(RT_SWITCH, vec![fallback, arms], span)
     }
 
-    /// Lower a `<ViewStyle>` / `<TextStyle>` declaration. `target` is a plain
-    /// value; every other prop compiles to a style expression tree the runtime
-    /// encodes into a program (or folds to a static value).
+    /// Lower a `<ViewStyle>` / `<TextStyle>` declaration. It applies to the
+    /// parent whose children are being built. Every prop compiles to a style
+    /// expression tree the runtime encodes into a program (or folds to a
+    /// static value). An explicit `target` is rejected.
     fn lower_style_element(
         &mut self,
         span: Span,
@@ -1200,17 +1201,16 @@ impl<'a> Lower<'a> {
         debug_assert!(controls.is_empty());
         let mut lowered = Vec::new();
         for (key, value) in props {
-            let lowered_value = if key == "target" {
-                let mut value = value;
-                self.visit_expression(&mut value);
-                value
-            } else {
-                self.style_tree(span, value)
-            };
-            lowered.push((key, lowered_value));
-        }
-        if !lowered.iter().any(|(key, _)| *key == "target") {
-            self.error(span, format!("<{tag}> requires a target prop"));
+            if key == "target" {
+                self.error(
+                    span,
+                    format!(
+                        "<{tag}> does not accept target; style declarations apply to their parent"
+                    ),
+                );
+                continue;
+            }
+            lowered.push((key, self.style_tree(span, value)));
         }
         let props = self.object(span, lowered);
         self.call(RT_PRIMITIVE, vec![self.string_of(tag), props], span)

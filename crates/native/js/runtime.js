@@ -1714,12 +1714,11 @@ function styleDecl(props, component) {
     throw new Error("host does not expose style declarations");
   }
   props = props ?? {};
-  if (props.target == null) throw new Error("style declarations require a target");
-  const target = resolveTarget(props.target);
-  if (!target) throw new Error("style declarations require a resolved target");
+  const target = parent();
+  if (!target) throw new Error("style declarations require a parent");
   const allowed = component === 1 ? VIEW_STYLE_PROPS : TEXT_STYLE_PROPS;
   for (const key of Object.keys(props)) {
-    if (key === "target" || key === "when") continue;
+    if (key === "when") continue;
     if (!allowed.includes(key)) throw new Error(`this style component has no property ${key}`);
   }
   let order = styleOrderOfTarget.get(target);
@@ -1732,7 +1731,6 @@ function styleDecl(props, component) {
   order.push(id);
   registerVirtual("style", id, target);
   for (const key of Object.keys(props)) {
-    if (key === "target") continue;
     const value = props[key];
     const tree = value && value.__bubbleStyleExpr ? value.__bubbleStyleExpr : value;
     const enums = key === "textAlign" || key === "fit" ? key : null;

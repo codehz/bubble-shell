@@ -34,7 +34,7 @@ export function PressedDemo() {
         >
           <TapGesture onTap={() => taps.update((c) => c + 1)} />
           <Text color="#ffffff" fontSize={15}>{taps() + " taps — hold me"}</Text>
-          <ViewStyle target={btnRef} when={press > 0} opacity={1 - press * 0.4} />
+          <ViewStyle when={press > 0} opacity={1 - press * 0.4} />
         </View>
         <Text color="#6b7280" fontSize={12}>The pressed progress source is driven by the UI thread; the declaration patches opacity from 1 down to 0.6.</Text>
       </Section>
@@ -62,8 +62,8 @@ export function FocusedDemo() {
           label="Focus me"
           onChange={(e) => echo.set(e.value)}
         >
-          <ViewStyle target={fieldRef} when={focused} backgroundColor={0xff2563eb} />
-          <ViewStyle target={fieldRef} when={editing} opacity={0.85} />
+          <ViewStyle when={focused} backgroundColor={0xff2563eb} />
+          <ViewStyle when={editing} opacity={0.85} />
         </TextField>
         <Text color="#9ca3af" fontSize={13}>Echo: {echo()}</Text>
         <Text color="#6b7280" fontSize={12}>Tap the field: background turns blue while focused, and dims while an edit session is active.</Text>
@@ -73,8 +73,6 @@ export function FocusedDemo() {
 }
 
 export function AnimatedDemo() {
-  const springBox = ref();
-  const tweenBox = ref();
   const slide = createSharedValue(0);
   const glide = createSharedValue(0);
   // Animations start on the UI thread: a JS tap schedules a worklet whose
@@ -95,16 +93,18 @@ export function AnimatedDemo() {
   return (
     <View gap={12}>
       <Section title="Spring animation on a script-driven var">
-        <View ref={springBox} backgroundColor={0xff22c55e} radius={10} width={56} height={56} />
-        <ViewStyle target={springBox} when={true} translateX={slide} />
+        <View backgroundColor={0xff22c55e} radius={10} width={56} height={56}>
+          <ViewStyle when={true} translateX={slide} />
+        </View>
         <View flexDirection="row" gap={8}>
           <Btn label="Spring to 100" color={0xff22c55e} onTap={() => springTo(100)} />
           <Btn label="Spring to 0" color={0xff4b5563} onTap={() => springTo(0)} />
         </View>
       </Section>
       <Section title="Tween animation on a script-driven var">
-        <View ref={tweenBox} backgroundColor={0xfff59e0b} radius={10} width={56} height={56} />
-        <ViewStyle target={tweenBox} when={true} translateX={glide} />
+        <View backgroundColor={0xfff59e0b} radius={10} width={56} height={56}>
+          <ViewStyle when={true} translateX={glide} />
+        </View>
         <View flexDirection="row" gap={8}>
           <Btn label="Tween to 100" color={0xfff59e0b} onTap={() => tweenTo(100)} />
           <Btn label="Tween to 0" color={0xff4b5563} onTap={() => tweenTo(0)} />

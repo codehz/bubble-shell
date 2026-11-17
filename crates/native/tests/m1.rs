@@ -751,21 +751,18 @@ export default function App() {
     () => {
       shell.show(() => open(), null, () => {
         shell.primitive("ViewStyle", {
-          target: viewRef,
           when: focused,
           backgroundColor: "#ff0000",
         });
       });
       shell.forEach(() => items(), (item) => item, (read) => {
         shell.primitive("ViewStyle", {
-          target: viewRef,
           when: true,
           backgroundColor: read() === "a" ? "#0000ff" : "#ffff00",
         });
       });
       shell.indexEach(() => ladder(), (read, index) => {
         shell.primitive("ViewStyle", {
-          target: viewRef,
           when: true,
           backgroundColor: index === 0 ? "#111111" : "#222222",
         });
@@ -775,14 +772,13 @@ export default function App() {
           () => gate(),
           () => {
             shell.primitive("ViewStyle", {
-              target: viewRef,
               when: true,
               backgroundColor: "#333333",
             });
             // The focused declaration patches nothing: it takes the default
             // focus ring over while it matches, and closing the arm gives the
             // ring back without blurring.
-            shell.primitive("TextStyle", { target: viewRef, when: focused });
+            shell.primitive("TextStyle", { when: focused });
           },
         ],
       ]);
@@ -910,7 +906,6 @@ export default function App() {
     { ref: viewRef, backgroundColor: "#ffffff", width: 200, height: 100 },
     () => {
       shell.primitive("ViewStyle", {
-        target: viewRef,
         when: t,
         backgroundColor: "#00ff00",
       });
@@ -969,7 +964,6 @@ export default function App() {
     { ref: viewRef, backgroundColor: "#ffffff", width: 200, height: 100 },
     () => {
       shell.primitive("ViewStyle", {
-        target: viewRef,
         when: true,
         // The patch value follows the animated variable for free.
         backgroundColor: ["mix", 0xff0000ff, 0xff00ff00, t],
@@ -1194,7 +1188,7 @@ export default function App() {
     { ref: viewRef, backgroundColor: "#ffffff", width: 100, height: 100 },
     () => {
       shell.primitive("PanGesture", { ref: panRef, onPanUpdate: () => {} });
-      shell.primitive("ViewStyle", { target: viewRef, when: true, translateX: tx });
+      shell.primitive("ViewStyle", { when: true, translateX: tx });
     },
   );
 }
@@ -1260,7 +1254,6 @@ export default function App() {
         backgroundColor: "#ffffff",
       }, () => {
         shell.primitive("ViewStyle", {
-          target: childRef,
           when: true,
           backgroundColor: ["mix", 0xffff0000, 0xff00ff00, ["div", sy, 200]],
         });
@@ -1307,7 +1300,7 @@ export default function App() {
         mode: ["pinch"],
         onTransformUpdate: () => {},
       });
-      shell.primitive("ViewStyle", { target: viewRef, when: true, scale });
+      shell.primitive("ViewStyle", { when: true, scale });
     },
   );
 }

@@ -67,7 +67,6 @@ export function LongPressDemo() {
 }
 
 export function PanDemo() {
-  const boxRef = ref();
   const panX = createSharedValue(0);
   const panY = createSharedValue(0);
   const status = signal("idle");
@@ -76,7 +75,6 @@ export function PanDemo() {
       <Section title="PanGesture — drag moves the card via script vars">
         <View backgroundColor={0xff111827} radius={8} height={230} padding={[8, 8, 8, 8]}>
           <View
-            ref={boxRef}
             backgroundColor={0xff8b5cf6}
             radius={8}
             width={130}
@@ -105,7 +103,7 @@ export function PanDemo() {
                 scheduleOnJS(status.set, "pan cancelled");
               }}
             />
-            <ViewStyle target={boxRef} when={true} translateX={panX} translateY={panY} />
+            <ViewStyle when={true} translateX={panX} translateY={panY} />
             <Text color="#ffffff" fontSize={14}>drag me</Text>
           </View>
         </View>
@@ -116,7 +114,6 @@ export function PanDemo() {
 }
 
 export function TransformDemo() {
-  const boxRef = ref();
   const scaleV = createSharedValue(1);
   const rotateV = createSharedValue(0);
   const status = signal("idle");
@@ -129,7 +126,6 @@ export function TransformDemo() {
       <Section title="TransformGesture — pinch zoom, rotate, pan">
         <View backgroundColor={0xff111827} radius={8} height={240} justifyContent="center" alignItems="center">
           <View
-            ref={boxRef}
             backgroundColor={0xff0ea5e9}
             radius={10}
             width={140}
@@ -159,7 +155,7 @@ export function TransformDemo() {
                 scheduleOnJS(status.set, "transform cancelled");
               }}
             />
-            <ViewStyle target={boxRef} when={true} scale={scaleV} rotate={rotateV} />
+            <ViewStyle when={true} scale={scaleV} rotate={rotateV} />
             <Text color="#ffffff" fontSize={14}>pinch / rotate</Text>
           </View>
         </View>
@@ -176,10 +172,8 @@ export function TransformDemo() {
 const SCROLL_ROWS = Array.from({ length: 14 }, (_, index) => index + 1);
 
 export function GestureVarsDemo() {
-  const cardRef = ref();
   const panRef = ref();
   const scrollRef = ref();
-  const barRef = ref();
   const tx = createSharedValue({ source: "gesture.translationX", target: panRef });
   const ty = createSharedValue({ source: "gesture.translationY", target: panRef });
   const sy = createSharedValue({ source: "scroll.y", target: scrollRef });
@@ -191,7 +185,6 @@ export function GestureVarsDemo() {
           The card reads gesture.translationX/Y straight from the recognizer — it never lags a frame behind.
         </Text>
         <View
-          ref={cardRef}
           backgroundColor={0xff8b5cf6}
           radius={8}
           width={150}
@@ -200,7 +193,7 @@ export function GestureVarsDemo() {
           alignItems="center"
         >
           <PanGesture ref={panRef} onPanUpdate={() => {}} onPanEnd={() => {}} />
-          <ViewStyle target={cardRef} when={true} translateX={tx} translateY={ty} />
+          <ViewStyle when={true} translateX={tx} translateY={ty} />
           <Text color="#ffffff" fontSize={14}>drag me</Text>
         </View>
       </View>
@@ -222,12 +215,12 @@ export function GestureVarsDemo() {
             {(read) => <Text color="#d1d5db" fontSize={14}>{"Scroll item " + read()}</Text>}
           </For>
         </View>
-        <View ref={barRef} height={8} width={180} radius={4} backgroundColor={0xff3b82f6} />
-        <ViewStyle
-          target={barRef}
-          when={true}
-          backgroundColor={mix(0xff3b82f6, 0xff22c55e, clamp(sy / 200, 0, 1))}
-        />
+        <View height={8} width={180} radius={4} backgroundColor={0xff3b82f6}>
+          <ViewStyle
+            when={true}
+            backgroundColor={mix(0xff3b82f6, 0xff22c55e, clamp(sy / 200, 0, 1))}
+          />
+        </View>
       </View>
     </View>
   );

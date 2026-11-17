@@ -66,7 +66,6 @@ export const Slot: (props: {
 // ============================================================================
 
 export const ViewStyle: (props: {
-  target: unknown;
   when?: unknown;
   backgroundColor?: unknown;
   radius?: unknown;
@@ -79,7 +78,6 @@ export const ViewStyle: (props: {
 }) => void;
 
 export const TextStyle: (props: {
-  target: unknown;
   when?: unknown;
   color?: unknown;
   textAlign?: unknown;
