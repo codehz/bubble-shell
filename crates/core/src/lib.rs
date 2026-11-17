@@ -55,6 +55,9 @@ pub use ops::{
 };
 pub use paint::encode_paint;
 pub use props::{Prop, TEXT_STYLE_PROPS, VIEW_STYLE_PROPS};
+/// Primitives, gestures, events, and platform APIs generated from `bubble-schema`.
+pub const GENERATED_DTS: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/bubble-shell-generated.d.ts"));
 pub use reactive::{Kind as ComputationKind, Sched};
 pub use semantics::{
     Role, SemanticsNode, SemanticsSnapshot, ACTION_ACTIVATE, ACTION_FOCUS, ACTION_SCROLL_BACKWARD,

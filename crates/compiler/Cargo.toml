@@ -12,3 +12,9 @@ oxc = { version = "=0.158.0", default-features = false, features = [
     "semantic",
     "transformer",
 ] }
+
+[build-dependencies]
+bubble-schema = { path = "../schema" }
+
+[dev-dependencies]
+bubble-schema = { path = "../schema" }

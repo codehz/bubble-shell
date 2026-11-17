@@ -1,0 +1,9 @@
+[package]
+name = "bubble-schema"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Bubble Shell schema and codegen for props, specs, and d.ts"
+license = "MIT"
+
+[dependencies]

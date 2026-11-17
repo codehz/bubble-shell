@@ -8,6 +8,7 @@ members = [
     "crates/cli",
     "crates/native",
     "crates/testing",
+    "crates/schema",
 ]
 
 # bubble-wasm is a wasm32 cdylib; building it for the host fails at link time.

@@ -23,10 +23,7 @@ use oxc::span::{GetSpan, SourceType, Span, SPAN};
 use oxc::str::{Ident, Str};
 use oxc::syntax::scope::ScopeFlags;
 use oxc::transformer::{JsxOptions, TransformOptions, Transformer};
-mod bubble_shell_dts;
 mod props;
-
-pub use bubble_shell_dts::BUBBLE_SHELL_DTS;
 
 /// The runtime module injected into every compiled module.
 const RT_MODULE: &str = "bubble:rt";
