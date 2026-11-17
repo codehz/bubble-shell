@@ -46,6 +46,19 @@ pub const SOURCE_SCROLL_CAN_DOWN: u8 = 12;
 pub const SOURCE_SCROLL_CAN_LEFT: u8 = 13;
 /// Source read: the target can move farther right from its current offset.
 pub const SOURCE_SCROLL_CAN_RIGHT: u8 = 14;
+/// Source read: pre-transform layout frame width, logical px. Includes
+/// padding and excludes margin.
+pub const SOURCE_LAYOUT_WIDTH: u8 = 15;
+/// Source read: pre-transform layout frame height, logical px. Includes
+/// padding and excludes margin.
+pub const SOURCE_LAYOUT_HEIGHT: u8 = 16;
+/// Source read: padding-inclusive scroll area width, logical px. Frame width
+/// plus the maximum horizontal scroll offset, so it is never smaller than
+/// the frame.
+pub const SOURCE_SCROLL_CONTENT_WIDTH: u8 = 17;
+/// Source read: padding-inclusive scroll area height, logical px. Frame
+/// height plus the maximum vertical scroll offset.
+pub const SOURCE_SCROLL_CONTENT_HEIGHT: u8 = 18;
 
 /// Interest bits: which state sources a declaration's programs may read,
 /// precomputed from the variables the programs load. The hit path consults

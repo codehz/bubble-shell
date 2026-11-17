@@ -1138,13 +1138,15 @@ impl Shell {
         caret_h: f32,
     ) -> Result<(), String> {
         let pads = self.pads(handle);
-        let changed = {
+        let (changed, extent_changed) = {
             let node = self.node_mut(handle)?;
             if node.kind != Kind::Field {
                 return Ok(());
             }
             let before_left = node.scroll_left;
             let before_top = node.scroll_top;
+            let before_w = node.content_w;
+            let before_h = node.content_h;
             let viewport_w = (node.w - pads[0] - pads[1]).max(0.0);
             let viewport_h = (node.h - pads[2] - pads[3]).max(0.0);
             node.content_w = node.content_w.max(caret_x + 1.0);
@@ -1173,10 +1175,18 @@ impl Shell {
                 let max_scroll = (node.content_h - viewport_h).max(0.0);
                 node.scroll_top = node.scroll_top.clamp(0.0, max_scroll);
             }
-            node.scroll_left != before_left || node.scroll_top != before_top
+            (
+                node.scroll_left != before_left || node.scroll_top != before_top,
+                node.content_w != before_w || node.content_h != before_h,
+            )
         };
         if changed {
             self.last_scroll_time.insert(handle, self.now_ms);
+        }
+        // Caret reveal can grow the field's text extent after `compute_layout`
+        // already sampled scroll content size.
+        if changed || extent_changed {
+            self.sample_sources();
         }
         Ok(())
     }

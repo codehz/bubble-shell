@@ -5,9 +5,10 @@ use crate::ops::Value;
 use crate::state_style::{
     AnimSpec, AnimState, DeclExpr, ResolvedPatch, SlotType, VarEvent, VarTable, SOURCE_DISABLED,
     SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_GESTURE_ROTATION, SOURCE_GESTURE_SCALE,
-    SOURCE_GESTURE_TX, SOURCE_GESTURE_TY, SOURCE_NONE, SOURCE_PRESSED, SOURCE_SCROLL_CAN_DOWN,
-    SOURCE_SCROLL_CAN_LEFT, SOURCE_SCROLL_CAN_RIGHT, SOURCE_SCROLL_CAN_UP, SOURCE_SCROLL_X,
-    SOURCE_SCROLL_Y,
+    SOURCE_GESTURE_TX, SOURCE_GESTURE_TY, SOURCE_LAYOUT_HEIGHT, SOURCE_LAYOUT_WIDTH, SOURCE_NONE,
+    SOURCE_PRESSED, SOURCE_SCROLL_CAN_DOWN, SOURCE_SCROLL_CAN_LEFT, SOURCE_SCROLL_CAN_RIGHT,
+    SOURCE_SCROLL_CAN_UP, SOURCE_SCROLL_CONTENT_HEIGHT, SOURCE_SCROLL_CONTENT_WIDTH,
+    SOURCE_SCROLL_X, SOURCE_SCROLL_Y,
 };
 
 use super::paint::EffectivePaintStyle;
@@ -83,7 +84,7 @@ impl Shell {
         source: u8,
         initial: &Value,
     ) -> Result<(), String> {
-        if source > SOURCE_SCROLL_CAN_RIGHT {
+        if source > SOURCE_SCROLL_CONTENT_HEIGHT {
             return Err(format!("var {var} has unknown source {source}"));
         }
         let value = match source {
@@ -95,7 +96,11 @@ impl Shell {
             | SOURCE_GESTURE_TY
             | SOURCE_GESTURE_ROTATION
             | SOURCE_SCROLL_X
-            | SOURCE_SCROLL_Y => ExprValue::Num(0.0),
+            | SOURCE_SCROLL_Y
+            | SOURCE_LAYOUT_WIDTH
+            | SOURCE_LAYOUT_HEIGHT
+            | SOURCE_SCROLL_CONTENT_WIDTH
+            | SOURCE_SCROLL_CONTENT_HEIGHT => ExprValue::Num(0.0),
             SOURCE_SCROLL_CAN_UP
             | SOURCE_SCROLL_CAN_DOWN
             | SOURCE_SCROLL_CAN_LEFT
@@ -394,6 +399,33 @@ impl Shell {
         };
         offset < max
     }
+    /// Layout frame or padding-inclusive scroll content, in logical px.
+    /// A missing target, or `display: none` on the target or any ancestor,
+    /// reads as 0 so a field's cached text extent cannot report a size after
+    /// it has left layout. `visibility: hidden`, opacity, and disabled do not
+    /// zero the measurement. Paint transforms are not part of it.
+    fn measured_source(&self, target: u32, source: u8) -> f32 {
+        let mut id = target;
+        while id != 0 {
+            let Ok(node) = self.node(id) else {
+                return 0.0;
+            };
+            if node.display_none {
+                return 0.0;
+            }
+            id = node.parent;
+        }
+        let Ok(node) = self.node(target) else {
+            return 0.0;
+        };
+        match source {
+            SOURCE_LAYOUT_WIDTH => node.w,
+            SOURCE_LAYOUT_HEIGHT => node.h,
+            SOURCE_SCROLL_CONTENT_WIDTH => node.w + self.max_scroll_x(node),
+            SOURCE_SCROLL_CONTENT_HEIGHT => node.h + self.max_scroll_y(node),
+            _ => 0.0,
+        }
+    }
 
     /// Re-sample every source-driven variable and re-evaluate the
     /// declarations that read a changed one. Cheap: only vars with sources,
@@ -431,6 +463,12 @@ impl Shell {
                 SOURCE_SCROLL_CAN_DOWN => ExprValue::Bool(self.scroll_can(target, true, true)),
                 SOURCE_SCROLL_CAN_LEFT => ExprValue::Bool(self.scroll_can(target, false, false)),
                 SOURCE_SCROLL_CAN_RIGHT => ExprValue::Bool(self.scroll_can(target, false, true)),
+                SOURCE_LAYOUT_WIDTH
+                | SOURCE_LAYOUT_HEIGHT
+                | SOURCE_SCROLL_CONTENT_WIDTH
+                | SOURCE_SCROLL_CONTENT_HEIGHT => {
+                    ExprValue::Num(self.measured_source(target, source))
+                }
                 _ => continue,
             };
             if let Some(var) = self.vars.get_mut(id) {

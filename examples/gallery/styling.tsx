@@ -145,3 +145,142 @@ export function AnimatedDemo() {
     </View>
   );
 }
+
+// Layout frame and scroll-content size, sampled on the UI thread. The corner
+// badge follows the frame through style transitions; the travel marker only
+// moves when a worklet reads the measured width.
+export function MeasuredDemo() {
+  const boxRef = ref();
+  const scrollRef = ref();
+  const boxWidth = createSharedValue({ source: "layout.width", target: boxRef });
+  const boxHeight = createSharedValue({ source: "layout.height", target: boxRef });
+  const viewportWidth = createSharedValue({ source: "layout.width", target: scrollRef });
+  const viewportHeight = createSharedValue({ source: "layout.height", target: scrollRef });
+  const contentWidth = createSharedValue({ source: "scroll.contentWidth", target: scrollRef });
+  const contentHeight = createSharedValue({ source: "scroll.contentHeight", target: scrollRef });
+  const scrollX = createSharedValue({ source: "scroll.x", target: scrollRef });
+  const scrollY = createSharedValue({ source: "scroll.y", target: scrollRef });
+  const travel = createSharedValue(0);
+  const wide = signal(false);
+  const fitted = signal(false);
+  const animateEdge = () => {
+    scheduleOnUI(() => {
+      "worklet";
+      travel.value = withTiming(boxWidth.value - 20, { duration: 300, easing: "linear" });
+    });
+  };
+  const resetTravel = () => {
+    scheduleOnUI(() => {
+      "worklet";
+      travel.value = withTiming(0, { duration: 300, easing: "linear" });
+    });
+  };
+  return (
+    <View gap={12}>
+      <Section title="Measured frame — layout.width / layout.height">
+        <Text color="#9ca3af" fontSize={13}>
+          The amber badge eases to the measured corner. The blue marker moves only when Animate reads that width on the UI thread.
+        </Text>
+        <View
+          ref={boxRef}
+          width={wide() ? 240 : 160}
+          height={wide() ? 120 : 80}
+          flexShrink={0}
+          backgroundColor={0xff172554}
+          radius={6}
+        >
+          <View
+            position="absolute"
+            start={0}
+            top={0}
+            width={20}
+            height={20}
+            backgroundColor={0xfff59e0b}
+            transition:translateX={{ duration: 300, easing: "linear" }}
+            transition:translateY={{ duration: 300, easing: "linear" }}
+          >
+            <ViewStyle
+              translateX={max(0, boxWidth - 20)}
+              translateY={max(0, boxHeight - 20)}
+            />
+            <ViewStyle when={boxWidth >= 200} backgroundColor={0xff22c55e} />
+          </View>
+          <View
+            position="absolute"
+            start={0}
+            top={0}
+            width={20}
+            height={20}
+            backgroundColor={0xff38bdf8}
+          >
+            <ViewStyle translateX={travel} />
+          </View>
+        </View>
+        <View flexDirection="row" flexWrap="wrap" gap={8}>
+          <Btn label="Resize box" color={0xff2563eb} onTap={() => wide.set(!wide())} />
+          <Btn label="Animate to measured edge" color={0xff0ea5e9} onTap={() => animateEdge()} />
+          <Btn label="Reset animation" color={0xff4b5563} onTap={() => resetTravel()} />
+        </View>
+      </Section>
+      <Section title="Scroll content size">
+        <Text color="#9ca3af" fontSize={13}>
+          Content size starts at 360×260 and is 180×120 after fit. Scroll offset does not change those sizes.
+        </Text>
+        <View flexDirection="row" flexWrap="wrap" gap={8}>
+          <View backgroundColor={0xff6b7280} radius={6} padding={[6, 10, 6, 10]}>
+            <ViewStyle when={viewportWidth == 180} backgroundColor={0xff22c55e} />
+            <Text color="#ffffff" fontSize={12}>viewport width 180</Text>
+          </View>
+          <View backgroundColor={0xff6b7280} radius={6} padding={[6, 10, 6, 10]}>
+            <ViewStyle when={viewportHeight == 120} backgroundColor={0xff22c55e} />
+            <Text color="#ffffff" fontSize={12}>viewport height 120</Text>
+          </View>
+          <View backgroundColor={0xff6b7280} radius={6} padding={[6, 10, 6, 10]}>
+            <ViewStyle when={contentWidth > viewportWidth} backgroundColor={0xff22c55e} />
+            <Text color="#ffffff" fontSize={12}>content wider</Text>
+          </View>
+          <View backgroundColor={0xff6b7280} radius={6} padding={[6, 10, 6, 10]}>
+            <ViewStyle when={contentHeight > viewportHeight} backgroundColor={0xff22c55e} />
+            <Text color="#ffffff" fontSize={12}>content taller</Text>
+          </View>
+        </View>
+        <View
+          ref={scrollRef}
+          width={180}
+          height={120}
+          flexShrink={0}
+          overflowX="scroll"
+          overflowY="scroll"
+          backgroundColor={0xff172554}
+          radius={6}
+        >
+          <View
+            width={fitted() ? 100 : 360}
+            height={fitted() ? 80 : 260}
+            flexShrink={0}
+            backgroundColor={0xff1f2937}
+          />
+        </View>
+        <View position="relative" width={100} height={14} backgroundColor={0xff374151} radius={4}>
+          <View position="absolute" start={0} top={0} width={10} height={10} backgroundColor={0xfff59e0b}>
+            <ViewStyle
+              translateX={90 * clamp(scrollX / max(1, contentWidth - viewportWidth), 0, 1)}
+            />
+          </View>
+        </View>
+        <View position="relative" width={100} height={14} backgroundColor={0xff374151} radius={4}>
+          <View position="absolute" start={0} top={0} width={10} height={10} backgroundColor={0xff38bdf8}>
+            <ViewStyle
+              translateX={90 * clamp(scrollY / max(1, contentHeight - viewportHeight), 0, 1)}
+            />
+          </View>
+        </View>
+        <Btn
+          label="Fit content"
+          color={0xff2563eb}
+          onTap={() => fitted.set(!fitted())}
+        />
+      </Section>
+    </View>
+  );
+}

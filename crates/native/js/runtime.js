@@ -1043,6 +1043,12 @@ const SOURCE_CODES = {
   "scroll.canScrollDown": 12,
   "scroll.canScrollLeft": 13,
   "scroll.canScrollRight": 14,
+  // Pre-transform layout frame, logical px. Padding included, margin excluded.
+  "layout.width": 15,
+  "layout.height": 16,
+  // Padding-inclusive scroll area: frame plus the maximum scroll offset.
+  "scroll.contentWidth": 17,
+  "scroll.contentHeight": 18,
 };
 
 // Settle requests per variable id; resolved when the shell reports the
@@ -1135,10 +1141,17 @@ function resolveTarget(target) {
 /// `scroll.canScrollDown` / `scroll.canScrollLeft` / `scroll.canScrollRight`
 /// are booleans for whether that container can move farther in the physical
 /// direction from its current offset (a missing target or a disabled axis is
-/// false). `createSharedValue(0)` makes a script-driven
+/// false). `layout.width` / `layout.height` read the target's pre-transform
+/// layout frame in logical px (padding included, margin excluded).
+/// `scroll.contentWidth` / `scroll.contentHeight` are the padding-inclusive
+/// scroll area — the frame plus that axis's maximum scroll offset, never
+/// smaller than the frame. A missing target or any `display: none` ancestor
+/// reads as 0; visibility, opacity, and disabled do not zero them. Paint
+/// transforms and scroll offsets do not change these sizes. `createSharedValue(0)` makes a script-driven
 /// variable written from JS with `value = ...`, or from a worklet with
 /// `.value` reads and writes. Either form accepts `{ value }` for the
-/// starting value.
+/// starting value. A source-driven value ignores `{ value }` and stays owned
+/// by the UI thread.
 export function createSharedValue(valueOrOptions, options) {
   if (typeof api.create_var !== "function") {
     throw new Error("host does not expose shared variables");
