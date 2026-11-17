@@ -1038,6 +1038,11 @@ const SOURCE_CODES = {
   // Scroll offsets from the target scroll container, logical px.
   "scroll.x": 9,
   "scroll.y": 10,
+  // Whether the target can move farther in that physical direction.
+  "scroll.canScrollUp": 11,
+  "scroll.canScrollDown": 12,
+  "scroll.canScrollLeft": 13,
+  "scroll.canScrollRight": 14,
 };
 
 // Settle requests per variable id; resolved when the shell reports the
@@ -1126,7 +1131,11 @@ function resolveTarget(target) {
 /// `gesture.translationY` / `gesture.scale` / `gesture.rotation` read the
 /// target gesture declaration's live values (`scale` stays `1.0` and
 /// translations `0` while idle), `scroll.x` / `scroll.y` read the target
-/// container's scroll offsets. `createSharedValue(0)` makes a script-driven
+/// container's scroll offsets, and `scroll.canScrollUp` /
+/// `scroll.canScrollDown` / `scroll.canScrollLeft` / `scroll.canScrollRight`
+/// are booleans for whether that container can move farther in the physical
+/// direction from its current offset (a missing target or a disabled axis is
+/// false). `createSharedValue(0)` makes a script-driven
 /// variable written from JS with `value = ...`, or from a worklet with
 /// `.value` reads and writes. Either form accepts `{ value }` for the
 /// starting value.

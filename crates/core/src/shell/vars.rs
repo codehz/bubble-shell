@@ -5,7 +5,8 @@ use crate::ops::Value;
 use crate::state_style::{
     AnimSpec, AnimState, DeclExpr, ResolvedPatch, SlotType, VarEvent, VarTable, SOURCE_DISABLED,
     SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_GESTURE_ROTATION, SOURCE_GESTURE_SCALE,
-    SOURCE_GESTURE_TX, SOURCE_GESTURE_TY, SOURCE_NONE, SOURCE_PRESSED, SOURCE_SCROLL_X,
+    SOURCE_GESTURE_TX, SOURCE_GESTURE_TY, SOURCE_NONE, SOURCE_PRESSED, SOURCE_SCROLL_CAN_DOWN,
+    SOURCE_SCROLL_CAN_LEFT, SOURCE_SCROLL_CAN_RIGHT, SOURCE_SCROLL_CAN_UP, SOURCE_SCROLL_X,
     SOURCE_SCROLL_Y,
 };
 
@@ -82,7 +83,7 @@ impl Shell {
         source: u8,
         initial: &Value,
     ) -> Result<(), String> {
-        if source > SOURCE_SCROLL_Y {
+        if source > SOURCE_SCROLL_CAN_RIGHT {
             return Err(format!("var {var} has unknown source {source}"));
         }
         let value = match source {
@@ -95,6 +96,10 @@ impl Shell {
             | SOURCE_GESTURE_ROTATION
             | SOURCE_SCROLL_X
             | SOURCE_SCROLL_Y => ExprValue::Num(0.0),
+            SOURCE_SCROLL_CAN_UP
+            | SOURCE_SCROLL_CAN_DOWN
+            | SOURCE_SCROLL_CAN_LEFT
+            | SOURCE_SCROLL_CAN_RIGHT => ExprValue::Bool(false),
             // Pinch scale reads as "no transform" while idle.
             SOURCE_GESTURE_SCALE => ExprValue::Num(1.0),
             _ => ExprValue::Bool(false),
@@ -364,6 +369,32 @@ impl Shell {
         }
     }
 
+    /// Whether `target` can move farther in one physical direction.
+    /// `toward_end` is down or right. A missing target is false. A disabled
+    /// axis has a zero offset and a zero maximum, so both directions are false.
+    fn scroll_can(&self, target: u32, vertical: bool, toward_end: bool) -> bool {
+        let Ok(node) = self.node(target) else {
+            return false;
+        };
+        let (offset, enabled) = if vertical {
+            (node.scroll_top, node.scrolls_y())
+        } else {
+            (node.scroll_left, node.scrolls_x())
+        };
+        if !toward_end {
+            return offset > 0.0;
+        }
+        if !enabled {
+            return false;
+        }
+        let max = if vertical {
+            self.max_scroll_y(node)
+        } else {
+            self.max_scroll_x(node)
+        };
+        offset < max
+    }
+
     /// Re-sample every source-driven variable and re-evaluate the
     /// declarations that read a changed one. Cheap: only vars with sources,
     /// and only changed vars touch declarations.
@@ -396,6 +427,10 @@ impl Shell {
                 SOURCE_SCROLL_Y => {
                     ExprValue::Num(self.node(target).map(|node| node.scroll_top).unwrap_or(0.0))
                 }
+                SOURCE_SCROLL_CAN_UP => ExprValue::Bool(self.scroll_can(target, true, false)),
+                SOURCE_SCROLL_CAN_DOWN => ExprValue::Bool(self.scroll_can(target, true, true)),
+                SOURCE_SCROLL_CAN_LEFT => ExprValue::Bool(self.scroll_can(target, false, false)),
+                SOURCE_SCROLL_CAN_RIGHT => ExprValue::Bool(self.scroll_can(target, false, true)),
                 _ => continue,
             };
             if let Some(var) = self.vars.get_mut(id) {

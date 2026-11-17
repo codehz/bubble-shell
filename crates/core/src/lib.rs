@@ -64,7 +64,8 @@ pub use semantics::{
 pub use shell::{A11yAction, EditMenuAction, Key, MenuResult, PaintCmd, ScrollOutcome, Shell};
 pub use state_style::{
     encode_var_events, AnimSpec, TransitionSpec, VarEvent, EASE_LINEAR, SOURCE_DISABLED,
-    SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED,
+    SOURCE_EDITING, SOURCE_FOCUSED, SOURCE_NONE, SOURCE_PRESSED, SOURCE_SCROLL_CAN_DOWN,
+    SOURCE_SCROLL_CAN_LEFT, SOURCE_SCROLL_CAN_RIGHT, SOURCE_SCROLL_CAN_UP,
 };
 pub use turn::Turn;
 pub use ui::{encode_js_calls, UiCall, UiCapture, UiProgram, UiValue};

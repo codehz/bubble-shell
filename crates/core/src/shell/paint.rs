@@ -351,6 +351,8 @@ impl Shell {
         }
         self.place(1, 0.0, 0.0)?;
         self.paint_dirty.set(true);
+        // Content growth and the clamp above change scroll ranges without an input event.
+        self.sample_sources();
         Ok(())
     }
 

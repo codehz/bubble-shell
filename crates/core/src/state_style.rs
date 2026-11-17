@@ -38,6 +38,14 @@ pub const SOURCE_GESTURE_ROTATION: u8 = 8;
 pub const SOURCE_SCROLL_X: u8 = 9;
 /// Source read: vertical scroll offset of one scroll container, logical px.
 pub const SOURCE_SCROLL_Y: u8 = 10;
+/// Source read: the target can move farther up from its current offset.
+pub const SOURCE_SCROLL_CAN_UP: u8 = 11;
+/// Source read: the target can move farther down from its current offset.
+pub const SOURCE_SCROLL_CAN_DOWN: u8 = 12;
+/// Source read: the target can move farther left from its current offset.
+pub const SOURCE_SCROLL_CAN_LEFT: u8 = 13;
+/// Source read: the target can move farther right from its current offset.
+pub const SOURCE_SCROLL_CAN_RIGHT: u8 = 14;
 
 /// Interest bits: which state sources a declaration's programs may read,
 /// precomputed from the variables the programs load. The hit path consults
