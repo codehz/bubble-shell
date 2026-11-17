@@ -66,6 +66,7 @@ export const Slot: (props: {
 // ============================================================================
 
 export const ViewStyle: (props: {
+  /** Omitted `when` keeps the declaration active. */
   when?: unknown;
   backgroundColor?: unknown;
   radius?: unknown;
@@ -78,6 +79,7 @@ export const ViewStyle: (props: {
 }) => void;
 
 export const TextStyle: (props: {
+  /** Omitted `when` keeps the declaration active. */
   when?: unknown;
   color?: unknown;
   textAlign?: unknown;

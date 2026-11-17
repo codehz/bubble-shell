@@ -27,7 +27,7 @@
 | 5 | 动画语义 | 双模：默认即时写入，per-var 或 per-write 可选动画参数 |
 | 6 | 可绑定属性 | 6 个 paint 属性 + transform（不进 Taffy、不触发重排） |
 | 7 | settle 通知 | 复用现有 UI→脚本事件批次，新增 var-settle 事件 |
-| 8 | 条件形式 | 全显式变量：`when` 只读作用域内变量；移除 `enabled`（`when={false}` 或绑定布尔变量覆盖） |
+| 8 | 条件形式 | `when` 只读作用域内变量；省略 `when` 恒真，声明保持生效；移除 `enabled`（`when={false}` 或绑定布尔变量覆盖） |
 | 9 | 组件划分 | 两个组件：`ViewStyle`（backgroundColor/radius/opacity/fit/transform）、`TextStyle`（color/textAlign） |
 | 10 | 目标解析 | 样式声明不接受 `target`，只作用于正在构建的父节点。共享变量的 `target` 仍显式给出 |
 | 11 | 首批状态源 | Pressed、Focused、Disabled（读现有 `node.disabled`）、Editing（读 EditSession） |
@@ -116,7 +116,7 @@ MIN MAX ABS | EASE(fn, t)                       // 内建函数（EASE 为动画
 约束：
 
 - 常量折叠在编译期完成；整棵程序折叠为常量时，直接退化为静态 patch 值（产出与今天等价的 op），运行期零求值——这就是编译期 computed 的形态。
-- 编译期类型检查：`when` 必须折叠/推断为 Bool；patch 项类型必须匹配属性（`backgroundColor` 需要 Color，`opacity` 需要 Num，`textAlign`/`fit` 需要 `SELECT` 于枚举常量）。类型错误是构建错误，不是运行期错误。
+- 编译期类型检查：写出的 `when` 必须折叠/推断为 Bool；patch 项类型必须匹配属性（`backgroundColor` 需要 Color，`opacity` 需要 Num，`textAlign`/`fit` 需要 `SELECT` 于枚举常量）。类型错误是构建错误，不是运行期错误。
 - NaN/Infinity 防护与 05 号文档手势部分同一标准：除零、零距离插值不得产生非有限值。
 - 字符串字面量、属性名、任意对象不进入引擎；引擎之外的表达式由编译器拒绝。
 
@@ -148,7 +148,7 @@ MIN MAX ABS | EASE(fn, t)                       // 内建函数（EASE 为动画
 StyleDecl {
     target: u32,              // 构建期解析出的父节点句柄，不是公开属性
     index: u32,               // 保持 OrderedDecls 序模型（同目标内按源码顺序，后者胜出）
-    when: Program,            // Bool 程序（或折叠后的常量 true/false）
+    when: Option<Program>,   // None = 省略，恒真；Some = Bool 程序或折叠后的常量
     patch: [Option<PatchSlot>; N],  // PatchSlot = 静态值 | Program；None = 未声明该项
     interests: u8,            // 编译期预计算：声明关注哪些状态源（第 7 节）
     resolved: ResolvedPatch,  // 最近一次求值缓存
@@ -181,7 +181,7 @@ function Button() {
 }
 ```
 
-- `when` 只接受表达式程序；无字符串形式、无 `enabled`。
+- `when` 只接受表达式程序；无字符串形式、无 `enabled`。省略 `when` 等价于恒真，声明保持生效。
 - 声明不接受 `target`，只作用于正在构建的父节点，包括叶子节点自己的样式子构建。不能把声明重定向到另一个节点。`SpawnStyleDecl.target` 仍是当时解析出的节点句柄，不是公开属性。
 - 标识符解析为作用域内的 `VarRef` 与编译期常量；解析不到即编译错误。
 - 同一父节点上多条匹配声明按源码顺序覆盖，后者胜出。声明不能指向别的节点，因此没有「挂错目标」这条路径。

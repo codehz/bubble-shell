@@ -302,7 +302,7 @@ impl Shell {
                     Ok(Some(ExprValue::Bool(true)))
                 )
             }
-            None => false,
+            None => true,
         };
         if matched {
             for slot in 0..crate::state_style::SLOT_COUNT {

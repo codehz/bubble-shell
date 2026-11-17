@@ -433,7 +433,7 @@ pub(crate) struct StyleDecl {
     /// `1` ViewStyle, `2` TextStyle. Enforces the compile-time whitelist.
     pub component: u8,
     pub target: u32,
-    /// `None` means "no when yet", which matches nothing.
+    /// `None` means `when` was omitted, which always matches.
     pub when: Option<DeclExpr>,
     pub patch: [Option<DeclExpr>; SLOT_COUNT],
     pub interests: u8,
