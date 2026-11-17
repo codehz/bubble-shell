@@ -521,11 +521,8 @@ impl Shell {
                     let font_size = node.font_size;
                     let line_height = node.line_height;
                     let font_weight = node.font_weight;
-                    let max_lines = layout_max_lines(
-                        node.kind,
-                        node.text_overflow,
-                        node.line_clamp,
-                    );
+                    let max_lines =
+                        layout_max_lines(node.kind, node.text_overflow, node.line_clamp);
                     let taffy_id = node.taffy;
                     self.taffy
                         .set_node_context(

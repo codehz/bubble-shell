@@ -1,9 +1,7 @@
 use bubble_core::{encode, spawn_ops, Kind, NodeDesc, Op, PaintCmd, Shell, Value};
 
 fn layout(shell: &mut Shell) {
-    shell
-        .layout(&mut |_, _, _, _, _| (0.0, 0.0))
-        .unwrap();
+    shell.layout(&mut |_, _, _, _, _| (0.0, 0.0)).unwrap();
 }
 
 fn fade(shell: &Shell) -> Option<(f32, f32, f32, f32)> {
@@ -34,10 +32,7 @@ fn scroller(child_h: f32, fade_edges: f32) -> Shell {
     child.height = Some(child_h);
     child.flex_shrink = 0.0;
     shell
-        .apply_ops(&encode(
-            1,
-            &[spawn_ops(root), spawn_ops(child)].concat(),
-        ))
+        .apply_ops(&encode(1, &[spawn_ops(root), spawn_ops(child)].concat()))
         .unwrap();
     layout(&mut shell);
     shell
@@ -56,7 +51,10 @@ fn fade_edges_only_when_overflow_exists() {
     for cmd in shell.paint().iter() {
         match cmd {
             PaintCmd::Fill { color, .. } if color.to_argb() == 0xff37_4151 => {
-                assert!(!open, "container background stays outside the content layer");
+                assert!(
+                    !open,
+                    "container background stays outside the content layer"
+                );
                 saw_fill = true;
             }
             PaintCmd::PushLayer => {

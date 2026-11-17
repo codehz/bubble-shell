@@ -142,7 +142,10 @@ fn auto_hide_follows_scroll_clock() {
     assert!(shell.scroll_path(&[id], 0.0, 40.0).changed());
     assert_eq!(blue_thumbs(&shell).len(), 1, "scroll shows the thumb again");
     shell.advance_gestures(1001.0 + 1001.0);
-    assert!(blue_thumbs(&shell).is_empty(), "hides again after another 1000ms");
+    assert!(
+        blue_thumbs(&shell).is_empty(),
+        "hides again after another 1000ms"
+    );
 
     shell
         .apply_ops(&encode(4, &[prop(6, "autoHide", Value::Bool(false))]))
@@ -281,7 +284,13 @@ fn horizontal_thumb_sits_on_the_bottom_edge() {
         ))
         .unwrap();
     let (tx, ty, tw, th) = blue_thumbs(&shell)[0];
-    pointer(&mut shell, PointerAction::Down, tx + tw / 2.0, ty + th / 2.0, 10.0);
+    pointer(
+        &mut shell,
+        PointerAction::Down,
+        tx + tw / 2.0,
+        ty + th / 2.0,
+        10.0,
+    );
     pointer(
         &mut shell,
         PointerAction::Move,
@@ -291,7 +300,10 @@ fn horizontal_thumb_sits_on_the_bottom_edge() {
     );
     let left = shell.scroll_of(2).unwrap().0;
     let expected = 50.0 * max / (track - length);
-    assert!(near(left, expected), "scroll_left {left} expected {expected}");
+    assert!(
+        near(left, expected),
+        "scroll_left {left} expected {expected}"
+    );
 }
 
 #[test]
@@ -376,7 +388,10 @@ fn both_axes_track_independently() {
     let next = blue_thumbs(&shell);
     let vertical_next = next.iter().find(|(_, _, w, h)| *h > *w).unwrap();
     let horizontal_next = next.iter().find(|(_, _, w, h)| *w > *h).unwrap();
-    assert!(vertical_next.1 > vertical_thumb.1, "vertical thumb moved down");
+    assert!(
+        vertical_next.1 > vertical_thumb.1,
+        "vertical thumb moved down"
+    );
     assert!(
         near(horizontal_next.0, horizontal_thumb.0),
         "horizontal thumb stays put when only y scrolls"

@@ -405,7 +405,9 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
                 *slot = text.clone();
                 Scan::Replace
             }
-            Op::SetPropColor { .. } | Op::SetProp { .. } | Op::SetScrollBarProp { .. } => Scan::Skip,
+            Op::SetPropColor { .. } | Op::SetProp { .. } | Op::SetScrollBarProp { .. } => {
+                Scan::Skip
+            }
             _ => Scan::Stop,
         }),
         Op::SetPropColor { handle, key, rgba } => coalesce_last(buf, |item| match item {
@@ -417,7 +419,10 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
                 *slot = *rgba;
                 Scan::Replace
             }
-            Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } | Op::SetScrollBarProp { .. } => Scan::Skip,
+            Op::SetText { .. }
+            | Op::SetPropColor { .. }
+            | Op::SetProp { .. }
+            | Op::SetScrollBarProp { .. } => Scan::Skip,
             _ => Scan::Stop,
         }),
         Op::SetProp { handle, key, value } => coalesce_last(buf, |item| match item {
@@ -429,7 +434,10 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
                 *slot = value.clone();
                 Scan::Replace
             }
-            Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } | Op::SetScrollBarProp { .. } => Scan::Skip,
+            Op::SetText { .. }
+            | Op::SetPropColor { .. }
+            | Op::SetProp { .. }
+            | Op::SetScrollBarProp { .. } => Scan::Skip,
             _ => Scan::Stop,
         }),
         Op::SetStyleDeclProp { decl, key, value } => coalesce_last(buf, |item| match item {
@@ -441,7 +449,10 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
                 *slot = value.clone();
                 Scan::Replace
             }
-            Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } | Op::SetScrollBarProp { .. } => Scan::Skip,
+            Op::SetText { .. }
+            | Op::SetPropColor { .. }
+            | Op::SetProp { .. }
+            | Op::SetScrollBarProp { .. } => Scan::Skip,
             _ => Scan::Stop,
         }),
         Op::SetVar { var, value, anim } => coalesce_last(buf, |item| match item {
@@ -490,7 +501,10 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
                 *slot = value.clone();
                 Scan::Replace
             }
-            Op::SetText { .. } | Op::SetPropColor { .. } | Op::SetProp { .. } | Op::SetScrollBarProp { .. } => Scan::Skip,
+            Op::SetText { .. }
+            | Op::SetPropColor { .. }
+            | Op::SetProp { .. }
+            | Op::SetScrollBarProp { .. } => Scan::Skip,
             _ => Scan::Stop,
         }),
         Op::SetScrollBarProp {

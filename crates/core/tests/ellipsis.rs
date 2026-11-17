@@ -94,4 +94,3 @@ fn line_clamp_puts_ellipsis_on_the_last_visible_line() {
     layout(&mut shell);
     assert_eq!(painted(&shell), "abcd\nefg…");
 }
-

@@ -528,11 +528,7 @@ impl Shell {
             if !matches!(node.kind, Kind::Text | Kind::Field) {
                 return Ok(());
             }
-            let max_lines = super::layout_max_lines(
-                node.kind,
-                node.text_overflow,
-                node.line_clamp,
-            );
+            let max_lines = super::layout_max_lines(node.kind, node.text_overflow, node.line_clamp);
             let text = if node.kind == Kind::Field {
                 display_text(&node.text, node.secure)
             } else {
@@ -815,10 +811,7 @@ impl Shell {
         self.state_styles.target_disposed(handle);
         let retired_bars = self.scrollbars.target_disposed(handle);
         for id in retired_bars {
-            if self
-                .scrollbar_drag
-                .is_some_and(|drag| drag.scrollbar == id)
-            {
+            if self.scrollbar_drag.is_some_and(|drag| drag.scrollbar == id) {
                 self.scrollbar_drag = None;
             }
         }
