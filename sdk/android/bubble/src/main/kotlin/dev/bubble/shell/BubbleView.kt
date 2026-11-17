@@ -746,18 +746,26 @@ class BubbleView(context: Context) : View(context) {
     }
 
     private fun publishCursor() {
-        val caret = BubbleNative.caret(handle, )
-        if (caret.size < 4) return
         val snapshot = editSnapshot() ?: return
-        val density = resources.displayMetrics.density
-        val x = paddingLeft + caret[0] * density
-        val top = paddingTop + caret[1] * density
-        val bottom = top + caret[3] * density
-        val info = CursorAnchorInfo.Builder()
+        val builder = CursorAnchorInfo.Builder()
             .setMatrix(android.graphics.Matrix())
             .setSelectionRange(snapshot.start, snapshot.end)
-            .setInsertionMarkerLocation(x, top, bottom, bottom, CursorAnchorInfo.FLAG_HAS_VISIBLE_REGION)
-            .build()
+        if (snapshot.anchor == snapshot.active) {
+            val caret = BubbleNative.caret(handle)
+            if (caret.size < 4) return
+            val density = resources.displayMetrics.density
+            val x = paddingLeft + caret[0] * density
+            val top = paddingTop + caret[1] * density
+            val bottom = top + caret[3] * density
+            builder.setInsertionMarkerLocation(
+                x,
+                top,
+                bottom,
+                bottom,
+                CursorAnchorInfo.FLAG_HAS_VISIBLE_REGION,
+            )
+        }
+        val info = builder.build()
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.updateCursorAnchorInfo(this, info)
         lastCursorAnchorInfo = info

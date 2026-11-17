@@ -1133,7 +1133,8 @@ pub extern "C" fn bubble_focus_at(shell: *mut BubbleShell, x: f32, y: f32) -> u3
     result.unwrap_or(0)
 }
 
-/// Focused caret: x, y, width, height. Returns 0 when a field is focused.
+/// Collapsed focused caret: x, y, width, height. Returns 0 on success.
+/// Errors with "no caret" when the selection is not collapsed or nothing is focused.
 #[no_mangle]
 pub extern "C" fn bubble_caret(
     shell: *mut BubbleShell,
@@ -1311,6 +1312,7 @@ pub extern "C" fn bubble_unit_at(shell: *mut BubbleShell, x: f32, y: f32, unit: 
     finish(shell, result)
 }
 
+/// Geometry of a UTF-16 offset in the focused field. Does not require a collapsed selection.
 #[no_mangle]
 pub extern "C" fn bubble_caret_at(
     shell: *mut BubbleShell,

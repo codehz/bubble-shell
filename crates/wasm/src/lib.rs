@@ -833,7 +833,8 @@ pub extern "C" fn unit_at(x: f32, y: f32) -> u32 {
     }
 }
 
-/// Writes x, y, width, height of the focused caret into scratch. Returns 16, or 0.
+/// Writes x, y, width, height of the focused collapsed caret into scratch.
+/// Returns 16, or 0 when the selection is not collapsed or nothing is focused.
 #[no_mangle]
 pub extern "C" fn caret_box() -> u32 {
     drain_pending().ok();
@@ -852,8 +853,9 @@ pub extern "C" fn caret_box() -> u32 {
     store_scratch(bytes)
 }
 
-/// Caret rect for a UTF-16 offset in the focused field: x, y, width, height in
-/// scratch. Returns 16, or 0 when nothing is focused.
+/// Geometry of a UTF-16 offset in the focused field: x, y, width, height in
+/// scratch. Does not require a collapsed selection. Returns 16, or 0 when
+/// nothing is focused.
 #[no_mangle]
 pub extern "C" fn caret_rect(unit: u32) -> u32 {
     drain_pending().ok();

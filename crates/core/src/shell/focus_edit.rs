@@ -379,7 +379,8 @@ impl Shell {
         Ok(bits | (kind << 8) | (autofill << 16))
     }
 
-    /// Focused caret in viewport coordinates: x, y, width, height.
+    /// Viewport rect of the focused collapsed caret: x, y, width, height.
+    /// `None` when nothing is focused or the selection is not collapsed.
     pub fn caret_box(&self) -> Option<(f32, f32, f32, f32)> {
         self.caret_box
     }
@@ -433,7 +434,8 @@ impl Shell {
         )))
     }
 
-    /// Caret rect for a UTF-16 offset in the focused field, viewport coordinates.
+    /// Viewport rect of a UTF-16 offset in the focused field. Does not require
+    /// a collapsed selection.
     pub fn caret_rect_at(
         &self,
         unit: u32,
@@ -453,6 +455,8 @@ impl Shell {
         })
     }
 
+    /// Viewport rect of a UTF-16 offset in the focused field, using a
+    /// caller-supplied layout host. Does not require a collapsed selection.
     pub fn caret_rect_at_with(
         &self,
         unit: u32,
@@ -946,6 +950,9 @@ impl Shell {
 
     /// Recompute caret and selection from the current platform snapshot.
     /// An old revision or a mismatched width/font/align/density is an error.
+    /// The visible caret exists only for a collapsed selection. Scrolling
+    /// follows the directional active endpoint even when the selection is not
+    /// collapsed.
     pub fn refresh_caret(
         &mut self,
         host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
@@ -957,11 +964,11 @@ impl Shell {
         self.selection_handles = None;
         let handle = self.focused;
         if handle == 0 {
-            self.caret_reveal = None;
+            self.selection_reveal = None;
             return Ok(());
         }
-        let Some(state) = self.fields.get(&handle).cloned() else {
-            self.caret_reveal = None;
+        let Some(state) = self.fields.get(&handle).map(EditSession::field_state) else {
+            self.selection_reveal = None;
             return Ok(());
         };
         if self
@@ -970,15 +977,16 @@ impl Shell {
             .filter(|node| node.kind == Kind::Field)
             .is_none()
         {
-            self.caret_reveal = None;
+            self.selection_reveal = None;
             return Ok(());
         }
         let (geom, snapshot) = self.field_snapshot(handle, host)?;
-        let active = snap_unit(&geom.text, state.sel_end()).min(snapshot.units);
+        let active = snap_unit(&geom.text, state.active()).min(snapshot.units);
         let caret = snapshot.caret(active).ok_or("layout has no caret")?;
-        // Auto-scroll follows the caret only when it appears or moves; a
-        // scrolled-away caret must not be snapped back on every layout.
-        let reveal = match self.caret_reveal {
+        // Auto-scroll follows the active endpoint only when it appears or
+        // moves; a scrolled-away endpoint must not be snapped back on every
+        // layout.
+        let reveal = match self.selection_reveal {
             Some((last_handle, last_offset, last_x, last_y)) => {
                 last_handle != handle
                     || last_offset != active
@@ -988,8 +996,8 @@ impl Shell {
             None => true,
         };
         if reveal {
-            self.reveal_field_caret(handle, caret.x, caret.y, caret.h)?;
-            self.caret_reveal = Some((handle, active, caret.x, caret.y));
+            self.reveal_field_active(handle, caret.x, caret.y, caret.h)?;
+            self.selection_reveal = Some((handle, active, caret.x, caret.y));
         }
         let geom = self.field_geom(handle)?;
         self.caret_handle = handle;
@@ -998,12 +1006,14 @@ impl Shell {
             .into_iter()
             .map(|[x, y, w, h]| (geom.origin_x + x, geom.origin_y + y, w, h))
             .collect();
-        self.caret_box = Some((
-            geom.origin_x + caret.x,
-            geom.origin_y + caret.y,
-            1.0,
-            caret.h,
-        ));
+        if state.selection.is_collapsed() {
+            self.caret_box = Some((
+                geom.origin_x + caret.x,
+                geom.origin_y + caret.y,
+                1.0,
+                caret.h,
+            ));
+        }
         let (start, end) = (state.sel_start(), state.sel_end());
         if start != end && self.last_pointer_kind != 1 {
             let start = snap_unit(&geom.text, start).min(snapshot.units);
@@ -1088,8 +1098,8 @@ impl Shell {
             },
         })
     }
-    /// Bring the caret into the field viewport and clamp to the measured text.
-    fn reveal_field_caret(
+    /// Bring the active endpoint into the field viewport and clamp to the measured text.
+    fn reveal_field_active(
         &mut self,
         handle: u32,
         caret_x: f32,

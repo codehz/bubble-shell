@@ -88,6 +88,7 @@ int bubble_edit_batch_abort(BubbleShell *shell, uint64_t session);
 /* Deepest text field under the point, or 0. */
 uint32_t bubble_field_at(BubbleShell *shell, float x, float y);
 uint32_t bubble_focus_at(BubbleShell *shell, float x, float y);
+/* Collapsed focused caret: x, y, width, height. Nonzero when there is no visible caret. */
 int bubble_caret(BubbleShell *shell, float *x, float *y, float *w, float *h);
 uint32_t bubble_field_flags(BubbleShell *shell, uint32_t handle);
 uint32_t bubble_focused(BubbleShell *shell);
@@ -95,6 +96,7 @@ uint32_t bubble_focused(BubbleShell *shell);
 int bubble_selection(BubbleShell *shell, uint32_t *start, uint32_t *end, uint32_t *mark_start, uint32_t *mark_end);
 /* Nearest UTF-16 offset in the focused field. Does not move the caret. */
 int bubble_unit_at(BubbleShell *shell, float x, float y, uint32_t *unit);
+/* Geometry of a UTF-16 offset in the focused field. Does not require a collapsed selection. */
 int bubble_caret_at(BubbleShell *shell, uint32_t unit, float *x, float *y, float *w, float *h);
 uint32_t bubble_selection_count(BubbleShell *shell);
 int bubble_selection_rect(BubbleShell *shell, uint32_t index, float *x, float *y, float *w, float *h);

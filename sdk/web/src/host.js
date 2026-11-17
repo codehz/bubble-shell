@@ -1035,13 +1035,16 @@ function placeCaret(handle) {
   ime.inputMode = ["text", "numeric", "email", "url", "tel"][kind] || "text";
   const autofill = (flags >> 16) & 0xff;
   ime.autocomplete = ["off", "username", "current-password", "new-password", "email", "tel", "one-time-code"][autofill] || "off";
-  const len = exports.caret_box();
-  if (len >= 16) {
-    const view = new DataView(memory().buffer, exports.scratch_ptr(), 16);
-    const rect = canvas.getBoundingClientRect();
-    ime.style.left = `${rect.left + view.getFloat32(0, true)}px`;
-    ime.style.top = `${rect.top + view.getFloat32(4, true)}px`;
-    ime.style.height = `${Math.max(16, view.getFloat32(12, true))}px`;
+  const snapshot = editSnapshot();
+  if (snapshot) {
+    const len = exports.caret_rect(snapshot.active);
+    if (len >= 16) {
+      const view = new DataView(memory().buffer, exports.scratch_ptr(), 16);
+      const rect = canvas.getBoundingClientRect();
+      ime.style.left = `${rect.left + view.getFloat32(0, true)}px`;
+      ime.style.top = `${rect.top + view.getFloat32(4, true)}px`;
+      ime.style.height = `${Math.max(16, view.getFloat32(12, true))}px`;
+    }
   }
   syncIme();
   ime.focus();

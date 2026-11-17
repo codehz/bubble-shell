@@ -271,10 +271,10 @@ pub struct Shell {
     drag_ghost_pos: Option<(f32, f32)>,
     /// Measured ghost text size before padding. `(0, 0)` until measured.
     drag_ghost_size: (f32, f32),
-    /// Last auto-revealed caret: handle, offset, content-space x/y. A fresh
-    /// frame only scrolls to the caret again when this changes, so free
-    /// scrolling is never snapped back.
-    caret_reveal: Option<(u32, u32, f32, f32)>,
+    /// Last auto-revealed active endpoint: field, offset, content-space x/y.
+    /// A fresh frame only scrolls to that endpoint again when this changes, so
+    /// free scrolling is never snapped back. Not an independent edit position.
+    selection_reveal: Option<(u32, u32, f32, f32)>,
     selection_rects: Vec<(f32, f32, f32, f32)>,
     /// UI-thread programs ("worklets"), by id. Shared with the running
     /// frame so a call does not copy the program.
@@ -488,7 +488,7 @@ impl Shell {
             drag_ghost_text: String::new(),
             drag_ghost_pos: None,
             drag_ghost_size: (0.0, 0.0),
-            caret_reveal: None,
+            selection_reveal: None,
             selection_rects: Vec::new(),
             ui_programs: Vec::new(),
             ui_dirty: HashSet::new(),
