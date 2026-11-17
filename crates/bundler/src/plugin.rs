@@ -137,7 +137,6 @@ impl BubblePlugin {
             &CompileOptions {
                 source_map: self.source_map,
                 hot: self.hot.then(|| id.to_string()),
-                optimize: false,
             },
         )?;
         let map = compiled.map.and_then(|json| {

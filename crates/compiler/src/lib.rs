@@ -77,11 +77,6 @@ pub struct CompileOptions {
     /// components, top-level signals, and the default export mount for
     /// state-preserving updates.
     pub hot: Option<String>,
-    /// Skip `() =>` wrappers on literal component props, and skip `dynamic`
-    /// for expressions that fold to a constant. Literal component props are
-    /// then plain values; a component that reads `props.x()` will throw.
-    /// Off by default.
-    pub optimize: bool,
 }
 
 /// Output of [`compile_module`].
@@ -133,7 +128,6 @@ pub fn compile_module(
         scopes: Vec::new(),
         thunk_jsx: false,
         errors: Vec::new(),
-        options,
         worklets: Vec::new(),
         worklet_arity: HashMap::new(),
         worklet_calls: Vec::new(),
@@ -301,7 +295,6 @@ struct Lower<'a> {
     /// inside `() => ...` only executes when the function runs.
     thunk_jsx: bool,
     errors: Vec<(Span, String)>,
-    options: &'a CompileOptions,
     /// Module-level worklet functions: name, then the worklet callees its
     /// body calls. Feeds the recursion cycle check.
     worklets: Vec<(String, Vec<String>)>,
@@ -525,7 +518,7 @@ impl<'a> Lower<'a> {
 
     /// Wrap `expression` in `dynamic(() => ...)` when it reads a local signal.
     fn dynamic(&self, span: Span, expression: Expression<'a>) -> Expression<'a> {
-        if self.options.optimize && is_static_expr(&expression) {
+        if is_static_expr(&expression) {
             return expression;
         }
         if !self.reads_signal(&expression) {
@@ -832,11 +825,12 @@ impl<'a> Lower<'a> {
             .collect()
     }
 
-    /// Component props use Solid-style getters: every non-handler expression
-    /// compiles to `() => expr` and the component reads `props.x()`. A JSX
-    /// value is a render thunk the component invokes where it wants the
-    /// content rendered; the `children` prop names the children slot. Returns
-    /// the prepared props and the children thunk.
+    /// Component props use getters for a uniform API. Non-function values
+    /// wrap in `() => expr` and the component reads `props.x()`. Handlers
+    /// pass through unwrapped for event and gesture APIs. A JSX value is a
+    /// render thunk the component invokes where it wants the content
+    /// rendered; the `children` prop names the children slot. Returns the
+    /// prepared props and the children thunk.
     fn prepare_component_props(
         &mut self,
         span: Span,
@@ -881,19 +875,9 @@ impl<'a> Lower<'a> {
                     );
                     self.visit_expression(&mut other);
                     if !is_function {
-                        // Handlers stay plain so the component can pass them
-                        // on unchanged; everything else is a getter the
-                        // component reads with `props.{key}()`. Literal
-                        // values skip the getter only when `optimize` is set.
-                        let is_literal = matches!(
-                            other,
-                            Expression::NumericLiteral(_)
-                                | Expression::StringLiteral(_)
-                                | Expression::BooleanLiteral(_)
-                        );
-                        if !(self.options.optimize && is_literal) {
-                            other = self.arrow_expr(span, other);
-                        }
+                        // Non-function values wrap in `() => expr`. Handlers
+                        // pass through unwrapped for event and gesture APIs.
+                        other = self.arrow_expr(span, other);
                     }
                     other
                 }

@@ -357,7 +357,6 @@ export default App;
         &CompileOptions {
             source_map: false,
             hot: Some("/repo/app.tsx".to_string()),
-            optimize: false,
         },
     )
     .unwrap();
@@ -504,7 +503,7 @@ fn rejects_unknown_props() {
 }
 
 #[test]
-fn optimizes_literal_props() {
+fn wraps_all_component_value_props() {
     let src = r#"
         function Label(props) {
             return <Text fontSize={props.fontSize()}>{props.label()}</Text>;
@@ -514,26 +513,10 @@ fn optimizes_literal_props() {
         }
         export default App;
     "#;
-    let code_default = compile("row.tsx", src);
+    let code = compile("row.tsx", src);
     assert!(
-        code_default.contains("() => 18"),
-        "default wraps:\n{code_default}"
-    );
-
-    let code_opt = compile_module(
-        "row.tsx",
-        src,
-        &CompileOptions {
-            optimize: true,
-            ..CompileOptions::default()
-        },
-    )
-    .unwrap()
-    .code;
-    assert!(!code_opt.contains("() => 18"), "opt skips:\n{code_opt}");
-    assert!(
-        code_opt.contains("fontSize: 18"),
-        "opt inlines:\n{code_opt}"
+        code.contains("fontSize: () => 18"),
+        "literal props are getters:\n{code}"
     );
 }
 
@@ -547,37 +530,18 @@ fn skips_dynamic_for_static_expr() {
         }
         export default App;
     "#;
-    let code_default = compile("static.tsx", src);
+    let code = compile("static.tsx", src);
     assert!(
-        code_default.contains("width: 10 + 5"),
-        "static arithmetic is not a signal read:\n{code_default}"
+        code.contains("width: 10 + 5"),
+        "static arithmetic is not a signal read:\n{code}"
     );
     assert!(
-        !code_default.contains("__bubble_rt_dynamic(() => 10 + 5)"),
-        "default does not wrap a constant:\n{code_default}"
+        !code.contains("__bubble_rt_dynamic(() => 10 + 5)"),
+        "a constant is not wrapped:\n{code}"
     );
     assert!(
-        code_default.contains("__bubble_rt_dynamic(() => count())"),
-        "signal reads stay dynamic:\n{code_default}"
-    );
-
-    let code_opt = compile_module(
-        "static.tsx",
-        src,
-        &CompileOptions {
-            optimize: true,
-            ..CompileOptions::default()
-        },
-    )
-    .unwrap()
-    .code;
-    assert!(
-        !code_opt.contains("__bubble_rt_dynamic(() => 10 + 5)"),
-        "opt skips:\n{code_opt}"
-    );
-    assert!(
-        code_opt.contains("__bubble_rt_dynamic(() => count())"),
-        "opt still binds signal reads:\n{code_opt}"
+        code.contains("__bubble_rt_dynamic(() => count())"),
+        "signal reads stay dynamic:\n{code}"
     );
 }
 
