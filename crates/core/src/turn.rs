@@ -6,7 +6,7 @@
 //! only swaps buffers and encodes a batch; it never mutates the tree.
 
 use crate::reactive::{self, Graph, Kind, Sched};
-use crate::state_style::AnimSpec;
+use crate::state_style::{AnimSpec, TransitionSpec};
 
 use crate::expr::ExprConst;
 use crate::gesture::GestureKind;
@@ -335,6 +335,12 @@ impl Turn {
     pub fn dispose_style_decl(&mut self, decl: u32) {
         self.push(Op::DisposeStyleDecl { decl });
     }
+    /// Queue one style-transition slot. `None` disables that property.
+    /// Repeated writes of the same handle and slot keep the last spec.
+    pub fn set_style_transition(&mut self, handle: u32, slot: u8, spec: Option<TransitionSpec>) {
+        self.push(Op::SetStyleTransition { handle, slot, spec });
+    }
+
 
     pub fn set_prop(&mut self, handle: u32, key: impl Into<String>, value: Value) {
         self.push(Op::SetProp {
@@ -525,6 +531,25 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
             | Op::SetProp { .. }
             | Op::SetGestureProp { .. }
             | Op::SetStyleDeclProp { .. } => Scan::Skip,
+            _ => Scan::Stop,
+        }),
+        Op::SetStyleTransition { handle, slot, spec } => coalesce_last(buf, |item| match item {
+            Op::SetStyleTransition {
+                handle: existing,
+                slot: existing_slot,
+                spec: slot_spec,
+            } if *existing == *handle && *existing_slot == *slot => {
+                *slot_spec = *spec;
+                Scan::Replace
+            }
+            Op::SetText { .. }
+            | Op::SetPropColor { .. }
+            | Op::SetProp { .. }
+            | Op::SetStyleDeclProp { .. }
+            | Op::SetGestureProp { .. }
+            | Op::SetScrollBarProp { .. }
+            | Op::SetVar { .. }
+            | Op::SetStyleTransition { .. } => Scan::Skip,
             _ => Scan::Stop,
         }),
         _ => false,

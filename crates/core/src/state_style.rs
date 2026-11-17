@@ -151,6 +151,70 @@ pub(crate) fn slot_type(slot: usize) -> SlotType {
     }
 }
 
+/// One property's style-transition config. `duration_ms == 0` is instant:
+/// the shell stores the spec and never starts an [`AnimState`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransitionSpec {
+    pub duration_ms: f32,
+    pub easing: u8,
+}
+
+impl TransitionSpec {
+    pub fn new(duration_ms: f32, easing: u8) -> Result<Self, String> {
+        if !duration_ms.is_finite() || duration_ms < 0.0 {
+            return Err("transition duration must be a finite non-negative number".into());
+        }
+        if easing != EASE_LINEAR && easing != EASE_IN_OUT {
+            return Err("transition easing must be \"linear\" or \"easeInOut\"".into());
+        }
+        Ok(Self { duration_ms, easing })
+    }
+}
+
+/// Paint property name for a slot, including enum slots that cannot tween.
+pub(crate) fn transition_slot_key(slot: u8) -> Option<&'static str> {
+    match slot as usize {
+        SLOT_BACKGROUND => Some("backgroundColor"),
+        SLOT_COLOR => Some("color"),
+        SLOT_OPACITY => Some("opacity"),
+        SLOT_RADIUS => Some("radius"),
+        SLOT_TEXT_ALIGN => Some("textAlign"),
+        SLOT_FIT => Some("fit"),
+        SLOT_TRANSLATE_X => Some("translateX"),
+        SLOT_TRANSLATE_Y => Some("translateY"),
+        SLOT_SCALE => Some("scale"),
+        SLOT_ROTATE => Some("rotate"),
+        _ => None,
+    }
+}
+
+/// Whether `kind` may tween `slot`. Enum slots and layout props are excluded.
+/// View and image share the paint set minus `color`; text is `color` only;
+/// fields add `color` to the view set.
+pub(crate) fn transition_slot_allowed(kind: crate::ir::Kind, slot: u8) -> bool {
+    use crate::ir::Kind;
+    let animatable = matches!(
+        slot as usize,
+        SLOT_BACKGROUND
+            | SLOT_COLOR
+            | SLOT_OPACITY
+            | SLOT_RADIUS
+            | SLOT_TRANSLATE_X
+            | SLOT_TRANSLATE_Y
+            | SLOT_SCALE
+            | SLOT_ROTATE
+    );
+    if !animatable {
+        return false;
+    }
+    match kind {
+        Kind::View | Kind::Image => slot as usize != SLOT_COLOR,
+        Kind::Text => slot as usize == SLOT_COLOR,
+        Kind::Field => true,
+        Kind::ScrollBar => false,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SlotType {
     Num,

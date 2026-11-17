@@ -107,6 +107,14 @@ export function createSharedValue<T = number>(
   options?: { value?: T }
 ): SharedValue<T>;
 
+export interface TransitionOptions {
+  duration?: number;
+  easing?: "linear" | "easeInOut";
+}
+
+export type Transition = boolean | TransitionOptions;
+
+
 export function withTiming(
   target: number,
   options?: { duration?: number; easing?: "linear" | "easeInOut" }

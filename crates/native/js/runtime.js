@@ -363,11 +363,16 @@ function pack(kind, props, text) {
   const cursor = cursors[cursors.length - 1];
   const values = [];
   const dynamics = [];
+  const transitions = [];
   let refBinding = null;
   for (const key of Object.keys(props)) {
     const value = props[key];
     if (key === "ref") {
       refBinding = refValue(value);
+      continue;
+    }
+    if (key === "transition" || key.startsWith("transition:")) {
+      transitions.push([key, value]);
       continue;
     }
     if (value instanceof Dynamic) dynamics.push([key, value.run]);
@@ -385,8 +390,133 @@ function pack(kind, props, text) {
     registerChild(parentHandle, handle);
   }
   if (refBinding) resolveRef(refBinding, handle);
+  configureTransitions(handle, kind, transitions);
   applyNodeProps(handle, values, dynamics);
   return handle;
+}
+
+const F32_MAX = 3.4028234663852886e38;
+const TRANSITION_SLOTS = {
+  backgroundColor: 0,
+  color: 1,
+  opacity: 2,
+  radius: 3,
+  translateX: 6,
+  translateY: 7,
+  scale: 8,
+  rotate: 9,
+};
+const TRANSITION_PROPS = {
+  1: ["backgroundColor", "opacity", "radius", "translateX", "translateY", "scale", "rotate"],
+  2: ["color"],
+  3: ["backgroundColor", "opacity", "radius", "translateX", "translateY", "scale", "rotate"],
+  4: ["backgroundColor", "color", "opacity", "radius", "translateX", "translateY", "scale", "rotate"],
+};
+
+function isPlainObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function transitionOptions(value) {
+  if (value === true) return {};
+  if (!isPlainObject(value) || value.__anim) {
+    throw new Error("transition must be a boolean or an options object");
+  }
+  const spec = {};
+  for (const key of Object.keys(value)) {
+    if (value[key] === undefined) continue;
+    if (key === "duration") {
+      const duration = value.duration;
+      if (typeof duration !== "number" || !Number.isFinite(duration) || duration < 0 || duration > F32_MAX) {
+        throw new Error("transition duration must be a finite non-negative number");
+      }
+      spec.duration = duration;
+    } else if (key === "easing") {
+      if (value.easing !== "linear" && value.easing !== "easeInOut") {
+        throw new Error('transition easing must be "linear" or "easeInOut"');
+      }
+      spec.easing = value.easing;
+    } else {
+      throw new Error(`unknown transition option ${key}`);
+    }
+  }
+  return spec;
+}
+
+function mergeTransition(base, local) {
+  return {
+    duration: local.duration !== undefined ? local.duration : base.duration !== undefined ? base.duration : 300,
+    easing: local.easing !== undefined ? local.easing : base.easing !== undefined ? base.easing : "easeInOut",
+  };
+}
+
+function setStyleTransition(handle, slot, enabled, duration, easing) {
+  if (api.set_style_transition(handle, slot, enabled, duration, easing) !== 0) {
+    throw new Error(api.error() || "set_style_transition failed");
+  }
+}
+
+function publishTransitions(handle, kind, raw, previous) {
+  const allowed = TRANSITION_PROPS[kind];
+  if (!allowed) return;
+  const allowedSet = new Set(allowed);
+  let master;
+  if (Object.prototype.hasOwnProperty.call(raw, "transition")) {
+    const value = raw.transition;
+    if (value == null) master = null;
+    else if (value === false) master = false;
+    else master = transitionOptions(value);
+  }
+  const local = new Map();
+  for (const key of Object.keys(raw)) {
+    if (key === "transition") continue;
+    const prop = key.slice("transition:".length);
+    if (!allowedSet.has(prop)) throw new Error(`unsupported transition property ${key}`);
+    const value = raw[key];
+    if (value == null) local.set(prop, null);
+    else if (value === false) local.set(prop, false);
+    else local.set(prop, transitionOptions(value));
+  }
+  const masterOn = master && master !== false;
+  for (const prop of allowed) {
+    const slot = TRANSITION_SLOTS[prop];
+    const choice = local.has(prop) ? local.get(prop) : undefined;
+    let spec = null;
+    if (master === false || choice === false) {
+      spec = null;
+    } else if (choice && typeof choice === "object") {
+      spec = mergeTransition(masterOn ? master : {}, choice);
+    } else if (masterOn) {
+      spec = mergeTransition(master, {});
+    }
+    const prev = previous.has(slot) ? previous.get(slot) : undefined;
+    if (spec == null) {
+      if (prev != null) {
+        setStyleTransition(handle, slot, 0, 0, 0);
+        previous.set(slot, null);
+      }
+      continue;
+    }
+    if (prev && prev.duration === spec.duration && prev.easing === spec.easing) continue;
+    setStyleTransition(handle, slot, 1, spec.duration, spec.easing === "linear" ? 0 : 1);
+    previous.set(slot, spec);
+  }
+}
+
+function configureTransitions(handle, kind, entries) {
+  if (entries.length === 0) return;
+  const previous = new Map();
+  const apply = () => {
+    const raw = {};
+    for (const [key, value] of entries) {
+      raw[key] = value instanceof Dynamic ? value.run() : value;
+    }
+    publishTransitions(handle, kind, raw, previous);
+  };
+  if (entries.some(([, value]) => value instanceof Dynamic)) addBinding(apply, handle);
+  else apply();
 }
 
 export function view(props, build) {

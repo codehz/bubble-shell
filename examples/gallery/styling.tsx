@@ -1,4 +1,4 @@
-// Styling demos: state sources and animated variables.
+// Styling demos: state sources, declarative style transitions, and animated variables.
 import {
   signal,
   View,
@@ -31,12 +31,14 @@ export function PressedDemo() {
           height={48}
           justifyContent="center"
           alignItems="center"
+          transition={{ duration: 160 }}
+          transition:opacity={{ duration: 100 }}
         >
           <TapGesture onTap={() => taps.update((c) => c + 1)} />
           <Text color="#ffffff" fontSize={15}>{taps() + " taps — hold me"}</Text>
-          <ViewStyle when={press > 0} opacity={1 - press * 0.4} />
+          <ViewStyle when={press > 0} backgroundColor="#1e40af" opacity={1 - press * 0.4} />
         </View>
-        <Text color="#6b7280" fontSize={12}>The pressed progress source is driven by the UI thread; the declaration patches opacity from 1 down to 0.6.</Text>
+        <Text color="#6b7280" fontSize={12}>Hold the button: background and opacity ease toward the pressed style, then back. Opacity uses the shorter per-property duration.</Text>
       </Section>
     </View>
   );
@@ -60,13 +62,14 @@ export function FocusedDemo() {
           radius={6}
           padding={[8, 8, 8, 8]}
           label="Focus me"
+          transition:backgroundColor={{ duration: 160 }}
           onChange={(e) => echo.set(e.value)}
         >
           <ViewStyle when={focused} backgroundColor={0xff2563eb} />
           <ViewStyle when={editing} opacity={0.85} />
         </TextField>
         <Text color="#9ca3af" fontSize={13}>Echo: {echo()}</Text>
-        <Text color="#6b7280" fontSize={12}>Tap the field: background turns blue while focused, and dims while an edit session is active.</Text>
+        <Text color="#6b7280" fontSize={12}>Tap the field: the background eases to blue while focused, and back when focus leaves.</Text>
       </Section>
     </View>
   );
@@ -75,6 +78,8 @@ export function FocusedDemo() {
 export function AnimatedDemo() {
   const slide = createSharedValue(0);
   const glide = createSharedValue(0);
+  const active = signal(false);
+  const transitionsEnabled = signal(true);
   // Animations start on the UI thread: a JS tap schedules a worklet whose
   // assignment of withTiming/withSpring drives the value. The destination is
   // a worklet parameter — scheduleOnUI's extra args must match that arity.
@@ -108,6 +113,33 @@ export function AnimatedDemo() {
         <View flexDirection="row" gap={8}>
           <Btn label="Tween to 100" color={0xfff59e0b} onTap={() => tweenTo(100)} />
           <Btn label="Tween to 0" color={0xff4b5563} onTap={() => tweenTo(0)} />
+        </View>
+      </Section>
+      <Section title="Declarative style transition">
+        <View
+          backgroundColor={active() ? "#2563eb" : "#f59e0b"}
+          opacity={active() ? 1 : 0.4}
+          radius={active() ? 24 : 8}
+          width={56}
+          height={56}
+          transition={transitionsEnabled() ? { duration: 1000, easing: "linear" } : false}
+          transition:opacity={{ duration: 500 }}
+          transition:translateX={false}
+        />
+        <Text
+          color={active() ? "#2563eb" : "#f59e0b"}
+          fontSize={14}
+          transition={transitionsEnabled() ? { duration: 1000, easing: "linear" } : false}
+        >
+          {active() ? "active" : "rest"}
+        </Text>
+        <View flexDirection="row" gap={8}>
+          <Btn label="Toggle target" color={0xff2563eb} onTap={() => active.set(!active())} />
+          <Btn
+            label={transitionsEnabled() ? "Disable transitions" : "Enable transitions"}
+            color={0xff4b5563}
+            onTap={() => transitionsEnabled.set(!transitionsEnabled())}
+          />
         </View>
       </Section>
     </View>

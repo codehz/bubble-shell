@@ -105,7 +105,7 @@ mod tests {
             SchemaType::Number => PropType::Number,
             SchemaType::String => PropType::String,
             SchemaType::Boolean => PropType::Boolean,
-            SchemaType::Ref | SchemaType::Unknown => PropType::Unknown,
+            SchemaType::Ref | SchemaType::Unknown | SchemaType::Transition => PropType::Unknown,
             SchemaType::EventFn(_) | SchemaType::Func(_) => PropType::Function,
             SchemaType::Edges => PropType::Union(vec!["number", "number[]"]),
             SchemaType::Array(inner) => PropType::Array(Box::new(expect_compiler(inner))),

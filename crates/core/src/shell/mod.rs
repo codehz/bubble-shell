@@ -6,6 +6,7 @@ mod hit_scroll;
 mod paint;
 mod semantics;
 mod tree;
+mod transition;
 mod vars;
 
 pub use paint::PaintCmd;
@@ -292,6 +293,7 @@ pub struct Shell {
     pub(crate) ui_stack: Vec<UiValue>,
     /// The gesture event the current UI call answers, if any.
     pub(crate) ui_event: Option<GestureEvent>,
+    transitions: transition::TransitionRuntime,
 }
 
 /// A rejected script or IME write. Never contains user text.
@@ -498,6 +500,7 @@ impl Shell {
             ui_last_error: String::new(),
             ui_stack: Vec::new(),
             ui_event: None,
+            transitions: transition::TransitionRuntime::default(),
         })
     }
 
@@ -526,6 +529,13 @@ impl Shell {
 
     pub fn apply_ops(&mut self, bytes: &[u8]) -> Result<u32, String> {
         let (seq, ops) = decode_ops(bytes)?;
+        self.begin_style_transition_batch(&ops);
+        let result = self.apply_decoded_ops(seq, ops);
+        self.finish_style_transition_batch(result.is_ok());
+        result
+    }
+
+    fn apply_decoded_ops(&mut self, seq: u32, ops: Vec<Op>) -> Result<u32, String> {
         for op in ops {
             match op {
                 Op::SetText { handle, text } => {
@@ -649,6 +659,7 @@ impl Shell {
                 } => {
                     self.node(target)?;
                     self.state_styles.spawn(decl, target, component, index)?;
+                    self.mark_transition_target_dirty(target);
                 }
                 Op::SetStyleDeclProp { decl, key, value } => {
                     self.set_style_decl_prop(decl, &key, &value)?
@@ -659,9 +670,20 @@ impl Shell {
                     index,
                 } => {
                     self.node(target)?;
+                    let old = self.state_styles.decl(decl).map(|decl| decl.target);
                     self.state_styles.move_decl(decl, target, index)?;
+                    if let Some(old) = old {
+                        self.mark_transition_target_dirty(old);
+                    }
+                    self.mark_transition_target_dirty(target);
                 }
-                Op::DisposeStyleDecl { decl } => self.state_styles.dispose(decl)?,
+                Op::DisposeStyleDecl { decl } => {
+                    let target = self.state_styles.decl(decl).map(|decl| decl.target);
+                    self.state_styles.dispose(decl)?;
+                    if let Some(target) = target {
+                        self.mark_transition_target_dirty(target);
+                    }
+                }
                 Op::SpawnScrollBar {
                     scrollbar,
                     target,
@@ -694,6 +716,9 @@ impl Shell {
                     {
                         self.scrollbar_drag = None;
                     }
+                }
+                Op::SetStyleTransition { handle, slot, spec } => {
+                    self.stage_style_transition(handle, slot, spec)?
                 }
             }
         }

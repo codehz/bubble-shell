@@ -15,9 +15,9 @@ use super::Shell;
 use crate::ui::UiCall;
 
 impl Shell {
-    /// Base paint values with the currently matching style declaration
-    /// patches applied. Reads cached declaration results only.
-    pub(super) fn effective_paint_style(&self, id: u32, node: &Node) -> EffectivePaintStyle {
+    /// Merged target: base paint plus matching declaration patches.
+    /// Does not read in-flight style tweens.
+    pub(super) fn resolved_paint_style(&self, id: u32, node: &Node) -> EffectivePaintStyle {
         let mut style = EffectivePaintStyle {
             background: node.background,
             color: node.color,
@@ -62,6 +62,14 @@ impl Shell {
         if let Some(value) = patch.rotate {
             style.rotate = value;
         }
+        style
+    }
+
+    /// Resolved target with in-flight style tweens painted over it.
+    /// Hit-testing uses this, so transforms follow the visible animation.
+    pub(super) fn effective_paint_style(&self, id: u32, node: &Node) -> EffectivePaintStyle {
+        let mut style = self.resolved_paint_style(id, node);
+        self.overlay_style_transition(id, &mut style);
         style
     }
 
@@ -174,16 +182,16 @@ impl Shell {
     /// Re-evaluate every declaration that reads a variable written in this
     /// UI batch, then flush settled-variable events.
     pub(super) fn reval_dirty(&mut self) {
-        if self.ui_dirty.is_empty() {
-            return;
+        if !self.ui_dirty.is_empty() {
+            let ids: Vec<u32> = self.ui_dirty.drain().collect();
+            for decl in self.state_styles.dependents_of(ids.iter().copied()) {
+                self.eval_decl(decl);
+            }
+            for id in ids {
+                self.flush_var_settle(id);
+            }
         }
-        let ids: Vec<u32> = self.ui_dirty.drain().collect();
-        for decl in self.state_styles.dependents_of(ids.iter().copied()) {
-            self.eval_decl(decl);
-        }
-        for id in ids {
-            self.flush_var_settle(id);
-        }
+        self.commit_style_transitions();
     }
 
     /// Record a settle request. The event goes out when the variable
@@ -217,6 +225,7 @@ impl Shell {
     /// pending settle requests.
     pub fn advance_animations(&mut self, now_ms: f64) {
         self.now_ms = now_ms;
+        self.step_style_transitions(now_ms);
         let ids: Vec<u32> = self
             .vars
             .all_with_anim()
@@ -227,41 +236,40 @@ impl Shell {
                     .is_some_and(|var| var.anim_state.is_some())
             })
             .collect();
-        if ids.is_empty() {
-            return;
-        }
-        let mut changed: Vec<u32> = Vec::new();
-        for id in ids {
-            let Some(var_slot) = self.vars.get_mut(id) else {
-                continue;
-            };
-            let Some(state) = var_slot.anim_state.as_mut() else {
-                continue;
-            };
-            let (next, converged) = state.step(now_ms);
-            if let Some(next) = next {
-                if var_slot.value != next {
-                    var_slot.value = next;
-                    changed.push(id);
+        if !ids.is_empty() {
+            let mut changed: Vec<u32> = Vec::new();
+            for id in ids {
+                let Some(var_slot) = self.vars.get_mut(id) else {
+                    continue;
+                };
+                let Some(state) = var_slot.anim_state.as_mut() else {
+                    continue;
+                };
+                let (next, converged) = state.step(now_ms);
+                if let Some(next) = next {
+                    if var_slot.value != next {
+                        var_slot.value = next;
+                        changed.push(id);
+                    }
                 }
-            }
-            let to = state.to.clone();
-            if converged {
-                var_slot.anim_state = None;
-                if var_slot.value != to {
-                    var_slot.value = to;
-                    changed.push(id);
+                let to = state.to.clone();
+                if converged {
+                    var_slot.anim_state = None;
+                    if var_slot.value != to {
+                        var_slot.value = to;
+                        changed.push(id);
+                    }
                 }
+                self.flush_var_settle(id);
             }
-            self.flush_var_settle(id);
+            if !changed.is_empty() {
+                for decl in self.state_styles.dependents_of(changed) {
+                    self.eval_decl(decl);
+                }
+                self.paint_dirty.set(true);
+            }
         }
-        if changed.is_empty() {
-            return;
-        }
-        for decl in self.state_styles.dependents_of(changed) {
-            self.eval_decl(decl);
-        }
-        self.paint_dirty.set(true);
+        self.reconcile_style_transitions();
     }
 
     /// Settled-variable events since the last drain, for the script thread.
@@ -271,9 +279,16 @@ impl Shell {
 
     /// Mark one declaration as not matching after a variable it read retired.
     pub(super) fn mark_decl_unmatched(&mut self, decl: u32) {
+        let target = self.state_styles.decl(decl).map(|decl| decl.target);
+        let changed = self.state_styles.decl(decl).is_some_and(|decl| {
+            decl.resolved_when || decl.resolved != ResolvedPatch::default()
+        });
         if let Some(decl) = self.state_styles_decl_mut(decl) {
             decl.resolved_when = false;
             decl.resolved = ResolvedPatch::default();
+        }
+        if let Some(target) = target.filter(|_| changed) {
+            self.mark_transition_target_dirty(target);
         }
         self.paint_dirty.set(true);
     }
@@ -288,11 +303,17 @@ impl Shell {
     /// values. Programs that fail re-evaluation mark the declaration as not
     /// matching rather than corrupting paint.
     pub(super) fn eval_decl(&mut self, decl: u32) {
-        let (when, patch) = {
+        let (target, before_when, before, when, patch) = {
             let Some(decl) = self.state_styles.decl(decl) else {
                 return;
             };
-            (decl.when.clone(), decl.patch.clone())
+            (
+                decl.target,
+                decl.resolved_when,
+                decl.resolved,
+                decl.when.clone(),
+                decl.patch.clone(),
+            )
         };
         let mut resolved = ResolvedPatch::default();
         let mut matched = match &when {
@@ -330,11 +351,17 @@ impl Shell {
                 };
             }
         }
-        let Some(decl) = self.state_styles.decl_mut(decl) else {
-            return;
+        let changed = {
+            let Some(decl) = self.state_styles.decl_mut(decl) else {
+                return;
+            };
+            decl.resolved_when = matched;
+            decl.resolved = resolved;
+            matched != before_when || resolved != before
         };
-        decl.resolved_when = matched;
-        decl.resolved = resolved;
+        if changed {
+            self.mark_transition_target_dirty(target);
+        }
     }
 
     /// Re-sample every source-driven variable and re-evaluate the
@@ -378,13 +405,13 @@ impl Shell {
                 }
             }
         }
-        if changed.is_empty() {
-            return;
+        if !changed.is_empty() {
+            for decl in self.state_styles.dependents_of(changed) {
+                self.eval_decl(decl);
+            }
+            self.paint_dirty.set(true);
         }
-        for decl in self.state_styles.dependents_of(changed) {
-            self.eval_decl(decl);
-        }
-        self.paint_dirty.set(true);
+        self.commit_style_transitions();
     }
 
     /// A matching `focused` declaration replaces the default focus ring, even

@@ -153,6 +153,9 @@ setApi({
   },
   bind_var: exports.bind_var,
   dispose_var: exports.dispose_var,
+  set_style_transition(handle, slot, enabled, duration, easing) {
+    return exports.set_style_transition(handle, slot, enabled, duration, easing);
+  },
   spawn_style_decl: exports.spawn_style_decl,
   set_style_prop(decl, key, tag, number, text) {
     const keyBytes = encoder.encode(key);

@@ -85,6 +85,8 @@ func bubble_selection_count(_ shell: OpaquePointer?) -> UInt32
 func bubble_selection_rect(_ shell: OpaquePointer?, _ index: UInt32, _ x: UnsafeMutablePointer<Float>?, _ y: UnsafeMutablePointer<Float>?, _ w: UnsafeMutablePointer<Float>?, _ h: UnsafeMutablePointer<Float>?) -> Int32
 @_silgen_name("bubble_tick")
 func bubble_tick(_ shell: OpaquePointer?, _ timeMs: Double) -> Int32
+@_silgen_name("bubble_pending")
+func bubble_pending(_ shell: OpaquePointer?) -> Int32
 @_silgen_name("bubble_scroll")
 func bubble_scroll(_ shell: OpaquePointer?, _ x: Float, _ y: Float, _ dx: Float, _ dy: Float)
 @_silgen_name("bubble_scroll_x_of")
@@ -796,6 +798,7 @@ final class BubbleView: UIView {
         updateAccessibility()
         updateInputSession()
         setNeedsDisplay()
+        syncTouchLink()
     }
     override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
@@ -1071,7 +1074,8 @@ final class BubbleView: UIView {
     }
 
     private func syncTouchLink() {
-        if pointerIds.isEmpty {
+        let needsFrames = window != nil && (!pointerIds.isEmpty || bubble_pending(shell) != 0)
+        if !needsFrames {
             touchLink?.invalidate()
             touchLink = nil
         } else if touchLink == nil {
@@ -1092,6 +1096,13 @@ final class BubbleView: UIView {
             touchLink = nil
         }
     }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil {
+            refresh()
+        }
+    }
+
 
     private func showEditMenu() {
         guard bubble_focused(shell, ) != 0 else { return }

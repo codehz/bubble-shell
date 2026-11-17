@@ -477,6 +477,9 @@ setApi({
   set_var(varId, tag, number, anim, animA, animB, animC) {
     return exports.set_var(varId, tag, number, anim, animA, animB, animC);
   },
+  set_style_transition(handle, slot, enabled, duration, easing) {
+    return exports.set_style_transition(handle, slot, enabled, duration, easing);
+  },
   settle_var: exports.settle_var,
   dispose_var: exports.dispose_var,
   spawn_style_decl: exports.spawn_style_decl,

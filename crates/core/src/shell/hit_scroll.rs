@@ -217,6 +217,11 @@ impl Shell {
     /// when their own pointer path owns the sample, so the same physical touch
     /// is never fed twice.
     pub fn visual_pointer(&mut self, mut input: PointerInput) {
+        let previous = self.now_ms;
+        self.now_ms = input.time_ms;
+        if self.scrollbar_visibility_changed(previous, self.now_ms) {
+            self.paint_dirty.set(true);
+        }
         if input.action == PointerAction::Down {
             input.path.clear();
             self.hit_path(1, input.x, input.y, &mut input.path);

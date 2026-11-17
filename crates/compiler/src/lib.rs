@@ -310,6 +310,16 @@ struct Scope {
     elements: HashSet<String>,
 }
 
+fn js_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(ch) if ch == '$' || ch == '_' || ch.is_ascii_alphabetic() => {
+            chars.all(|ch| ch == '$' || ch == '_' || ch.is_ascii_alphanumeric())
+        }
+        _ => false,
+    }
+}
+
 fn is_static_expr(expr: &Expression<'_>) -> bool {
     match expr {
         Expression::NumericLiteral(_)
@@ -340,20 +350,28 @@ impl<'a> Lower<'a> {
         attributes: &ArenaVec<'a, JSXAttributeItem<'a>>,
         spec: &props::PrimSpec,
     ) {
-        let mut seen: HashSet<&str> = HashSet::new();
+        let mut seen: HashSet<String> = HashSet::new();
         for item in attributes {
             let JSXAttributeItem::Attribute(attr) = item else {
                 continue;
             };
             let key = match &attr.name {
-                JSXAttributeName::Identifier(id) => id.name.as_str(),
-                _ => continue,
+                JSXAttributeName::Identifier(id) => id.name.as_str().to_string(),
+                JSXAttributeName::NamespacedName(name) => {
+                    let namespace = name.namespace.name.as_str();
+                    let property = name.name.name.as_str();
+                    if namespace != "transition" {
+                        self.error(attr.span, "namespaced JSX attributes are not supported");
+                        continue;
+                    }
+                    format!("transition:{property}")
+                }
             };
-            if !seen.insert(key) {
+            if !seen.insert(key.clone()) {
                 self.error(attr.span, format!("<{tag}> duplicate prop '{key}'"));
                 continue;
             }
-            let Some(expected) = spec.allowed.get(key) else {
+            let Some(expected) = spec.allowed.get(key.as_str()) else {
                 self.error(attr.span, format!("<{tag}> unknown prop '{key}'"));
                 continue;
             };
@@ -496,12 +514,19 @@ impl<'a> Lower<'a> {
     fn object(&self, span: Span, props: Vec<(&'a str, Expression<'a>)>) -> Expression<'a> {
         let mut properties = self.ast_vec();
         for (key, value) in props {
-            let name = IdentifierName::new(span, Ident::from(key), &self.builder);
-            let key = PropertyKey::StaticIdentifier(ArenaBox::new_in(name, &self.builder));
+            let property_key = if js_identifier(key) {
+                let name = IdentifierName::new(span, Ident::from(key), &self.builder);
+                PropertyKey::StaticIdentifier(ArenaBox::new_in(name, &self.builder))
+            } else {
+                PropertyKey::StringLiteral(ArenaBox::new_in(
+                    StringLiteral::new(span, Str::from(key), None, &self.builder),
+                    &self.builder,
+                ))
+            };
             let property = ObjectProperty::boxed(
                 span,
                 PropertyKind::Init,
-                key,
+                property_key,
                 value,
                 false,
                 false,
@@ -715,11 +740,17 @@ impl<'a> Lower<'a> {
                 value,
                 ..
             } = self.take(attribute);
-            let key = match name {
+            let key: &'a str = match name {
                 JSXAttributeName::Identifier(id) => id.name.as_str(),
-                JSXAttributeName::NamespacedName(_) => {
-                    self.error(attr_span, "namespaced JSX attributes are not supported");
-                    continue;
+                JSXAttributeName::NamespacedName(namespaced) => {
+                    let namespace = namespaced.namespace.name.as_str();
+                    let property = namespaced.name.name.as_str();
+                    if namespace != "transition" {
+                        self.error(attr_span, "namespaced JSX attributes are not supported");
+                        continue;
+                    }
+                    self.allocator
+                        .alloc_str(&format!("transition:{property}"))
                 }
             };
             let value = match self.attribute_value(value) {
@@ -734,6 +765,14 @@ impl<'a> Lower<'a> {
         }
         (props, controls)
     }
+    fn reject_transition(&mut self, span: Span, props: &[(&'a str, Expression<'a>)]) {
+        for (key, _) in props {
+            if *key == "transition" || key.starts_with("transition:") {
+                self.error(span, "transition must be declared on a rendered node");
+            }
+        }
+    }
+
 
     fn attribute_value(&mut self, value: Option<JSXAttributeValue<'a>>) -> Option<Expression<'a>> {
         match value {
@@ -1081,7 +1120,8 @@ impl<'a> Lower<'a> {
         attributes: ArenaVec<'a, JSXAttributeItem<'a>>,
         children: ArenaVec<'a, JSXChild<'a>>,
     ) -> Expression<'a> {
-        let (_, mut controls) = self.split_attributes(span, attributes, &["when", "fallback"]);
+        let (props, mut controls) = self.split_attributes(span, attributes, &["when", "fallback"]);
+        self.reject_transition(span, &props);
         let when = match self.required_control(span, &mut controls, "when") {
             Some(expr) => self.accessor_value(span, expr),
             None => self.null(span),
@@ -1098,7 +1138,8 @@ impl<'a> Lower<'a> {
         attributes: ArenaVec<'a, JSXAttributeItem<'a>>,
         children: ArenaVec<'a, JSXChild<'a>>,
     ) -> Expression<'a> {
-        let (_, mut controls) = self.split_attributes(span, attributes, &["each", "by"]);
+        let (props, mut controls) = self.split_attributes(span, attributes, &["each", "by"]);
+        self.reject_transition(span, &props);
         let each = match self.required_control(span, &mut controls, "each") {
             Some(expr) => self.accessor_value(span, expr),
             None => self.null(span),
@@ -1117,7 +1158,8 @@ impl<'a> Lower<'a> {
         attributes: ArenaVec<'a, JSXAttributeItem<'a>>,
         children: ArenaVec<'a, JSXChild<'a>>,
     ) -> Expression<'a> {
-        let (_, mut controls) = self.split_attributes(span, attributes, &["each"]);
+        let (props, mut controls) = self.split_attributes(span, attributes, &["each"]);
+        self.reject_transition(span, &props);
         let each = match self.required_control(span, &mut controls, "each") {
             Some(expr) => self.accessor_value(span, expr),
             None => self.null(span),
@@ -1132,7 +1174,8 @@ impl<'a> Lower<'a> {
         attributes: ArenaVec<'a, JSXAttributeItem<'a>>,
         children: ArenaVec<'a, JSXChild<'a>>,
     ) -> Expression<'a> {
-        let (_, mut controls) = self.split_attributes(span, attributes, &["fallback"]);
+        let (props, mut controls) = self.split_attributes(span, attributes, &["fallback"]);
+        self.reject_transition(span, &props);
         let fallback_value = self.control(span, &mut controls, "fallback");
         let fallback = self.fallback(span, fallback_value);
         let mut arms = self.ast_vec();
@@ -1158,8 +1201,9 @@ impl<'a> Lower<'a> {
                         ..
                     } = element;
                     let JSXOpeningElement { attributes, .. } = self.take(opening_element);
-                    let (_, mut controls) =
+                    let (props, mut controls) =
                         self.split_attributes(element_span, attributes, &["when"]);
+                    self.reject_transition(element_span, &props);
                     let when = match self.required_control(element_span, &mut controls, "when") {
                         Some(expr) => self.accessor_value(element_span, expr),
                         None => self.null(element_span),
@@ -1201,6 +1245,10 @@ impl<'a> Lower<'a> {
         debug_assert!(controls.is_empty());
         let mut lowered = Vec::new();
         for (key, value) in props {
+            if key == "transition" || key.starts_with("transition:") {
+                self.error(span, "transition must be declared on a rendered node");
+                continue;
+            }
             if key == "target" {
                 self.error(
                     span,

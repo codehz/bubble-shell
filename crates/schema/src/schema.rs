@@ -418,7 +418,7 @@ pub fn bubble_shell_schema() -> Schema {
 }
 
 fn view_props() -> Vec<PropDef> {
-    vec![
+    let mut props = vec![
         opt("ref", PropType::Ref),
         opt("backgroundColor", PropType::Color),
         opt("flexGrow", PropType::Number),
@@ -473,11 +473,13 @@ fn view_props() -> Vec<PropDef> {
         opt("checked", PropType::Boolean),
         opt("selected", PropType::Boolean),
         opt("expanded", PropType::Boolean),
-    ]
+    ];
+    push_transition(&mut props, VIEW_TRANSITIONS);
+    props
 }
 
 fn text_props() -> Vec<PropDef> {
-    vec![
+    let mut props = vec![
         opt("ref", PropType::Ref),
         opt("color", PropType::Color),
         opt("fontSize", PropType::Number),
@@ -490,11 +492,13 @@ fn text_props() -> Vec<PropDef> {
         opt("lineClamp", PropType::Number),
         opt("width", PropType::Len),
         opt("testID", PropType::String),
-    ]
+    ];
+    push_transition(&mut props, &["transition:color"]);
+    props
 }
 
 fn image_props() -> Vec<PropDef> {
-    vec![
+    let mut props = vec![
         opt("ref", PropType::Ref),
         req("src", PropType::String),
         opt("fit", union(&["contain", "cover", "fill"])),
@@ -502,7 +506,9 @@ fn image_props() -> Vec<PropDef> {
         opt("height", PropType::Len),
         opt("label", PropType::String),
         opt("testID", PropType::String),
-    ]
+    ];
+    push_transition(&mut props, VIEW_TRANSITIONS);
+    props
 }
 
 /// TextField's own props win; every View prop is then inherited, matching
@@ -519,6 +525,7 @@ fn text_field_props(view: &[PropDef]) -> Vec<PropDef> {
         opt("onChange", PropType::EventFn("TextFieldChangeEvent")),
         opt("fontSize", PropType::Number),
         opt("color", PropType::Color),
+        opt("transition:color", PropType::Transition),
     ];
     for prop in view {
         if props.iter().any(|existing| existing.name == prop.name) {
@@ -598,6 +605,23 @@ fn validate(schema: &Schema) {
         }
     }
 }
+const VIEW_TRANSITIONS: &[&str] = &[
+    "transition:backgroundColor",
+    "transition:opacity",
+    "transition:radius",
+    "transition:translateX",
+    "transition:translateY",
+    "transition:scale",
+    "transition:rotate",
+];
+
+fn push_transition(props: &mut Vec<PropDef>, names: &[&'static str]) {
+    props.push(opt("transition", PropType::Transition));
+    for name in names {
+        props.push(opt(name, PropType::Transition));
+    }
+}
+
 
 fn require_event(schema: &Schema, owner: &str, prop: &str, event: &str) {
     if !schema.events.iter().any(|spec| spec.name == event) {

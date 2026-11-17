@@ -661,6 +661,7 @@ pub extern "C" fn bubble_tick(shell: *mut BubbleShell, time_ms: f64) -> i32 {
         let events = {
             let mut shell = lock_or(&engine.shared.shell, "tree lock poisoned")?;
             shell.advance_gestures(time_ms);
+            shell.advance_animations(time_ms);
             shell.take_gesture_events()
         };
         send_events(&engine.shared, events);

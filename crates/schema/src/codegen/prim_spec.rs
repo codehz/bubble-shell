@@ -111,7 +111,7 @@ fn rust_prop_type(ty: &PropType) -> String {
         PropType::Number => "PropType::Number".to_string(),
         PropType::String => "PropType::String".to_string(),
         PropType::Boolean => "PropType::Boolean".to_string(),
-        PropType::Unknown | PropType::Ref => "PropType::Unknown".to_string(),
+        PropType::Unknown | PropType::Ref | PropType::Transition => "PropType::Unknown".to_string(),
         PropType::EventFn(_) | PropType::Func(_) => "PropType::Function".to_string(),
         PropType::Edges => "PropType::Union(vec![\"number\", \"number[]\"])".to_string(),
         PropType::Array(inner) => {

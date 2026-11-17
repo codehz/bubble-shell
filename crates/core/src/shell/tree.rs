@@ -360,11 +360,21 @@ impl Shell {
             return Err(format!("unsupported prop {key}"));
         };
         match prop {
-            Prop::Color => self.node_mut(id)?.color = value.as_color()?,
-            Prop::BackgroundColor => self.node_mut(id)?.background = value.as_color()?,
-            Prop::Radius => self.node_mut(id)?.radius = value.as_f32()?,
+            Prop::Color => {
+                self.node_mut(id)?.color = value.as_color()?;
+                self.mark_transition_target_dirty(id);
+            }
+            Prop::BackgroundColor => {
+                self.node_mut(id)?.background = value.as_color()?;
+                self.mark_transition_target_dirty(id);
+            }
+            Prop::Radius => {
+                self.node_mut(id)?.radius = value.as_f32()?;
+                self.mark_transition_target_dirty(id);
+            }
             Prop::Opacity => {
                 self.node_mut(id)?.opacity = value.as_f32()?.clamp(0.0, 1.0);
+                self.mark_transition_target_dirty(id);
             }
             Prop::FontSize => {
                 self.node_mut(id)?.font_size = value.as_f32()?;
@@ -819,6 +829,7 @@ impl Shell {
         for child in children {
             self.destroy_subtree(child)?;
         }
+        self.drop_style_transition(handle);
         let taffy_id = self.node(handle)?.taffy;
         if self
             .edit_batch

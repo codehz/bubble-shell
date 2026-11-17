@@ -139,6 +139,8 @@ pub enum PropType {
     EventFn(&'static str),
     Func(FnType),
     ObjectLit(Vec<Field>),
+    /// `Transition | null`. Not wrapped as `Ref` or `SharedValue`.
+    Transition,
 }
 
 impl PropType {
@@ -147,7 +149,7 @@ impl PropType {
     pub fn is_dynamic_eligible(&self) -> bool {
         !matches!(
             self,
-            PropType::Ref | PropType::EventFn(_) | PropType::Func(_)
+            PropType::Ref | PropType::EventFn(_) | PropType::Func(_) | PropType::Transition
         )
     }
 }

@@ -7,7 +7,7 @@ use std::io::{Cursor, Read};
 use crate::color::Color;
 use crate::expr::{decode_program, ExprConst, Program};
 use crate::ir::{Kind, NodeDesc};
-use crate::state_style::AnimSpec;
+use crate::state_style::{AnimSpec, TransitionSpec};
 use crate::ui::UiCapture;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -263,6 +263,14 @@ pub enum Op {
     },
     DisposeScrollBar {
         scrollbar: u32,
+    },
+    /// Enable or disable one style-transition slot. `None` clears the slot.
+    /// Payload tag 35: handle u32, slot u8, enabled u8; enabled 1 then
+    /// duration_ms f32 and easing u8. `enabled` is only 0 or 1.
+    SetStyleTransition {
+        handle: u32,
+        slot: u8,
+        spec: Option<TransitionSpec>,
     },
 }
 
@@ -981,6 +989,19 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                 payload.push(34);
                 payload.extend_from_slice(&scrollbar.to_le_bytes());
             }
+            Op::SetStyleTransition { handle, slot, spec } => {
+                payload.push(35);
+                payload.extend_from_slice(&handle.to_le_bytes());
+                payload.push(*slot);
+                match spec {
+                    None => payload.push(0),
+                    Some(spec) => {
+                        payload.push(1);
+                        payload.extend_from_slice(&spec.duration_ms.to_le_bytes());
+                        payload.push(spec.easing);
+                    }
+                }
+            }
         }
     }
 
@@ -1295,6 +1316,21 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
             34 => ops.push(Op::DisposeScrollBar {
                 scrollbar: read_u32(&mut payload_cur)?,
             }),
+            35 => {
+                let handle = read_u32(&mut payload_cur)?;
+                let slot = read_u8(&mut payload_cur)?;
+                let enabled = read_u8(&mut payload_cur)?;
+                let spec = match enabled {
+                    0 => None,
+                    1 => {
+                        let duration_ms = read_f32(&mut payload_cur)?;
+                        let easing = read_u8(&mut payload_cur)?;
+                        Some(TransitionSpec::new(duration_ms, easing)?)
+                    }
+                    other => return Err(format!("bad transition enabled {other}")),
+                };
+                ops.push(Op::SetStyleTransition { handle, slot, spec });
+            }
             other => return Err(format!("unknown op tag {other}")),
         }
     }

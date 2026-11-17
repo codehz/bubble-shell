@@ -477,6 +477,7 @@ impl crate::shell::Shell {
             || !self.ui_calls.is_empty()
             || !self.js_calls.is_empty()
             || self.vars.any_animating()
+            || self.style_transition_pending()
     }
 
     /// Faults recorded since the last drain, plus the newest message.

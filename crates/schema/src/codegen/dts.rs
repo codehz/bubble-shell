@@ -99,7 +99,13 @@ fn push_gesture(out: &mut String, gesture: &GestureSpec) {
 
 fn push_prop(out: &mut String, prop: &PropDef) {
     out.push_str("  ");
-    out.push_str(prop.name);
+    if prop.name.contains(':') {
+        out.push('"');
+        out.push_str(prop.name);
+        out.push('"');
+    } else {
+        out.push_str(prop.name);
+    }
     if !prop.required {
         out.push('?');
     }
@@ -194,6 +200,7 @@ fn prop_type_to_ts(ty: &PropType) -> String {
         PropType::EventFn(name) => format!("(event: {name}) => void"),
         PropType::Func(sig) => render_fn(sig),
         PropType::ObjectLit(fields) => render_object(fields),
+        PropType::Transition => "Transition | null".to_string(),
     }
 }
 

@@ -20,7 +20,7 @@ use bubble_core::{
     encode_events, encode_paint, encode_set_text, encode_var_events, parse_computation_kind,
     read_abi_utf8, validate_bundle_hashes, A11yAction, AnimSpec, EditCommand, EditEvent,
     EditMenuAction, GestureEvent, GestureKind, Key, Kind, LayoutRequest, NodeDesc, Op,
-    PointerAction, PointerInput, Sched, Shell, Turn, Value, VarEvent,
+    PointerAction, PointerInput, Sched, Shell, TransitionSpec, Turn, Value, VarEvent,
 };
 
 thread_local! {
@@ -336,6 +336,7 @@ pub extern "C" fn tick(time_ms: f64) -> i32 {
         drain_pending().and_then(|()| {
             with_shell(|shell| {
                 shell.advance_gestures(time_ms);
+                shell.advance_animations(time_ms);
                 collect_events(shell);
                 Ok(0)
             })
@@ -1416,6 +1417,41 @@ pub extern "C" fn bind_var(var: u32, target: u32) -> i32 {
         1
     )
 }
+#[no_mangle]
+pub extern "C" fn set_style_transition(
+    handle: u32,
+    slot: u32,
+    enabled: u32,
+    duration: f64,
+    easing: u32,
+) -> i32 {
+    abi_ok!(
+        {
+            let slot = u8::try_from(slot).map_err(|_| format!("bad transition slot {slot}"))?;
+            let spec = if enabled == 0 {
+                None
+            } else {
+                if easing != 0 && easing != 1 {
+                    return Err(
+                        "transition easing must be \"linear\" or \"easeInOut\"".to_string()
+                    );
+                }
+                if !duration.is_finite() || duration < 0.0 || duration > f32::MAX as f64 {
+                    return Err(
+                        "transition duration must be a finite non-negative number".to_string(),
+                    );
+                }
+                Some(TransitionSpec::new(duration as f32, easing as u8)?)
+            };
+            with_turn(|turn| {
+                turn.set_style_transition(handle, slot, spec);
+                Ok(0)
+            })
+        },
+        1
+    )
+}
+
 
 /// `tag` 0 none, 1 bool, 2 int, 3 float; matches `propParts` on the JS side.
 /// `anim` 0 immediate, 2 tween (a=duration ms, c=easing code),

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use bubble_core::{
     validate_bundle_hashes, AnimSpec, ComputationKind, GestureKind, Kind, NodeDesc, Op, Sched,
-    Turn, Value,
+    TransitionSpec, Turn, Value,
 };
 use quickjs_oxide::engine::api::core::{
     CallableRef, Context, HeapLimits, Host, Js, JsString, ModuleImportAttributes, ModuleLoader,
@@ -861,6 +861,7 @@ fn bind_api(ctx: &Context) -> Result<(), RuntimeError> {
     def!(ctx, &api, "create_var", 3, (source: f64, initial_tag: f64, initial_number: f64) => api_create_var(source, initial_tag, initial_number));
     def!(ctx, &api, "bind_var", 2, (var: f64, target: f64) => api_bind_var(var, target));
     def!(ctx, &api, "set_var", 7, (var: f64, tag: f64, number: f64, anim: f64, a: f64, b: f64, c: f64) => api_set_var(var, tag, number, anim, a, b, c));
+    def!(ctx, &api, "set_style_transition", 5, (handle: f64, slot: f64, enabled: f64, duration: f64, easing: f64) => api_set_style_transition(handle, slot, enabled, duration, easing));
     def!(ctx, &api, "settle_var", 1, (var: f64) => api_settle_var(var));
     def!(ctx, &api, "dispose_var", 1, (var: f64) => api_dispose_var(var));
     def!(ctx, &api, "define_ui_function", 3, scope(params: f64, bytes: JsValue, reuse: f64) => api_define_ui_function(params, bytes, reuse));
@@ -1429,6 +1430,53 @@ fn api_bind_var(var: f64, target: f64) -> i32 {
         }
     }
 }
+fn api_set_style_transition(
+    handle: f64,
+    slot: f64,
+    enabled: f64,
+    duration: f64,
+    easing: f64,
+) -> i32 {
+    let slot = match u8::try_from(slot as u64) {
+        Ok(narrow) if narrow as f64 == slot => narrow,
+        _ => {
+            set_api_error(format!("bad transition slot {slot}"));
+            return 1;
+        }
+    };
+    let spec = if enabled == 0.0 {
+        None
+    } else {
+        if easing != 0.0 && easing != 1.0 {
+            set_api_error("transition easing must be \"linear\" or \"easeInOut\"".to_string());
+            return 1;
+        }
+        if !duration.is_finite() || duration < 0.0 || duration > f32::MAX as f64 {
+            set_api_error(
+                "transition duration must be a finite non-negative number".to_string(),
+            );
+            return 1;
+        }
+        match TransitionSpec::new(duration as f32, easing as u8) {
+            Ok(spec) => Some(spec),
+            Err(err) => {
+                set_api_error(err);
+                return 1;
+            }
+        }
+    };
+    match with_turn(|turn| {
+        turn.set_style_transition(handle as u32, slot, spec);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
 
 fn api_set_var(var: f64, tag: f64, number: f64, anim: f64, a: f64, b: f64, c: f64) -> i32 {
     let value = match tag as u32 {
