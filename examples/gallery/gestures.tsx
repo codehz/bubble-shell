@@ -1,4 +1,4 @@
-// Gesture demos: tap, double tap, long press, pan, transform, gesture variables.
+// Gesture demos: tap, double tap, long press, pan, transform, gesture and scroll variables.
 import {
   signal,
   View,
@@ -14,7 +14,7 @@ import {
   scheduleOnUI,
   ref,
 } from "bubble-shell";
-import { Section } from "./shared";
+import { Section, Btn } from "./shared";
 
 export function TapDemo() {
   const taps = signal(0);
@@ -221,6 +221,73 @@ export function GestureVarsDemo() {
           />
         </View>
       </View>
+    </View>
+  );
+}
+
+// Physical scroll room, sampled on the UI thread. Chips light while the
+// scroller can still move that way from its current offset.
+export function ScrollStateDemo() {
+  const scrollRef = ref();
+  const canUp = createSharedValue({ source: "scroll.canScrollUp", target: scrollRef });
+  const canDown = createSharedValue({ source: "scroll.canScrollDown", target: scrollRef });
+  const canLeft = createSharedValue({ source: "scroll.canScrollLeft", target: scrollRef });
+  const canRight = createSharedValue({ source: "scroll.canScrollRight", target: scrollRef });
+  const expanded = signal(true);
+  return (
+    <View gap={12}>
+      <Section title="Scroll direction — canScrollUp/Down/Left/Right">
+        <Text color="#9ca3af" fontSize={13}>
+          Green means that physical direction can still move. Scroll to a corner, then fit the content so every chip goes dark.
+        </Text>
+        <View alignItems="center" gap={8}>
+          <View backgroundColor={0xff374151} radius={6} padding={[6, 10, 6, 10]}>
+            <ViewStyle when={canUp} backgroundColor={0xff22c55e} />
+            <Text color="#ffffff" fontSize={12}>up</Text>
+          </View>
+          <View flexDirection="row" alignItems="center" gap={8}>
+            <View backgroundColor={0xff374151} radius={6} padding={[6, 10, 6, 10]}>
+              <ViewStyle when={canLeft} backgroundColor={0xff22c55e} />
+              <Text color="#ffffff" fontSize={12}>left</Text>
+            </View>
+            <View
+              ref={scrollRef}
+              width={180}
+              height={120}
+              overflowX="scroll"
+              overflowY="scroll"
+              backgroundColor={0xff172554}
+              radius={6}
+              padding={[8, 8, 8, 8]}
+            >
+              <View
+                width={expanded() ? 360 : 164}
+                height={expanded() ? 260 : 104}
+                backgroundColor={0xff1f2937}
+                radius={4}
+                padding={[8, 8, 8, 8]}
+                gap={6}
+              >
+                <Text color="#d1d5db" fontSize={13}>Drag or wheel inside this box.</Text>
+                <Text color="#9ca3af" fontSize={13}>Wider and taller than the viewport, until you fit it.</Text>
+              </View>
+            </View>
+            <View backgroundColor={0xff374151} radius={6} padding={[6, 10, 6, 10]}>
+              <ViewStyle when={canRight} backgroundColor={0xff22c55e} />
+              <Text color="#ffffff" fontSize={12}>right</Text>
+            </View>
+          </View>
+          <View backgroundColor={0xff374151} radius={6} padding={[6, 10, 6, 10]}>
+            <ViewStyle when={canDown} backgroundColor={0xff22c55e} />
+            <Text color="#ffffff" fontSize={12}>down</Text>
+          </View>
+        </View>
+        <Btn
+          label={expanded() ? "Fit content" : "Overflow content"}
+          color={0xff2563eb}
+          onTap={() => expanded.set(!expanded())}
+        />
+      </Section>
     </View>
   );
 }

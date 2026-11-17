@@ -12,6 +12,7 @@ import {
   PanDemo,
   TransformDemo,
   GestureVarsDemo,
+  ScrollStateDemo,
 } from "./gestures";
 import { ShowDemo, ForDemo, IndexDemo, SwitchDemo, SlotDemo } from "./control-flow";
 import { LayoutDemo, TextPropsDemo } from "./layout";
@@ -37,6 +38,7 @@ const demos = [
   { name: "Pan", demo: PanDemo },
   { name: "Transform", demo: TransformDemo },
   { name: "Gesture Vars", demo: GestureVarsDemo },
+  { name: "Scroll State", demo: ScrollStateDemo },
   { name: "Show", demo: ShowDemo },
   { name: "For", demo: ForDemo },
   { name: "Index", demo: IndexDemo },
@@ -107,22 +109,23 @@ function App() {
           <Match when={selected() === 8}>{() => <PanDemo />}</Match>
           <Match when={selected() === 9}>{() => <TransformDemo />}</Match>
           <Match when={selected() === 10}>{() => <GestureVarsDemo />}</Match>
-          <Match when={selected() === 11}>{() => <ShowDemo />}</Match>
-          <Match when={selected() === 12}>{() => <ForDemo />}</Match>
-          <Match when={selected() === 13}>{() => <IndexDemo />}</Match>
-          <Match when={selected() === 14}>{() => <SwitchDemo />}</Match>
-          <Match when={selected() === 15}>{() => <SlotDemo />}</Match>
-          <Match when={selected() === 16}>{() => <LayoutDemo />}</Match>
-          <Match when={selected() === 17}>{() => <TextPropsDemo />}</Match>
-          <Match when={selected() === 18}>{() => <PressedDemo />}</Match>
-          <Match when={selected() === 19}>{() => <FocusedDemo />}</Match>
-          <Match when={selected() === 20}>{() => <AnimatedDemo />}</Match>
-          <Match when={selected() === 21}>{() => <StorageDemo />}</Match>
-          <Match when={selected() === 22}>{() => <ToastDemo />}</Match>
-          <Match when={selected() === 23}>{() => <ClipboardDemo />}</Match>
-          <Match when={selected() === 24}>{() => <FetchDemo />}</Match>
-          <Match when={selected() === 25}>{() => <OpenNavDemo />}</Match>
-          <Match when={selected() === 26}>{() => <HostDemo />}</Match>
+          <Match when={selected() === 11}>{() => <ScrollStateDemo />}</Match>
+          <Match when={selected() === 12}>{() => <ShowDemo />}</Match>
+          <Match when={selected() === 13}>{() => <ForDemo />}</Match>
+          <Match when={selected() === 14}>{() => <IndexDemo />}</Match>
+          <Match when={selected() === 15}>{() => <SwitchDemo />}</Match>
+          <Match when={selected() === 16}>{() => <SlotDemo />}</Match>
+          <Match when={selected() === 17}>{() => <LayoutDemo />}</Match>
+          <Match when={selected() === 18}>{() => <TextPropsDemo />}</Match>
+          <Match when={selected() === 19}>{() => <PressedDemo />}</Match>
+          <Match when={selected() === 20}>{() => <FocusedDemo />}</Match>
+          <Match when={selected() === 21}>{() => <AnimatedDemo />}</Match>
+          <Match when={selected() === 22}>{() => <StorageDemo />}</Match>
+          <Match when={selected() === 23}>{() => <ToastDemo />}</Match>
+          <Match when={selected() === 24}>{() => <ClipboardDemo />}</Match>
+          <Match when={selected() === 25}>{() => <FetchDemo />}</Match>
+          <Match when={selected() === 26}>{() => <OpenNavDemo />}</Match>
+          <Match when={selected() === 27}>{() => <HostDemo />}</Match>
         </Switch>
       </View>
     </View>
