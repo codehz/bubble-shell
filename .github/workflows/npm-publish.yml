@@ -1,7 +1,10 @@
-# Publishes bubble-shell and the @bubble-shell platform packages.
-# Requires secret NPM_TOKEN and a GitHub environment named npm-release.
+# Stages bubble-shell and the @bubble-shell platform packages.
+# npm stage publish does not make a version installable. A maintainer approves
+# each staged version with 2FA (Staged Packages on https://www.npmjs.com, or
+# npm stage approve <stage-id>). Approve the platform packages before
+# bubble-shell. Requires secret NPM_TOKEN, Node >= 22.14, and npm >= 11.15.
 
-name: npm publish
+name: npm stage
 
 on:
   workflow_dispatch:
@@ -140,10 +143,10 @@ jobs:
           curl -sf -o /dev/null http://127.0.0.1:4173/bubble.wasm
           curl -sf -o /dev/null http://127.0.0.1:4173/src/host.js
           curl -sf -o /dev/null http://127.0.0.1:4173/src/a11y.js
-  publish:
+
+  stage:
     runs-on: ubuntu-latest
     needs: [build-binaries, generate-types, smoke]
-    environment: npm-release
     permissions:
       contents: write
       id-token: write
@@ -154,8 +157,10 @@ jobs:
           path: artifacts
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://registry.npmjs.org
+      - name: Install npm with staged publishing
+        run: npm install -g npm@11
       - name: Assemble packages
         run: |
           for platform in darwin-arm64 linux-x64 windows-x64; do
@@ -198,17 +203,21 @@ jobs:
             fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + '\n');
           }
           EOF
-      - name: Publish platform packages
+      - name: Stage platform packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           for platform in darwin-arm64 linux-x64 windows-x64; do
-            (cd "npm/@bubble-shell/${platform}" && npm publish --provenance --access public)
+            (cd "npm/@bubble-shell/${platform}" && npm stage publish --provenance --access public)
+            npm stage list "@bubble-shell/${platform}"
           done
-      - name: Publish bubble-shell
+      - name: Stage bubble-shell
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: (cd npm/bubble-shell && npm publish --provenance)
+        run: |
+          (cd npm/bubble-shell && npm stage publish --provenance)
+          npm stage list bubble-shell
+          echo "Staged. Approve the platform packages before bubble-shell."
       - name: Stage release binaries
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
