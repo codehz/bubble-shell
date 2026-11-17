@@ -1641,6 +1641,14 @@ pub extern "C" fn commit() -> u32 {
 }
 
 #[no_mangle]
+pub extern "C" fn invalidate_text_layout() -> i32 {
+    abi_ok!(
+        with_shell(|shell| shell.invalidate_text_layout().map(|()| 0)),
+        1
+    )
+}
+
+#[no_mangle]
 pub extern "C" fn layout() -> i32 {
     let _flush = FlushEvents;
     abi_ok!(

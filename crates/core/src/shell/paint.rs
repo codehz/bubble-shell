@@ -212,70 +212,46 @@ impl Shell {
             style.height = Len::Pt(self.viewport.height);
             style_for(style)
         };
-        self.taffy
-            .set_style(root, root_style)
-            .map_err(|err| err.to_string())?;
-        self.taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(self.viewport.width),
-                    height: AvailableSpace::Definite(self.viewport.height),
-                },
-                |inputs, _node, ctx, style| {
-                    let measured = ctx.map(|ctx| {
-                        (
-                            ctx.text.clone(),
-                            ctx.font_size,
-                            ctx.line_height,
-                            ctx.font_weight,
-                            ctx.max_lines,
-                        )
-                    });
-                    compute_leaf_layout(
-                        inputs,
-                        style,
-                        |_, _| 0.0,
-                        |known, available| {
-                            let Some((text, font_size, line_height, font_weight, max_lines)) =
-                                measured.as_ref()
-                            else {
-                                return Size::ZERO;
-                            };
-                            if let (Some(width), Some(height)) = (known.width, known.height) {
-                                return Size { width, height };
-                            }
-                            // Min-content is the longest word. Max-content and an
-                            // indefinite width are the unwrapped string. A definite
-                            // width wraps, which is what keeps a paragraph inside
-                            // a sized parent instead of overflowing it.
-                            let limit = match available.width {
-                                AvailableSpace::Definite(width) => Some(width),
-                                AvailableSpace::MinContent => {
-                                    let mut advance = |sample: &str| {
-                                        measure(
-                                            sample,
-                                            *font_size,
-                                            *line_height,
-                                            *font_weight,
-                                            None,
-                                        )
-                                        .0
-                                    };
-                                    let min_width = min_content_width(text, &mut advance);
-                                    (min_width > 0.0).then_some(min_width)
+        if self.taffy.style(root).map_err(|err| err.to_string())? != &root_style {
+            self.taffy
+                .set_style(root, root_style)
+                .map_err(|err| err.to_string())?;
+        }
+        if self.taffy.dirty(root).map_err(|err| err.to_string())? {
+            self.taffy
+                .compute_layout_with_measure(
+                    root,
+                    Size {
+                        width: AvailableSpace::Definite(self.viewport.width),
+                        height: AvailableSpace::Definite(self.viewport.height),
+                    },
+                    |inputs, _node, ctx, style| {
+                        let measured = ctx.as_deref();
+                        compute_leaf_layout(
+                            inputs,
+                            style,
+                            |_, _| 0.0,
+                            |known, available| {
+                                let Some(super::MeasureCtx {
+                                    text,
+                                    font_size,
+                                    line_height,
+                                    font_weight,
+                                    max_lines,
+                                }) = measured
+                                else {
+                                    return Size::ZERO;
+                                };
+                                if let (Some(width), Some(height)) = (known.width, known.height) {
+                                    return Size { width, height };
                                 }
-                                AvailableSpace::MaxContent => known
-                                    .width
-                                    .filter(|width| width.is_finite() && *width > 0.0),
-                            };
-                            let (width, mut height) =
-                                measure(text, *font_size, *line_height, *font_weight, limit);
-                            if *max_lines > 0 {
-                                if let Some(limit) =
-                                    limit.filter(|limit| limit.is_finite() && *limit > 0.0)
-                                {
-                                    let line_count = {
+                                // Min-content is the longest word. Max-content and an
+                                // indefinite width are the unwrapped string. A definite
+                                // width wraps, which is what keeps a paragraph inside
+                                // a sized parent instead of overflowing it.
+                                let limit = match available.width {
+                                    AvailableSpace::Definite(width) => Some(width),
+                                    AvailableSpace::MinContent => {
                                         let mut advance = |sample: &str| {
                                             measure(
                                                 sample,
@@ -286,55 +262,81 @@ impl Shell {
                                             )
                                             .0
                                         };
-                                        wrapped_lines(text, limit, &mut advance)
-                                            .len()
-                                            .min(*max_lines as usize)
-                                    };
-                                    // `line_height` 0 is the host's natural line box.
-                                    let line = if *line_height > 0.0 {
-                                        *line_height
-                                    } else {
-                                        measure("x", *font_size, *line_height, *font_weight, None).1
-                                    };
-                                    if line_count > 0 && line > 0.0 {
-                                        height = line_count as f32 * line;
+                                        let min_width = min_content_width(text, &mut advance);
+                                        (min_width > 0.0).then_some(min_width)
+                                    }
+                                    AvailableSpace::MaxContent => known
+                                        .width
+                                        .filter(|width| width.is_finite() && *width > 0.0),
+                                };
+                                let (width, mut height) =
+                                    measure(text, *font_size, *line_height, *font_weight, limit);
+                                if *max_lines > 0 {
+                                    if let Some(limit) =
+                                        limit.filter(|limit| limit.is_finite() && *limit > 0.0)
+                                    {
+                                        let line_count = {
+                                            let mut advance = |sample: &str| {
+                                                measure(
+                                                    sample,
+                                                    *font_size,
+                                                    *line_height,
+                                                    *font_weight,
+                                                    None,
+                                                )
+                                                .0
+                                            };
+                                            wrapped_lines(text, limit, &mut advance)
+                                                .len()
+                                                .min(*max_lines as usize)
+                                        };
+                                        // `line_height` 0 is the host's natural line box.
+                                        let line = if *line_height > 0.0 {
+                                            *line_height
+                                        } else {
+                                            measure(
+                                                "x",
+                                                *font_size,
+                                                *line_height,
+                                                *font_weight,
+                                                None,
+                                            )
+                                            .1
+                                        };
+                                        if line_count > 0 && line > 0.0 {
+                                            height = line_count as f32 * line;
+                                        }
                                     }
                                 }
-                            }
-                            Size {
-                                width: known.width.unwrap_or(width),
-                                height: known.height.unwrap_or(height),
-                            }
-                        },
-                    )
-                },
-            )
-            .map_err(|err| err.to_string())?;
-        self.place(1, 0.0, 0.0)?;
+                                Size {
+                                    width: known.width.unwrap_or(width),
+                                    height: known.height.unwrap_or(height),
+                                }
+                            },
+                        )
+                    },
+                )
+                .map_err(|err| err.to_string())?;
+            self.place(1, 0.0, 0.0)?;
+        }
+        // Clamp offsets before placing: shrinking content must not leave stale coordinates.
         self.sync_field_content(measure)?;
-        let limits: Vec<(usize, f32, f32)> = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, node)| {
-                let node = node.as_ref()?;
-                Some((
-                    index,
-                    if node.scrolls_x() {
-                        self.max_scroll_x(node)
-                    } else {
-                        0.0
-                    },
-                    if node.scrolls_y() {
-                        self.max_scroll_y(node)
-                    } else {
-                        0.0
-                    },
-                ))
-            })
-            .collect();
-        for (index, limit_x, limit_y) in limits {
-            if let Some(node) = &mut self.nodes[index] {
+        for index in 0..self.nodes.len() {
+            let Some(node) = self.nodes[index].as_ref() else {
+                continue;
+            };
+            let limit_x = if node.scrolls_x() {
+                self.max_scroll_x(node)
+            } else {
+                0.0
+            };
+            let limit_y = if node.scrolls_y() {
+                self.max_scroll_y(node)
+            } else {
+                0.0
+            };
+            {
+                let node = self.nodes[index].as_mut().expect("scroll node");
                 node.scroll_left = if node.scrolls_x() {
                     node.scroll_left.clamp(0.0, limit_x)
                 } else {
@@ -347,6 +349,7 @@ impl Shell {
                 };
             }
         }
+        self.place(1, 0.0, 0.0)?;
         self.paint_dirty.set(true);
         Ok(())
     }
@@ -442,7 +445,7 @@ impl Shell {
         let y = origin_y + layout.location.y;
         let scroll_left = self.node(id)?.scroll_left;
         let scroll_top = self.node(id)?.scroll_top;
-        let children = self.node(id)?.children.clone();
+        let child_count = self.node(id)?.children.len();
         {
             let node = self.node_mut(id)?;
             node.x = x;
@@ -450,7 +453,8 @@ impl Shell {
             node.w = layout.size.width;
             node.h = layout.size.height;
         }
-        for child in children {
+        for index in 0..child_count {
+            let child = self.node(id)?.children[index];
             self.place(child, x - scroll_left, y - scroll_top)?;
         }
         Ok(())
@@ -831,52 +835,59 @@ impl Shell {
     }
     /// Text extent used as the field's scrollable overflow. Taffy only sees a leaf.
     fn sync_field_content(&mut self, measure: Measure<'_>) -> Result<(), String> {
-        let ids: Vec<u32> = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, node)| {
-                node.as_ref()
-                    .filter(|node| node.kind == Kind::Field)
-                    .map(|_| index as u32)
-            })
-            .collect();
-        for id in ids {
-            let (text, font_size, line_height, font_weight, multiline, viewport_w) = {
-                let node = self.node(id)?;
-                let pads = self.pads(id);
-                (
-                    display_text(&node.text, node.secure),
-                    node.font_size,
-                    node.line_height,
-                    node.font_weight,
-                    node.multiline,
-                    (node.w - pads[0] - pads[1]).max(0.0),
-                )
+        for index in 0..self.nodes.len() {
+            let Some(node) = self.nodes[index]
+                .as_ref()
+                .filter(|node| node.kind == Kind::Field)
+            else {
+                continue;
             };
-            let max_width = if multiline { Some(viewport_w) } else { None };
-            let (width, height) = measure(&text, font_size, line_height, font_weight, max_width);
+            let id = index as u32;
+            let pads = self.pads(id);
+            let box_width = self
+                .taffy
+                .layout(node.taffy)
+                .map_err(|err| err.to_string())?
+                .size
+                .width;
+            let max_width = node
+                .multiline
+                .then_some((box_width - pads[0] - pads[1]).max(0.0));
+            if node.content_measure_width == Some(max_width) {
+                continue;
+            }
+            let text = display_text(&node.text, node.secure);
+            let (width, height) = measure(
+                &text,
+                node.font_size,
+                node.line_height,
+                node.font_weight,
+                max_width,
+            );
             let node = self.node_mut(id)?;
             node.content_w = width;
             node.content_h = height;
+            node.content_measure_width = Some(max_width);
         }
         Ok(())
     }
 
     fn apply_text_ellipsis(&mut self, measure: Measure<'_>) -> Result<(), String> {
-        let ids: Vec<u32> = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, node)| {
-                node.as_ref()
-                    .filter(|node| matches!(node.kind, Kind::Text | Kind::Field))
-                    .map(|_| index as u32)
-            })
-            .collect();
-        for id in ids {
+        for index in 0..self.nodes.len() {
+            let Some(node) = self.nodes[index]
+                .as_ref()
+                .filter(|node| node.kind == Kind::Text)
+            else {
+                continue;
+            };
+            let id = index as u32;
+            if node.ellipsis_width == Some(node.w) {
+                continue;
+            }
             let next = self.ellipsis_text_for(id, measure);
-            self.node_mut(id)?.ellipsis_text = next;
+            let node = self.node_mut(id)?;
+            node.ellipsis_text = next;
+            node.ellipsis_width = Some(node.w);
         }
         self.paint_dirty.set(true);
         Ok(())
@@ -887,7 +898,7 @@ impl Shell {
         if node.kind != Kind::Text || node.text_overflow != 1 {
             return None;
         }
-        let shown = node.text.clone();
+        let shown = &node.text;
         if shown.is_empty() {
             return None;
         }
@@ -898,10 +909,10 @@ impl Shell {
         let clamp = node.line_clamp;
         let mut advance = |text: &str| measure(text, font_size, line_height, weight, None).0;
         if clamp >= 2 {
-            clamp_lines(&shown, clamp, width, &mut advance)
+            clamp_lines(shown, clamp, width, &mut advance)
         } else {
-            let truncated = truncate_with_ellipsis(&shown, width, &mut advance);
-            (truncated != shown).then_some(truncated)
+            let truncated = truncate_with_ellipsis(shown, width, &mut advance);
+            (truncated != *shown).then_some(truncated)
         }
     }
 }

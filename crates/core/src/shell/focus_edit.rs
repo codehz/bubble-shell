@@ -5,14 +5,22 @@ use crate::editing::{
 use crate::ir::Kind;
 use crate::layout::{snap_unit, wrapping_layout, LayoutKey, LayoutRequest, LayoutSnapshot};
 use crate::semantics::Role;
+use std::sync::Arc;
 
 use super::{EditBatch, EditConflict, EditMenuAction, Key, Measure, MenuResult, Shell};
 
 struct FieldGeom {
-    text: String,
+    text: Arc<str>,
     origin_x: f32,
     origin_y: f32,
     key: LayoutKey,
+}
+
+pub(super) struct FieldLayoutCache {
+    pub(super) text: String,
+    pub(super) secure: bool,
+    pub(super) displayed: Arc<str>,
+    pub(super) snapshot: Arc<LayoutSnapshot>,
 }
 
 impl Shell {
@@ -1042,8 +1050,17 @@ impl Shell {
         &self,
         handle: u32,
         host: &mut dyn FnMut(&LayoutRequest<'_>) -> Result<LayoutSnapshot, String>,
-    ) -> Result<(FieldGeom, LayoutSnapshot), String> {
+    ) -> Result<(FieldGeom, Arc<LayoutSnapshot>), String> {
         let geom = self.field_geom(handle)?;
+        let node = self.node(handle)?;
+        if let Some(cached) = node.field_layout.borrow().as_ref() {
+            if cached.text == node.text
+                && cached.secure == node.secure
+                && cached.snapshot.key == geom.key
+            {
+                return Ok((geom, Arc::clone(&cached.snapshot)));
+            }
+        }
         let req = LayoutRequest {
             text: &geom.text,
             key: geom.key,
@@ -1057,6 +1074,13 @@ impl Shell {
         if !snapshot.matches(&geom.key) {
             return Err("stale layout snapshot".into());
         }
+        let snapshot = Arc::new(snapshot);
+        *node.field_layout.borrow_mut() = Some(FieldLayoutCache {
+            text: node.text.clone(),
+            secure: node.secure,
+            displayed: Arc::clone(&geom.text),
+            snapshot: Arc::clone(&snapshot),
+        });
         Ok((geom, snapshot))
     }
 
@@ -1083,8 +1107,15 @@ impl Shell {
         } else {
             node.content_w.max(viewport_w)
         };
+        let text = node
+            .field_layout
+            .borrow()
+            .as_ref()
+            .filter(|cached| cached.text == node.text && cached.secure == node.secure)
+            .map(|cached| Arc::clone(&cached.displayed))
+            .unwrap_or_else(|| Arc::from(display_text(&node.text, node.secure)));
         Ok(FieldGeom {
-            text: display_text(&node.text, node.secure),
+            text,
             origin_x: node.x + pads[0] - node.scroll_left,
             origin_y: node.y + pads[2] - node.scroll_top,
             key: LayoutKey {

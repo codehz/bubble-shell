@@ -1475,6 +1475,8 @@ pub extern "C" fn bubble_register_font(
             .map_err(|_| "font lock poisoned".to_string())?;
         fonts.push((family, bytes));
         engine.shared.epoch.fetch_add(1, Ordering::Relaxed);
+        drop(fonts);
+        lock_or(&engine.shared.shell, "tree lock poisoned")?.invalidate_text_layout()?;
         Ok(())
     });
     let _ = finish(shell, result);

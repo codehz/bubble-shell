@@ -27,7 +27,7 @@ use taffy::{NodeId, TaffyTree};
 
 use self::tree::{style_for, Node};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct MeasureCtx {
     text: String,
     font_size: f32,
@@ -508,6 +508,22 @@ impl Shell {
         }
     }
 
+    /// The host changed its font environment without changing authored properties.
+    pub fn invalidate_text_layout(&mut self) -> Result<(), String> {
+        for node in self.nodes.iter_mut().flatten() {
+            if matches!(node.kind, Kind::Text | Kind::Field) {
+                node.content_measure_width = None;
+                node.ellipsis_width = None;
+                *node.field_layout.get_mut() = None;
+                self.taffy
+                    .mark_dirty(node.taffy)
+                    .map_err(|err| err.to_string())?;
+            }
+        }
+        self.paint_dirty.set(true);
+        Ok(())
+    }
+
     pub fn apply_ops(&mut self, bytes: &[u8]) -> Result<u32, String> {
         let (seq, ops) = decode_ops(bytes)?;
         for op in ops {
@@ -517,25 +533,10 @@ impl Shell {
                     if node.kind != Kind::Text {
                         return Err(format!("handle {handle} is not text"));
                     }
-                    node.text = text.clone();
-                    let font_size = node.font_size;
-                    let line_height = node.line_height;
-                    let font_weight = node.font_weight;
-                    let max_lines =
-                        layout_max_lines(node.kind, node.text_overflow, node.line_clamp);
-                    let taffy_id = node.taffy;
-                    self.taffy
-                        .set_node_context(
-                            taffy_id,
-                            Some(MeasureCtx {
-                                text,
-                                font_size,
-                                line_height,
-                                font_weight,
-                                max_lines,
-                            }),
-                        )
-                        .map_err(|err| err.to_string())?;
+                    if node.text != text {
+                        node.text = text;
+                        self.refresh_measure(handle)?;
+                    }
                 }
                 Op::SetPropColor { handle, key, rgba } => {
                     self.set_prop(handle, &key, &Value::Int(rgba as i64))?

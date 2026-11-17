@@ -66,6 +66,10 @@ pub(super) struct Node {
     pub(super) text: String,
     /// Paint string when ellipsis shortened `text`. `None` paints the full string.
     pub(super) ellipsis_text: Option<String>,
+    /// Derived text results are invalidated by measurement input changes.
+    pub(super) content_measure_width: Option<Option<f32>>,
+    pub(super) ellipsis_width: Option<f32>,
+    pub(super) field_layout: std::cell::RefCell<Option<super::focus_edit::FieldLayoutCache>>,
     pub(super) taffy: NodeId,
     pub(super) scroll_left: f32,
     pub(super) scroll_top: f32,
@@ -147,6 +151,9 @@ impl Node {
             fit: 0,
             text: String::new(),
             ellipsis_text: None,
+            content_measure_width: None,
+            ellipsis_width: None,
+            field_layout: std::cell::RefCell::new(None),
             taffy: taffy_id,
             scroll_left: 0.0,
             scroll_top: 0.0,
@@ -407,10 +414,12 @@ impl Shell {
             Prop::TextAlign => self.node_mut(id)?.text_align = text_align(value)?,
             Prop::TextOverflow => {
                 self.node_mut(id)?.text_overflow = parse_text_overflow(value)?;
+                self.node_mut(id)?.ellipsis_width = None;
                 self.refresh_measure(id)?;
             }
             Prop::LineClamp => {
                 self.node_mut(id)?.line_clamp = value.as_u32()?;
+                self.node_mut(id)?.ellipsis_width = None;
                 self.refresh_measure(id)?;
             }
             Prop::FontWeight => {
@@ -456,6 +465,7 @@ impl Shell {
             Prop::Fit => self.node_mut(id)?.fit = image_fit(value)?,
             Prop::Multiline => {
                 self.node_mut(id)?.multiline = value.as_bool()?;
+                self.node_mut(id)?.content_measure_width = None;
                 self.refresh_field_overflow(id)?;
                 self.refresh_measure(id)?;
             }
@@ -513,13 +523,20 @@ impl Shell {
     }
 
     fn restyle(&mut self, id: u32) -> Result<(), String> {
-        let (taffy, style) = {
-            let node = self.node(id)?;
-            (node.taffy, style_for(NodeStyle::from_node(node)))
-        };
-        self.taffy
-            .set_style(taffy, style)
-            .map_err(|err| err.to_string())
+        let node = self.node(id)?;
+        let mut node_style = NodeStyle::from_node(node);
+        if id == 1 {
+            node_style.width = Len::Pt(self.viewport.width);
+            node_style.height = Len::Pt(self.viewport.height);
+        }
+        let taffy = node.taffy;
+        let style = style_for(node_style);
+        if self.taffy.style(taffy).map_err(|err| err.to_string())? != &style {
+            self.taffy
+                .set_style(taffy, style)
+                .map_err(|err| err.to_string())?;
+        }
+        Ok(())
     }
 
     pub(super) fn refresh_measure(&mut self, id: u32) -> Result<(), String> {
@@ -543,18 +560,22 @@ impl Shell {
                 max_lines,
             )
         };
-        self.taffy
-            .set_node_context(
-                taffy,
-                Some(MeasureCtx {
-                    text,
-                    font_size,
-                    line_height,
-                    font_weight,
-                    max_lines,
-                }),
-            )
-            .map_err(|err| err.to_string())
+        let ctx = MeasureCtx {
+            text,
+            font_size,
+            line_height,
+            font_weight,
+            max_lines,
+        };
+        if self.taffy.get_node_context(taffy) != Some(&ctx) {
+            let node = self.node_mut(id)?;
+            node.content_measure_width = None;
+            node.ellipsis_width = None;
+            self.taffy
+                .set_node_context(taffy, Some(ctx))
+                .map_err(|err| err.to_string())?;
+        }
+        Ok(())
     }
 
     pub fn node_box(&self, id: u32) -> Result<(f32, f32, f32, f32), String> {
