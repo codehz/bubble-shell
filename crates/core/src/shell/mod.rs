@@ -18,6 +18,7 @@ use crate::editing::{EditError, EditEvent, EditSession, SessionId};
 use crate::gesture::{GestureEvent, GestureKind, Recognizer};
 use crate::ir::{Kind, NodeDesc};
 use crate::ops::{decode_ops, Op, Value};
+use crate::decoration::DecorationDecls;
 use crate::scrollbar::ScrollBarDecls;
 use crate::state_style::{StyleDecls, VarEvent, VarTable};
 use crate::ui::{UiCall, UiProgram, UiValue};
@@ -249,6 +250,7 @@ pub struct Shell {
     scrollbar_drag: Option<ScrollbarDrag>,
     scrollbars: ScrollBarDecls,
     state_styles: StyleDecls,
+    decorations: DecorationDecls,
     visual: VisualPress,
     field_pointer: Option<field_gesture::FieldPointerState>,
     /// Pointer kind of the last press sample (0 touch, 1 mouse, 2 pen).
@@ -474,6 +476,7 @@ impl Shell {
             scrollbar_drag: None,
             scrollbars: ScrollBarDecls::new(),
             state_styles: StyleDecls::new(),
+            decorations: DecorationDecls::new(),
             visual: VisualPress::default(),
             field_pointer: None,
             last_pointer_kind: 0,
@@ -716,6 +719,34 @@ impl Shell {
                     {
                         self.scrollbar_drag = None;
                     }
+                }
+                Op::SpawnDecoration {
+                    decoration,
+                    target,
+                    kind,
+                    index,
+                } => {
+                    self.node(target)?;
+                    self.decorations.spawn(decoration, target, kind, index)?;
+                    self.paint_dirty.set(true);
+                }
+                Op::SetDecorationProp {
+                    decoration,
+                    key,
+                    value,
+                } => self.set_decoration_prop(decoration, &key, &value)?,
+                Op::MoveDecoration {
+                    decoration,
+                    target,
+                    index,
+                } => {
+                    self.node(target)?;
+                    self.decorations.move_decl(decoration, target, index)?;
+                    self.paint_dirty.set(true);
+                }
+                Op::DisposeDecoration { decoration } => {
+                    self.decorations.dispose(decoration)?;
+                    self.paint_dirty.set(true);
                 }
                 Op::SetStyleTransition { handle, slot, spec } => {
                     self.stage_style_transition(handle, slot, spec)?

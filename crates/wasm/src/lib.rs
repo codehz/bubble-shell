@@ -1398,6 +1398,89 @@ pub extern "C" fn move_scrollbar(handle: u32, target: u32, index: u32) -> i32 {
         1
     )
 }
+#[no_mangle]
+pub extern "C" fn spawn_decoration(target: u32, kind: u32, index: u32) -> u32 {
+    abi_ok!(with_turn(|turn| turn.spawn_decoration(target, kind as u8, index)))
+}
+
+#[no_mangle]
+pub extern "C" fn set_decoration_prop(
+    handle: u32,
+    key_ptr: *const u8,
+    key_len: u32,
+    tag: u32,
+    number: f64,
+    text_ptr: *const u8,
+    text_len: u32,
+) -> i32 {
+    abi_ok!(
+        {
+            let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
+            let key = std::str::from_utf8(key_bytes)
+                .map_err(|_| "decoration key is not utf-8".to_string())?;
+            let value = Value::from_abi(
+                tag,
+                number,
+                if tag == 4 {
+                    read_abi_utf8(text_ptr, text_len, "prop string")
+                } else {
+                    Ok(String::new())
+                },
+            )?;
+            with_turn(|turn| {
+                turn.set_decoration_prop(handle, key, value);
+                Ok(0)
+            })
+        },
+        1
+    )
+}
+
+#[no_mangle]
+pub extern "C" fn set_decoration_prop_program(
+    id: u32,
+    key_ptr: *const u8,
+    key_len: u32,
+    data_ptr: *const u8,
+    data_len: u32,
+) -> i32 {
+    abi_ok!(
+        {
+            let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) };
+            let key = std::str::from_utf8(key_bytes)
+                .map_err(|_| "decoration key is not utf-8".to_string())?;
+            let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len as usize) }.to_vec();
+            let program = decode_program(&bytes).map_err(|error| error.to_string())?;
+            with_turn(|turn| {
+                turn.set_decoration_prop(id, key, Value::Program(program));
+                Ok(0)
+            })
+        },
+        1
+    )
+}
+
+#[no_mangle]
+pub extern "C" fn move_decoration(id: u32, target: u32, index: u32) -> i32 {
+    abi_ok!(
+        with_turn(|turn| {
+            turn.move_decoration(id, target, index);
+            Ok(0)
+        }),
+        1
+    )
+}
+
+#[no_mangle]
+pub extern "C" fn dispose_decoration(id: u32) -> i32 {
+    abi_ok!(
+        with_turn(|turn| {
+            turn.dispose_decoration(id);
+            Ok(0)
+        }),
+        1
+    )
+}
 
 #[no_mangle]
 pub extern "C" fn create_var(source: u32, initial_tag: u32, initial_number: f64) -> u32 {

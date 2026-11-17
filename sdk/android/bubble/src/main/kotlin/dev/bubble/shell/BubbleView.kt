@@ -9,6 +9,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.BlurMaskFilter
 import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.LinearGradient
@@ -32,6 +33,7 @@ import android.view.inputmethod.InputMethodManager
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.roundToInt
+import kotlin.math.ceil
 import kotlin.math.hypot
 import android.os.Bundle
 import android.text.InputType
@@ -61,6 +63,13 @@ class BubbleView(context: Context) : View(context) {
         xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
     }
     private val path = Path()
+    private val shadowClear = Paint().apply {
+        xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+    }
+    private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val shadowPath = Path()
+    private val shadowCache = HashMap<Int, ShadowEntry>()
+    private val seenShadows = HashSet<Int>()
     private val images = HashMap<String, Bitmap?>()
     private var paintBytes = ByteArray(0)
     private var family: Typeface = Typeface.DEFAULT
@@ -128,6 +137,7 @@ class BubbleView(context: Context) : View(context) {
     fun destroyEngine() {
         if (!engine) return
         Choreographer.getInstance().removeFrameCallback(frameCallback)
+        releaseShadowCaches()
         BubbleNative.destroy(handle)
         handle = 0L
         engine = false
@@ -508,6 +518,7 @@ class BubbleView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         val density = resources.displayMetrics.density
+        seenShadows.clear()
         canvas.translate(paddingLeft.toFloat(), paddingTop.toFloat())
         canvas.scale(density, density)
         val buffer = ByteBuffer.wrap(paintBytes).order(ByteOrder.LITTLE_ENDIAN)
@@ -688,11 +699,133 @@ class BubbleView(context: Context) : View(context) {
                 }
                 12 -> canvas.saveLayer(null, null)
                 13 -> canvas.restore()
+                14 -> {
+                    val outer = readRound(buffer)
+                    val hasInner = buffer.get().toInt() and 0xff
+                    val inner = if (hasInner != 0) readRound(buffer) else null
+                    fill.color = color(buffer.float, buffer.float, buffer.float, buffer.float)
+                    fill.style = Paint.Style.FILL
+                    path.reset()
+                    path.fillType = Path.FillType.EVEN_ODD
+                    addRound(path, outer)
+                    if (inner != null) addRound(path, inner)
+                    canvas.drawPath(path, fill)
+                    path.fillType = Path.FillType.WINDING
+                }
+                15 -> {
+                    val id = buffer.int
+                    val caster = readRound(buffer)
+                    val knockout = readRound(buffer)
+                    val blur = buffer.float
+                    val packed = color(buffer.float, buffer.float, buffer.float, buffer.float)
+                    paintOuterShadow(canvas, density, id, caster, knockout, blur, packed)
+                }
                 else -> return
             }
         }
         drawSelectionHandles(canvas)
+        releaseUnseenShadows()
     }
+    private data class Round(val x: Float, val y: Float, val w: Float, val h: Float, val radius: Float)
+
+    private class ShadowEntry(var bitmap: Bitmap, var key: String)
+
+    private fun readRound(buffer: ByteBuffer) =
+        Round(buffer.float, buffer.float, buffer.float, buffer.float, buffer.float)
+
+    private fun addRound(path: Path, round: Round) {
+        path.addRoundRect(
+            round.x, round.y, round.x + round.w, round.y + round.h,
+            round.radius, round.radius, Path.Direction.CW,
+        )
+    }
+
+    private fun paintOuterShadow(
+        canvas: Canvas,
+        density: Float,
+        id: Int,
+        caster: Round,
+        knockout: Round,
+        blur: Float,
+        packed: Int,
+    ) {
+        seenShadows.add(id)
+        val safeBlur = blur.coerceAtLeast(0f)
+        val padPx = ceil(4f * safeBlur * density).toInt() + 2
+        val minX = minOf(caster.x, knockout.x)
+        val minY = minOf(caster.y, knockout.y)
+        val maxX = maxOf(caster.x + caster.w, knockout.x + knockout.w)
+        val maxY = maxOf(caster.y + caster.h, knockout.y + knockout.h)
+        val pad = padPx / density
+        val originX = minX - pad
+        val originY = minY - pad
+        val logicalW = maxX - minX + pad * 2
+        val logicalH = maxY - minY + pad * 2
+        val physW = maxOf(1, ceil(logicalW * density).toInt())
+        val physH = maxOf(1, ceil(logicalH * density).toInt())
+        val key = "$density,${caster.x - knockout.x},${caster.y - knockout.y},${caster.w},${caster.h},${caster.radius},${knockout.w},${knockout.h},${knockout.radius},$safeBlur,$packed"
+        var entry = shadowCache[id]
+        if (entry == null || entry.bitmap.width != physW || entry.bitmap.height != physH) {
+            entry?.bitmap?.recycle()
+            entry = ShadowEntry(Bitmap.createBitmap(physW, physH, Bitmap.Config.ARGB_8888), "")
+            shadowCache[id] = entry
+        }
+        if (entry.key != key) {
+            val surface = Canvas(entry.bitmap)
+            surface.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+            shadowPaint.maskFilter = if (safeBlur > 0f) {
+                BlurMaskFilter(safeBlur * density, BlurMaskFilter.Blur.NORMAL)
+            } else {
+                null
+            }
+            shadowPaint.color = packed
+            shadowPaint.style = Paint.Style.FILL
+            shadowPath.reset()
+            shadowPath.addRoundRect(
+                (caster.x - originX) * density,
+                (caster.y - originY) * density,
+                (caster.x - originX + caster.w) * density,
+                (caster.y - originY + caster.h) * density,
+                caster.radius.coerceAtLeast(0f) * density,
+                caster.radius.coerceAtLeast(0f) * density,
+                Path.Direction.CW,
+            )
+            surface.drawPath(shadowPath, shadowPaint)
+            shadowPaint.maskFilter = null
+            shadowPath.reset()
+            shadowPath.addRoundRect(
+                (knockout.x - originX) * density,
+                (knockout.y - originY) * density,
+                (knockout.x - originX + knockout.w) * density,
+                (knockout.y - originY + knockout.h) * density,
+                knockout.radius.coerceAtLeast(0f) * density,
+                knockout.radius.coerceAtLeast(0f) * density,
+                Path.Direction.CW,
+            )
+            surface.drawPath(shadowPath, shadowClear)
+            entry.key = key
+        }
+        canvas.drawBitmap(
+            entry.bitmap,
+            null,
+            RectF(originX, originY, originX + logicalW, originY + logicalH),
+            imagePaint,
+        )
+    }
+
+    private fun releaseUnseenShadows() {
+        val stale = shadowCache.keys.filter { it !in seenShadows }
+        for (id in stale) {
+            shadowCache.remove(id)?.bitmap?.recycle()
+        }
+    }
+
+    private fun releaseShadowCaches() {
+        for (entry in shadowCache.values) entry.bitmap.recycle()
+        shadowCache.clear()
+        seenShadows.clear()
+    }
+
 
     private fun drawSelectionHandles(canvas: Canvas) {
         val handles = BubbleNative.selectionHandles(handle, )
@@ -1025,6 +1158,7 @@ class BubbleView(context: Context) : View(context) {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         if (engine) cancelActivePointers(SystemClock.uptimeMillis().toDouble())
         super.onDetachedFromWindow()
+        releaseShadowCaches()
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean = withEditingCache(textCache, family) { touchEvent(event) }

@@ -462,6 +462,19 @@ setApi({
   },
   dispose_scrollbar: exports.dispose_scrollbar,
   move_scrollbar: exports.move_scrollbar,
+  spawn_decoration: exports.spawn_decoration,
+  set_decoration_prop(id, key, tag, number, text) {
+    return withStr(key, (keyPtr, keyLen) =>
+      withStr(tag === 4 ? text : "", (textPtr, textLen) =>
+        exports.set_decoration_prop(id, keyPtr, keyLen, tag, number, textPtr, textLen)));
+  },
+  set_decoration_prop_program(id, key, bytes) {
+    return withStr(key, (keyPtr, keyLen) =>
+      withBytes(Uint8Array.from(bytes), (dataPtr, dataLen) =>
+        exports.set_decoration_prop_program(id, keyPtr, keyLen, dataPtr, dataLen)));
+  },
+  move_decoration: exports.move_decoration,
+  dispose_decoration: exports.dispose_decoration,
   bind_gesture_program: exports.bind_gesture_program,
   define_ui_function(params, bytes, reuse) {
     return withBytes(Uint8Array.from(bytes), (ptr, len) =>
@@ -575,6 +588,7 @@ function popPaintLayer() {
 }
 
 function paint() {
+  seenShadows.clear();
   ctx = mainCtx;
   paintStack.length = 0;
   const len = exports.paint();
@@ -741,6 +755,18 @@ function paint() {
       ctx.globalAlpha *= opacity;
     } else if (tag === 6) {
       ctx.restore();
+    } else if (tag === 14) {
+      const outer = readRect();
+      const hasInner = view.getUint8(offset);
+      offset += 1;
+      const inner = hasInner ? readRect() : null;
+      fillRing(outer, inner, readColor());
+    } else if (tag === 15) {
+      const id = u32();
+      const caster = readRect();
+      const knockout = readRect();
+      const blur = f32();
+      paintOuterShadow(id, caster, knockout, blur, readColor());
     }
   }
 
@@ -749,10 +775,19 @@ function paint() {
     offset += 4;
     return value;
   }
+  function u32() {
+    const value = view.getUint32(offset, true);
+    offset += 4;
+    return value;
+  }
+  function readRect() {
+    return { x: f32(), y: f32(), w: f32(), h: f32(), radius: f32() };
+  }
 
   function readColor() {
     return { r: f32(), g: f32(), b: f32(), a: f32() };
   }
+  releaseUnseenShadows();
   drawSelectionHandles();
   syncA11y();
 }
@@ -762,6 +797,107 @@ function fill(x, y, w, h, radius, color) {
   ctx.roundRect(x, y, w, h, radius);
   ctx.fillStyle = css(color);
   ctx.fill();
+}
+function fillRing(outer, inner, color) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(outer.x, outer.y, outer.w, outer.h, Math.max(0, outer.radius));
+  if (inner) ctx.roundRect(inner.x, inner.y, inner.w, inner.h, Math.max(0, inner.radius));
+  ctx.fillStyle = css(color);
+  ctx.fill("evenodd");
+  ctx.restore();
+}
+
+const shadowCache = new Map();
+const seenShadows = new Set();
+
+function paintOuterShadow(id, caster, knockout, blur, color) {
+  seenShadows.add(id);
+  const pixelScale = window.devicePixelRatio || 1;
+  const safeBlur = Math.max(0, blur);
+  const padPx = Math.ceil(4 * safeBlur * pixelScale) + 2;
+  const minX = Math.min(caster.x, knockout.x);
+  const minY = Math.min(caster.y, knockout.y);
+  const maxX = Math.max(caster.x + caster.w, knockout.x + knockout.w);
+  const maxY = Math.max(caster.y + caster.h, knockout.y + knockout.h);
+  const pad = padPx / pixelScale;
+  const originX = minX - pad;
+  const originY = minY - pad;
+  const logicalW = maxX - minX + pad * 2;
+  const logicalH = maxY - minY + pad * 2;
+  const physW = Math.max(1, Math.ceil(logicalW * pixelScale));
+  const physH = Math.max(1, Math.ceil(logicalH * pixelScale));
+  const key = [
+    pixelScale,
+    caster.x - knockout.x,
+    caster.y - knockout.y,
+    caster.w, caster.h, caster.radius,
+    knockout.w, knockout.h, knockout.radius,
+    safeBlur,
+    color.r, color.g, color.b, color.a,
+  ].join(",");
+  let entry = shadowCache.get(id);
+  if (!entry) {
+    const surface = document.createElement("canvas");
+    entry = { canvas: surface, ctx: surface.getContext("2d"), key: "", physW: 0, physH: 0 };
+    shadowCache.set(id, entry);
+  }
+  const resized = entry.physW !== physW || entry.physH !== physH;
+  if (resized) {
+    entry.canvas.width = physW;
+    entry.canvas.height = physH;
+    entry.physW = physW;
+    entry.physH = physH;
+  }
+  if (resized || entry.key !== key) {
+    const sctx = entry.ctx;
+    sctx.setTransform(1, 0, 0, 1, 0, 0);
+    sctx.clearRect(0, 0, physW, physH);
+    const cx = (caster.x - originX) * pixelScale;
+    const cy = (caster.y - originY) * pixelScale;
+    const cw = caster.w * pixelScale;
+    const ch = caster.h * pixelScale;
+    const cr = Math.max(0, caster.radius) * pixelScale;
+    const kx = (knockout.x - originX) * pixelScale;
+    const ky = (knockout.y - originY) * pixelScale;
+    const kw = knockout.w * pixelScale;
+    const kh = knockout.h * pixelScale;
+    const kr = Math.max(0, knockout.radius) * pixelScale;
+    sctx.save();
+    if (safeBlur > 0) {
+      const shift = physW + cw + padPx * 2;
+      sctx.shadowColor = css(color);
+      sctx.shadowBlur = safeBlur * pixelScale;
+      sctx.shadowOffsetX = shift;
+      sctx.shadowOffsetY = 0;
+      sctx.fillStyle = "#000";
+      sctx.beginPath();
+      sctx.roundRect(cx - shift, cy, cw, ch, cr);
+      sctx.fill();
+      sctx.shadowColor = "rgba(0,0,0,0)";
+      sctx.shadowBlur = 0;
+      sctx.shadowOffsetX = 0;
+    } else {
+      sctx.fillStyle = css(color);
+      sctx.beginPath();
+      sctx.roundRect(cx, cy, cw, ch, cr);
+      sctx.fill();
+    }
+    sctx.globalCompositeOperation = "destination-out";
+    sctx.fillStyle = "#000";
+    sctx.beginPath();
+    sctx.roundRect(kx, ky, kw, kh, kr);
+    sctx.fill();
+    sctx.restore();
+    entry.key = key;
+  }
+  ctx.drawImage(entry.canvas, originX, originY, logicalW, logicalH);
+}
+
+function releaseUnseenShadows() {
+  for (const id of shadowCache.keys()) {
+    if (!seenShadows.has(id)) shadowCache.delete(id);
+  }
 }
 
 const supportsColorFunction =

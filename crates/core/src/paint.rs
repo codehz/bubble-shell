@@ -126,6 +126,32 @@ pub fn encode_paint(cmds: &[PaintCmd]) -> Vec<u8> {
             PaintCmd::PushLayer => out.push(12),
             PaintCmd::PopLayer => out.push(13),
             PaintCmd::PopTransform => out.push(10),
+            PaintCmd::FillRing { outer, inner, color } => {
+                out.push(14);
+                push_rect(&mut out, outer);
+                match inner {
+                    None => out.push(0),
+                    Some(inner) => {
+                        out.push(1);
+                        push_rect(&mut out, &inner);
+                    }
+                }
+                push_color(&mut out, *color);
+            }
+            PaintCmd::OuterShadow {
+                decoration,
+                caster,
+                knockout,
+                blur,
+                color,
+            } => {
+                out.push(15);
+                out.extend_from_slice(&decoration.to_le_bytes());
+                push_rect(&mut out, caster);
+                push_rect(&mut out, knockout);
+                push_f32(&mut out, *blur);
+                push_color(&mut out, *color);
+            }
         }
     }
     out
@@ -133,6 +159,13 @@ pub fn encode_paint(cmds: &[PaintCmd]) -> Vec<u8> {
 
 fn push_f32(out: &mut Vec<u8>, value: f32) {
     out.extend_from_slice(&value.to_le_bytes());
+}
+fn push_rect(out: &mut Vec<u8>, rect: &crate::decoration::RoundedRect) {
+    push_f32(out, rect.x);
+    push_f32(out, rect.y);
+    push_f32(out, rect.w);
+    push_f32(out, rect.h);
+    push_f32(out, rect.radius);
 }
 
 /// Extended nonlinear sRGB, alpha last. Hosts that only paint sRGB clamp.

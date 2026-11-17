@@ -64,7 +64,11 @@ fn push_primitive(out: &mut String, prim: &PrimitiveSpec) {
     out.push_str(&props_name);
     out.push_str(" {\n");
     for prop in &prim.props {
-        push_prop(out, prop);
+        if matches!(prim.name, "Border" | "Outline" | "Shadow") {
+            push_decoration_prop(out, prop);
+        } else {
+            push_prop(out, prop);
+        }
     }
     out.push_str("}\n");
     out.push_str("export const ");
@@ -111,6 +115,20 @@ fn push_prop(out: &mut String, prop: &PropDef) {
     }
     out.push_str(": ");
     out.push_str(&prop_to_ts(prop));
+    out.push_str(";\n");
+}
+fn push_decoration_prop(out: &mut String, prop: &PropDef) {
+    out.push_str("  ");
+    out.push_str(prop.name);
+    if !prop.required {
+        out.push('?');
+    }
+    out.push_str(": ");
+    if prop.name == "layer" || prop.name == "align" {
+        out.push_str(&prop_type_to_ts(&prop.ty));
+    } else {
+        out.push_str("unknown");
+    }
     out.push_str(";\n");
 }
 

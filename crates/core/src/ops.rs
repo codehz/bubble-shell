@@ -17,7 +17,7 @@ pub enum Value {
     Int(i64),
     Float(f64),
     String(String),
-    /// Compiled expression program. Only style declaration props accept it;
+    /// Compiled expression program. Style and decoration props accept it;
     /// every other consumer rejects it.
     Program(Program),
 }
@@ -271,6 +271,31 @@ pub enum Op {
         handle: u32,
         slot: u8,
         spec: Option<TransitionSpec>,
+    },
+    /// Virtual paint decoration attached to `target`. `kind` is 1 Border,
+    /// 2 Outline, 3 Shadow. `index` is its position among that target's
+    /// decorations.
+    SpawnDecoration {
+        decoration: u32,
+        target: u32,
+        kind: u8,
+        index: u32,
+    },
+    /// One decoration value. `Value::Program` carries a UI expression.
+    /// `Null` clears an optional programmable slot.
+    SetDecorationProp {
+        decoration: u32,
+        key: String,
+        value: Value,
+    },
+    /// Final decoration index after it leaves its old slot.
+    MoveDecoration {
+        decoration: u32,
+        target: u32,
+        index: u32,
+    },
+    DisposeDecoration {
+        decoration: u32,
     },
 }
 
@@ -1002,6 +1027,43 @@ pub fn encode(seq: u32, ops: &[Op]) -> Vec<u8> {
                     }
                 }
             }
+            Op::SpawnDecoration {
+                decoration,
+                target,
+                kind,
+                index,
+            } => {
+                payload.push(36);
+                payload.extend_from_slice(&decoration.to_le_bytes());
+                payload.extend_from_slice(&target.to_le_bytes());
+                payload.push(*kind);
+                payload.extend_from_slice(&index.to_le_bytes());
+            }
+            Op::SetDecorationProp {
+                decoration,
+                key,
+                value,
+            } => {
+                let key_id = intern(key);
+                payload.push(37);
+                payload.extend_from_slice(&decoration.to_le_bytes());
+                payload.extend_from_slice(&key_id.to_le_bytes());
+                write_value(&mut payload, value, &mut intern);
+            }
+            Op::MoveDecoration {
+                decoration,
+                target,
+                index,
+            } => {
+                payload.push(38);
+                payload.extend_from_slice(&decoration.to_le_bytes());
+                payload.extend_from_slice(&target.to_le_bytes());
+                payload.extend_from_slice(&index.to_le_bytes());
+            }
+            Op::DisposeDecoration { decoration } => {
+                payload.push(39);
+                payload.extend_from_slice(&decoration.to_le_bytes());
+            }
         }
     }
 
@@ -1331,6 +1393,34 @@ pub fn decode_ops(bytes: &[u8]) -> Result<(u32, Vec<Op>), String> {
                 };
                 ops.push(Op::SetStyleTransition { handle, slot, spec });
             }
+            36 => ops.push(Op::SpawnDecoration {
+                decoration: read_u32(&mut payload_cur)?,
+                target: read_u32(&mut payload_cur)?,
+                kind: read_u8(&mut payload_cur)?,
+                index: read_u32(&mut payload_cur)?,
+            }),
+            37 => {
+                let decoration = read_u32(&mut payload_cur)?;
+                let key_id = read_u32(&mut payload_cur)? as usize;
+                let key = strings
+                    .get(key_id)
+                    .ok_or("decoration key out of range")?
+                    .clone();
+                let value = read_value(&mut payload_cur, &strings)?;
+                ops.push(Op::SetDecorationProp {
+                    decoration,
+                    key,
+                    value,
+                });
+            }
+            38 => ops.push(Op::MoveDecoration {
+                decoration: read_u32(&mut payload_cur)?,
+                target: read_u32(&mut payload_cur)?,
+                index: read_u32(&mut payload_cur)?,
+            }),
+            39 => ops.push(Op::DisposeDecoration {
+                decoration: read_u32(&mut payload_cur)?,
+            }),
             other => return Err(format!("unknown op tag {other}")),
         }
     }

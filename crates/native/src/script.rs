@@ -858,6 +858,11 @@ fn bind_api(ctx: &Context) -> Result<(), RuntimeError> {
     def!(ctx, &api, "set_scrollbar_prop", 5, (handle: f64, key: String, tag: f64, number: f64, text: String) => api_set_scrollbar_prop(handle, key, tag, number, text));
     def!(ctx, &api, "dispose_scrollbar", 1, (handle: f64) => api_dispose_scrollbar(handle));
     def!(ctx, &api, "move_scrollbar", 3, (handle: f64, target: f64, index: f64) => api_move_scrollbar(handle, target, index));
+    def!(ctx, &api, "spawn_decoration", 3, (target: f64, kind: f64, index: f64) => api_spawn_decoration(target, kind, index));
+    def!(ctx, &api, "set_decoration_prop", 5, (handle: f64, key: String, tag: f64, number: f64, text: String) => api_set_decoration_prop(handle, key, tag, number, text));
+    def!(ctx, &api, "set_decoration_prop_program", 3, scope(id: f64, key: String, bytes: JsValue) => api_set_decoration_prop_program(id, key, bytes));
+    def!(ctx, &api, "move_decoration", 3, (id: f64, target: f64, index: f64) => api_move_decoration(id, target, index));
+    def!(ctx, &api, "dispose_decoration", 1, (id: f64) => api_dispose_decoration(id));
     def!(ctx, &api, "create_var", 3, (source: f64, initial_tag: f64, initial_number: f64) => api_create_var(source, initial_tag, initial_number));
     def!(ctx, &api, "bind_var", 2, (var: f64, target: f64) => api_bind_var(var, target));
     def!(ctx, &api, "set_var", 7, (var: f64, tag: f64, number: f64, anim: f64, a: f64, b: f64, c: f64) => api_set_var(var, tag, number, anim, a, b, c));
@@ -1729,6 +1734,97 @@ fn api_move_style_decl(decl: f64, target: f64, index: f64) -> i32 {
 fn api_dispose_style_decl(decl: f64) -> i32 {
     match with_turn(|turn| {
         turn.dispose_style_decl(decl as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+fn api_spawn_decoration(target: f64, kind: f64, index: f64) -> u32 {
+    match with_turn(|turn| turn.spawn_decoration(target as u32, kind as u8, index as u32)) {
+        Ok(id) => id,
+        Err(err) => {
+            set_api_error(err);
+            0
+        }
+    }
+}
+
+fn api_set_decoration_prop(handle: f64, key: String, tag: f64, number: f64, text: String) -> i32 {
+    let value = match tag as u32 {
+        0 => Value::Null,
+        1 => Value::Bool(number != 0.0),
+        2 => Value::Int(number as i64),
+        3 => Value::Float(number),
+        4 => Value::String(text),
+        other => {
+            set_api_error(format!("unsupported prop tag {other}"));
+            return 1;
+        }
+    };
+    match with_turn(|turn| {
+        turn.set_decoration_prop(handle as u32, key, value.clone());
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_set_decoration_prop_program(
+    scope: &mut Scope<'_>,
+    id: f64,
+    key: String,
+    bytes: JsValue,
+) -> i32 {
+    let data = match byte_array(scope, &bytes) {
+        Some(data) => data,
+        None => {
+            set_api_error("decoration program is not a byte array".into());
+            return 1;
+        }
+    };
+    let program = match bubble_core::decode_program(&data) {
+        Ok(program) => program,
+        Err(error) => {
+            set_api_error(error.to_string());
+            return 1;
+        }
+    };
+    match with_turn(|turn| {
+        turn.set_decoration_prop(id as u32, key, Value::Program(program));
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_move_decoration(id: f64, target: f64, index: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.move_decoration(id as u32, target as u32, index as u32);
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(err) => {
+            set_api_error(err);
+            1
+        }
+    }
+}
+
+fn api_dispose_decoration(id: f64) -> i32 {
+    match with_turn(|turn| {
+        turn.dispose_decoration(id as u32);
         Ok(())
     }) {
         Ok(()) => 0,

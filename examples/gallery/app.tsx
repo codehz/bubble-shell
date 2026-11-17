@@ -17,6 +17,7 @@ import {
 import { ShowDemo, ForDemo, IndexDemo, SwitchDemo, SlotDemo } from "./control-flow";
 import { LayoutDemo, TextPropsDemo } from "./layout";
 import { PressedDemo, FocusedDemo, AnimatedDemo, MeasuredDemo } from "./styling";
+import { DecorationsDemo } from "./decorations";
 import {
   StorageDemo,
   ToastDemo,
@@ -56,6 +57,7 @@ const demos = [
   { name: "OpenURL / Navigate", demo: OpenNavDemo },
   { name: "Host Bridge", demo: HostDemo },
   { name: "Measured", demo: MeasuredDemo },
+  { name: "Decorations", demo: DecorationsDemo },
 ];
 
 function App() {
@@ -128,6 +130,7 @@ function App() {
           <Match when={selected() === 26}>{() => <OpenNavDemo />}</Match>
           <Match when={selected() === 27}>{() => <HostDemo />}</Match>
           <Match when={selected() === 28}>{() => <MeasuredDemo />}</Match>
+          <Match when={selected() === 29}>{() => <DecorationsDemo />}</Match>
         </Switch>
       </View>
     </View>

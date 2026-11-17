@@ -261,6 +261,21 @@ function paintList() {
       cmds.push({ tag, opacity });
     } else if (tag === 6) {
       cmds.push({ tag });
+    } else if (tag === 14) {
+      const outer = readRect();
+      const hasInner = view.getUint8(offset);
+      offset += 1;
+      const inner = hasInner ? readRect() : null;
+      const color = readColor();
+      cmds.push({ tag, outer, inner, color });
+    } else if (tag === 15) {
+      const id = view.getUint32(offset, true);
+      offset += 4;
+      const caster = readRect();
+      const knockout = readRect();
+      const blur = f32();
+      const color = readColor();
+      cmds.push({ tag, id, caster, knockout, blur, color });
     } else {
       throw new Error(`unknown paint tag ${tag}`);
     }
@@ -272,6 +287,9 @@ function paintList() {
     const value = view.getFloat32(offset, true);
     offset += 4;
     return value;
+  }
+  function readRect() {
+    return { x: f32(), y: f32(), w: f32(), h: f32(), radius: f32() };
   }
   return cmds;
 }

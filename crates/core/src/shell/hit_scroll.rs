@@ -280,7 +280,7 @@ impl Shell {
             if !self.interaction_available(*id, modal) {
                 continue;
             }
-            if self.state_styles.pressed_interest(*id) {
+            if self.state_styles.pressed_interest(*id) || self.decorations.pressed_interest(*id) {
                 return *id;
             }
         }
@@ -370,6 +370,7 @@ impl Shell {
         }
         let alive = self.interaction_available(target, self.active_modal())
             && (self.state_styles.pressed_feedback(target)
+                || self.decorations.pressed_feedback(target)
                 || self
                     .recognizer
                     .click_target(std::slice::from_ref(&target))

@@ -10,6 +10,9 @@ use crate::props::{
 };
 use crate::semantics::Role;
 use crate::state_style::{slot_allowed, slot_of, slot_type, DeclExpr, SlotType};
+use crate::decoration::{
+    key_allowed, parse_align, parse_layer, program_expr, slot_type as deco_slot_type, static_expr,
+};
 use taffy::prelude::*;
 use taffy::style::Overflow;
 use taffy::NodeId;
@@ -353,6 +356,79 @@ impl Shell {
         }
         self.paint_dirty.set(true);
         Ok(())
+    }
+    pub(super) fn set_decoration_prop(
+        &mut self,
+        id: u32,
+        key: &str,
+        value: &Value,
+    ) -> Result<(), String> {
+        let kind = self
+            .decorations
+            .decl(id)
+            .ok_or_else(|| format!("unknown decoration {id}"))?
+            .kind;
+        if !key_allowed(kind, key) {
+            return Err(format!("this decoration has no property {key}"));
+        }
+        if key == "layer" || key == "align" {
+            if matches!(value, Value::Program(_)) {
+                return Err("decoration layer and align must be static".into());
+            }
+            let text = match value {
+                Value::String(text) => text.as_str(),
+                Value::Null => {
+                    return Err(format!("decoration {key} does not accept null"));
+                }
+                _ => return Err(format!("decoration {key} must be a string")),
+            };
+            if key == "layer" {
+                let layer = parse_layer(text)?;
+                self.decorations.set_layer(id, layer)?;
+            } else {
+                let align = parse_align(text)?;
+                self.decorations.set_align(id, align)?;
+            }
+            self.paint_dirty.set(true);
+            return Ok(());
+        }
+        let expr = match value {
+            Value::Program(program) => {
+                let want = deco_slot_type(key).ok_or_else(|| format!("decoration has no property {key}"))?;
+                let got = program
+                    .result_type(&|var| self.vars.get(var).map(|var| var.value_type()))
+                    .map_err(|error| format!("{key}: {error}"))?;
+                if got != want {
+                    return Err(format!("{key} expression has the wrong type"));
+                }
+                Some(program_expr(program.clone()))
+            }
+            other => static_expr(key, other)?,
+        };
+        self.decorations.set_slot(id, key, expr)?;
+        self.decorations.register_deps(id, &self.vars);
+        self.eval_decoration(id);
+        self.paint_dirty.set(true);
+        Ok(())
+    }
+    pub(super) fn eval_decoration(&mut self, id: u32) {
+        let before = self.decorations.decl(id).map(|decl| decl.resolved);
+        let target = self.decorations.decl(id).map(|decl| decl.target);
+        self.decorations.eval(id, &self.vars);
+        let (Some(before), Some(target)) = (before, target) else {
+            return;
+        };
+        let specs = [
+            self.node_transition(target, Some(crate::state_style::SLOT_COLOR)),
+            self.node_transition(target, Some(crate::state_style::SLOT_RADIUS)),
+            self.node_transition(target, None),
+            self.node_transition(target, None),
+            self.node_transition(target, None),
+            self.node_transition(target, None),
+            self.node_transition(target, None),
+            self.node_transition(target, None),
+        ];
+        self.decorations.retarget(id, before, specs, self.now_ms);
     }
 
     pub(super) fn set_prop(&mut self, id: u32, key: &str, value: &Value) -> Result<(), String> {
@@ -841,6 +917,7 @@ impl Shell {
         self.taffy.remove(taffy_id).map_err(|err| err.to_string())?;
         self.nodes[handle as usize] = None;
         self.state_styles.target_disposed(handle);
+        self.decorations.target_disposed(handle);
         let retired_bars = self.scrollbars.target_disposed(handle);
         for id in retired_bars {
             if self.scrollbar_drag.is_some_and(|drag| drag.scrollbar == id) {
@@ -854,6 +931,9 @@ impl Shell {
             let dependents = self.vars.dispose(var).unwrap_or_default();
             for decl in dependents {
                 self.mark_decl_unmatched(decl);
+            }
+            for decoration in self.decorations.dependents_of(std::iter::once(var)) {
+                self.mark_decoration_unmatched(decoration);
             }
         }
         if self.visual.target == handle {

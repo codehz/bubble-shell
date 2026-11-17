@@ -18,6 +18,8 @@ const retiredGestureHandlers = new Map();
 const styleOrderOfTarget = new Map();
 const scrollbarOrderOfTarget = new Map();
 const scrollbarBindings = new Map();
+const decorationOrderOfTarget = new Map();
+const decorationBindings = new Map();
 const virtualTargetOf = new Map();
 const virtualScopeOf = new Map();
 const virtualRoots = new Map();
@@ -116,6 +118,8 @@ function resetRenderState() {
   styleOrderOfTarget.clear();
   scrollbarOrderOfTarget.clear();
   scrollbarBindings.clear();
+  decorationOrderOfTarget.clear();
+  decorationBindings.clear();
   resetUiPrograms();
   virtualTargetOf.clear();
   virtualScopeOf.clear();
@@ -732,7 +736,7 @@ export function registerPrimitive(name, factory) {
 export function primitive(name, props, children, buildStyles) {
   const factory = primitives.get(name);
   if (!factory) throw new Error(`unknown primitive ${name}`);
-  const STYLE_COMPONENTS = new Set(["ViewStyle", "TextStyle"]);
+  const STYLE_COMPONENTS = new Set(["ViewStyle", "TextStyle", "Border", "Outline", "Shadow"]);
   if (leafStyles && !STYLE_COMPONENTS.has(name)) {
     throw new Error(`${name} cannot be built inside style declaration children`);
   }
@@ -912,6 +916,9 @@ registerPrimitive("PanGesture", panGesture);
 registerPrimitive("TransformGesture", transformGesture);
 registerPrimitive("ViewStyle", viewStyle);
 registerPrimitive("TextStyle", textStyle);
+registerPrimitive("Border", border);
+registerPrimitive("Outline", outline);
+registerPrimitive("Shadow", shadow);
 
 function propParts(value) {
   if (value == null) return [0, 0, ""];
@@ -1912,6 +1919,120 @@ function viewStyle(props) {
 function textStyle(props) {
   return styleDecl(props, 2);
 }
+const DECORATION_PROPS = {
+  1: ["color", "when", "radius", "layer", "width", "align"],
+  2: ["color", "when", "radius", "layer", "width", "offset"],
+  3: ["color", "when", "radius", "layer", "offsetX", "offsetY", "blur", "spread"],
+};
+
+function setDecorationValue(id, key, value) {
+  if (value == null) {
+    if (key === "color" || key === "layer" || key === "align") {
+      throw new Error(`decoration ${key} does not accept null`);
+    }
+    if (api.set_decoration_prop(id, key, 0, 0, "") !== 0) {
+      throw new Error(api.error() || "set_decoration_prop failed");
+    }
+    return;
+  }
+  if (key === "layer" || key === "align") {
+    if (typeof value !== "string") {
+      throw new Error("decoration layer and align must be static");
+    }
+    if (api.set_decoration_prop(id, key, 4, 0, value) !== 0) {
+      throw new Error(api.error() || "set_decoration_prop failed");
+    }
+    return;
+  }
+  const tree = value && value.__bubbleStyleExpr ? value.__bubbleStyleExpr : value;
+  const encoded = encodeStyleTree(tree, null, key === "color");
+  if (encoded.static !== undefined) {
+    const [tag, number, text] = propParts(encoded.static);
+    if (api.set_decoration_prop(id, key, tag, number, text) !== 0) {
+      throw new Error(api.error() || "set_decoration_prop failed");
+    }
+  } else if (api.set_decoration_prop_program(id, key, Array.from(encoded.program)) !== 0) {
+    throw new Error(api.error() || "set_decoration_prop_program failed");
+  }
+}
+
+function bindDecorationProp(id, key, fn) {
+  let set = decorationBindings.get(id);
+  if (!set) {
+    set = new Set();
+    decorationBindings.set(id, set);
+  }
+  set.add(addBinding(() => setDecorationValue(id, key, fn()), null));
+}
+
+function deactivateDecorationBindings(id) {
+  const set = decorationBindings.get(id);
+  if (!set) return;
+  for (const binding of set) {
+    if (api.dispose_node(binding) !== 0) throw new Error(api.error() || "dispose_node failed");
+  }
+  decorationBindings.delete(id);
+}
+
+function decoration(props, kind) {
+  props = props ?? {};
+  const allowed = DECORATION_PROPS[kind];
+  if (props.color == null) throw new Error("decoration requires color");
+  for (const key of Object.keys(props)) {
+    if (!allowed.includes(key)) throw new Error(`this decoration has no property ${key}`);
+    if ((key === "layer" || key === "align") && props[key] instanceof Dynamic) {
+      throw new Error("decoration layer and align must be static");
+    }
+  }
+  const target = parent();
+  if (!target) throw new Error("decoration requires a parent");
+  if (typeof api.spawn_decoration !== "function") {
+    throw new Error("host does not expose decoration declarations");
+  }
+  let order = decorationOrderOfTarget.get(target);
+  if (!order) {
+    order = [];
+    decorationOrderOfTarget.set(target, order);
+  }
+  const id = api.spawn_decoration(target, kind, order.length);
+  if (!id) throw new Error(api.error() || "spawn_decoration failed");
+  order.push(id);
+  registerVirtual("decoration", id, target);
+  for (const key of Object.keys(props)) {
+    const value = props[key];
+    if (value instanceof Dynamic) bindDecorationProp(id, key, value.run);
+    else setDecorationValue(id, key, value);
+  }
+  return id;
+}
+
+function disposeDecoration(id) {
+  const key = virtualKey("decoration", id);
+  if (!virtualTargetOf.has(key)) return;
+  const target = virtualTargetOf.get(key);
+  unlinkVirtual(key);
+  deactivateDecorationBindings(id);
+  const order = decorationOrderOfTarget.get(target);
+  if (order) {
+    const index = order.indexOf(id);
+    if (index >= 0) order.splice(index, 1);
+    if (order.length === 0) decorationOrderOfTarget.delete(target);
+  }
+  if (api.dispose_decoration(id) !== 0) throw new Error(api.error() || "dispose decoration failed");
+}
+
+function border(props) {
+  return decoration(props, 1);
+}
+
+function outline(props) {
+  return decoration(props, 2);
+}
+
+function shadow(props) {
+  return decoration(props, 3);
+}
+
 
 // One scope per real UI target: declarations created while building that
 // target land in its root scope, and every control-flow node keeps a stable
@@ -1931,15 +2052,16 @@ function rootVirtualScope(target) {
   return scope;
 }
 
-function flattenVirtualScope(scope, gestures, styles, scrollbars) {
+function flattenVirtualScope(scope, gestures, styles, scrollbars, decorations) {
   for (const entry of scope.entries) {
     if (typeof entry === "string") {
       const id = virtualId(entry);
       if (entry.startsWith("gesture:")) gestures.push(id);
       else if (entry.startsWith("scrollbar:")) scrollbars.push(id);
+      else if (entry.startsWith("decoration:")) decorations.push(id);
       else styles.push(id);
     } else {
-      flattenVirtualScope(entry, gestures, styles, scrollbars);
+      flattenVirtualScope(entry, gestures, styles, scrollbars, decorations);
     }
   }
 }
@@ -1981,6 +2103,7 @@ function disposeVirtual(key) {
   const id = virtualId(key);
   if (key.startsWith("gesture:")) disposeGesture(id);
   else if (key.startsWith("scrollbar:")) disposeScrollbar(id);
+  else if (key.startsWith("decoration:")) disposeDecoration(id);
   else disposeStyleDecl(id);
 }
 
@@ -2013,6 +2136,9 @@ function disposeTargetVirtuals(handle) {
   const scrollbars = scrollbarOrderOfTarget.get(handle);
   if (scrollbars) for (const id of [...scrollbars]) disposeScrollbar(id);
   scrollbarOrderOfTarget.delete(handle);
+  const decorations = decorationOrderOfTarget.get(handle);
+  if (decorations) for (const id of [...decorations]) disposeDecoration(id);
+  decorationOrderOfTarget.delete(handle);
   const root = virtualRoots.get(handle);
   if (root) {
     root.entries.length = 0;
@@ -2025,10 +2151,12 @@ function syncVirtualOrders() {
     const gestures = [];
     const styles = [];
     const scrollbars = [];
-    flattenVirtualScope(root, gestures, styles, scrollbars);
+    const decorations = [];
+    flattenVirtualScope(root, gestures, styles, scrollbars, decorations);
     syncOrder(target, gestures, gestureOrderOfTarget, "gesture");
     syncOrder(target, styles, styleOrderOfTarget, "state style");
     syncOrder(target, scrollbars, scrollbarOrderOfTarget, "scrollbar");
+    syncOrder(target, decorations, decorationOrderOfTarget, "decoration");
   }
 }
 
@@ -2046,7 +2174,9 @@ function syncOrder(target, desired, orders, label) {
         ? api.move_gesture(desired[index], target, index)
         : label === "scrollbar"
           ? api.move_scrollbar(desired[index], target, index)
-          : api.move_style_decl(desired[index], target, index);
+          : label === "decoration"
+            ? api.move_decoration(desired[index], target, index)
+            : api.move_style_decl(desired[index], target, index);
     if (code !== 0) throw new Error(api.error() || `move ${label} failed`);
   }
 }

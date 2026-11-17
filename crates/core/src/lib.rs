@@ -9,6 +9,7 @@
 mod abi;
 mod color;
 mod editing;
+mod decoration;
 mod expr;
 mod gesture;
 mod ir;
@@ -54,6 +55,7 @@ pub use ops::{
     Value,
 };
 pub use paint::encode_paint;
+pub use decoration::RoundedRect;
 pub use props::{Prop, TEXT_STYLE_PROPS, VIEW_STYLE_PROPS};
 pub use reactive::{Kind as ComputationKind, Sched};
 pub use semantics::{

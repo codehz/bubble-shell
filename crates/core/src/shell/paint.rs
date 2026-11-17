@@ -1,6 +1,10 @@
 use std::cell::Ref;
 
 use crate::color::Color;
+use crate::decoration::{
+    border_ring, host_frame, outline_ring, shadow_caster, with_radius, DecorationLayer, RoundedRect,
+    KIND_BORDER, KIND_OUTLINE, KIND_SHADOW,
+};
 use crate::editing::display_text;
 use crate::ir::Kind;
 use crate::layout::{
@@ -102,6 +106,21 @@ pub enum PaintCmd {
     /// before `PushLayer` (the container background) stay in place.
     PushLayer,
     PopLayer,
+    /// Rounded ring. `inner` None fills `outer`. Even-odd: outer minus inner.
+    FillRing {
+        outer: RoundedRect,
+        inner: Option<RoundedRect>,
+        color: Color,
+    },
+    /// Outer shadow. `caster` already includes spread and offset. `decoration`
+    /// is the declaration id hosts use as a cache key, not a node handle.
+    OuterShadow {
+        decoration: u32,
+        caster: RoundedRect,
+        knockout: RoundedRect,
+        blur: f32,
+        color: Color,
+    },
 }
 
 /// Longest prefix of `text` whose width with a trailing `…` fits. The original
@@ -526,6 +545,10 @@ impl Shell {
                 rotate: paint.rotate,
             });
         }
+        let frame = host_frame(x, y, w, h, radius);
+        if let Some(frame) = frame {
+            self.paint_decorations(id, DecorationLayer::Background, frame, out);
+        }
         if background.is_visible() {
             out.push(PaintCmd::Fill {
                 x,
@@ -535,6 +558,9 @@ impl Shell {
                 radius,
                 color: background,
             });
+        }
+        if let Some(frame) = frame {
+            self.paint_decorations(id, DecorationLayer::Underlay, frame, out);
         }
         if let Some((cx, cy, cw, ch, cr)) = clip {
             out.push(PaintCmd::PushClip {
@@ -679,6 +705,9 @@ impl Shell {
         if clip.is_some() {
             out.push(PaintCmd::PopClip);
         }
+        if let Some(frame) = frame {
+            self.paint_decorations(id, DecorationLayer::Overlay, frame, out);
+        }
         if id == self.focused
             && kind != Kind::Field
             && self.is_focusable(id)
@@ -728,6 +757,71 @@ impl Shell {
         }
         if opacity < 1.0 {
             out.push(PaintCmd::PopOpacity);
+        }
+    }
+
+    fn paint_decorations(
+        &self,
+        target: u32,
+        layer: DecorationLayer,
+        host: RoundedRect,
+        out: &mut Vec<PaintCmd>,
+    ) {
+        let Some(ids) = self.decorations.ids(target) else {
+            return;
+        };
+        let ids: Vec<u32> = ids.to_vec();
+        for id in ids {
+            let Some(decl) = self.decorations.decl(id) else {
+                continue;
+            };
+            if decl.layer != layer || !decl.resolved.matched || !decl.shown.color.is_visible() {
+                continue;
+            }
+            let resolved = decl.shown;
+            let align = decl.align;
+            let kind = decl.kind;
+            let base = with_radius(host, resolved.radius.map(|radius| radius.max(0.0)));
+            let color = resolved.color;
+            match kind {
+                KIND_BORDER => {
+                    if let Some(ring) = border_ring(base, align, resolved.width.max(0.0)) {
+                        out.push(PaintCmd::FillRing {
+                            outer: ring.outer,
+                            inner: ring.inner,
+                            color,
+                        });
+                    }
+                }
+                KIND_OUTLINE => {
+                    if let Some(ring) = outline_ring(base, resolved.offset, resolved.width.max(0.0))
+                    {
+                        out.push(PaintCmd::FillRing {
+                            outer: ring.outer,
+                            inner: ring.inner,
+                            color,
+                        });
+                    }
+                }
+                KIND_SHADOW => {
+                    let blur = resolved.blur.max(0.0);
+                    if let Some(caster) = shadow_caster(
+                        base,
+                        resolved.spread,
+                        resolved.offset_x,
+                        resolved.offset_y,
+                    ) {
+                        out.push(PaintCmd::OuterShadow {
+                            decoration: id,
+                            caster,
+                            knockout: host,
+                            blur,
+                            color,
+                        });
+                    }
+                }
+                _ => {}
+            }
         }
     }
 

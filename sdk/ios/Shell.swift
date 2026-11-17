@@ -557,6 +557,15 @@ final class BubbleView: UIView {
     var paint = Data()
     var family = "Arial"
     private var imageCache: [String: UIImage] = [:]
+    private final class ShadowCache {
+        var context: CGContext?
+        var image: CGImage?
+        var key = ""
+        var width = 0
+        var height = 0
+    }
+    private var shadowCaches: [UInt32: ShadowCache] = [:]
+    private var seenShadows = Set<UInt32>()
     weak var inputDelegate: UITextInputDelegate?
     lazy var textTokenizer: UITextInputStringTokenizer = UITextInputStringTokenizer(textInput: self)
 
@@ -593,6 +602,7 @@ final class BubbleView: UIView {
     }
 
     deinit {
+        releaseShadowCaches()
         touchLink?.invalidate()
         bubble_destroy(shell)
     }
@@ -827,6 +837,11 @@ final class BubbleView: UIView {
             guard let raw = take(1) else { return nil }
             return raw.first
         }
+        func readRounded() -> (CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)? {
+            guard let x = f32(), let y = f32(), let w = f32(), let h = f32(), let radius = f32() else { return nil }
+            return (x, y, w, h, radius)
+        }
+        seenShadows.removeAll()
         guard let count = u32() else { return }
         var alpha: CGFloat = 1
         var alphas: [CGFloat] = []
@@ -934,12 +949,122 @@ final class BubbleView: UIView {
                 ctx.beginTransparencyLayer(auxiliaryInfo: nil)
             case 13:
                 ctx.endTransparencyLayer()
+            case 14:
+                guard let outer = readRounded(), let hasInner = u8() else { return }
+                let inner = hasInner == 0 ? nil : readRounded()
+                if hasInner != 0 && inner == nil { return }
+                guard let r = f32(), let g = f32(), let b = f32(), let a = f32() else { return }
+                fillRing(ctx, outer: outer, inner: inner, color: colorOf(CGFloat(r), CGFloat(g), CGFloat(b), CGFloat(a)))
+            case 15:
+                guard let id = u32(), let caster = readRounded(), let knockout = readRounded(), let blur = f32(),
+                      let r = f32(), let g = f32(), let b = f32(), let a = f32() else { return }
+                paintOuterShadow(ctx, id: id, caster: caster, knockout: knockout, blur: blur, color: colorOf(CGFloat(r), CGFloat(g), CGFloat(b), CGFloat(a)))
             default:
                 return
             }
         }
         drawSelectionHandles(ctx)
+        releaseUnseenShadows()
     }
+    private func fillRing(_ ctx: CGContext, outer: (CGFloat, CGFloat, CGFloat, CGFloat, CGFloat), inner: (CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)?, color: UIColor) {
+        ctx.saveGState()
+        let path = CGMutablePath()
+        path.addRoundedRect(in: CGRect(x: outer.0, y: outer.1, width: outer.2, height: outer.3), cornerWidth: max(0, outer.4), cornerHeight: max(0, outer.4))
+        if let inner {
+            path.addRoundedRect(in: CGRect(x: inner.0, y: inner.1, width: inner.2, height: inner.3), cornerWidth: max(0, inner.4), cornerHeight: max(0, inner.4))
+        }
+        ctx.addPath(path)
+        ctx.setFillColor(color.cgColor)
+        ctx.drawPath(using: .eoFill)
+        ctx.restoreGState()
+    }
+
+    private func paintOuterShadow(_ ctx: CGContext, id: UInt32, caster: (CGFloat, CGFloat, CGFloat, CGFloat, CGFloat), knockout: (CGFloat, CGFloat, CGFloat, CGFloat, CGFloat), blur: CGFloat, color: UIColor) {
+        seenShadows.insert(id)
+        let scale = max(contentScaleFactor, 1)
+        let safeBlur = max(0, blur)
+        let padPx = ceil(4 * safeBlur * scale) + 2
+        let minX = min(caster.0, knockout.0)
+        let minY = min(caster.1, knockout.1)
+        let maxX = max(caster.0 + caster.2, knockout.0 + knockout.2)
+        let maxY = max(caster.1 + caster.3, knockout.1 + knockout.3)
+        let pad = padPx / scale
+        let originX = minX - pad
+        let originY = minY - pad
+        let logicalW = maxX - minX + pad * 2
+        let logicalH = maxY - minY + pad * 2
+        let physW = max(1, Int(ceil(logicalW * scale)))
+        let physH = max(1, Int(ceil(logicalH * scale)))
+        let key = "\(scale),\(caster.0 - knockout.0),\(caster.1 - knockout.1),\(caster.2),\(caster.3),\(caster.4),\(knockout.2),\(knockout.3),\(knockout.4),\(safeBlur),\(color)"
+        let entry = shadowCaches[id] ?? ShadowCache()
+        shadowCaches[id] = entry
+        if entry.context == nil || entry.width != physW || entry.height != physH || entry.key != key {
+            if entry.context == nil || entry.width != physW || entry.height != physH {
+                entry.context = CGContext(
+                    data: nil,
+                    width: physW,
+                    height: physH,
+                    bitsPerComponent: 8,
+                    bytesPerRow: 0,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                )
+                entry.width = physW
+                entry.height = physH
+            }
+            guard let bitmap = entry.context else { return }
+            bitmap.saveGState()
+            bitmap.translateBy(x: 0, y: CGFloat(physH))
+            bitmap.scaleBy(x: 1, y: -1)
+            bitmap.clear(CGRect(x: 0, y: 0, width: physW, height: physH))
+            let cx = (caster.0 - originX) * scale
+            let cy = (caster.1 - originY) * scale
+            let cw = caster.2 * scale
+            let ch = caster.3 * scale
+            let cr = max(0, caster.4) * scale
+            let kx = (knockout.0 - originX) * scale
+            let ky = (knockout.1 - originY) * scale
+            let kw = knockout.2 * scale
+            let kh = knockout.3 * scale
+            let kr = max(0, knockout.4) * scale
+            if safeBlur > 0 {
+                let shift = CGFloat(physW) + cw + padPx * 2
+                bitmap.setShadow(offset: CGSize(width: shift, height: 0), blur: safeBlur * scale, color: color.cgColor)
+                bitmap.setFillColor(UIColor.black.cgColor)
+                bitmap.addPath(CGPath(roundedRect: CGRect(x: cx - shift, y: cy, width: cw, height: ch), cornerWidth: cr, cornerHeight: cr, transform: nil))
+                bitmap.fillPath()
+                bitmap.setShadow(offset: .zero, blur: 0, color: nil)
+            } else {
+                bitmap.setFillColor(color.cgColor)
+                bitmap.addPath(CGPath(roundedRect: CGRect(x: cx, y: cy, width: cw, height: ch), cornerWidth: cr, cornerHeight: cr, transform: nil))
+                bitmap.fillPath()
+            }
+            bitmap.setBlendMode(.clear)
+            bitmap.addPath(CGPath(roundedRect: CGRect(x: kx, y: ky, width: kw, height: kh), cornerWidth: kr, cornerHeight: kr, transform: nil))
+            bitmap.fillPath()
+            bitmap.restoreGState()
+            entry.image = bitmap.makeImage()
+            entry.key = key
+        }
+        if let image = entry.image {
+            ctx.saveGState()
+            ctx.draw(image, in: CGRect(x: originX, y: originY, width: logicalW, height: logicalH))
+            ctx.restoreGState()
+        }
+    }
+
+    private func releaseUnseenShadows() {
+        let stale = shadowCaches.keys.filter { !seenShadows.contains($0) }
+        for id in stale {
+            shadowCaches.removeValue(forKey: id)
+        }
+    }
+
+    private func releaseShadowCaches() {
+        shadowCaches.removeAll()
+        seenShadows.removeAll()
+    }
+
 
     private func drawSelectionHandles(_ ctx: CGContext) {
         var sx: Float = 0, sy: Float = 0, sw: Float = 0, sh: Float = 0

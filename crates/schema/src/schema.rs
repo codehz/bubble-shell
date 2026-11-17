@@ -138,6 +138,8 @@ const ROLE: &[&str] = &[
 const CAPTURE_AXIS: &[&str] = &["none", "x", "y", "both"];
 const TRANSFORM_MODE: &[&str] = &["pan", "pinch", "rotate"];
 
+const DECORATION_LAYER: &[&str] = &["background", "underlay", "overlay"];
+const BORDER_ALIGN: &[&str] = &["inside", "center", "outside"];
 /// The single schema. Shell props are listed explicitly: JSX shorthands
 /// (`padding`, `margin`, `inset`) are expanded by the runtime before
 /// `Prop::parse`, and several keys do not match their variant names.
@@ -169,6 +171,18 @@ pub fn bubble_shell_schema() -> Schema {
         PrimitiveSpec {
             name: "ScrollBar",
             props: scroll_bar_props(),
+        },
+        PrimitiveSpec {
+            name: "Border",
+            props: border_props(),
+        },
+        PrimitiveSpec {
+            name: "Outline",
+            props: outline_props(),
+        },
+        PrimitiveSpec {
+            name: "Shadow",
+            props: shadow_props(),
         },
     ];
 
@@ -549,6 +563,37 @@ fn scroll_bar_props() -> Vec<PropDef> {
         opt("interactive", PropType::Boolean),
         opt("ref", PropType::Ref),
     ]
+}
+fn decoration_base() -> Vec<PropDef> {
+    vec![
+        req("color", PropType::Color),
+        opt("when", PropType::Boolean),
+        opt("radius", PropType::Number),
+        opt("layer", union(DECORATION_LAYER)),
+    ]
+}
+
+fn border_props() -> Vec<PropDef> {
+    let mut props = decoration_base();
+    props.push(opt("width", PropType::Number));
+    props.push(opt("align", union(BORDER_ALIGN)));
+    props
+}
+
+fn outline_props() -> Vec<PropDef> {
+    let mut props = decoration_base();
+    props.push(opt("width", PropType::Number));
+    props.push(opt("offset", PropType::Number));
+    props
+}
+
+fn shadow_props() -> Vec<PropDef> {
+    let mut props = decoration_base();
+    props.push(opt("offsetX", PropType::Number));
+    props.push(opt("offsetY", PropType::Number));
+    props.push(opt("blur", PropType::Number));
+    props.push(opt("spread", PropType::Number));
+    props
 }
 
 fn validate(schema: &Schema) {

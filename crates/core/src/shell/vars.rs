@@ -128,6 +128,9 @@ impl Shell {
         for decl in dependents {
             self.mark_decl_unmatched(decl);
         }
+        for decoration in self.decorations.dependents_of(std::iter::once(var)) {
+            self.mark_decoration_unmatched(decoration);
+        }
         self.paint_dirty.set(true);
         Ok(())
     }
@@ -196,6 +199,9 @@ impl Shell {
             let ids: Vec<u32> = self.ui_dirty.drain().collect();
             for decl in self.state_styles.dependents_of(ids.iter().copied()) {
                 self.eval_decl(decl);
+            }
+            for decoration in self.decorations.dependents_of(ids.iter().copied()) {
+                self.eval_decoration(decoration);
             }
             for id in ids {
                 self.flush_var_settle(id);
@@ -273,8 +279,11 @@ impl Shell {
                 self.flush_var_settle(id);
             }
             if !changed.is_empty() {
-                for decl in self.state_styles.dependents_of(changed) {
+                for decl in self.state_styles.dependents_of(changed.iter().copied()) {
                     self.eval_decl(decl);
+                }
+                for decoration in self.decorations.dependents_of(changed.iter().copied()) {
+                    self.eval_decoration(decoration);
                 }
                 self.paint_dirty.set(true);
             }
@@ -302,6 +311,11 @@ impl Shell {
         }
         self.paint_dirty.set(true);
     }
+    pub(super) fn mark_decoration_unmatched(&mut self, id: u32) {
+        self.decorations.mark_unmatched(id);
+        self.paint_dirty.set(true);
+    }
+
 
     fn state_styles_decl_mut(&mut self, id: u32) -> Option<&mut crate::state_style::StyleDecl> {
         // The declaration table is owned by `state_styles`; expose the mutable
@@ -479,8 +493,11 @@ impl Shell {
             }
         }
         if !changed.is_empty() {
-            for decl in self.state_styles.dependents_of(changed) {
+            for decl in self.state_styles.dependents_of(changed.iter().copied()) {
                 self.eval_decl(decl);
+            }
+            for decoration in self.decorations.dependents_of(changed.iter().copied()) {
+                self.eval_decoration(decoration);
             }
             self.paint_dirty.set(true);
         }

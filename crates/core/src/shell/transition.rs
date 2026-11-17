@@ -188,6 +188,15 @@ impl Shell {
             apply_display(style, slot, slot_state.displayed);
         }
     }
+    pub(super) fn node_transition(&self, id: u32, prefer: Option<usize>) -> Option<TransitionSpec> {
+        let state = self.transitions.nodes.get(&id)?;
+        if let Some(slot) = prefer {
+            if let Some(Some(slot)) = state.slots.get(slot) {
+                return Some(slot.spec);
+            }
+        }
+        state.slots.iter().flatten().next().map(|slot| slot.spec)
+    }
 
     pub(super) fn mark_transition_target_dirty(&mut self, target: u32) {
         if self.transitions.nodes.contains_key(&target) || self.transitions.batch_nodes.contains(&target)
@@ -276,6 +285,9 @@ impl Shell {
             if self.step_style_node(id, now_ms) {
                 self.paint_dirty.set(true);
             }
+        }
+        if self.decorations.step_motion(now_ms) {
+            self.paint_dirty.set(true);
         }
         self.transitions.scratch = ids;
     }

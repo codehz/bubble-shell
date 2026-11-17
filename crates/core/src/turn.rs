@@ -25,6 +25,7 @@ pub struct Turn {
     next_var: u32,
     next_style: u32,
     next_scrollbar: u32,
+    next_decoration: u32,
     next_ui_function: u32,
 }
 
@@ -47,6 +48,7 @@ impl Turn {
             next_style: 1,
             next_scrollbar: 1,
             next_ui_function: 1,
+            next_decoration: 1,
         }
     }
 
@@ -212,6 +214,42 @@ impl Turn {
     pub fn dispose_scrollbar(&mut self, scrollbar: u32) {
         self.push(Op::DisposeScrollBar { scrollbar });
     }
+    pub fn spawn_decoration(
+        &mut self,
+        target: u32,
+        kind: u8,
+        index: u32,
+    ) -> Result<u32, String> {
+        let decoration = bump(&mut self.next_decoration, "decoration")?;
+        self.push(Op::SpawnDecoration {
+            decoration,
+            target,
+            kind,
+            index,
+        });
+        Ok(decoration)
+    }
+
+    pub fn set_decoration_prop(&mut self, decoration: u32, key: impl Into<String>, value: Value) {
+        self.push(Op::SetDecorationProp {
+            decoration,
+            key: key.into(),
+            value,
+        });
+    }
+
+    pub fn move_decoration(&mut self, decoration: u32, target: u32, index: u32) {
+        self.push(Op::MoveDecoration {
+            decoration,
+            target,
+            index,
+        });
+    }
+
+    pub fn dispose_decoration(&mut self, decoration: u32) {
+        self.push(Op::DisposeDecoration { decoration });
+    }
+
 
     /// Allocate a variable id and queue its creation. `source` is one of the
     /// `SOURCE_*` codes; `initial` carries the starting value for
@@ -411,7 +449,7 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
                 *slot = text.clone();
                 Scan::Replace
             }
-            Op::SetPropColor { .. } | Op::SetProp { .. } | Op::SetScrollBarProp { .. } => {
+            Op::SetPropColor { .. } | Op::SetProp { .. } | Op::SetScrollBarProp { .. } | Op::SetDecorationProp { .. } => {
                 Scan::Skip
             }
             _ => Scan::Stop,
@@ -428,7 +466,8 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
             Op::SetText { .. }
             | Op::SetPropColor { .. }
             | Op::SetProp { .. }
-            | Op::SetScrollBarProp { .. } => Scan::Skip,
+            | Op::SetScrollBarProp { .. }
+            | Op::SetDecorationProp { .. } => Scan::Skip,
             _ => Scan::Stop,
         }),
         Op::SetProp { handle, key, value } => coalesce_last(buf, |item| match item {
@@ -443,7 +482,8 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
             Op::SetText { .. }
             | Op::SetPropColor { .. }
             | Op::SetProp { .. }
-            | Op::SetScrollBarProp { .. } => Scan::Skip,
+            | Op::SetScrollBarProp { .. }
+            | Op::SetDecorationProp { .. } => Scan::Skip,
             _ => Scan::Stop,
         }),
         Op::SetStyleDeclProp { decl, key, value } => coalesce_last(buf, |item| match item {
@@ -458,7 +498,8 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
             Op::SetText { .. }
             | Op::SetPropColor { .. }
             | Op::SetProp { .. }
-            | Op::SetScrollBarProp { .. } => Scan::Skip,
+            | Op::SetScrollBarProp { .. }
+            | Op::SetDecorationProp { .. } => Scan::Skip,
             _ => Scan::Stop,
         }),
         Op::SetVar { var, value, anim } => coalesce_last(buf, |item| match item {
@@ -477,6 +518,7 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
             | Op::SetStyleDeclProp { .. }
             | Op::SetGestureProp { .. }
             | Op::SetScrollBarProp { .. }
+            | Op::SetDecorationProp { .. }
             | Op::SetVar { .. } => Scan::Skip,
             _ => Scan::Stop,
         }),
@@ -490,6 +532,7 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
                 | Op::SetStyleDeclProp { .. }
                 | Op::SetGestureProp { .. }
                 | Op::SetScrollBarProp { .. }
+                | Op::SetDecorationProp { .. }
                 | Op::SetVar { .. } => Scan::Skip,
                 _ => Scan::Stop,
             })
@@ -510,7 +553,8 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
             Op::SetText { .. }
             | Op::SetPropColor { .. }
             | Op::SetProp { .. }
-            | Op::SetScrollBarProp { .. } => Scan::Skip,
+            | Op::SetScrollBarProp { .. }
+            | Op::SetDecorationProp { .. } => Scan::Skip,
             _ => Scan::Stop,
         }),
         Op::SetScrollBarProp {
@@ -530,7 +574,29 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
             | Op::SetPropColor { .. }
             | Op::SetProp { .. }
             | Op::SetGestureProp { .. }
-            | Op::SetStyleDeclProp { .. } => Scan::Skip,
+            | Op::SetStyleDeclProp { .. }
+            | Op::SetDecorationProp { .. } => Scan::Skip,
+            _ => Scan::Stop,
+        }),
+        Op::SetDecorationProp {
+            decoration,
+            key,
+            value,
+        } => coalesce_last(buf, |item| match item {
+            Op::SetDecorationProp {
+                decoration: existing,
+                key: existing_key,
+                value: slot,
+            } if existing == decoration && existing_key == key => {
+                *slot = value.clone();
+                Scan::Replace
+            }
+            Op::SetText { .. }
+            | Op::SetPropColor { .. }
+            | Op::SetProp { .. }
+            | Op::SetGestureProp { .. }
+            | Op::SetStyleDeclProp { .. }
+            | Op::SetScrollBarProp { .. } => Scan::Skip,
             _ => Scan::Stop,
         }),
         Op::SetStyleTransition { handle, slot, spec } => coalesce_last(buf, |item| match item {
@@ -548,6 +614,7 @@ fn coalesce(buf: &mut Vec<Op>, op: Op) {
             | Op::SetStyleDeclProp { .. }
             | Op::SetGestureProp { .. }
             | Op::SetScrollBarProp { .. }
+            | Op::SetDecorationProp { .. }
             | Op::SetVar { .. }
             | Op::SetStyleTransition { .. } => Scan::Skip,
             _ => Scan::Stop,

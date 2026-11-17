@@ -63,6 +63,9 @@ const PRIMITIVES: &[&str] = &[
     "TransformGesture",
     "ViewStyle",
     "TextStyle",
+    "Border",
+    "Outline",
+    "Shadow",
 ];
 
 /// Options for [`compile_module`].
@@ -627,6 +630,9 @@ impl<'a> Lower<'a> {
                 if other == "ViewStyle" || other == "TextStyle" {
                     return self.lower_style_element(span, other, attributes, children);
                 }
+                if other == "Border" || other == "Outline" || other == "Shadow" {
+                    return self.lower_decoration_element(span, other, attributes, children);
+                }
                 let (props, controls) =
                     self.split_attributes(span, attributes, &control_names(other));
                 debug_assert!(controls.is_empty());
@@ -634,23 +640,23 @@ impl<'a> Lower<'a> {
                     let prepared = self.prepare_primitive_props(span, props);
                     let props = self.object(span, prepared);
                     if other == "Text" {
-                        let (styles, rest) = self.split_style_children(children);
+                        let (decls, rest) = self.split_leaf_declarations(children);
                         let content = self.text_content(span, rest);
                         let mut args = vec![self.string_of(other), props, content];
-                        if let Some(builder) = self.style_children_block(span, styles) {
+                        if let Some(builder) = self.leaf_declarations_block(span, decls) {
                             args.push(builder);
                         }
                         self.call(RT_PRIMITIVE, args, span)
                     } else if other == "TextField" {
-                        let (styles, rest) = self.split_style_children(children);
+                        let (decls, rest) = self.split_leaf_declarations(children);
                         if !scrollbar_children_only(&rest) {
                             self.error(
                                 span,
-                                "<TextField> children must be style declarations or ScrollBar",
+                                "<TextField> children must be style declarations, decorations, or ScrollBar",
                             );
                         }
                         let mut args = vec![self.string_of(other), props];
-                        let styles = self.style_children_block(span, styles);
+                        let styles = self.leaf_declarations_block(span, decls);
                         let bars = if scrollbar_children_only(&rest) && has_children(&rest) {
                             Some(self.children_block(span, rest))
                         } else {
@@ -669,16 +675,30 @@ impl<'a> Lower<'a> {
                             }
                         }
                         self.call(RT_PRIMITIVE, args, span)
-                    } else if other == "Image" || other == "ScrollBar" {
-                        let (styles, rest) = self.split_style_children(children);
+                    } else if other == "Image" {
+                        let (decls, rest) = self.split_leaf_declarations(children);
                         if has_children(&rest) {
                             self.error(
                                 span,
-                                format!("<{other}> children must be style declarations"),
+                                "<Image> children must be style declarations or decorations",
                             );
                         }
                         let mut args = vec![self.string_of(other), props];
-                        if let Some(builder) = self.style_children_block(span, styles) {
+                        if let Some(builder) = self.leaf_declarations_block(span, decls) {
+                            args.push(builder);
+                        }
+                        self.call(RT_PRIMITIVE, args, span)
+                    } else if other == "ScrollBar" {
+                        let (decls, rest) = self.split_leaf_declarations(children);
+                        if has_children(&rest) || decls.iter().any(is_decoration_element) {
+                            self.error(span, "<ScrollBar> children must be style declarations");
+                        }
+                        let styles: Vec<_> = decls
+                            .into_iter()
+                            .filter(|element| !is_decoration_element(element))
+                            .collect();
+                        let mut args = vec![self.string_of(other), props];
+                        if let Some(builder) = self.leaf_declarations_block(span, styles) {
                             args.push(builder);
                         }
                         self.call(RT_PRIMITIVE, args, span)
@@ -1264,6 +1284,176 @@ impl<'a> Lower<'a> {
         self.call(RT_PRIMITIVE, vec![self.string_of(tag), props], span)
     }
 
+    fn lower_decoration_element(
+        &mut self,
+        span: Span,
+        tag: &'a str,
+        attributes: ArenaVec<'a, JSXAttributeItem<'a>>,
+        children: ArenaVec<'a, JSXChild<'a>>,
+    ) -> Expression<'a> {
+        if has_children(&children) {
+            self.error(span, format!("<{tag}> does not accept children"));
+        }
+        let (props, _) = self.split_attributes(span, attributes, &[]);
+        let mut lowered = Vec::new();
+        for (key, value) in props {
+            if key == "transition" || key.starts_with("transition:") {
+                self.error(span, "transition must be declared on a rendered node");
+                continue;
+            }
+            if key == "target" {
+                self.error(
+                    span,
+                    format!("<{tag}> does not accept target; decorations apply to their parent"),
+                );
+                continue;
+            }
+            if matches!(key, "color" | "layer" | "align")
+                && matches!(value, Expression::NullLiteral(_))
+            {
+                self.error(span, format!("decoration {key} does not accept null"));
+                continue;
+            }
+            if key == "layer" || key == "align" {
+                if self.reads_signal(&value) {
+                    self.error(span, "decoration layer and align must be static");
+                    continue;
+                }
+                let mut value = value;
+                self.visit_expression(&mut value);
+                if self.reads_signal(&value) {
+                    self.error(span, "decoration layer and align must be static");
+                    continue;
+                }
+                lowered.push((key, value));
+                continue;
+            }
+            if matches!(value, Expression::NullLiteral(_)) {
+                lowered.push((key, value));
+                continue;
+            }
+            lowered.push((key, self.decoration_expr(span, value)));
+        }
+        let props = self.object(span, lowered);
+        self.call(RT_PRIMITIVE, vec![self.string_of(tag), props], span)
+    }
+
+    /// Static values become a style tree. A signal read rebuilds that tree
+    /// from a dynamic thunk; shared-value identifiers stay loads.
+    fn decoration_expr(&mut self, span: Span, expression: Expression<'a>) -> Expression<'a> {
+        if !self.reads_signal(&expression) {
+            return self.style_tree(span, expression);
+        }
+        let mut expression = expression;
+        self.visit_expression(&mut expression);
+        let tree = self.decoration_tree_expr(span, expression);
+        let wrapped = self.call(RT_STYLE_EXPR, vec![tree], span);
+        let thunk = self.arrow_expr(span, wrapped);
+        self.call(RT_DYNAMIC, vec![thunk], span)
+    }
+
+    fn decoration_tree_expr(&mut self, span: Span, expression: Expression<'a>) -> Expression<'a> {
+        if !self.reads_signal(&expression) {
+            return self.style_tree_expr(span, expression);
+        }
+        if !style_operator_expr(&expression) {
+            return expression;
+        }
+        match expression {
+            Expression::UnaryExpression(mut unary) => {
+                let UnaryExpression {
+                    operator, argument, ..
+                } = unary.take_in(&self.builder);
+                let name = match operator {
+                    UnaryOperator::UnaryNegation => "neg",
+                    UnaryOperator::LogicalNot => "not",
+                    _ => return self.null(span),
+                };
+                let argument = self.decoration_tree_expr(span, argument);
+                self.style_op(span, name, vec![argument])
+            }
+            Expression::BinaryExpression(mut binary) => {
+                let BinaryExpression {
+                    operator,
+                    left,
+                    right,
+                    ..
+                } = binary.take_in(&self.builder);
+                let name = match operator {
+                    BinaryOperator::Addition => "add",
+                    BinaryOperator::Subtraction => "sub",
+                    BinaryOperator::Multiplication => "mul",
+                    BinaryOperator::Division => "div",
+                    BinaryOperator::LessThan => "lt",
+                    BinaryOperator::LessEqualThan => "le",
+                    BinaryOperator::GreaterThan => "gt",
+                    BinaryOperator::GreaterEqualThan => "ge",
+                    BinaryOperator::Equality | BinaryOperator::StrictEquality => "eq",
+                    BinaryOperator::Inequality | BinaryOperator::StrictInequality => "ne",
+                    _ => return self.null(span),
+                };
+                let left = self.decoration_tree_expr(span, left);
+                let right = self.decoration_tree_expr(span, right);
+                self.style_op(span, name, vec![left, right])
+            }
+            Expression::LogicalExpression(mut logical) => {
+                let LogicalExpression {
+                    operator,
+                    left,
+                    right,
+                    ..
+                } = logical.take_in(&self.builder);
+                let name = match operator {
+                    LogicalOperator::And => "and",
+                    LogicalOperator::Or => "or",
+                    _ => return self.null(span),
+                };
+                let left = self.decoration_tree_expr(span, left);
+                let right = self.decoration_tree_expr(span, right);
+                self.style_op(span, name, vec![left, right])
+            }
+            Expression::ConditionalExpression(mut conditional) => {
+                let ConditionalExpression {
+                    test,
+                    consequent,
+                    alternate,
+                    ..
+                } = conditional.take_in(&self.builder);
+                let test = self.decoration_tree_expr(span, test);
+                let consequent = self.decoration_tree_expr(span, consequent);
+                let alternate = self.decoration_tree_expr(span, alternate);
+                self.style_op(span, "select", vec![test, consequent, alternate])
+            }
+            Expression::ParenthesizedExpression(mut paren) => {
+                let inner = paren.take_in(&self.builder).expression;
+                self.decoration_tree_expr(span, inner)
+            }
+            Expression::CallExpression(mut call) => {
+                let CallExpression {
+                    callee, arguments, ..
+                } = call.take_in(&self.builder);
+                let name = match &callee {
+                    Expression::Identifier(id) => match id.name.as_str() {
+                        "mix" | "lerp" | "clamp" | "min" | "max" | "abs" | "select" => {
+                            self.allocator.alloc_str(id.name.as_str())
+                        }
+                        _ => return self.null(span),
+                    },
+                    _ => return self.null(span),
+                };
+                let mut args = Vec::new();
+                for argument in arguments {
+                    let Ok(argument) = Expression::try_from(argument) else {
+                        return self.null(span);
+                    };
+                    args.push(self.decoration_tree_expr(span, argument));
+                }
+                self.style_op(span, name, args)
+            }
+            other => other,
+        }
+    }
+
     /// Compile one style declaration expression into a tree value. The
     /// runtime turns the tree into a stack program; identifiers stay live so
     /// variable references and plain JS constants both work.
@@ -1560,36 +1750,38 @@ impl<'a> Lower<'a> {
         self.arrow_block(span, statements)
     }
 
-    /// Split direct `<ViewStyle>` / `<TextStyle>` children from the rest. Only
-    /// direct children are styles; anything else keeps its normal path.
-    fn split_style_children(
+    /// Split direct style and decoration children from the rest, keeping their
+    /// relative order. Text content and real elements stay in `rest`.
+    fn split_leaf_declarations(
         &self,
         children: ArenaVec<'a, JSXChild<'a>>,
     ) -> (Vec<JSXElement<'a>>, ArenaVec<'a, JSXChild<'a>>) {
-        let mut styles = Vec::new();
+        let mut decls = Vec::new();
         let mut rest = self.ast_vec::<JSXChild<'a>>();
         for child in children {
             match child {
-                JSXChild::Element(element) if is_style_component(&element) => {
-                    styles.push(self.take(element));
+                JSXChild::Element(element)
+                    if is_style_component(&element) || is_decoration_element(&element) =>
+                {
+                    decls.push(self.take(element));
                 }
                 other => rest.push(other),
             }
         }
-        (styles, rest)
+        (decls, rest)
     }
 
-    /// `() => { <state style declarations> }`, or `None` when there are none.
-    fn style_children_block(
+    /// `() => { leaf declarations }`, or `None` when there are none.
+    fn leaf_declarations_block(
         &mut self,
         span: Span,
-        styles: Vec<JSXElement<'a>>,
+        decls: Vec<JSXElement<'a>>,
     ) -> Option<Expression<'a>> {
-        if styles.is_empty() {
+        if decls.is_empty() {
             return None;
         }
         let mut statements = self.ast_vec();
-        for element in styles {
+        for element in decls {
             let element_span = element.span;
             let expression = self.lower_element(element);
             statements.push(self.statement(element_span, expression));
@@ -1747,6 +1939,36 @@ fn is_style_component(element: &JSXElement<'_>) -> bool {
         _ => false,
     }
 }
+fn is_decoration_element(element: &JSXElement<'_>) -> bool {
+    match &element.opening_element.name {
+        JSXElementName::Identifier(id) => {
+            matches!(id.name.as_str(), "Border" | "Outline" | "Shadow")
+        }
+        JSXElementName::IdentifierReference(id) => {
+            matches!(id.name.as_str(), "Border" | "Outline" | "Shadow")
+        }
+        _ => false,
+    }
+}
+
+fn style_operator_expr(expression: &Expression<'_>) -> bool {
+    match expression {
+        Expression::UnaryExpression(_)
+        | Expression::BinaryExpression(_)
+        | Expression::LogicalExpression(_)
+        | Expression::ConditionalExpression(_)
+        | Expression::ParenthesizedExpression(_) => true,
+        Expression::CallExpression(call) => match &call.callee {
+            Expression::Identifier(id) => matches!(
+                id.name.as_str(),
+                "mix" | "lerp" | "clamp" | "min" | "max" | "abs" | "select"
+            ),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 
 fn has_children(children: &ArenaVec<'_, JSXChild<'_>>) -> bool {
     children.iter().any(|child| match child {

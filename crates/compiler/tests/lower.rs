@@ -804,7 +804,7 @@ fn textfield_rejects_non_scrollbar_children() {
     let src = r#"function App() { return <TextField><View /></TextField>; } export default App;"#;
     let err = errors("tf-child.tsx", src);
     assert!(
-        err.contains("children must be style declarations or ScrollBar"),
+        err.contains("children must be style declarations, decorations, or ScrollBar"),
         "{err}"
     );
 }
@@ -814,7 +814,7 @@ fn image_rejects_children() {
     let src =
         r#"function App() { return <Image src="a.png"><View /></Image>; } export default App;"#;
     let err = errors("img-child.tsx", src);
-    assert!(err.contains("children must be style declarations"), "{err}");
+    assert!(err.contains("children must be style declarations or decorations"), "{err}");
 }
 
 #[test]
