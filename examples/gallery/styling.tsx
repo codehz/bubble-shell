@@ -94,7 +94,7 @@ export function AnimatedDemo() {
     <View gap={12}>
       <Section title="Spring animation on a script-driven var">
         <View backgroundColor={0xff22c55e} radius={10} width={56} height={56}>
-          <ViewStyle when={true} translateX={slide} />
+          <ViewStyle translateX={slide} />
         </View>
         <View flexDirection="row" gap={8}>
           <Btn label="Spring to 100" color={0xff22c55e} onTap={() => springTo(100)} />
@@ -103,7 +103,7 @@ export function AnimatedDemo() {
       </Section>
       <Section title="Tween animation on a script-driven var">
         <View backgroundColor={0xfff59e0b} radius={10} width={56} height={56}>
-          <ViewStyle when={true} translateX={glide} />
+          <ViewStyle translateX={glide} />
         </View>
         <View flexDirection="row" gap={8}>
           <Btn label="Tween to 100" color={0xfff59e0b} onTap={() => tweenTo(100)} />

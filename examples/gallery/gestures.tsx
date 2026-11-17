@@ -103,7 +103,7 @@ export function PanDemo() {
                 scheduleOnJS(status.set, "pan cancelled");
               }}
             />
-            <ViewStyle when={true} translateX={panX} translateY={panY} />
+            <ViewStyle translateX={panX} translateY={panY} />
             <Text color="#ffffff" fontSize={14}>drag me</Text>
           </View>
         </View>
@@ -155,7 +155,7 @@ export function TransformDemo() {
                 scheduleOnJS(status.set, "transform cancelled");
               }}
             />
-            <ViewStyle when={true} scale={scaleV} rotate={rotateV} />
+            <ViewStyle scale={scaleV} rotate={rotateV} />
             <Text color="#ffffff" fontSize={14}>pinch / rotate</Text>
           </View>
         </View>
@@ -193,7 +193,7 @@ export function GestureVarsDemo() {
           alignItems="center"
         >
           <PanGesture ref={panRef} onPanUpdate={() => {}} onPanEnd={() => {}} />
-          <ViewStyle when={true} translateX={tx} translateY={ty} />
+          <ViewStyle translateX={tx} translateY={ty} />
           <Text color="#ffffff" fontSize={14}>drag me</Text>
         </View>
       </View>
@@ -217,7 +217,6 @@ export function GestureVarsDemo() {
         </View>
         <View height={8} width={180} radius={4} backgroundColor={0xff3b82f6}>
           <ViewStyle
-            when={true}
             backgroundColor={mix(0xff3b82f6, 0xff22c55e, clamp(sy / 200, 0, 1))}
           />
         </View>
