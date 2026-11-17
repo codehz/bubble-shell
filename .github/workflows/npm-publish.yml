@@ -202,14 +202,12 @@ jobs:
         run: |
           for platform in darwin-arm64 linux-x64 windows-x64; do
             (cd "npm/@bubble-shell/${platform}" && npm stage publish --provenance --access public)
-            npm stage list "@bubble-shell/${platform}"
           done
       - name: Stage bubble-shell
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           (cd npm/bubble-shell && npm stage publish --provenance)
-          npm stage list bubble-shell
           echo "Staged. Approve the platform packages before bubble-shell."
       - name: Stage release binaries
         if: startsWith(github.ref, 'refs/tags/v')
