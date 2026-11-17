@@ -46,6 +46,8 @@ const RT_SWITCH: &str = "__bubble_rt_switchFlow";
 const HOT_COMPONENT: &str = "__bubble_hot_component";
 const HOT_KEEP: &str = "__bubble_hot_keep";
 const HOT_MOUNT: &str = "__bubble_hot_mount";
+/// Binding the hot transform gives an expression `export default`.
+const HOT_DEFAULT: &str = "__bubble_hot_default";
 
 const PRIMITIVES: &[&str] = &[
     "View",
@@ -68,8 +70,8 @@ pub struct CompileOptions {
     /// Emit a module-level source map. Release builds leave this off.
     pub source_map: bool,
     /// Hot-module key for this module. Set only by `bubble dev`, which wraps
-    /// components, top-level signals, and the mount call for state-preserving
-    /// updates.
+    /// components, top-level signals, and the default export mount for
+    /// state-preserving updates.
     pub hot: Option<String>,
 }
 
@@ -2832,12 +2834,15 @@ impl<'a> VisitMut<'a> for Lower<'a> {
 }
 
 impl<'a> Lower<'a> {
-    /// Wrap top-level components, signals, and the mount call for `bubble dev`.
+    /// Wrap top-level components and signals, and mount the default export,
+    /// for `bubble dev`.
     fn hot_transform(&mut self, program: &mut Program<'a>, module_key: &str) {
         program.body.insert(0, hot_import(&self.builder));
 
+        // Statements to insert around the one at each index.
+        let mut insertions: Vec<(usize, Vec<Statement<'a>>, Vec<Statement<'a>>)> = Vec::new();
+
         // Function declarations get a stable proxy registered right after them.
-        let mut registrations = Vec::new();
         for (index, statement) in program.body.iter().enumerate() {
             let Statement::FunctionDeclaration(function) = statement else {
                 continue;
@@ -2847,29 +2852,37 @@ impl<'a> Lower<'a> {
             };
             if is_component_name(id.name.as_str()) {
                 let key = format!("{module_key}:{}", id.name.as_str());
-                registrations.push((
-                    index,
-                    self.hot_register_function(id.span, id.name.as_str(), &key),
-                ));
+                let registration =
+                    self.hot_register_function(id.span, id.name.as_str(), &key);
+                insertions.push((index, Vec::new(), vec![registration]));
             }
         }
 
-        for statement in &mut program.body {
+        for (index, statement) in program.body.iter_mut().enumerate() {
             match statement {
                 Statement::VariableDeclaration(declaration)
                     if declaration.kind == VariableDeclarationKind::Const =>
                 {
                     self.hot_bindings(declaration, module_key);
                 }
-                Statement::ExpressionStatement(statement) => {
-                    self.hot_mount(&mut statement.expression, module_key);
+                Statement::ExportDefaultDeclaration(declaration) => {
+                    let (before, after) = self.hot_default_export(declaration, module_key);
+                    if !before.is_empty() || !after.is_empty() {
+                        insertions.push((index, before, after));
+                    }
                 }
                 _ => {}
             }
         }
 
-        for (index, registration) in registrations.into_iter().rev() {
-            program.body.insert(index + 1, registration);
+        insertions.sort_by_key(|(index, ..)| *index);
+        for (index, before, after) in insertions.into_iter().rev() {
+            for statement in after.into_iter().rev() {
+                program.body.insert(index + 1, statement);
+            }
+            for statement in before.into_iter().rev() {
+                program.body.insert(index, statement);
+            }
         }
     }
 
@@ -2904,27 +2917,87 @@ impl<'a> Lower<'a> {
         }
     }
 
-    fn hot_mount(&self, expression: &mut Expression<'a>, module_key: &str) {
-        let Expression::CallExpression(call) = expression else {
-            return;
-        };
-        let Expression::Identifier(callee) = &call.callee else {
-            return;
-        };
-        if callee.name.as_str() != "mount" || call.arguments.len() != 1 {
-            return;
+    /// Mount the module's default export, and register it when the export is
+    /// a named component function. Returns the statements to insert before and
+    /// after the export declaration.
+    fn hot_default_export(
+        &self,
+        declaration: &mut ExportDefaultDeclaration<'a>,
+        module_key: &str,
+    ) -> (Vec<Statement<'a>>, Vec<Statement<'a>>) {
+        let span = declaration.span;
+        if let Some(name) = export_default_name(&declaration.declaration) {
+            let mut after = Vec::new();
+            if let Some(registration_span) =
+                export_default_function_span(&declaration.declaration)
+            {
+                if is_component_name(name) {
+                    let key = format!("{module_key}:{name}");
+                    after.push(self.hot_register_function(registration_span, name, &key));
+                }
+            }
+            after.push(self.hot_mount(span, name, module_key));
+            return (Vec::new(), after);
         }
-        let span = call.span;
-        let taken = std::mem::replace(expression, self.null(span));
-        let Expression::CallExpression(mut call) = taken else {
-            return;
+
+        let taken = std::mem::replace(
+            &mut declaration.declaration,
+            self.export_default_binding(HOT_DEFAULT),
+        );
+        let expression = match taken {
+            ExportDefaultDeclarationKind::FunctionDeclaration(function) => {
+                Expression::FunctionExpression(function)
+            }
+            ExportDefaultDeclarationKind::ClassDeclaration(class) => {
+                Expression::ClassExpression(class)
+            }
+            ExportDefaultDeclarationKind::TSInterfaceDeclaration(interface) => {
+                // Nothing to mount: leave the declaration as it was.
+                declaration.declaration =
+                    ExportDefaultDeclarationKind::TSInterfaceDeclaration(interface);
+                return (Vec::new(), Vec::new());
+            }
+            expression => expression.into_expression(),
         };
-        let mut arguments = call.arguments.take_in(&self.builder);
-        let argument = arguments.remove(0);
-        let Ok(component) = Expression::try_from(argument) else {
-            return;
-        };
-        *expression = self.call(HOT_MOUNT, vec![self.string_of(module_key), component], span);
+        let binding = self.const_statement(span, HOT_DEFAULT, expression);
+        let mount = self.hot_mount(span, HOT_DEFAULT, module_key);
+        (vec![binding], vec![mount])
+    }
+
+    fn hot_mount(&self, span: Span, component: &'a str, module_key: &str) -> Statement<'a> {
+        let call = self.call(
+            HOT_MOUNT,
+            vec![self.string_of(module_key), self.ident(component)],
+            span,
+        );
+        self.statement(span, call)
+    }
+
+    /// `const name = expression;`
+    fn const_statement(&self, span: Span, name: &'a str, init: Expression<'a>) -> Statement<'a> {
+        let id = BindingPattern::BindingIdentifier(ArenaBox::new_in(
+            BindingIdentifier::new(SPAN, Ident::from(name), &self.builder),
+            &self.builder,
+        ));
+        let declarator =
+            VariableDeclarator::new(span, id, None, Some(init), false, &self.builder);
+        let mut declarations = self.ast_vec();
+        declarations.push(declarator);
+        Statement::new_variable_declaration(
+            span,
+            VariableDeclarationKind::Const,
+            declarations,
+            false,
+            &self.builder,
+        )
+    }
+
+    /// `export default name;`
+    fn export_default_binding(&self, name: &'a str) -> ExportDefaultDeclarationKind<'a> {
+        ExportDefaultDeclarationKind::Identifier(ArenaBox::new_in(
+            IdentifierReference::new(SPAN, Ident::from(name), &self.builder),
+            &self.builder,
+        ))
     }
 
     fn hot_register_function(&self, span: Span, name: &'a str, key: &str) -> Statement<'a> {
@@ -2986,6 +3059,30 @@ fn is_component_name(name: &str) -> bool {
     name.chars()
         .next()
         .is_some_and(|ch| ch.is_ascii_uppercase())
+}
+
+/// The name `export default ...` already binds: an identifier, or a named
+/// function or class declaration.
+fn export_default_name<'a>(declaration: &ExportDefaultDeclarationKind<'a>) -> Option<&'a str> {
+    match declaration {
+        ExportDefaultDeclarationKind::Identifier(id) => Some(id.name.as_str()),
+        ExportDefaultDeclarationKind::FunctionDeclaration(function) => {
+            function.id.as_ref().map(|id| id.name.as_str())
+        }
+        ExportDefaultDeclarationKind::ClassDeclaration(class) => {
+            class.name().map(|id| id.as_str())
+        }
+        _ => None,
+    }
+}
+
+fn export_default_function_span<'a>(declaration: &ExportDefaultDeclarationKind<'a>) -> Option<Span> {
+    match declaration {
+        ExportDefaultDeclarationKind::FunctionDeclaration(function) => {
+            function.id.as_ref().map(|id| id.span)
+        }
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------

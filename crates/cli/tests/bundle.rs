@@ -52,12 +52,13 @@ fn writes_bundle_manifest_and_assets() {
     dir.write("logo.png", b"\x89PNG\r\n\x1a\nasset");
     let entry = dir.write(
         "app.tsx",
-        r#"import { mount, Text, View } from "bubble-shell";
+        r#"import { signal, Text, View } from "bubble-shell";
 import logo from "./logo.png";
 function App() {
-  return <View><Text>{logo}</Text></View>;
+  const count = signal(0);
+  return <View><Text>{logo + count()}</Text></View>;
 }
-mount(App);
+export default App;
 "#,
     );
     let out = dir.0.join("out");

@@ -50,7 +50,7 @@ fn bundles_modules_and_assets_into_one_module() {
     dir.write("logo.png", b"\x89PNG\r\n\x1a\nfake");
     let entry = dir.write(
         "app.tsx",
-        r#"import { mount, signal, Text, View } from "bubble-shell";
+        r#"import { signal, Text, View } from "bubble-shell";
 import { helper } from "./helper";
 import logo from "./logo.png";
 
@@ -64,7 +64,7 @@ function App() {
   );
 }
 
-mount(App);
+export default App;
 "#,
     );
 
@@ -98,9 +98,9 @@ fn keeps_native_module_imports_as_specifiers() {
     let dir = TempDir::new("native");
     let entry = dir.write(
         "plain.js",
-        r#"import { mount, signal } from "bubble-shell";
+        r#"import { signal } from "bubble-shell";
 const count = signal(0);
-mount(count);
+export default count;
 "#,
     );
     let bundled = bundle(&entry);
@@ -117,13 +117,13 @@ fn deduplicates_identical_assets() {
     let dir = TempDir::new("assets");
     let entry = dir.write(
         "app.tsx",
-        r#"import { mount, Text } from "bubble-shell";
+        r#"import { Text } from "bubble-shell";
 import one from "./a/logo.png";
 import two from "./b/logo.png";
 function App() {
   return <Text>{one + two}</Text>;
 }
-mount(App);
+export default App;
 "#,
     );
     dir.write("a/logo.png", b"same");
@@ -155,7 +155,7 @@ fn emits_source_maps_only_when_requested() {
     let dir = TempDir::new("maps");
     let entry = dir.write(
         "app.tsx",
-        "import { mount, Text } from \"bubble-shell\";\nfunction App() { return <Text>hi</Text>; }\nmount(App);\n",
+        "import { Text } from \"bubble-shell\";\nfunction App() { return <Text>hi</Text>; }\nexport default App;\n",
     );
     let plain = bundle(&entry);
     assert!(plain.source_map.is_none());
@@ -175,7 +175,7 @@ fn dev_build_keeps_one_factory_per_module() {
     dir.write("helper.ts", "export const label = \"hi\";\n");
     let entry = dir.write(
         "app.tsx",
-        r#"import { mount, signal, Text, View } from "bubble-shell";
+        r#"import { signal, Text, View } from "bubble-shell";
 import { label } from "./helper";
 const count = signal(1);
 function App() {
@@ -186,7 +186,7 @@ function App() {
     </View>
   );
 }
-mount(App);
+export default App;
 "#,
     );
     let build = build_dev(&entry).expect("dev build");

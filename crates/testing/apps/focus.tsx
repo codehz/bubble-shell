@@ -1,4 +1,4 @@
-import { mount, signal, Text, View, TextField, TapGesture } from "bubble-shell";
+import { signal, Text, View, TextField, TapGesture } from "bubble-shell";
 
 function Focus() {
   const opened = signal(false);
@@ -42,4 +42,4 @@ function Focus() {
   );
 }
 
-mount(Focus);
+export default Focus;

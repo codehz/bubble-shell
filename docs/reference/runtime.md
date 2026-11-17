@@ -7,7 +7,7 @@
 作者写的是函数组件，不是一份静态 JSX 树。参照 nsh（`docs/dev/native-pipeline.md`）：
 
 ```tsx
-import { mount, signal, Text, View } from "bubble-shell";
+import { signal, Text, View } from "bubble-shell";
 
 function Counter() {
   const count = signal(0);
@@ -19,7 +19,7 @@ function Counter() {
   );
 }
 
-mount(() => <Counter />);
+export default Counter;
 
 ```
 
@@ -36,7 +36,7 @@ mount(() => <Counter />);
 
 ### 运行时
 
-1. 脚本线程执行入口 bundle。`mount` 调用组件一次，渲染器按调用创建节点并登记绑定，产出首批 op。
+1. 脚本线程执行入口 bundle，读取其 `export default` 并挂载：组件执行一次，渲染器按调用创建节点并登记绑定，产出首批 op。
 2. 事件到达已登记的 handler；handler 写信号。
 3. 图只重跑读过该信号的绑定，把变更写入 op 批次。
 4. 批次在帧边界合并、压缩，提交给 UI 线程。

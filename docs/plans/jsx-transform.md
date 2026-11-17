@@ -73,7 +73,7 @@
 
 - 新增 `content(thunk)` 导出：创建 anchor + 虚拟 scope + 绑定（同 `show` 的 `replaceBranch` 路径），渲染 thunk 构建的节点；依赖变化时 dispose 重建。字符串快速路径不需要（编译期已分流）。
 - `Dynamic`、`dynamic()` 停止导出，移入内部（`bindProp` 继续使用）。`gesturePropValue`/`bindGestureProp` 不变。
-- `slot()`、控制流四组件、`mount()`、事件/gesture/edit/var 派发均不变。
+- `slot()`、控制流四组件、入口 `export default` 挂载、事件/gesture/edit/var 派发均不变。
 
 ## 5. 迁移清单
 

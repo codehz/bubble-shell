@@ -1,4 +1,4 @@
-import { mount, signal, Text, View, TextField } from "bubble-shell";
+import { signal, Text, View, TextField } from "bubble-shell";
 
 function Editing() {
   const name = signal("");
@@ -56,4 +56,4 @@ function Editing() {
   );
 }
 
-mount(Editing);
+export default Editing;

@@ -38,7 +38,7 @@ ticks.update((n) => n + 1);
 #[test]
 fn lowers_primitives_components_and_control_flow() {
     let source = r##"
-import { signal, mount, Text, View, TapGesture } from "bubble-shell";
+import { signal, Text, View, TapGesture } from "bubble-shell";
 function Row(props) {
   return <Text color="#ddd">{props.label}</Text>;
 }
@@ -53,7 +53,7 @@ function App() {
     </View>
   );
 }
-mount(App);
+export default App;
 "##;
     let code = compile("app.tsx", source);
     assert!(code.contains("__bubble_rt_primitive(\"View\""), "{code}");
@@ -64,7 +64,7 @@ mount(App);
     assert!(code.contains("__bubble_rt_show"), "{code}");
     // Tags that were only used in JSX are dropped from the author import.
     assert!(
-        code.contains("import { signal, mount } from \"bubble-shell\""),
+        code.contains("import { signal } from \"bubble-shell\""),
         "{code}"
     );
     assert!(!code.contains("TapGesture"), "{code}");
@@ -310,7 +310,7 @@ fn emits_a_source_map_on_request() {
 #[test]
 fn compiles_the_counter_fixture() {
     let source = r#"
-import { mount, signal, Text, View, TapGesture } from "bubble-shell";
+import { signal, Text, View, TapGesture } from "bubble-shell";
 const count = signal(0);
 function Row(props) {
   return <Text>{props.label}</Text>;
@@ -326,11 +326,11 @@ function Counter() {
     </View>
   );
 }
-mount(Counter);
+export default Counter;
 "#;
     let code = compile("counter.tsx", source);
     assert!(code.contains("function Counter()"), "{code}");
-    assert!(code.contains("mount(Counter)"), "{code}");
+    assert!(code.contains("export default Counter"), "{code}");
     assert!(code.contains("__bubble_rt_primitive(\"View\""), "{code}");
     assert!(code.contains("__bubble_rt_component(Row"), "{code}");
 }
@@ -338,7 +338,7 @@ mount(Counter);
 #[test]
 fn hot_mode_wraps_components_signals_and_mount() {
     let source = r#"
-import { mount, signal, Text, View } from "bubble-shell";
+import { signal, Text, View } from "bubble-shell";
 const shared = signal(2);
 const Card = (props) => <Text>{props.label}</Text>;
 function App() {
@@ -349,7 +349,7 @@ function App() {
     </View>
   );
 }
-mount(App);
+export default App;
 "#;
     let compiled = compile_module(
         "app.tsx",
@@ -376,41 +376,14 @@ mount(App);
     );
     assert!(
         code.contains("__bubble_hot_mount(\"/repo/app.tsx\", App)"),
-        "mount is intercepted:\n{code}"
+        "the default export is mounted:\n{code}"
     );
-}
-
-#[test]
-fn hot_mode_keeps_mount_calls_with_extra_arguments() {
-    // A multi-argument mount call must survive untouched; the hot transform
-    // used to blank the statement, dropping the app in dev builds only.
-    let source = r#"
-import { mount, Text } from "bubble-shell";
-function App() {
-  return <Text>hi</Text>;
-}
-mount(App, null);
-"#;
-    let compiled = compile_module(
-        "app.tsx",
-        source,
-        &CompileOptions {
-            source_map: false,
-            hot: Some("/repo/app.tsx".to_string()),
-        },
-    )
-    .unwrap();
-    let code = compiled.code;
-    assert!(code.contains("mount(App, null)"), "{code}");
-    assert!(
-        code.contains("import { mount } from \"bubble-shell\""),
-        "the shell import stays referenced:\n{code}"
-    );
+    assert!(code.contains("export default App"), "{code}");
 }
 
 #[test]
 fn release_mode_has_no_hot_runtime() {
-    let source = "import { mount, Text } from \"bubble-shell\";\nfunction App() { return <Text>hi</Text>; }\nmount(App);\n";
+    let source = "import { Text } from \"bubble-shell\";\nfunction App() { return <Text>hi</Text>; }\nexport default App;\n";
     let code = compile("app.tsx", source);
     assert!(!code.contains("bubble:hot"), "{code}");
     assert!(!code.contains("__bubble_hot"), "{code}");

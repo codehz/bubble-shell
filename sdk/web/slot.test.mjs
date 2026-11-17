@@ -3,7 +3,7 @@ import { registerHooks } from "node:module";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { entryUrl, fixture, wasmBytes } from "./fixtures.mjs";
-import { setApi } from "../../crates/native/js/runtime.js";
+import { mount, setApi } from "../../crates/native/js/runtime.js";
 import { layoutSnapshot } from "./src/textlayout.js";
 
 // Fixture bundles import the host modules by specifier; map them like the
@@ -193,7 +193,8 @@ setApi({
   },
 });
 
-await import(entryUrl("slot"));
+const app = await import(entryUrl("slot"));
+mount(app.default);
 
 function paintList() {
   const len = exports.paint();

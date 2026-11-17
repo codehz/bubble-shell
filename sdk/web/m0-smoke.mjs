@@ -4,6 +4,7 @@ import {
   dispatchGestureEvents,
   dispatchUiCalls,
   dispatchVarEvents,
+  mount,
   setApi,
 } from "../../crates/native/js/runtime.js";
 import { entryUrl, fixture as bundledApp, wasmBytes } from "./fixtures.mjs";
@@ -227,7 +228,8 @@ setApi({
 
 });
 
-await import(entryUrl(fixture));
+const entry = await import(entryUrl(fixture));
+mount(entry.default);
 
 function paintList() {
   const len = exports.paint();

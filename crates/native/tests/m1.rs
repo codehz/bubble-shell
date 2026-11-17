@@ -575,11 +575,11 @@ fn host_modules_resolve_to_one_runtime_instance() {
 import * as rt from "bubble:rt";
 if (shell !== rt) throw new Error("bubble-shell and bubble:rt must be one module");
 const count = shell.signal(41);
-shell.mount(function App() {
+export default function App() {
   shell.primitive("View", {}, () => {
     shell.primitive("Text", {}, () => "N=" + (count() + 1));
   });
-});
+}
 "#,
     )
     .unwrap_or_else(|error| panic!("{error}"));
@@ -635,7 +635,7 @@ fn back_handler_gates_back_events() {
     let _guard = Open;
     reopen();
     assert_eq!(bubble_has_back_handler(shell(),), 0);
-    try_load_source("export const ready = true;\n").unwrap();
+    try_load_source("export const ready = true;\nexport default function App() {}\n").unwrap();
     assert_eq!(bubble_has_back_handler(shell(),), 0);
     eval(
         "globalThis.backs = 0; globalThis.seen = 0; bubbleHost.onBack((value) => { globalThis.backs += 1; globalThis.backValue = value; }); bubbleHost.on('ping', (data) => { globalThis.seen = data.n })",
@@ -670,7 +670,7 @@ fn back_handler_gates_back_events() {
     assert_eq!(eval("String(globalThis.backs)"), "1");
     eval("bubbleHost.onBack(() => {})");
     assert_eq!(bubble_has_back_handler(shell(),), 1);
-    try_load_source("export const ready = true;\n").unwrap();
+    try_load_source("export const ready = true;\nexport default function App() {}\n").unwrap();
     assert_eq!(bubble_has_back_handler(shell(),), 0);
     close();
 }
@@ -684,14 +684,14 @@ fn storage_reloads_from_the_host_directory() {
     let path = c(dir.to_str().unwrap());
     reopen();
     ffi_ok(bubble_set_storage_dir(shell(), path.as_ptr()));
-    try_load_source("export const ready = true;\n").unwrap();
+    try_load_source("export const ready = true;\nexport default function App() {}\n").unwrap();
     assert_eq!(
         eval("bubbleStorage.set('k','v'); bubbleStorage.get('k')"),
         "v"
     );
     reopen();
     ffi_ok(bubble_set_storage_dir(shell(), path.as_ptr()));
-    try_load_source("export const ready = true;\n").unwrap();
+    try_load_source("export const ready = true;\nexport default function App() {}\n").unwrap();
     assert_eq!(eval("bubbleStorage.get('k')"), "v");
     close();
     let _ = std::fs::remove_dir_all(&dir);
@@ -736,7 +736,7 @@ fn frame_fills(width: f32, height: f32) -> Vec<[u8; 4]> {
 const STYLE_DECL_APP: &str = r##"
 import * as shell from "bubble-shell";
 
-shell.mount(function App() {
+export default function App() {
   const open = shell.signal(false);
   const items = shell.signal(["a", "b"]);
   const ladder = shell.signal([]);
@@ -789,7 +789,7 @@ shell.mount(function App() {
     },
   );
   globalThis.appView = viewRef.current;
-});
+}
 
 globalThis.appFocus = () => {
   shell.focusField(globalThis.appView);
@@ -894,7 +894,7 @@ import * as shell from "bubble-shell";
 globalThis.settled = 0;
 
 const viewRef = shell.ref();
-shell.mount(function App() {
+export default function App() {
   // Signals live inside the mount: boot resets the reactive graph.
   const count = shell.signal(0);
   const on = shell.signal(false);
@@ -916,7 +916,7 @@ shell.mount(function App() {
       });
     },
   );
-});
+}
 
 globalThis.appStep = (fn) => {
   shell.batch(fn);
@@ -959,7 +959,7 @@ import * as shell from "bubble-shell";
 globalThis.settled = 0;
 
 const viewRef = shell.ref();
-shell.mount(function App() {
+export default function App() {
   const t = shell.createSharedValue(0);
   globalThis.t = t;
   globalThis.withTiming = shell.withTiming;
@@ -976,7 +976,7 @@ shell.mount(function App() {
       });
     },
   );
-});
+}
 
 globalThis.appStep = (fn) => {
   shell.batch(fn);
@@ -1010,7 +1010,7 @@ fn animated_var_drives_paint_and_settles_at_convergence() {
 const GESTURE_ORDER_APP: &str = r##"
 import * as shell from "bubble-shell";
 
-shell.mount(function App() {
+export default function App() {
   const open = shell.signal(false);
   globalThis.branchOpen = open;
   globalThis.hits = [];
@@ -1032,7 +1032,7 @@ shell.mount(function App() {
     shell.batch(fn);
     shell.flush();
   };
-});
+}
 "##;
 
 /// Dispatch one tap and wait until a gesture handler has run `expected` times.
@@ -1113,7 +1113,7 @@ fn frame_fill_colors(width: f32, height: f32) -> Vec<[u8; 4]> {
                         as usize;
                 offset += 47 + text_len;
             }
-            3 => offset += 17,
+            3 => offset += 21,
             4 | 6 | 10 => offset += 1,
             5 => offset += 5,
             7 => {
@@ -1155,7 +1155,7 @@ fn frame_transforms(width: f32, height: f32) -> Vec<[f32; 6]> {
                         as usize;
                 offset += 47 + text_len;
             }
-            3 => offset += 17,
+            3 => offset += 21,
             4 | 6 | 10 => offset += 1,
             5 => offset += 5,
             7 => {
@@ -1187,7 +1187,7 @@ import * as shell from "bubble-shell";
 
 const viewRef = shell.ref();
 const panRef = shell.ref();
-shell.mount(function App() {
+export default function App() {
   const tx = shell.createSharedValue({ source: "gesture.translationX", target: panRef });
   shell.primitive(
     "View",
@@ -1197,7 +1197,7 @@ shell.mount(function App() {
       shell.primitive("ViewStyle", { target: viewRef, when: true, translateX: tx });
     },
   );
-});
+}
 "##;
 
 #[test]
@@ -1247,7 +1247,7 @@ import * as shell from "bubble-shell";
 
 const containerRef = shell.ref();
 const childRef = shell.ref();
-shell.mount(function App() {
+export default function App() {
   shell.primitive(
     "View",
     { ref: containerRef, overflowY: "scroll", width: 100, height: 100 },
@@ -1267,7 +1267,7 @@ shell.mount(function App() {
       });
     },
   );
-});
+}
 "##;
 
 #[test]
@@ -1296,7 +1296,7 @@ import * as shell from "bubble-shell";
 
 const viewRef = shell.ref();
 const pinchRef = shell.ref();
-shell.mount(function App() {
+export default function App() {
   const scale = shell.createSharedValue({ source: "gesture.scale", target: pinchRef });
   shell.primitive(
     "View",
@@ -1310,7 +1310,7 @@ shell.mount(function App() {
       shell.primitive("ViewStyle", { target: viewRef, when: true, scale });
     },
   );
-});
+}
 "##;
 
 #[test]

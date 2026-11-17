@@ -1,4 +1,4 @@
-import { mount, signal, Text, View, TapGesture, DoubleTapGesture, LongPressGesture, PanGesture } from "bubble-shell";
+import { signal, Text, View, TapGesture, DoubleTapGesture, LongPressGesture, PanGesture } from "bubble-shell";
 
 function Gestures() {
   const status = signal("");
@@ -25,4 +25,4 @@ function Gestures() {
   );
 }
 
-mount(Gestures);
+export default Gestures;

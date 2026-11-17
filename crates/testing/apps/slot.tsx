@@ -1,4 +1,4 @@
-import { mount, signal, Text, View, For } from "bubble-shell";
+import { signal, Text, View, For } from "bubble-shell";
 
 // Container component: children render where the slot expression sits, not
 // where <Card> is written. Header is a named slot; the fallback covers both a
@@ -37,4 +37,4 @@ function App() {
   );
 }
 
-mount(App);
+export default App;

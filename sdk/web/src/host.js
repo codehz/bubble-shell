@@ -1,6 +1,6 @@
 import { scrollActionForKey } from "./a11y.js";
 import { commandsForDom } from "./ime.js";
-import { dispatchEditEvents, dispatchGestureEvents, dispatchUiCalls, dispatchVarEvents, setApi } from "bubble-shell";
+import { dispatchEditEvents, dispatchGestureEvents, dispatchUiCalls, dispatchVarEvents, mount, setApi } from "bubble-shell";
 import { layoutSnapshot, wrapLines } from "./textlayout.js";
 
 const dev = window.__bubbleDev ?? null;
@@ -1205,7 +1205,8 @@ if (dev) {
   await checkBundle();
   // Relative to the page, not this module: the fixtures live next to
   // index.html, not under sdk/web/src.
-  await import(new URL(`./fixtures/${fixture}.js`, document.baseURI).href);
+  const entry = await import(new URL(`./fixtures/${fixture}.js`, document.baseURI).href);
+  mount(entry.default);
 }
 paint();
 const firstFrameMs = performance.now() - started;

@@ -1,4 +1,4 @@
-import { mount, Image, Text, View } from "bubble-shell";
+import { Image, Text, View } from "bubble-shell";
 import logo from "../assets/logo.png";
 
 function Media() {
@@ -11,4 +11,4 @@ function Media() {
   );
 }
 
-mount(Media);
+export default Media;

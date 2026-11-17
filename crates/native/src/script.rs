@@ -615,6 +615,19 @@ fn run_install(vm: &mut Vm, source: &str, entry: &str) -> Result<(), RuntimeErro
         ctx.execute_module(&main)?
     };
     finish_promise(vm, promise)?;
+    let promise = {
+        let ctx = &mut vm.context;
+        let entry = serde_json::to_string(entry).expect("an entry name is a JSON string");
+        ctx.eval(&format!(
+            r#"(async () => {{
+  const entry = await import({entry});
+  if (entry.default === undefined) throw new Error("entry module has no default export");
+  const runtime = await import("bubble-shell");
+  runtime.mount(entry.default);
+}})();"#
+        ))?
+    };
+    finish_promise(vm, promise)?;
     pump(vm)
 }
 

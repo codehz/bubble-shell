@@ -2,7 +2,7 @@
 //
 // Run with: bubble dev examples/gallery/app.tsx
 // Bundle with: bubble bundle examples/gallery/app.tsx --out target/gallery
-import { mount, signal, View, Text, TapGesture, For, Switch, Match, ScrollBar } from "bubble-shell";
+import { signal, View, Text, TapGesture, For, Switch, Match, ScrollBar } from "bubble-shell";
 import { ViewDemo, TextDemo, ImageDemo, TextFieldDemo } from "./primitives";
 import { ScrollBarDemo } from "./scrollbar";
 import {
@@ -129,4 +129,4 @@ function App() {
   );
 }
 
-mount(App);
+export default App;

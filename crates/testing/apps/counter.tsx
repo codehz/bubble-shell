@@ -1,4 +1,4 @@
-import { mount, signal, Text, View, TapGesture } from "bubble-shell";
+import { signal, Text, View, TapGesture } from "bubble-shell";
 
 function Row(props) {
   return <Text color="#dddddd" fontSize={18}>{props.label()}</Text>;
@@ -31,4 +31,4 @@ function Counter() {
   );
 }
 
-mount(Counter);
+export default Counter;
