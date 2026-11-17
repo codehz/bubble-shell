@@ -1,7 +1,7 @@
 import { scrollActionForKey } from "./a11y.js";
 import { commandsForDom } from "./ime.js";
 import { dispatchEditEvents, dispatchGestureEvents, dispatchUiCalls, dispatchVarEvents, mount, setApi } from "bubble-shell";
-import { layoutSnapshot, wrapLines } from "./textlayout.js";
+import { createTextLayoutCache } from "./textlayout.js";
 
 const dev = window.__bubbleDev ?? null;
 const canvas = document.querySelector("canvas");
@@ -293,20 +293,12 @@ function fontOf(fontSize, weight) {
   return `${weight || 400} ${fontSize}px sans-serif`;
 }
 
-function lineHeightOf(fontSize, lineHeight) {
-  return lineHeight > 0 ? lineHeight : fontSize * 1.2;
-}
+const textCache = createTextLayoutCache();
 
-function wrapText(text, fontSize, weight, maxWidth) {
-  ctx.font = fontOf(fontSize, weight);
-  return wrapLines(text, maxWidth, (line) => ctx.measureText(line).width).map((line) => line.text);
-}
-
-function hostLayout(textPtr, textLen, width, fontSize, lineHeight, weight, align, density, revisionLo, revisionHi, outPtr, outCap) {
-  const text = decoder.decode(new Uint8Array(memory().buffer, textPtr, textLen));
-  const revision = revisionLo + revisionHi * 2 ** 32;
-  ctx.font = fontOf(fontSize, weight);
-  const laid = layoutSnapshot({
+function textLayoutParams(text, width, fontSize, lineHeight, weight, align, density) {
+  const font = fontOf(fontSize, weight);
+  ctx.font = font;
+  return {
     text,
     width,
     fontSize,
@@ -314,13 +306,21 @@ function hostLayout(textPtr, textLen, width, fontSize, lineHeight, weight, align
     weight,
     align,
     density,
-    revision,
-    font: fontOf(fontSize, weight),
+    font,
     measure: (line) => ctx.measureText(line).width,
+  };
+}
+
+function hostLayout(textPtr, textLen, width, fontSize, lineHeight, weight, align, density, revisionLo, revisionHi, outPtr, outCap) {
+  const text = decoder.decode(new Uint8Array(memory().buffer, textPtr, textLen));
+  const revision = revisionLo + revisionHi * 2 ** 32;
+  const bytes = textCache.snapshot({
+    ...textLayoutParams(text, width, fontSize, lineHeight, weight, align, density),
+    revision,
   });
-  if (laid.bytes.length > outCap) return laid.bytes.length;
-  new Uint8Array(memory().buffer, outPtr, laid.bytes.length).set(laid.bytes);
-  return laid.bytes.length;
+  if (bytes.length > outCap) return bytes.length;
+  new Uint8Array(memory().buffer, outPtr, bytes.length).set(bytes);
+  return bytes.length;
 }
 
 const wasm = await WebAssembly.instantiateStreaming(fetch("./bubble.wasm"), {
@@ -328,14 +328,13 @@ const wasm = await WebAssembly.instantiateStreaming(fetch("./bubble.wasm"), {
     host_measure(textPtr, textLen, fontSize, lineHeight, weight, mode, avail, outPtr) {
       const text = decoder.decode(new Uint8Array(memory().buffer, textPtr, textLen));
       const maxWidth = mode && avail > 0 ? avail : null;
-      const lines = wrapText(text, fontSize, weight, maxWidth);
+      const laid = textCache.lines(
+        textLayoutParams(text, maxWidth ?? 0, fontSize, lineHeight, weight, 0, 1),
+      );
       let width = 0;
-      ctx.font = fontOf(fontSize, weight);
-      for (const line of lines) {
-        width = Math.max(width, ctx.measureText(line).width);
-      }
+      for (const line of laid.lines) width = Math.max(width, line.width);
       if (maxWidth !== null) width = Math.min(width, maxWidth);
-      const height = lines.length * lineHeightOf(fontSize, lineHeight);
+      const height = laid.lines.length * laid.lineHeight;
       const out = new DataView(memory().buffer, outPtr, 8);
       out.setFloat32(0, width, true);
       out.setFloat32(4, height, true);
@@ -609,21 +608,9 @@ function paint() {
       const text = decoder.decode(new Uint8Array(memory().buffer, exports.scratch_ptr() + offset, textLen));
       offset += textLen;
       ctx.fillStyle = css(color);
-      ctx.font = fontOf(fontSize, weight);
+      const laid = textCache.lines(textLayoutParams(text, w, fontSize, lineHeight, weight, align, 1));
       ctx.textBaseline = "middle";
-      const lineH = lineHeightOf(fontSize, lineHeight);
-      const laid = layoutSnapshot({
-        text,
-        width: w,
-        fontSize,
-        lineHeight,
-        weight,
-        align,
-        density: 1,
-        revision: 0,
-        font: ctx.font,
-        measure: (line) => ctx.measureText(line).width,
-      });
+      const lineH = laid.lineHeight;
       for (const line of laid.lines) {
         if (line.text && (index === 0 || line.y < h || h <= 0)) {
           ctx.fillText(line.text, x + (line.x || 0), y + line.y + lineH / 2);
@@ -1211,6 +1198,26 @@ if (dev) {
   const entry = await import(new URL(`./fixtures/${fixture}.js`, document.baseURI).href);
   mount(entry.default);
 }
+let textRefreshQueued = false;
+
+// Canvas stops resampling text every frame once line breaks are cached.
+// `document.fonts` `loadingdone` is the web font-environment change (native
+// uses registerFont). Drop host lines, then force a shell remeasure before paint.
+function refreshTextEnvironment() {
+  if (textRefreshQueued) return;
+  textRefreshQueued = true;
+  queueMicrotask(() => {
+    textRefreshQueued = false;
+    textCache.clear();
+    if (exports.invalidate_text_layout() !== 0) return;
+    if (exports.layout() === 0) paint();
+  });
+}
+
+if (document.fonts?.addEventListener) {
+  document.fonts.addEventListener("loadingdone", refreshTextEnvironment);
+}
+
 paint();
 const firstFrameMs = performance.now() - started;
 console.info(`first frame ${firstFrameMs.toFixed(1)} ms`);

@@ -1,7 +1,14 @@
 // BLS1 layout snapshot. Line breaks match canvas measurement. A line that contains
 // RTL uses DOM ranges so caret x is visual, not a logical prefix width.
+//
+// Line geometry is independent of screen position and color. Editing carets,
+// runs, and BLS1 bytes are built only when a snapshot is requested. Geometry
+// is reused across revisions; bytes are restamped so the header revision is
+// the one the caller asked for. The text itself is part of the key, because
+// an open edit batch can change the string without bumping the revision.
 
 const MAGIC = 0x314c5342;
+const TEXT_LAYOUT_LIMIT = 512;
 
 let probe;
 
@@ -29,7 +36,7 @@ function hasRtl(text) {
   return /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/.test(text);
 }
 
-export function wrapLines(text, maxWidth, measure) {
+function wrapLines(text, maxWidth, measure) {
   const lines = [];
   let unit = 0;
   const paragraphs = text.split("\n");
@@ -95,50 +102,54 @@ function putF32(view, offset, value) {
   return offset + 4;
 }
 
-export function layoutSnapshot({
-  text,
-  width,
-  fontSize,
-  lineHeight,
-  weight,
-  align,
-  density,
-  revision,
-  measure,
-  font,
-}) {
+function layoutLines({ text, width, fontSize, lineHeight, align, measure }) {
   const lh = lineHeight > 0 ? lineHeight : fontSize * 1.2;
-  const lines = wrapLines(text, width > 0 ? width : null, measure);
-  const units = utf16Length(text);
-  const carets = Array.from({ length: units + 1 }, () => ({ x: 0, y: 0, h: lh }));
-  const runs = [];
-  lines.forEach((line, index) => {
-    const y = index * lh;
+  const wrapped = wrapLines(text, width > 0 ? width : null, measure);
+  const lines = [];
+  for (let index = 0; index < wrapped.length; index += 1) {
+    const line = wrapped[index];
     const logical = measure(line.text);
     let shift = 0;
     if (width > 0 && logical < width) {
       if (align === 1) shift = (width - logical) / 2;
       else if (align === 2) shift = width - logical;
     }
+    lines.push({
+      text: line.text,
+      start: line.start,
+      x: shift,
+      y: index * lh,
+      width: logical,
+    });
+  }
+  return { lines, lineHeight: lh };
+}
+
+function editingGeometry({ text, lines, lineHeight, measure, font }) {
+  const units = utf16Length(text);
+  const carets = Array.from({ length: units + 1 }, () => ({ x: 0, y: 0, h: lineHeight }));
+  const runs = [];
+  for (const line of lines) {
+    const shift = line.x;
+    const y = line.y;
+    const logical = line.width;
     const rtl = hasRtl(line.text);
-    const visual = rtl ? visualOffsets(line.text, font, lh) : null;
-    line.x = shift;
-    line.y = y;
+    const visual = rtl ? visualOffsets(line.text, font, lineHeight) : null;
     const end = line.start + line.text.length;
     const xAt = (col) => {
       if (visual) return shift + visual[col];
       return shift + measure(line.text.slice(0, col));
     };
-    carets[line.start] = { x: xAt(0), y, h: lh };
+    carets[line.start] = { x: xAt(0), y, h: lineHeight };
     let col = 0;
     for (const char of line.text) {
       col += char.length;
       const at = line.start + col;
-      if (at < carets.length) carets[at] = { x: xAt(col), y, h: lh };
+      if (at < carets.length) carets[at] = { x: xAt(col), y, h: lineHeight };
     }
     if (end > line.start) {
       if (!visual) {
-        runs.push({ start: line.start, end, x: shift, y, w: logical, h: lh, level: 0 });
+        runs.push({ start: line.start, end, x: shift, y, w: logical, h: lineHeight, level: 0 });
       } else {
         let i = 0;
         while (i < line.text.length) {
@@ -162,14 +173,18 @@ export function layoutSnapshot({
             x: Math.min(x0, x1),
             y,
             w: Math.abs(x1 - x0),
-            h: lh,
+            h: lineHeight,
             level,
           });
           i = j;
         }
       }
     }
-  });
+  }
+  return { units, carets, runs };
+}
+
+function encodeLayout({ width, fontSize, lineHeight, weight, align, density, revision, units, carets, runs }) {
   const bytes = new Uint8Array(40 + carets.length * 12 + runs.length * 28);
   const view = new DataView(bytes.buffer);
   let offset = 0;
@@ -204,5 +219,141 @@ export function layoutSnapshot({
     view.setUint8(offset, run.level);
     offset += 4;
   }
-  return { bytes, lines, carets, runs, lineHeight: lh };
+  return bytes;
+}
+
+export function layoutSnapshot(args) {
+  const laid = layoutLines(args);
+  const editing = editingGeometry({
+    text: args.text,
+    lines: laid.lines,
+    lineHeight: laid.lineHeight,
+    measure: args.measure,
+    font: args.font,
+  });
+  const bytes = encodeLayout({
+    width: args.width,
+    fontSize: args.fontSize,
+    lineHeight: args.lineHeight,
+    weight: args.weight,
+    align: args.align,
+    density: args.density,
+    revision: args.revision,
+    units: editing.units,
+    carets: editing.carets,
+    runs: editing.runs,
+  });
+  return {
+    bytes,
+    lines: laid.lines,
+    carets: editing.carets,
+    runs: editing.runs,
+    lineHeight: laid.lineHeight,
+  };
+}
+
+function partKey(value) {
+  if (Object.is(value, -0)) return "-0";
+  return String(value);
+}
+
+function cacheKey(text, width, fontSize, lineHeight, weight, align, density, font) {
+  const parts = [font, weight, fontSize, lineHeight, width, align, density, text];
+  let key = "";
+  for (const part of parts) {
+    const value = partKey(part);
+    key += value.length;
+    key += ":";
+    key += value;
+    key += "\n";
+  }
+  return key;
+}
+
+export function createTextLayoutCache(limit = TEXT_LAYOUT_LIMIT) {
+  const entries = new Map();
+
+  function touch(key) {
+    const entry = entries.get(key);
+    if (!entry) return undefined;
+    entries.delete(key);
+    entries.set(key, entry);
+    return entry;
+  }
+
+  function remember(key, entry) {
+    entries.set(key, entry);
+    while (entries.size > limit) {
+      const oldest = entries.keys().next().value;
+      entries.delete(oldest);
+    }
+  }
+
+  function entryFor(params) {
+    const key = cacheKey(
+      params.text,
+      params.width,
+      params.fontSize,
+      params.lineHeight,
+      params.weight,
+      params.align,
+      params.density,
+      params.font,
+    );
+    const hit = touch(key);
+    if (hit) return hit;
+    const laid = layoutLines(params);
+    const entry = {
+      lines: laid.lines,
+      lineHeight: laid.lineHeight,
+      units: 0,
+      carets: null,
+      runs: null,
+      bytes: null,
+      bytesRevision: undefined,
+    };
+    remember(key, entry);
+    return entry;
+  }
+
+  return {
+    clear() {
+      entries.clear();
+    },
+    lines(params) {
+      const entry = entryFor(params);
+      return { lines: entry.lines, lineHeight: entry.lineHeight };
+    },
+    snapshot(params) {
+      const entry = entryFor(params);
+      if (!entry.carets) {
+        const editing = editingGeometry({
+          text: params.text,
+          lines: entry.lines,
+          lineHeight: entry.lineHeight,
+          measure: params.measure,
+          font: params.font,
+        });
+        entry.units = editing.units;
+        entry.carets = editing.carets;
+        entry.runs = editing.runs;
+      }
+      if (entry.bytesRevision !== params.revision) {
+        entry.bytes = encodeLayout({
+          width: params.width,
+          fontSize: params.fontSize,
+          lineHeight: params.lineHeight,
+          weight: params.weight,
+          align: params.align,
+          density: params.density,
+          revision: params.revision,
+          units: entry.units,
+          carets: entry.carets,
+          runs: entry.runs,
+        });
+        entry.bytesRevision = params.revision;
+      }
+      return entry.bytes;
+    },
+  };
 }
