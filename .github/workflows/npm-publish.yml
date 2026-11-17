@@ -1,0 +1,228 @@
+# Publishes bubble-shell and the @bubble-shell platform packages.
+# Requires secret NPM_TOKEN and a GitHub environment named npm-release.
+
+name: npm publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: npm version when this run is not a v* tag
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            platform: darwin-arm64
+            bin: bubble
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x64
+            bin: bubble
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x64
+            bin: bubble.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown,${{ matrix.target }}
+      - name: Build wasm
+        run: cargo build -p bubble-wasm --target wasm32-unknown-unknown --release
+      - name: Build CLI
+        run: cargo build -p bubble-cli --release --target ${{ matrix.target }}
+      - name: Stage platform package
+        shell: bash
+        run: |
+          dest="npm/@bubble-shell/${{ matrix.platform }}/bin"
+          mkdir -p "$dest"
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$dest/${{ matrix.bin }}"
+          if [ "${{ matrix.bin }}" = "bubble" ]; then
+            chmod +x "$dest/bubble"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: npm/@bubble-shell/${{ matrix.platform }}
+
+  generate-types:
+    runs-on: ubuntu-latest
+    needs: build-binaries
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build wasm
+        run: cargo build -p bubble-wasm --target wasm32-unknown-unknown --release
+      - name: Build CLI
+        run: cargo build -p bubble-cli --release
+      - name: Emit types
+        run: ./target/release/bubble __emit-dts > npm/bubble-shell/index.d.ts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bubble-shell-dts
+          path: npm/bubble-shell/index.d.ts
+
+  smoke:
+    runs-on: ubuntu-latest
+    needs: [build-binaries, generate-types]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble linux package and types
+        run: |
+          mkdir -p npm/@bubble-shell/linux-x64
+          cp -a artifacts/linux-x64/. npm/@bubble-shell/linux-x64/
+          chmod +x npm/@bubble-shell/linux-x64/bin/bubble
+          cp artifacts/bubble-shell-dts/index.d.ts npm/bubble-shell/index.d.ts
+          node <<'EOF'
+          const fs = require('fs');
+          const file = 'npm/bubble-shell/package.json';
+          const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
+          pkg.optionalDependencies = {
+            '@bubble-shell/linux-x64': 'file:../@bubble-shell/linux-x64',
+          };
+          fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + '\n');
+          EOF
+      - name: Install from the local package and run the CLI
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/npm-test"
+          mkdir -p "$work"
+          cd "$work"
+          npm init -y
+          npm install "${GITHUB_WORKSPACE}/npm/bubble-shell"
+          npx bubble --help
+          npm install -D typescript
+          cat > test.ts <<'EOF'
+          import { signal, mount } from "bubble-shell";
+          const count = signal(0);
+          void count;
+          mount(() => {});
+          EOF
+          npx tsc --noEmit --strict test.ts
+          npx bubble dev "${GITHUB_WORKSPACE}/crates/testing/apps/counter.tsx" --port 4173 >dev.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" || true' EXIT
+          ok=0
+          for _ in $(seq 1 60); do
+            if curl -sf -o /dev/null http://127.0.0.1:4173/; then
+              ok=1
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              cat dev.log
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "$ok" != 1 ]; then
+            cat dev.log
+            exit 1
+          fi
+          curl -sf -o /dev/null http://127.0.0.1:4173/bubble.wasm
+          curl -sf -o /dev/null http://127.0.0.1:4173/src/host.js
+          curl -sf -o /dev/null http://127.0.0.1:4173/src/a11y.js
+  publish:
+    runs-on: ubuntu-latest
+    needs: [build-binaries, generate-types, smoke]
+    environment: npm-release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Assemble packages
+        run: |
+          for platform in darwin-arm64 linux-x64 windows-x64; do
+            mkdir -p "npm/@bubble-shell/${platform}"
+            cp -a "artifacts/${platform}/." "npm/@bubble-shell/${platform}/"
+          done
+          chmod +x npm/@bubble-shell/darwin-arm64/bin/bubble
+          chmod +x npm/@bubble-shell/linux-x64/bin/bubble
+          cp artifacts/bubble-shell-dts/index.d.ts npm/bubble-shell/index.d.ts
+      - name: Set versions from the tag
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          elif [[ -n "$VERSION_INPUT" ]]; then
+            version="$VERSION_INPUT"
+          else
+            echo "no version: push a v* tag or pass the version input" >&2
+            exit 1
+          fi
+          export VERSION="$version"
+          node <<'EOF'
+          const fs = require('fs');
+          const version = process.env.VERSION;
+          const files = [
+            'npm/@bubble-shell/darwin-arm64/package.json',
+            'npm/@bubble-shell/linux-x64/package.json',
+            'npm/@bubble-shell/windows-x64/package.json',
+            'npm/bubble-shell/package.json',
+          ];
+          for (const file of files) {
+            const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
+            pkg.version = version;
+            if (pkg.optionalDependencies) {
+              for (const name of Object.keys(pkg.optionalDependencies)) {
+                pkg.optionalDependencies[name] = version;
+              }
+            }
+            fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + '\n');
+          }
+          EOF
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for platform in darwin-arm64 linux-x64 windows-x64; do
+            (cd "npm/@bubble-shell/${platform}" && npm publish --provenance --access public)
+          done
+      - name: Publish bubble-shell
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: (cd npm/bubble-shell && npm publish --provenance)
+      - name: Stage release binaries
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          mkdir -p release-assets
+          cp npm/@bubble-shell/darwin-arm64/bin/bubble release-assets/bubble-darwin-arm64
+          cp npm/@bubble-shell/linux-x64/bin/bubble release-assets/bubble-linux-x64
+          cp npm/@bubble-shell/windows-x64/bin/bubble.exe release-assets/bubble-windows-x64.exe
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/bubble-darwin-arm64
+            release-assets/bubble-linux-x64
+            release-assets/bubble-windows-x64.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

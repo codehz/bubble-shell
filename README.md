@@ -1,8 +1,20 @@
 # Bubble Shell
 
+[![npm](https://img.shields.io/npm/v/bubble-shell)](https://www.npmjs.com/package/bubble-shell)
+
 可嵌入 web / Android / iOS 宿主的自绘 UI 运行时：用 TSX 写界面，编译成远程下发的签名内容包，宿主内渲染与交互，不依赖 Web 渲染。
 
 架构与设计文档见 [docs/README.md](docs/README.md)。本文是开发者的构建与使用指南。
+
+## 安装
+
+```sh
+npm install -D bubble-shell
+```
+
+安装后提供 `bubble` 命令（`bubble bundle`、`bubble dev`）。已发布平台：macOS ARM64、Linux x64、Windows x64。类型定义随包发布，无需额外 `@types`。
+
+`import … from "bubble-shell"` 在编译后保持为 external specifier，由 `bubble dev` 或宿主运行时提供实现，不从 npm 加载运行时。
 
 ## 环境要求
 
@@ -14,7 +26,8 @@
 workspace 的 `default-members` 是 `crates/cli`，所以裸 `cargo run` / `cargo test` / `cargo check` 只构建宿主侧 CLI，不会碰 wasm（`bubble-wasm` 是 wasm32 cdylib，为宿主目标链接必然失败）。
 
 ```sh
-# 构建 wasm shell（`bubble dev` 与 web 单测都依赖它）
+# 构建 wasm shell。CLI 编译期嵌入这份 wasm，须先于 bubble-cli 构建。
+# `bubble dev` 与 web 单测都依赖它。
 cargo build -p bubble-wasm --target wasm32-unknown-unknown --release
 # 产物：target/wasm32-unknown-unknown/release/bubble_wasm.wasm
 ```
@@ -27,7 +40,7 @@ cargo run -- dev examples/gallery/app.tsx
 ```
 
 - 在浏览器打开终端打印的地址，页面在 `<canvas>` 上渲染应用，`/` 路由附带 import map 与 WebSocket 热更新客户端。
-- 需要先完成上面的 wasm 构建；`bubble dev` 从 `target/wasm32-unknown-unknown/release/bubble_wasm.wasm` 读取 wasm shell，从 `sdk/web/src` 提供 web 宿主模块。
+- 需要先完成上面的 wasm 构建，再编译 CLI。`bubble dev` 从二进制内嵌的 wasm 与 web 宿主模块提供 `/bubble.wasm` 和 `/src/*.js`，不读取仓库里的 `sdk/web/src` 或 `target/`。
 - 修改入口及其依赖的源文件会自动重编译，并通过 WebSocket 推增量更新；删除文件或改坏构建时推整页 reload / 错误信息。
 - `--port <port>` 可改端口（默认 4173）。
 
@@ -69,6 +82,7 @@ node sdk/web/m0-smoke.mjs counter   # 手动 smoke：渲染、点击；gestures 
 | `crates/compiler` | TSX/TS/JS → 原生渲染调用 |
 | `crates/bundler` | Oxc + rolldown 打包、资源处理、dev 构建 |
 | `crates/cli` | `bubble bundle` / `bubble dev` |
+| `npm/` | `bubble-shell` 与 `@bubble-shell/*` 平台包模板；二进制与 `index.d.ts` 由发布流程填入 |
 | `crates/wasm` | wasm shell（Web 宿主用） |
 | `crates/native` | native C ABI + QuickJS 脚本运行时 |
 | `crates/testing` | fixture 应用与 headless 驱动脚本 |

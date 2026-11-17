@@ -1,0 +1,23 @@
+{
+  "name": "bubble-shell",
+  "version": "0.1.0",
+  "description": "Build and serve Bubble UI bundles",
+  "bin": {
+    "bubble": "./bin/bubble.js"
+  },
+  "types": "./index.d.ts",
+  "keywords": ["bubble", "ui", "framework", "compiler"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=16"
+  },
+  "optionalDependencies": {
+    "@bubble-shell/darwin-arm64": "0.1.0",
+    "@bubble-shell/linux-x64": "0.1.0",
+    "@bubble-shell/windows-x64": "0.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/codehz/bubble-shell.git"
+  }
+}

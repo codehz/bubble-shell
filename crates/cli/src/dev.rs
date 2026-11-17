@@ -12,6 +12,12 @@ use bubble_bundler::{build_dev, bundle_entry, render_dev_bundle, BundleOptions, 
 
 const RUNTIME_JS: &str = include_str!("../../native/js/runtime.js");
 const HOT_JS: &str = include_str!("../js/hot.js");
+const HOST_JS: &str = include_str!("../../../sdk/web/src/host.js");
+const A11Y_JS: &str = include_str!("../../../sdk/web/src/a11y.js");
+const IME_JS: &str = include_str!("../../../sdk/web/src/ime.js");
+const TEXTLAYOUT_JS: &str = include_str!("../../../sdk/web/src/textlayout.js");
+const WASM_BYTES: &[u8] =
+    include_bytes!("../../../target/wasm32-unknown-unknown/release/bubble_wasm.wasm");
 
 const DEFAULT_MIN_RUNTIME: &str = "0.1.0";
 const PLATFORMS: &[&str] = &["web", "ios", "android"];
@@ -77,8 +83,6 @@ struct Shared {
 pub fn run(options: DevOptions) -> Result<(), String> {
     let entry = std::fs::canonicalize(&options.entry)
         .map_err(|error| format!("{}: {error}", options.entry.display()))?;
-    let sdk = web_sdk()?;
-    let wasm = wasm_shell()?;
 
     let initial = build_dev(&entry).map_err(|error| error.message)?;
     let native_body = native_json(&entry)?;
@@ -111,10 +115,8 @@ pub fn run(options: DevOptions) -> Result<(), String> {
             continue;
         };
         let shared = shared.clone();
-        let sdk = sdk.clone();
-        let wasm = wasm.clone();
         thread::spawn(move || {
-            let _ = handle_connection(stream, &shared, &sdk, &wasm);
+            let _ = handle_connection(stream, &shared);
         });
     }
     Ok(())
@@ -317,12 +319,7 @@ fn native_json(entry: &Path) -> Result<String, String> {
     .to_string())
 }
 
-fn handle_connection(
-    mut stream: TcpStream,
-    shared: &Arc<Mutex<Shared>>,
-    sdk: &Path,
-    wasm: &Path,
-) -> std::io::Result<()> {
+fn handle_connection(mut stream: TcpStream, shared: &Arc<Mutex<Shared>>) -> std::io::Result<()> {
     let request = read_request(&mut stream)?;
     let Some(line) = request.lines().next() else {
         return Ok(());
@@ -381,7 +378,7 @@ fn handle_connection(
             None => respond(&mut stream, 404, "text/plain", b"asset not found"),
         };
     }
-    serve_static(&mut stream, sdk, wasm, path)
+    serve_static(&mut stream, path)
 }
 
 const DEV_PAGE: &str = r#"<!doctype html>
@@ -509,50 +506,23 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// Web host modules and the wasm shell belong to this toolchain, not the app.
-/// Paths are fixed at compile time so `bubble dev` does not take a project root.
-fn toolchain_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn require_toolchain(path: PathBuf, hint: &str) -> Result<PathBuf, String> {
-    std::fs::canonicalize(&path).map_err(|_| format!("{hint} ({})", path.display()))
-}
-
-fn web_sdk() -> Result<PathBuf, String> {
-    require_toolchain(toolchain_root().join("sdk/web/src"), "web sdk not found")
-}
-
-fn wasm_shell() -> Result<PathBuf, String> {
-    require_toolchain(
-        toolchain_root().join("target/wasm32-unknown-unknown/release/bubble_wasm.wasm"),
-        "wasm shell not found; cargo build -p bubble-wasm --target wasm32-unknown-unknown --release",
-    )
-}
-
-const SDK_MODULES: &[&str] = &["host.js", "a11y.js", "ime.js", "textlayout.js"];
-
-fn static_path(sdk: &Path, wasm: &Path, url_path: &str) -> Option<PathBuf> {
-    if url_path == "/bubble.wasm" {
-        return Some(wasm.to_path_buf());
+/// Web host modules and the wasm shell are embedded at compile time.
+fn static_path(url_path: &str) -> Option<(&'static str, &'static [u8])> {
+    match url_path {
+        "/bubble.wasm" => Some(("application/wasm", WASM_BYTES)),
+        "/src/host.js" => Some(("text/javascript; charset=utf-8", HOST_JS.as_bytes())),
+        "/src/a11y.js" => Some(("text/javascript; charset=utf-8", A11Y_JS.as_bytes())),
+        "/src/ime.js" => Some(("text/javascript; charset=utf-8", IME_JS.as_bytes())),
+        "/src/textlayout.js" => Some(("text/javascript; charset=utf-8", TEXTLAYOUT_JS.as_bytes())),
+        _ => None,
     }
-    let name = url_path.strip_prefix("/src/")?;
-    SDK_MODULES.contains(&name).then(|| sdk.join(name))
 }
 
-fn serve_static(
-    stream: &mut TcpStream,
-    sdk: &Path,
-    wasm: &Path,
-    url_path: &str,
-) -> std::io::Result<()> {
-    let Some(file) = static_path(sdk, wasm, url_path) else {
+fn serve_static(stream: &mut TcpStream, url_path: &str) -> std::io::Result<()> {
+    let Some((mime, bytes)) = static_path(url_path) else {
         return respond(stream, 404, "text/plain", b"not found");
     };
-    match std::fs::read(&file) {
-        Ok(bytes) => respond(stream, 200, mime_for(url_path), &bytes),
-        Err(_) => respond(stream, 404, "text/plain", b"not found"),
-    }
+    respond(stream, 200, mime, bytes)
 }
 
 fn respond(
@@ -595,20 +565,21 @@ fn mime_for(path: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{static_path, toolchain_root};
+    use super::static_path;
 
     #[test]
-    fn web_host_comes_from_the_toolchain_sdk() {
-        let sdk = std::fs::canonicalize(toolchain_root().join("sdk/web/src")).unwrap();
-        let wasm = std::path::PathBuf::from("bubble_wasm.wasm");
-        let host = static_path(&sdk, &wasm, "/src/host.js").unwrap();
-        let text = std::fs::read_to_string(host).unwrap();
+    fn web_host_is_embedded() {
+        let (mime, host) = static_path("/src/host.js").unwrap();
+        assert_eq!(mime, "text/javascript; charset=utf-8");
+        let text = std::str::from_utf8(host).unwrap();
         assert!(text.contains("from \"./a11y.js\""));
-        assert!(static_path(&sdk, &wasm, "/src/../host.js").is_none());
-        assert!(static_path(&sdk, &wasm, "/sdk.js").is_none());
-        assert_eq!(
-            static_path(&sdk, &wasm, "/bubble.wasm").as_deref(),
-            Some(wasm.as_path())
-        );
+        assert!(static_path("/src/../host.js").is_none());
+        assert!(static_path("/sdk.js").is_none());
+        let (wasm_mime, wasm) = static_path("/bubble.wasm").unwrap();
+        assert_eq!(wasm_mime, "application/wasm");
+        assert!(!wasm.is_empty());
+        assert!(static_path("/src/a11y.js").is_some());
+        assert!(static_path("/src/ime.js").is_some());
+        assert!(static_path("/src/textlayout.js").is_some());
     }
 }

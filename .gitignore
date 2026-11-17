@@ -5,3 +5,6 @@ sdk/android/.gradle/
 sdk/android/bubble/build/
 sdk/android/build/
 /dist
+/npm/@bubble-shell/*/bin/bubble
+/npm/@bubble-shell/*/bin/bubble.exe
+/npm/bubble-shell/index.d.ts

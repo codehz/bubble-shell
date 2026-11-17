@@ -1,0 +1,13 @@
+{
+  "name": "@bubble-shell/darwin-arm64",
+  "version": "0.1.0",
+  "description": "Bubble CLI for macOS ARM64",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "main": "./index.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/codehz/bubble-shell.git"
+  }
+}
