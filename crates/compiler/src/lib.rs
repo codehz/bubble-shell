@@ -23,6 +23,10 @@ use oxc::span::{GetSpan, SourceType, Span, SPAN};
 use oxc::str::{Ident, Str};
 use oxc::syntax::scope::ScopeFlags;
 use oxc::transformer::{JsxOptions, TransformOptions, Transformer};
+mod bubble_shell_dts;
+mod props;
+
+pub use bubble_shell_dts::BUBBLE_SHELL_DTS;
 
 /// The runtime module injected into every compiled module.
 const RT_MODULE: &str = "bubble:rt";
@@ -73,6 +77,11 @@ pub struct CompileOptions {
     /// components, top-level signals, and the default export mount for
     /// state-preserving updates.
     pub hot: Option<String>,
+    /// Skip `() =>` wrappers on literal component props, and skip `dynamic`
+    /// for expressions that fold to a constant. Literal component props are
+    /// then plain values; a component that reads `props.x()` will throw.
+    /// Off by default.
+    pub optimize: bool,
 }
 
 /// Output of [`compile_module`].
@@ -121,10 +130,10 @@ pub fn compile_module(
         allocator: &allocator,
         builder: AstBuilder::new(&allocator),
         name,
-        source,
         scopes: Vec::new(),
         thunk_jsx: false,
         errors: Vec::new(),
+        options,
         worklets: Vec::new(),
         worklet_arity: HashMap::new(),
         worklet_calls: Vec::new(),
@@ -133,8 +142,18 @@ pub fn compile_module(
     lower.visit_program(&mut program);
     lower.check_worklet_recursion();
     lower.check_worklet_calls();
-    if let Some(error) = lower.errors.first() {
-        return Err(error.clone());
+    if !lower.errors.is_empty() {
+        let mut out = String::new();
+        for (i, (span, msg)) in lower.errors.iter().enumerate() {
+            if i > 0 {
+                out.push_str("\n\n");
+            }
+            out.push_str(&error_frame(name, source, Some(*span), msg));
+        }
+        if lower.errors.len() >= 100 {
+            out.push_str("\n\n(too many errors, stopping at 100)");
+        }
+        return Err(out);
     }
 
     if let Some(key) = &options.hot {
@@ -273,7 +292,6 @@ struct Lower<'a> {
     allocator: &'a Allocator,
     builder: AstBuilder<'a>,
     name: &'a str,
-    source: &'a str,
     /// Bindings per lexical scope, outermost first. Signals feed the primitive
     /// `dynamic` wrap and the bare-signal prop error; elements classify
     /// `{x}` children as node-valued and lower their declarators to thunks.
@@ -282,7 +300,8 @@ struct Lower<'a> {
     /// a render thunk instead of mounting. Function bodies clear it: JSX
     /// inside `() => ...` only executes when the function runs.
     thunk_jsx: bool,
-    errors: Vec<String>,
+    errors: Vec<(Span, String)>,
+    options: &'a CompileOptions,
     /// Module-level worklet functions: name, then the worklet callees its
     /// body calls. Feeds the recursion cycle check.
     worklets: Vec<(String, Vec<String>)>,
@@ -301,15 +320,71 @@ struct Scope {
     elements: HashSet<String>,
 }
 
+fn is_static_expr(expr: &Expression<'_>) -> bool {
+    match expr {
+        Expression::NumericLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::BooleanLiteral(_)
+        | Expression::NullLiteral(_) => true,
+        Expression::UnaryExpression(unary) => is_static_expr(&unary.argument),
+        Expression::BinaryExpression(binary) => {
+            is_static_expr(&binary.left) && is_static_expr(&binary.right)
+        }
+        Expression::ParenthesizedExpression(paren) => is_static_expr(&paren.expression),
+        _ => false,
+    }
+}
+
 impl<'a> Lower<'a> {
     fn error(&mut self, span: Span, message: impl AsRef<str>) {
-        if self.errors.is_empty() {
-            self.errors.push(error_frame(
-                self.name,
-                self.source,
-                Some(span),
-                message.as_ref(),
-            ));
+        const MAX_ERRORS: usize = 100;
+        if self.errors.len() < MAX_ERRORS {
+            self.errors.push((span, message.as_ref().to_string()));
+        }
+    }
+
+    fn validate_prim_props(
+        &mut self,
+        span: Span,
+        tag: &str,
+        attributes: &ArenaVec<'a, JSXAttributeItem<'a>>,
+        spec: &props::PrimSpec,
+    ) {
+        let mut seen: HashSet<&str> = HashSet::new();
+        for item in attributes {
+            let JSXAttributeItem::Attribute(attr) = item else {
+                continue;
+            };
+            let key = match &attr.name {
+                JSXAttributeName::Identifier(id) => id.name.as_str(),
+                _ => continue,
+            };
+            if !seen.insert(key) {
+                self.error(attr.span, format!("<{tag}> duplicate prop '{key}'"));
+                continue;
+            }
+            let Some(expected) = spec.allowed.get(key) else {
+                self.error(attr.span, format!("<{tag}> unknown prop '{key}'"));
+                continue;
+            };
+            if let Some(value) = &attr.value {
+                let actual = props::infer_prop_type(value);
+                if !props::prop_types_compatible(&actual, expected) {
+                    self.error(
+                        attr.span,
+                        format!(
+                            "<{tag}> prop '{key}' type mismatch: expected {}, got {}",
+                            expected.display(),
+                            actual.display()
+                        ),
+                    );
+                }
+            }
+        }
+        for &req in spec.required {
+            if !seen.contains(req) {
+                self.error(span, format!("<{tag}> missing required prop '{req}'"));
+            }
         }
     }
 
@@ -450,6 +525,9 @@ impl<'a> Lower<'a> {
 
     /// Wrap `expression` in `dynamic(() => ...)` when it reads a local signal.
     fn dynamic(&self, span: Span, expression: Expression<'a>) -> Expression<'a> {
+        if self.options.optimize && is_static_expr(&expression) {
+            return expression;
+        }
         if !self.reads_signal(&expression) {
             return expression;
         }
@@ -509,6 +587,10 @@ impl<'a> Lower<'a> {
                 return self.null(span);
             }
         };
+
+        if let Some(spec) = props::prim_spec(tag) {
+            self.validate_prim_props(span, tag, &element.opening_element.attributes, spec);
+        }
         let JSXElement {
             opening_element,
             children,
@@ -801,8 +883,17 @@ impl<'a> Lower<'a> {
                     if !is_function {
                         // Handlers stay plain so the component can pass them
                         // on unchanged; everything else is a getter the
-                        // component reads with `props.{key}()`.
-                        other = self.arrow_expr(span, other);
+                        // component reads with `props.{key}()`. Literal
+                        // values skip the getter only when `optimize` is set.
+                        let is_literal = matches!(
+                            other,
+                            Expression::NumericLiteral(_)
+                                | Expression::StringLiteral(_)
+                                | Expression::BooleanLiteral(_)
+                        );
+                        if !(self.options.optimize && is_literal) {
+                            other = self.arrow_expr(span, other);
+                        }
                     }
                     other
                 }
@@ -1356,6 +1447,7 @@ impl<'a> Lower<'a> {
                     let container = self.take(container);
                     let container_span = container.span;
                     if !container.expression.is_expression() {
+                        self.error(container_span, "empty JSX expression");
                         continue;
                     }
                     let mut expression = container.expression.into_expression();
@@ -1797,9 +1889,9 @@ fn is_worklet(expression: &Expression<'_>) -> bool {
         return false;
     };
     // The parser stores string directives separately from the statements.
-    body.directives.iter().any(|directive| {
-        directive.expression.value.as_str() == Some("worklet")
-    })
+    body.directives
+        .iter()
+        .any(|directive| directive.expression.value.as_str() == Some("worklet"))
 }
 
 /// Whether a lowered worklet statement tree produces no stack value. The
@@ -1879,7 +1971,8 @@ impl<'a> Lower<'a> {
         for capture in ctx.captures {
             captures_elements.push(ArrayExpressionElement::from(capture));
         }
-        let captures_array = Expression::new_array_expression(span, captures_elements, &self.builder);
+        let captures_array =
+            Expression::new_array_expression(span, captures_elements, &self.builder);
         let mut body_elements = self.ast_vec::<ArrayExpressionElement<'a>>();
         for statement in lowered {
             body_elements.push(ArrayExpressionElement::from(statement));
@@ -1963,10 +2056,11 @@ impl<'a> Lower<'a> {
                     };
                     let init_span = init.span();
                     let value = self.worklet_statement_expression(init_span, ctx, init);
-                    out.push(self.tree_op(span, "let", vec![
-                        self.number(SPAN, slot as f64),
-                        value,
-                    ]));
+                    out.push(self.tree_op(
+                        span,
+                        "let",
+                        vec![self.number(SPAN, slot as f64), value],
+                    ));
                 }
                 Statement::IfStatement(mut statement) => {
                     let test = statement.test.take_in(&self.builder);
@@ -1975,16 +2069,24 @@ impl<'a> Lower<'a> {
                     let consequent = statement.consequent.take_in(&self.builder);
                     let consequent = self.worklet_block(span, ctx, consequent);
                     let alternate = statement.alternate.take();
-                    let alternate = alternate
-                        .map(|alternate| self.worklet_block(span, ctx, alternate));
+                    let alternate =
+                        alternate.map(|alternate| self.worklet_block(span, ctx, alternate));
                     let mut elements = self.ast_vec::<ArrayExpressionElement<'a>>();
                     elements.push(ArrayExpressionElement::from(self.string("if", span)));
                     elements.push(ArrayExpressionElement::from(test));
-                    elements.push(ArrayExpressionElement::from(self.wrap_statements(span, consequent)));
+                    elements.push(ArrayExpressionElement::from(
+                        self.wrap_statements(span, consequent),
+                    ));
                     if let Some(alternate) = alternate {
-                        elements.push(ArrayExpressionElement::from(self.wrap_statements(span, alternate)));
+                        elements.push(ArrayExpressionElement::from(
+                            self.wrap_statements(span, alternate),
+                        ));
                     }
-                    out.push(Expression::new_array_expression(span, elements, &self.builder));
+                    out.push(Expression::new_array_expression(
+                        span,
+                        elements,
+                        &self.builder,
+                    ));
                 }
                 Statement::ReturnStatement(mut statement) => {
                     let value = match statement.argument.take() {
@@ -2044,24 +2146,41 @@ impl<'a> Lower<'a> {
     ) -> Expression<'a> {
         match expression {
             Expression::AssignmentExpression(mut assignment) => {
-                let AssignmentExpression { operator, left, right, .. } =
-                    assignment.take_in(&self.builder);
+                let AssignmentExpression {
+                    operator,
+                    left,
+                    right,
+                    ..
+                } = assignment.take_in(&self.builder);
                 let mut member = match left {
                     AssignmentTarget::StaticMemberExpression(member) => member,
                     _ => {
-                        self.error(span, "worklet assignments only write shared values (.value)");
+                        self.error(
+                            span,
+                            "worklet assignments only write shared values (.value)",
+                        );
                         return self.null(span);
                     }
                 };
                 if member.property.name.as_str() != "value" {
-                    self.error(span, "worklet assignments only write shared values (.value)");
+                    self.error(
+                        span,
+                        "worklet assignments only write shared values (.value)",
+                    );
                     return self.null(span);
                 }
                 let Expression::Identifier(object) = member.object.take_in(&self.builder) else {
-                    self.error(span, "worklet assignments write shared values through an identifier");
+                    self.error(
+                        span,
+                        "worklet assignments write shared values through an identifier",
+                    );
                     return self.null(span);
                 };
-                if ctx.params.iter().any(|param| param.as_str() == object.name.as_str()) {
+                if ctx
+                    .params
+                    .iter()
+                    .any(|param| param.as_str() == object.name.as_str())
+                {
                     self.error(span, "worklet parameters are read-only");
                     return self.null(span);
                 }
@@ -2075,46 +2194,97 @@ impl<'a> Lower<'a> {
                     }
                     AssignmentOperator::Addition => {
                         let addend = self.worklet_expr(rhs_span, ctx, right);
-                        self.tree_op(rhs_span, "store", vec![
-                            self.number(span, index as f64),
-                            self.tree_op(rhs_span, "add", vec![
-                                self.tree_op(rhs_span, "cap", vec![self.number(span, index as f64)]),
-                                addend,
-                            ]),
-                        ])
+                        self.tree_op(
+                            rhs_span,
+                            "store",
+                            vec![
+                                self.number(span, index as f64),
+                                self.tree_op(
+                                    rhs_span,
+                                    "add",
+                                    vec![
+                                        self.tree_op(
+                                            rhs_span,
+                                            "cap",
+                                            vec![self.number(span, index as f64)],
+                                        ),
+                                        addend,
+                                    ],
+                                ),
+                            ],
+                        )
                     }
                     AssignmentOperator::Subtraction => {
                         let addend = self.worklet_expr(rhs_span, ctx, right);
-                        self.tree_op(rhs_span, "store", vec![
-                            self.number(span, index as f64),
-                            self.tree_op(rhs_span, "sub", vec![
-                                self.tree_op(rhs_span, "cap", vec![self.number(span, index as f64)]),
-                                addend,
-                            ]),
-                        ])
+                        self.tree_op(
+                            rhs_span,
+                            "store",
+                            vec![
+                                self.number(span, index as f64),
+                                self.tree_op(
+                                    rhs_span,
+                                    "sub",
+                                    vec![
+                                        self.tree_op(
+                                            rhs_span,
+                                            "cap",
+                                            vec![self.number(span, index as f64)],
+                                        ),
+                                        addend,
+                                    ],
+                                ),
+                            ],
+                        )
                     }
                     AssignmentOperator::Multiplication => {
                         let factor = self.worklet_expr(rhs_span, ctx, right);
-                        self.tree_op(rhs_span, "store", vec![
-                            self.number(span, index as f64),
-                            self.tree_op(rhs_span, "mul", vec![
-                                self.tree_op(rhs_span, "cap", vec![self.number(span, index as f64)]),
-                                factor,
-                            ]),
-                        ])
+                        self.tree_op(
+                            rhs_span,
+                            "store",
+                            vec![
+                                self.number(span, index as f64),
+                                self.tree_op(
+                                    rhs_span,
+                                    "mul",
+                                    vec![
+                                        self.tree_op(
+                                            rhs_span,
+                                            "cap",
+                                            vec![self.number(span, index as f64)],
+                                        ),
+                                        factor,
+                                    ],
+                                ),
+                            ],
+                        )
                     }
                     AssignmentOperator::Division => {
                         let factor = self.worklet_expr(rhs_span, ctx, right);
-                        self.tree_op(rhs_span, "store", vec![
-                            self.number(span, index as f64),
-                            self.tree_op(rhs_span, "div", vec![
-                                self.tree_op(rhs_span, "cap", vec![self.number(span, index as f64)]),
-                                factor,
-                            ]),
-                        ])
+                        self.tree_op(
+                            rhs_span,
+                            "store",
+                            vec![
+                                self.number(span, index as f64),
+                                self.tree_op(
+                                    rhs_span,
+                                    "div",
+                                    vec![
+                                        self.tree_op(
+                                            rhs_span,
+                                            "cap",
+                                            vec![self.number(span, index as f64)],
+                                        ),
+                                        factor,
+                                    ],
+                                ),
+                            ],
+                        )
                     }
                     other => {
-                        self.error(span, format!("worklet assignments support = += -= *= /=, got {other:?}"));
+                        self.error(
+                            span,
+                            format!("worklet assignments support = += -= *= /=, got {other:?}"),
+                        );
                         return self.null(span);
                     }
                 };
@@ -2147,23 +2317,35 @@ impl<'a> Lower<'a> {
             Expression::CallExpression(call) => call,
             other => {
                 let value = self.worklet_expr(rhs_span, ctx, other);
-                return self.tree_op(rhs_span, "store", vec![self.number(span, index as f64), value]);
+                return self.tree_op(
+                    rhs_span,
+                    "store",
+                    vec![self.number(span, index as f64), value],
+                );
             }
         };
         let callee_name = match &call.callee {
             Expression::Identifier(id) => id.name.as_str().to_string(),
             _ => {
                 let value = self.worklet_expr(rhs_span, ctx, Expression::CallExpression(call));
-                return self.tree_op(rhs_span, "store", vec![self.number(span, index as f64), value]);
+                return self.tree_op(
+                    rhs_span,
+                    "store",
+                    vec![self.number(span, index as f64), value],
+                );
             }
         };
         if !matches!(callee_name.as_str(), "withTiming" | "withSpring") {
             let value = self.worklet_expr(rhs_span, ctx, Expression::CallExpression(call));
-            return self.tree_op(rhs_span, "store", vec![self.number(span, index as f64), value]);
+            return self.tree_op(
+                rhs_span,
+                "store",
+                vec![self.number(span, index as f64), value],
+            );
         }
         let mut arguments = call.arguments.take_in(&self.builder).into_iter();
         let Some(target) = arguments.next() else {
-            self.error(span, "withTiming needs a target value");
+            self.error(span, format!("{callee_name} needs a target value"));
             return self.null(span);
         };
         let target = match target {
@@ -2197,24 +2379,31 @@ impl<'a> Lower<'a> {
                 let mut numbers = Vec::new();
                 for property in object.properties.iter() {
                     let ObjectPropertyKind::ObjectProperty(property) = property else {
-                        self.error(span, "worklet animation options must be plain object properties");
+                        self.error(
+                            span,
+                            "worklet animation options must be plain object properties",
+                        );
                         return self.null(span);
                     };
                     let PropertyKey::StaticIdentifier(key) = &property.key else {
-                        self.error(span, "worklet animation options must be plain object properties");
+                        self.error(
+                            span,
+                            "worklet animation options must be plain object properties",
+                        );
                         return self.null(span);
                     };
                     let number = match &property.value {
                         Expression::NumericLiteral(value) => value.value,
                         // Easing names map to their codes.
-                        Expression::StringLiteral(value)
-                            if key.name.as_str() == "easing" =>
-                        {
+                        Expression::StringLiteral(value) if key.name.as_str() == "easing" => {
                             match value.value.as_str() {
                                 Some("linear") => 0.0,
                                 Some("easeInOut") => 1.0,
                                 _ => {
-                                    self.error(span, "tween easing must be \"linear\" or \"easeInOut\"");
+                                    self.error(
+                                        span,
+                                        "tween easing must be \"linear\" or \"easeInOut\"",
+                                    );
                                     return self.null(span);
                                 }
                             }
@@ -2259,11 +2448,11 @@ impl<'a> Lower<'a> {
             spec_elements.push(ArrayExpressionElement::from(self.number(span, easing)));
         }
         let spec = Expression::new_array_expression(span, spec_elements, &self.builder);
-        self.tree_op(span, "storeAnim", vec![
-            self.number(span, index as f64),
-            spec,
-            target,
-        ])
+        self.tree_op(
+            span,
+            "storeAnim",
+            vec![self.number(span, index as f64), spec, target],
+        )
     }
 
     fn number(&self, span: Span, value: f64) -> Expression<'a> {
@@ -2272,8 +2461,10 @@ impl<'a> Lower<'a> {
 
     /// Register a capture (identifier or string literal) and return its index.
     fn worklet_capture(&mut self, ctx: &mut WorkletCtx<'a>, value: Expression<'a>) -> usize {
-        if let Some(index) = ctx.captures.iter().position(|existing| {
-            match (existing, &value) {
+        if let Some(index) = ctx
+            .captures
+            .iter()
+            .position(|existing| match (existing, &value) {
                 (Expression::Identifier(a), Expression::Identifier(b)) => {
                     a.name.as_str() == b.name.as_str()
                 }
@@ -2281,8 +2472,8 @@ impl<'a> Lower<'a> {
                     a.value.as_str() == b.value.as_str()
                 }
                 _ => false,
-            }
-        }) {
+            })
+        {
             return index;
         }
         ctx.captures.push(value);
@@ -2322,12 +2513,17 @@ impl<'a> Lower<'a> {
                 self.tree_op(span, "cap", vec![self.number(span, index as f64)])
             }
             Expression::UnaryExpression(mut unary) => {
-                let UnaryExpression { operator, argument, .. } = unary.take_in(&self.builder);
+                let UnaryExpression {
+                    operator, argument, ..
+                } = unary.take_in(&self.builder);
                 let name = match operator {
                     UnaryOperator::UnaryNegation => "neg",
                     UnaryOperator::LogicalNot => "not",
                     other => {
-                        self.error(span, format!("operator {other:?} is not a worklet expression"));
+                        self.error(
+                            span,
+                            format!("operator {other:?} is not a worklet expression"),
+                        );
                         return self.null(span);
                     }
                 };
@@ -2335,7 +2531,12 @@ impl<'a> Lower<'a> {
                 self.tree_op(span, name, vec![argument])
             }
             Expression::BinaryExpression(mut binary) => {
-                let BinaryExpression { operator, left, right, .. } = binary.take_in(&self.builder);
+                let BinaryExpression {
+                    operator,
+                    left,
+                    right,
+                    ..
+                } = binary.take_in(&self.builder);
                 let name = match operator {
                     BinaryOperator::Addition => "add",
                     BinaryOperator::Subtraction => "sub",
@@ -2348,7 +2549,10 @@ impl<'a> Lower<'a> {
                     BinaryOperator::Equality | BinaryOperator::StrictEquality => "eq",
                     BinaryOperator::Inequality | BinaryOperator::StrictInequality => "ne",
                     other => {
-                        self.error(span, format!("operator {other:?} is not a worklet expression"));
+                        self.error(
+                            span,
+                            format!("operator {other:?} is not a worklet expression"),
+                        );
                         return self.null(span);
                     }
                 };
@@ -2357,12 +2561,20 @@ impl<'a> Lower<'a> {
                 self.tree_op(span, name, vec![left, right])
             }
             Expression::LogicalExpression(mut logical) => {
-                let LogicalExpression { operator, left, right, .. } = logical.take_in(&self.builder);
+                let LogicalExpression {
+                    operator,
+                    left,
+                    right,
+                    ..
+                } = logical.take_in(&self.builder);
                 let name = match operator {
                     LogicalOperator::And => "and",
                     LogicalOperator::Or => "or",
                     other => {
-                        self.error(span, format!("operator {other:?} is not a worklet expression"));
+                        self.error(
+                            span,
+                            format!("operator {other:?} is not a worklet expression"),
+                        );
                         return self.null(span);
                     }
                 };
@@ -2371,8 +2583,12 @@ impl<'a> Lower<'a> {
                 self.tree_op(span, name, vec![left, right])
             }
             Expression::ConditionalExpression(mut conditional) => {
-                let ConditionalExpression { test, consequent, alternate, .. } =
-                    conditional.take_in(&self.builder);
+                let ConditionalExpression {
+                    test,
+                    consequent,
+                    alternate,
+                    ..
+                } = conditional.take_in(&self.builder);
                 let test = self.worklet_expr(span, ctx, test);
                 let consequent = self.worklet_expr(span, ctx, consequent);
                 let alternate = self.worklet_expr(span, ctx, alternate);
@@ -2384,11 +2600,18 @@ impl<'a> Lower<'a> {
             }
             Expression::StaticMemberExpression(mut member) => {
                 let Expression::Identifier(object) = &member.object else {
-                    self.error(span, "worklet member access reads event fields or shared values");
+                    self.error(
+                        span,
+                        "worklet member access reads event fields or shared values",
+                    );
                     return self.null(span);
                 };
                 let property = member.property.name.as_str().to_string();
-                if ctx.params.iter().any(|param| param.as_str() == object.name.as_str()) {
+                if ctx
+                    .params
+                    .iter()
+                    .any(|param| param.as_str() == object.name.as_str())
+                {
                     let Some(field) = event_field(&property) else {
                         self.error(span, format!("worklet events have no field {property}"));
                         return self.null(span);
@@ -2396,7 +2619,8 @@ impl<'a> Lower<'a> {
                     return self.tree_op(span, "event", vec![self.number(span, field as f64)]);
                 }
                 if property == "value" {
-                    let Expression::Identifier(object) = member.object.take_in(&self.builder) else {
+                    let Expression::Identifier(object) = member.object.take_in(&self.builder)
+                    else {
                         unreachable!("checked above")
                     };
                     let index = self.worklet_capture(ctx, Expression::Identifier(object));
@@ -2408,17 +2632,25 @@ impl<'a> Lower<'a> {
                 self.tree_op(span, "cap", vec![self.number(span, index as f64)])
             }
             Expression::CallExpression(mut call) => {
-                let CallExpression { callee, arguments, .. } = call.take_in(&self.builder);
+                let CallExpression {
+                    callee, arguments, ..
+                } = call.take_in(&self.builder);
                 let name = match &callee {
                     Expression::Identifier(id) => id.name.as_str().to_string(),
                     Expression::StaticMemberExpression(member) => {
                         // Math.* helpers only.
                         let Expression::Identifier(object) = &member.object else {
-                            self.error(span, "worklet calls only support Math helpers and worklets");
+                            self.error(
+                                span,
+                                "worklet calls only support Math helpers and worklets",
+                            );
                             return self.null(span);
                         };
                         if object.name.as_str() != "Math" {
-                            self.error(span, "worklet calls only support Math helpers and worklets");
+                            self.error(
+                                span,
+                                "worklet calls only support Math helpers and worklets",
+                            );
                             return self.null(span);
                         }
                         member.property.name.as_str().to_string()
@@ -2429,7 +2661,10 @@ impl<'a> Lower<'a> {
                     }
                 };
                 if name == "withTiming" || name == "withSpring" {
-                    self.error(span, format!("{name} is only valid as a shared value assignment"));
+                    self.error(
+                        span,
+                        format!("{name} is only valid as a shared value assignment"),
+                    );
                     return self.null(span);
                 }
                 if name == "cancelAnimation" {
@@ -2593,10 +2828,8 @@ impl<'a> Lower<'a> {
     /// Fail the compile when the module's worklets call each other in a cycle.
     fn check_worklet_recursion(&mut self) {
         let edges: Vec<(String, Vec<String>)> = self.worklets.clone();
-        let mut colors: HashMap<String, u8> = edges
-            .iter()
-            .map(|(name, _)| (name.clone(), 0))
-            .collect();
+        let mut colors: HashMap<String, u8> =
+            edges.iter().map(|(name, _)| (name.clone(), 0)).collect();
         for (name, _) in &edges {
             if dfs_cycle(name, &edges, &mut colors) {
                 self.error(SPAN, "worklet recursion is not supported");
@@ -2645,7 +2878,11 @@ fn event_field(name: &str) -> Option<u8> {
 }
 
 /// Depth-first cycle detection over the worklet call graph.
-fn dfs_cycle(name: &str, edges: &[(String, Vec<String>)], colors: &mut HashMap<String, u8>) -> bool {
+fn dfs_cycle(
+    name: &str,
+    edges: &[(String, Vec<String>)],
+    colors: &mut HashMap<String, u8>,
+) -> bool {
     match colors.get(name).copied().unwrap_or(2) {
         1 => return true,
         2 => return false,
@@ -2796,9 +3033,7 @@ impl<'a> VisitMut<'a> for Lower<'a> {
                     && matches!(&declarator.id, BindingPattern::BindingIdentifier(_)) =>
             {
                 match &declarator.id {
-                    BindingPattern::BindingIdentifier(id) => {
-                        Some(id.name.as_str().to_string())
-                    }
+                    BindingPattern::BindingIdentifier(id) => Some(id.name.as_str().to_string()),
                     _ => None,
                 }
             }
@@ -2852,8 +3087,7 @@ impl<'a> Lower<'a> {
             };
             if is_component_name(id.name.as_str()) {
                 let key = format!("{module_key}:{}", id.name.as_str());
-                let registration =
-                    self.hot_register_function(id.span, id.name.as_str(), &key);
+                let registration = self.hot_register_function(id.span, id.name.as_str(), &key);
                 insertions.push((index, Vec::new(), vec![registration]));
             }
         }
@@ -2928,8 +3162,7 @@ impl<'a> Lower<'a> {
         let span = declaration.span;
         if let Some(name) = export_default_name(&declaration.declaration) {
             let mut after = Vec::new();
-            if let Some(registration_span) =
-                export_default_function_span(&declaration.declaration)
+            if let Some(registration_span) = export_default_function_span(&declaration.declaration)
             {
                 if is_component_name(name) {
                     let key = format!("{module_key}:{name}");
@@ -2979,8 +3212,7 @@ impl<'a> Lower<'a> {
             BindingIdentifier::new(SPAN, Ident::from(name), &self.builder),
             &self.builder,
         ));
-        let declarator =
-            VariableDeclarator::new(span, id, None, Some(init), false, &self.builder);
+        let declarator = VariableDeclarator::new(span, id, None, Some(init), false, &self.builder);
         let mut declarations = self.ast_vec();
         declarations.push(declarator);
         Statement::new_variable_declaration(
@@ -3069,14 +3301,14 @@ fn export_default_name<'a>(declaration: &ExportDefaultDeclarationKind<'a>) -> Op
         ExportDefaultDeclarationKind::FunctionDeclaration(function) => {
             function.id.as_ref().map(|id| id.name.as_str())
         }
-        ExportDefaultDeclarationKind::ClassDeclaration(class) => {
-            class.name().map(|id| id.as_str())
-        }
+        ExportDefaultDeclarationKind::ClassDeclaration(class) => class.name().map(|id| id.as_str()),
         _ => None,
     }
 }
 
-fn export_default_function_span<'a>(declaration: &ExportDefaultDeclarationKind<'a>) -> Option<Span> {
+fn export_default_function_span<'a>(
+    declaration: &ExportDefaultDeclarationKind<'a>,
+) -> Option<Span> {
     match declaration {
         ExportDefaultDeclarationKind::FunctionDeclaration(function) => {
             function.id.as_ref().map(|id| id.span)

@@ -17,6 +17,7 @@ path = "src/main.rs"
 sha2 = "0.10"
 
 [dependencies]
+bubble-compiler = { path = "../compiler" }
 bubble-bundler = { path = "../bundler" }
 serde_json = "1"
 sha1 = "0.10"

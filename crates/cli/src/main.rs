@@ -10,8 +10,9 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("bundle") => bundle_command(&args[1..]),
         Some("dev") => dev_command(&args[1..]),
+        Some("generate-dts") => generate_dts_command(&args[1..]),
         Some(other) => Err(format!(
-            "unknown command {other}; expected `bubble bundle` or `bubble dev`"
+            "unknown command {other}; expected `bubble bundle`, `bubble dev`, or `bubble generate-dts`"
         )),
         None => Err(usage()),
     };
@@ -24,8 +25,37 @@ fn main() -> ExitCode {
     }
 }
 
+fn generate_dts_command(args: &[String]) -> Result<(), String> {
+    let mut out = PathBuf::from("bubble-shell.d.ts");
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--out" => {
+                index += 1;
+                let value = args.get(index).ok_or("--out needs a path")?;
+                out = PathBuf::from(value);
+            }
+            other if other.starts_with("--") => {
+                return Err(format!("unknown option {other}"));
+            }
+            other => return Err(format!("unexpected argument {other}")),
+        }
+        index += 1;
+    }
+    if let Some(parent) = out.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("{}: {error}", parent.display()))?;
+        }
+    }
+    std::fs::write(&out, bubble_compiler::BUBBLE_SHELL_DTS)
+        .map_err(|error| format!("write {}: {error}", out.display()))?;
+    eprintln!("Generated {}", out.display());
+    Ok(())
+}
+
 fn usage() -> String {
-    "usage: bubble bundle <entries...> --out <dir> [--id <id>] [--dev]\n       bubble dev <entry> [--port <port>]".into()
+    "usage: bubble bundle <entries...> --out <dir> [--id <id>] [--dev]\n       bubble dev <entry> [--port <port>]\n       bubble generate-dts [--out <file>]".into()
 }
 
 fn dev_command(args: &[String]) -> Result<(), String> {

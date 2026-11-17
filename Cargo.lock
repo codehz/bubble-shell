@@ -138,6 +138,7 @@ name = "bubble-cli"
 version = "0.1.0"
 dependencies = [
  "bubble-bundler",
+ "bubble-compiler",
  "serde_json",
  "sha1",
  "sha2",
