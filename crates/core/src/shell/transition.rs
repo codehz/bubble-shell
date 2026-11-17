@@ -168,7 +168,7 @@ fn step_slot(slot: &mut TransitionSlot, now_ms: f64) -> (bool, bool) {
 
 impl Shell {
     pub(crate) fn style_transition_pending(&self) -> bool {
-        !self.transitions.active.is_empty()
+        !self.transitions.active.is_empty() || self.decorations.any_animating()
     }
     pub(super) fn commit_style_transitions(&mut self) {
         if !self.transitions.batch {

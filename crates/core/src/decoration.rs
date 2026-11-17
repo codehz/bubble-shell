@@ -499,6 +499,14 @@ impl DecorationDecls {
         decl.shown.matched = true;
     }
 
+    pub(crate) fn any_animating(&self) -> bool {
+        self.ordered
+            .decls
+            .iter()
+            .flatten()
+            .any(|decl| decl.motion.iter().any(Option::is_some))
+    }
+
     pub(crate) fn step_motion(&mut self, now_ms: f64) -> bool {
         let mut changed = false;
         for decl in self.ordered.decls.iter_mut().flatten() {

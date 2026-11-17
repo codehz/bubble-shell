@@ -256,6 +256,8 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 
 没有 op、没有动画、没有滚动时跳过绘制。
 
+`Shell::pending()` 包含共享变量动画、节点样式 transition，以及 `Border` / `Outline` / `Shadow` 继承的装饰 transition；即使指针已松开、节点本身没有属性变化，装饰动画仍驱动后续帧，直到收敛或被移除。
+
 ## 5. 布局、绘制与文本
 
 ### CSS 子集
