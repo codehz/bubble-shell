@@ -5,7 +5,7 @@ use crate::{
 
 /// Generated half of `bubble-shell.d.ts`. Hand-written generics (`Signal`,
 /// `Ref`, `SharedValue`, control flow, styles, worklets) are prepended by
-/// the CLI.
+/// the `bubble-dts` binary.
 pub fn generate(schema: &Schema) -> String {
     let mut out = String::new();
     out.push_str(
