@@ -46,6 +46,7 @@ object BubbleNative {
     external fun scrollYOf(handle: Long, node: Int): Float
     external fun setVisible(handle: Long, visible: Int)
     external fun registerFont(handle: Long, family: String, data: ByteArray)
+    external fun invalidateTextLayout(handle: Long): Int
     external fun nodeText(handle: Long, node: Int): String
     external fun nodeBox(handle: Long, node: Int): FloatArray
     external fun postEval(handle: Long, source: String)

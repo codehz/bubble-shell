@@ -1,27 +1,55 @@
 package dev.bubble.shell
 
 import android.graphics.Paint
-import android.graphics.Typeface
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.graphics.Typeface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.LinkedHashMap
 import kotlin.math.max
 import kotlin.math.min
 
 /** The StaticLayout BubbleView draws is the only geometry source for carets. */
 internal object FieldLayout {
     private const val MAGIC = 0x314C5342
+    private val editCache = TextLayoutCache()
 
     @JvmStatic
     var hostFamily: Typeface = Typeface.DEFAULT
+        set(value) {
+            if (field === value) return
+            field = value
+            editCache.clear()
+        }
 
-    fun paint(fontSize: Float, weight: Int): TextPaint {
-        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG)
-        paint.textSize = fontSize
-        paint.typeface = if (weight >= 600) Typeface.create(hostFamily, Typeface.BOLD) else hostFamily
-        return paint
+    fun clearEditCache() {
+        editCache.clear()
+    }
+
+    fun cachedSnapshot(
+        text: String,
+        width: Float,
+        fontSize: Float,
+        lineHeight: Float,
+        density: Float,
+        weight: Int,
+        align: Int,
+        revision: Long,
+        family: Typeface = hostFamily,
+    ): ByteArray {
+        return editCache.snapshot(
+            text,
+            width,
+            fontSize,
+            lineHeight,
+            density,
+            weight,
+            align,
+            revision,
+            family,
+        )
     }
 
     fun build(
@@ -140,5 +168,177 @@ internal object FieldLayout {
             }
         }
         return out
+    }
+}
+
+/**
+ * Bounded layouts for one host. Each entry owns its TextPaint, so a color
+ * write before draw cannot change another retained layout. Position, clip, and
+ * color are not part of the key.
+ */
+internal class TextLayoutCache(
+    private val layoutCap: Int = 256,
+    private val snapshotCap: Int = 64,
+) {
+    private class LayoutKey(
+        val text: String,
+        val widthPx: Int,
+        val fontSizeBits: Int,
+        val lineHeightBits: Int,
+        val weight: Int,
+        val align: Int,
+        val family: Typeface,
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            val key = other as? LayoutKey ?: return false
+            return widthPx == key.widthPx &&
+                fontSizeBits == key.fontSizeBits &&
+                lineHeightBits == key.lineHeightBits &&
+                weight == key.weight &&
+                align == key.align &&
+                family === key.family &&
+                text == key.text
+        }
+
+        override fun hashCode(): Int {
+            var result = text.hashCode()
+            result = 31 * result + widthPx
+            result = 31 * result + fontSizeBits
+            result = 31 * result + lineHeightBits
+            result = 31 * result + weight
+            result = 31 * result + align
+            result = 31 * result + System.identityHashCode(family)
+            return result
+        }
+    }
+
+    private class SnapshotKey(
+        val text: String,
+        val widthBits: Int,
+        val fontSizeBits: Int,
+        val lineHeightBits: Int,
+        val densityBits: Int,
+        val weight: Int,
+        val align: Int,
+        val revision: Long,
+        val family: Typeface,
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            val key = other as? SnapshotKey ?: return false
+            return widthBits == key.widthBits &&
+                fontSizeBits == key.fontSizeBits &&
+                lineHeightBits == key.lineHeightBits &&
+                densityBits == key.densityBits &&
+                weight == key.weight &&
+                align == key.align &&
+                revision == key.revision &&
+                family === key.family &&
+                text == key.text
+        }
+
+        override fun hashCode(): Int {
+            var result = text.hashCode()
+            result = 31 * result + widthBits
+            result = 31 * result + fontSizeBits
+            result = 31 * result + lineHeightBits
+            result = 31 * result + densityBits
+            result = 31 * result + weight
+            result = 31 * result + align
+            result = 31 * result + revision.hashCode()
+            result = 31 * result + System.identityHashCode(family)
+            return result
+        }
+    }
+
+    private class Lru<K, V>(private val cap: Int) : LinkedHashMap<K, V>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<K, V>?): Boolean = size > cap
+    }
+
+    private val layouts = Lru<LayoutKey, StaticLayout>(layoutCap)
+    private val snapshots = Lru<SnapshotKey, ByteArray>(snapshotCap)
+    private val lock = Any()
+
+    fun clear() {
+        synchronized(lock) {
+            layouts.clear()
+            snapshots.clear()
+        }
+    }
+
+    fun layout(
+        text: String,
+        width: Float,
+        fontSize: Float,
+        lineHeight: Float,
+        weight: Int,
+        align: Int,
+        family: Typeface,
+    ): StaticLayout {
+        val key = LayoutKey(
+            text,
+            width.toInt().coerceAtLeast(1),
+            java.lang.Float.floatToIntBits(fontSize),
+            java.lang.Float.floatToIntBits(lineHeight),
+            weight,
+            align,
+            family,
+        )
+        synchronized(lock) {
+            layouts[key]?.let { return it }
+        }
+        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        paint.textSize = fontSize
+        paint.typeface = if (weight >= 600) Typeface.create(family, Typeface.BOLD) else family
+        val built = FieldLayout.build(text, paint, width, lineHeight, fontSize, align)
+        synchronized(lock) {
+            layouts[key]?.let { return it }
+            layouts[key] = built
+            return built
+        }
+    }
+
+    fun snapshot(
+        text: String,
+        width: Float,
+        fontSize: Float,
+        lineHeight: Float,
+        density: Float,
+        weight: Int,
+        align: Int,
+        revision: Long,
+        family: Typeface,
+    ): ByteArray {
+        val key = SnapshotKey(
+            text,
+            java.lang.Float.floatToIntBits(width),
+            java.lang.Float.floatToIntBits(fontSize),
+            java.lang.Float.floatToIntBits(lineHeight),
+            java.lang.Float.floatToIntBits(density),
+            weight,
+            align,
+            revision,
+            family,
+        )
+        synchronized(lock) {
+            snapshots[key]?.let { return it }
+        }
+        val layout = layout(text, width, fontSize, lineHeight, weight, align, family)
+        val bytes = FieldLayout.snapshot(
+            text,
+            layout,
+            width,
+            fontSize,
+            lineHeight,
+            density,
+            weight,
+            align,
+            revision,
+        )
+        synchronized(lock) {
+            snapshots[key] = bytes
+        }
+        return bytes
     }
 }

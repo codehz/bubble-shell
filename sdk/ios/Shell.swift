@@ -95,6 +95,8 @@ func bubble_scroll_y_of(_ shell: OpaquePointer?, _ handle: UInt32) -> Float
 func bubble_register_font(_ shell: OpaquePointer?, _ family: UnsafePointer<CChar>?, _ data: UnsafePointer<UInt8>?, _ len: UInt32)
 @_silgen_name("bubble_font_epoch")
 func bubble_font_epoch(_ shell: OpaquePointer?) -> UInt32
+@_silgen_name("bubble_invalidate_text_layout")
+func bubble_invalidate_text_layout(_ shell: OpaquePointer?) -> Int32
 @_silgen_name("bubble_node_text")
 func bubble_node_text(_ shell: OpaquePointer?, _ handle: UInt32, _ buf: UnsafeMutablePointer<CChar>?, _ cap: UInt32) -> Int32
 @_silgen_name("bubble_node_box")
@@ -120,35 +122,28 @@ struct BubbleHost {
     var layout: (@convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, Float, Float, Float, UInt16, UInt8, Float, UInt64, UnsafeMutablePointer<UInt8>?, UInt32) -> Int32)?
 }
 
-var hostFamily = "Arial"
-
-let measure: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, Float, Float, UInt16, Float, Int32, UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?) -> Void = { _, text, len, fontSize, lineHeight, weight, maxWidth, hasMax, outW, outH in
-    let bytes = text.map { Array(UnsafeBufferPointer(start: $0, count: Int(len))) } ?? []
-    let string = String(bytes: bytes, encoding: .utf8) ?? ""
-    let size = hostFamily.isEmpty
-        ? UIFont.systemFont(ofSize: CGFloat(fontSize), weight: weight >= 600 ? .semibold : .regular)
-        : (UIFont(name: hostFamily, size: CGFloat(fontSize)) ?? UIFont.systemFont(ofSize: CGFloat(fontSize)))
-    let limit = hasMax != 0 ? CGFloat(maxWidth) : CGFloat.greatestFiniteMagnitude
-    let rect = (string as NSString).boundingRect(
-        with: CGSize(width: limit, height: .greatestFiniteMagnitude),
-        options: [.usesLineFragmentOrigin, .usesFontLeading],
-        attributes: [.font: size],
-        context: nil
-    )
-    outW?.pointee = Float(ceil(rect.width))
-    if lineHeight > 0 {
-        let natural = ceil(size.lineHeight)
-        let lines = max(1, ceil(rect.height / natural))
-        outH?.pointee = Float(lines * CGFloat(lineHeight))
-    } else {
-        outH?.pointee = Float(ceil(rect.height))
+var hostFamily = "Arial" {
+    didSet {
+        if oldValue != hostFamily {
+            HostTextCache.clearRegistered()
+        }
     }
 }
 
-let layoutText: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, Float, Float, Float, UInt16, UInt8, Float, UInt64, UnsafeMutablePointer<UInt8>?, UInt32) -> Int32 = { _, text, len, width, fontSize, lineHeight, weight, align, density, revision, out, cap in
+let measure: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, Float, Float, UInt16, Float, Int32, UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?) -> Void = { ctx, text, len, fontSize, lineHeight, weight, maxWidth, hasMax, outW, outH in
     let bytes = text.map { Array(UnsafeBufferPointer(start: $0, count: Int(len))) } ?? []
     let string = String(bytes: bytes, encoding: .utf8) ?? ""
-    let data = layoutSnapshot(string, CGFloat(width), CGFloat(fontSize), CGFloat(lineHeight), weight, align, density, revision)
+    let size = hostTextCache(ctx)?.measure(string, fontSize, lineHeight, weight, maxWidth, hasMax != 0)
+        ?? measureText(string, fontSize, lineHeight, weight, maxWidth, hasMax != 0)
+    outW?.pointee = size.0
+    outH?.pointee = size.1
+}
+
+let layoutText: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, Float, Float, Float, UInt16, UInt8, Float, UInt64, UnsafeMutablePointer<UInt8>?, UInt32) -> Int32 = { ctx, text, len, width, fontSize, lineHeight, weight, align, density, revision, out, cap in
+    let bytes = text.map { Array(UnsafeBufferPointer(start: $0, count: Int(len))) } ?? []
+    let string = String(bytes: bytes, encoding: .utf8) ?? ""
+    let data = hostTextCache(ctx)?.snapshot(string, CGFloat(width), CGFloat(fontSize), CGFloat(lineHeight), weight, align, density, revision)
+        ?? layoutSnapshot(string, CGFloat(width), CGFloat(fontSize), CGFloat(lineHeight), weight, align, density, revision)
     if data.count > Int(cap) { return Int32(data.count) }
     guard let out else { return -1 }
     data.withUnsafeBytes { raw in
@@ -159,21 +154,242 @@ let layoutText: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?,
     return Int32(data.count)
 }
 
-func layoutSnapshot(_ text: String, _ width: CGFloat, _ fontSize: CGFloat, _ lineHeight: CGFloat, _ weight: UInt16, _ align: UInt8, _ density: Float, _ revision: UInt64) -> Data {
-    let font = hostFamily.isEmpty
-        ? UIFont.systemFont(ofSize: fontSize, weight: weight >= 600 ? .semibold : .regular)
-        : (UIFont(name: hostFamily, size: fontSize) ?? UIFont.systemFont(ofSize: fontSize))
+private let textFrameHeight: CGFloat = 100000
+private let foregroundFromContext = NSAttributedString.Key(rawValue: kCTForegroundColorFromContextAttributeName as String)
+
+private func hostUIFont(size: CGFloat, weight: UInt16) -> UIFont {
+    if hostFamily.isEmpty {
+        return UIFont.systemFont(ofSize: size, weight: weight >= 600 ? .semibold : .regular)
+    }
+    return UIFont(name: hostFamily, size: size) ?? UIFont.systemFont(ofSize: size)
+}
+
+private func hostParagraph(lineHeight: CGFloat, align: UInt8) -> NSMutableParagraphStyle {
     let paragraph = NSMutableParagraphStyle()
     if lineHeight > 0 {
         paragraph.minimumLineHeight = lineHeight
         paragraph.maximumLineHeight = lineHeight
     }
     paragraph.alignment = align == 1 ? .center : (align == 2 ? .right : .left)
-    let attributed = NSAttributedString(string: text, attributes: [.font: font, .paragraphStyle: paragraph])
+    return paragraph
+}
+
+func measureText(_ text: String, _ fontSize: Float, _ lineHeight: Float, _ weight: UInt16, _ maxWidth: Float, _ hasMax: Bool) -> (Float, Float) {
+    let size = hostUIFont(size: CGFloat(fontSize), weight: weight)
+    let limit = hasMax ? CGFloat(maxWidth) : CGFloat.greatestFiniteMagnitude
+    let rect = (text as NSString).boundingRect(
+        with: CGSize(width: limit, height: .greatestFiniteMagnitude),
+        options: [.usesLineFragmentOrigin, .usesFontLeading],
+        attributes: [.font: size],
+        context: nil
+    )
+    let width = Float(ceil(rect.width))
+    let height: Float
+    if lineHeight > 0 {
+        let natural = ceil(size.lineHeight)
+        let lines = max(1, ceil(rect.height / natural))
+        height = Float(lines * CGFloat(lineHeight))
+    } else {
+        height = Float(ceil(rect.height))
+    }
+    return (width, height)
+}
+
+private func makeDrawFrame(_ text: String, _ width: CGFloat, _ fontSize: CGFloat, _ lineHeight: CGFloat, _ weight: UInt16, _ align: UInt8) -> CTFrame {
+    let attributes: [NSAttributedString.Key: Any] = [
+        .font: hostUIFont(size: fontSize, weight: weight),
+        .paragraphStyle: hostParagraph(lineHeight: lineHeight, align: align),
+        foregroundFromContext: true,
+    ]
+    let attributed = NSAttributedString(string: text, attributes: attributes)
     let setter = CTFramesetterCreateWithAttributedString(attributed)
-    let pathHeight: CGFloat = 100000
-    let path = CGPath(rect: CGRect(x: 0, y: 0, width: max(width, 1), height: pathHeight), transform: nil)
-    let frame = CTFramesetterCreateFrame(setter, CFRange(location: 0, length: attributed.length), path, nil)
+    let path = CGPath(rect: CGRect(x: 0, y: 0, width: max(width, 1), height: textFrameHeight), transform: nil)
+    return CTFramesetterCreateFrame(setter, CFRange(location: 0, length: attributed.length), path, nil)
+}
+
+private func hostTextCache(_ ctx: UnsafeMutableRawPointer?) -> HostTextCache? {
+    guard let ctx else { return nil }
+    return Unmanaged<HostTextCache>.fromOpaque(ctx).takeUnretainedValue()
+}
+
+private struct FrameKey: Hashable {
+    var text: String
+    var width: UInt
+    var fontSize: UInt
+    var lineHeight: UInt
+    var weight: UInt16
+    var align: UInt8
+    var family: String
+    var epoch: UInt32
+}
+
+private struct SnapshotKey: Hashable {
+    var text: String
+    var width: UInt
+    var fontSize: UInt
+    var lineHeight: UInt
+    var weight: UInt16
+    var align: UInt8
+    var density: UInt32
+    var revision: UInt64
+    var family: String
+    var epoch: UInt32
+}
+
+private struct MeasureKey: Hashable {
+    var text: String
+    var fontSize: UInt32
+    var lineHeight: UInt32
+    var weight: UInt16
+    var maxWidth: UInt32
+    var hasMax: Bool
+    var family: String
+    var epoch: UInt32
+}
+
+private final class Lru<Key: Hashable, Value> {
+    let cap: Int
+    private var map: [Key: Value] = [:]
+    private var order: [Key] = []
+    init(cap: Int) { self.cap = cap }
+    func get(_ key: Key) -> Value? {
+        guard let value = map[key] else { return nil }
+        if let index = order.firstIndex(of: key) {
+            order.remove(at: index)
+            order.append(key)
+        }
+        return value
+    }
+    func put(_ key: Key, _ value: Value) {
+        if map[key] != nil {
+            map[key] = value
+            if let index = order.firstIndex(of: key) {
+                order.remove(at: index)
+            }
+        } else {
+            map[key] = value
+        }
+        order.append(key)
+        while order.count > cap {
+            map.removeValue(forKey: order.removeFirst())
+        }
+    }
+    func clear() {
+        map.removeAll()
+        order.removeAll()
+    }
+}
+
+final class HostTextCache: NSObject {
+    private static let registry = NSHashTable<HostTextCache>.weakObjects()
+    private static let registryLock = NSLock()
+    var shell: OpaquePointer?
+    private var seenEpoch: UInt32 = 0
+    private var seenFamily = hostFamily
+    private let frames = Lru<FrameKey, CTFrame>(cap: 256)
+    private let snapshots = Lru<SnapshotKey, Data>(cap: 64)
+    private let measures = Lru<MeasureKey, (Float, Float)>(cap: 256)
+
+    override init() {
+        super.init()
+        Self.registryLock.lock()
+        Self.registry.add(self)
+        Self.registryLock.unlock()
+    }
+
+    static func clearRegistered() {
+        registryLock.lock()
+        let all = registry.allObjects
+        registryLock.unlock()
+        for cache in all {
+            cache.clear()
+            if let shell = cache.shell { precondition(bubble_invalidate_text_layout(shell) == 0) }
+        }
+    }
+
+    func clear() {
+        seenEpoch = bubble_font_epoch(shell)
+        seenFamily = hostFamily
+        frames.clear()
+        snapshots.clear()
+        measures.clear()
+    }
+
+    private func prepare() {
+        let next = bubble_font_epoch(shell)
+        if next != seenEpoch || seenFamily != hostFamily {
+            seenEpoch = next
+            seenFamily = hostFamily
+            frames.clear()
+            snapshots.clear()
+            measures.clear()
+        }
+    }
+
+    func drawFrame(_ text: String, _ width: CGFloat, _ fontSize: CGFloat, _ lineHeight: CGFloat, _ weight: UInt16, _ align: UInt8) -> CTFrame {
+        prepare()
+        let key = FrameKey(
+            text: text,
+            width: width.bitPattern,
+            fontSize: fontSize.bitPattern,
+            lineHeight: lineHeight.bitPattern,
+            weight: weight,
+            align: align,
+            family: seenFamily,
+            epoch: seenEpoch
+        )
+        if let hit = frames.get(key) { return hit }
+        let frame = makeDrawFrame(text, width, fontSize, lineHeight, weight, align)
+        frames.put(key, frame)
+        return frame
+    }
+
+    func snapshot(_ text: String, _ width: CGFloat, _ fontSize: CGFloat, _ lineHeight: CGFloat, _ weight: UInt16, _ align: UInt8, _ density: Float, _ revision: UInt64) -> Data {
+        prepare()
+        let key = SnapshotKey(
+            text: text,
+            width: width.bitPattern,
+            fontSize: fontSize.bitPattern,
+            lineHeight: lineHeight.bitPattern,
+            weight: weight,
+            align: align,
+            density: density.bitPattern,
+            revision: revision,
+            family: seenFamily,
+            epoch: seenEpoch
+        )
+        if let hit = snapshots.get(key) { return hit }
+        let data = encodeLayout(text, drawFrame(text, width, fontSize, lineHeight, weight, align), width, fontSize, lineHeight, weight, align, density, revision)
+        snapshots.put(key, data)
+        return data
+    }
+
+    func measure(_ text: String, _ fontSize: Float, _ lineHeight: Float, _ weight: UInt16, _ maxWidth: Float, _ hasMax: Bool) -> (Float, Float) {
+        prepare()
+        let key = MeasureKey(
+            text: text,
+            fontSize: fontSize.bitPattern,
+            lineHeight: lineHeight.bitPattern,
+            weight: weight,
+            maxWidth: hasMax ? maxWidth.bitPattern : 0,
+            hasMax: hasMax,
+            family: seenFamily,
+            epoch: seenEpoch
+        )
+        if let hit = measures.get(key) { return hit }
+        let size = measureText(text, fontSize, lineHeight, weight, maxWidth, hasMax)
+        measures.put(key, size)
+        return size
+    }
+}
+
+
+func layoutSnapshot(_ text: String, _ width: CGFloat, _ fontSize: CGFloat, _ lineHeight: CGFloat, _ weight: UInt16, _ align: UInt8, _ density: Float, _ revision: UInt64) -> Data {
+    encodeLayout(text, makeDrawFrame(text, width, fontSize, lineHeight, weight, align), width, fontSize, lineHeight, weight, align, density, revision)
+}
+
+func encodeLayout(_ text: String, _ frame: CTFrame, _ width: CGFloat, _ fontSize: CGFloat, _ lineHeight: CGFloat, _ weight: UInt16, _ align: UInt8, _ density: Float, _ revision: UInt64) -> Data {
+    let pathHeight = textFrameHeight
     let lines = (CTFrameGetLines(frame) as? [CTLine]) ?? []
     var origins = Array(repeating: CGPoint.zero, count: max(lines.count, 1))
     if !lines.isEmpty {
@@ -355,12 +571,17 @@ final class BubbleView: UIView {
     }
 
     fileprivate let shell: OpaquePointer
+    private let textCache: HostTextCache
 
     override init(frame: CGRect) {
-        var host = BubbleHost(measure: measure, ctx: nil, layout: layoutText)
+        let cache = HostTextCache()
+        let ctx = Unmanaged.passUnretained(cache).toOpaque()
+        var host = BubbleHost(measure: measure, ctx: ctx, layout: layoutText)
         guard let created = bubble_create(&host) else {
             fatalError("bubble_create failed")
         }
+        cache.shell = created
+        textCache = cache
         shell = created
         super.init(frame: frame)
         isMultipleTouchEnabled = true
@@ -413,6 +634,7 @@ final class BubbleView: UIView {
                 bubble_register_font(shell, familyPtr, bytes, UInt32(data.count))
             }
         }
+        textCache.clear()
     }
 
 
@@ -617,30 +839,13 @@ final class BubbleView: UIView {
                 guard let x = f32(), let y = f32(), let w = f32(), let h = f32(), let font = f32(), let red = f32(), let green = f32(), let blue = f32(), let alpha = f32(), let lineHeight = f32(), let weight = u16(), let align = u8(), let nbytes = u32() else { return }
                 guard let raw = take(Int(nbytes)) else { return }
                 let text = String(data: raw, encoding: .utf8) ?? ""
-                let uiFont: UIFont = hostFamily.isEmpty
-                    ? UIFont.systemFont(ofSize: font, weight: weight >= 600 ? .semibold : .regular)
-                    : (UIFont(name: hostFamily, size: font) ?? UIFont.systemFont(ofSize: font))
-                let paragraph = NSMutableParagraphStyle()
-                if lineHeight > 0 {
-                    paragraph.minimumLineHeight = lineHeight
-                    paragraph.maximumLineHeight = lineHeight
-                }
-                paragraph.alignment = align == 1 ? .center : (align == 2 ? .right : .left)
                 let color = colorOf(red, green, blue, alpha)
-                let attributed = NSAttributedString(string: text, attributes: [
-                    .font: uiFont,
-                    .foregroundColor: color,
-                    .paragraphStyle: paragraph,
-                ])
-                let pathHeight: CGFloat = 100000
-                let setter = CTFramesetterCreateWithAttributedString(attributed)
-                let path = CGPath(rect: CGRect(x: 0, y: 0, width: max(CGFloat(w), 1), height: pathHeight), transform: nil)
-                let frame = CTFramesetterCreateFrame(setter, CFRange(location: 0, length: attributed.length), path, nil)
+                let frame = textCache.drawFrame(text, w, font, lineHeight, weight, align)
                 if let ctx = UIGraphicsGetCurrentContext() {
                     ctx.saveGState()
                     ctx.translateBy(x: CGFloat(x), y: CGFloat(y))
                     ctx.clip(to: CGRect(x: 0, y: 0, width: CGFloat(max(w, 0)), height: CGFloat(max(h, 0))))
-                    ctx.translateBy(x: 0, y: pathHeight)
+                    ctx.translateBy(x: 0, y: textFrameHeight)
                     ctx.scaleBy(x: 1, y: -1)
                     ctx.setFillColor(color.cgColor)
                     CTFrameDraw(frame, ctx)

@@ -277,8 +277,9 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 
 - Taffy 负责 flex、绝对定位、尺寸约束。
 - 文本通过 measure 回调参与布局；回调携带 `font_size`、`line_height`、`font_weight` 与可用宽度。图片由显式 `width`/`height`（或父级约束）决定盒子，不做内禀尺寸测量。
-- 脏节点向上/向下传播；布局结果缓存到帧结束。
-- `Shell::paint` 缓存已生成的 `PaintCmd` 列表；op、viewport、layout、滚动变化会使缓存失效。当前只避免重复遍历树，宿主仍清整表面；矩形脏区与静态子树缓存待在绘制层实现。
+- Taffy 的脏标记从布局输入变化的节点向祖先传播，干净子树复用尺寸结果；相同样式或文本测量输入不重复提交。滚动只更新坐标、裁剪和绘制，不使尺寸布局失效。内容尺寸变化时，先夹紧滚动偏移，再更新最终屏幕坐标。
+- TextField 内容尺寸、省略号结果按文本测量输入与有效宽度复用；字段编辑快照按实际文本、secure 状态与完整 `LayoutKey` 复用。编辑 batch 内即使 revision 未变，文本变化仍会使快照失效。光标与选区使用内容坐标，滚动后重新映射到屏幕坐标。
+- `Shell::paint` 缓存已生成的 `PaintCmd` 列表；op、viewport、layout、滚动变化会使缓存失效。宿主仍清整表面；矩形脏区与静态子树缓存待在绘制层实现。
 
 ### 文本
 
@@ -290,8 +291,8 @@ runtime 自持 vsync：`CADisplayLink` / `Choreographer` / `requestAnimationFram
 - `textOverflow: "ellipsis"` 只作用于 `Text`。布局之后，用同一次测量把绘制字符串截成容器宽度并追加 `…`。`lineClamp` 为 0 或 1 时整段按单行截断，布局高度也是一行；大于等于 2 时保留前 N−1 行换行结果，只截断第 N 行，布局高度为 `min(换行数, lineClamp)` 行。未设置 `lineHeight` 时行高取宿主对单行的测量。`TextField` 不截断：单行横向滚动，多行纵向滚动。
 - 文本的 min-content 宽度是最长单词，不是整段不换行宽度。定宽父级里的段落因此换行，而不会把父级撑出视口。
 - 静态 JSX 文本按 HTML 折叠空白：连续空白变成一个空格，首尾空白去掉。表达式产生的字符串保持原样。
-- 缓存 key：`(text, style, maxWidth, fontEpoch)`。
-- 宿主注入字体时递增 `fontEpoch`，清空文本缓存。
+- 宿主以文本、有效宽度、字体及行高、对齐和字体环境为输入，使用有容量上限的排版缓存；屏幕位置与裁剪不进入几何缓存键。Web 绘制只读取行布局，编辑请求才生成 caret、runs 与 BLS1 数据；原生绘制复用 Core Text frame / StaticLayout。
+- 宿主注入字体时递增 `fontEpoch`，使宿主缓存与 Core 文本结果失效。直接切换 SDK 宿主字体时也使 Core 失效。自定义 Rust 宿主改变字体环境后调用 `Shell::invalidate_text_layout()`，C 宿主调用 `bubble_invalidate_text_layout()`；Web 字体加载完成时调用 wasm 同名入口后重新布局。
 - 三端换行/基线差异是接受的；内容避免依赖固定文本高度。
 
 ### 绘制

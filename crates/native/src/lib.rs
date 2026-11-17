@@ -1455,6 +1455,16 @@ pub extern "C" fn bubble_set_visible(shell: *mut BubbleShell, visible: i32) {
 }
 
 #[no_mangle]
+pub extern "C" fn bubble_invalidate_text_layout(shell: *mut BubbleShell) -> i32 {
+    let result = catch(|| {
+        let engine = engine(shell)?;
+        let mut tree = lock_or(&engine.shared.shell, "tree lock poisoned")?;
+        tree.invalidate_text_layout()
+    });
+    finish(shell, result)
+}
+
+#[no_mangle]
 pub extern "C" fn bubble_register_font(
     shell: *mut BubbleShell,
     family: *const c_char,
@@ -2433,6 +2443,15 @@ mod android {
             bytes.as_ptr().cast(),
             bytes.len() as u32,
         );
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_dev_bubble_shell_BubbleNative_invalidateTextLayout<'a>(
+        _env: JNIEnv<'a>,
+        _class: JClass<'a>,
+        shell: jlong,
+    ) -> jint {
+        super::bubble_invalidate_text_layout(shell as *mut super::BubbleShell)
     }
 
     #[no_mangle]

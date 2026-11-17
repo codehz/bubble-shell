@@ -104,6 +104,8 @@ int bubble_selection_rect(BubbleShell *shell, uint32_t index, float *x, float *y
 void bubble_register_font(BubbleShell *shell, const char *family, const uint8_t *data, uint32_t len);
 uint32_t bubble_font_epoch(BubbleShell *shell);
 uint32_t bubble_font_count(BubbleShell *shell);
+/* Invalidate measured text and editing geometry after changing host fonts. */
+int bubble_invalidate_text_layout(BubbleShell *shell);
 
 int bubble_node_text(BubbleShell *shell, uint32_t handle, char *buf, uint32_t cap);
 int bubble_node_box(BubbleShell *shell, uint32_t handle, float *x, float *y, float *w, float *h);

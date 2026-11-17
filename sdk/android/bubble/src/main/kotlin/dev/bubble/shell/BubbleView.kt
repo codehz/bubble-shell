@@ -55,6 +55,7 @@ class BubbleError(message: String) : Exception(message)
 class BubbleView(context: Context) : View(context) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+    private val textCache = TextLayoutCache()
     private val imagePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFilterBitmap = true }
     private val fadePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
@@ -98,8 +99,13 @@ class BubbleView(context: Context) : View(context) {
     }
 
     fun setHostTypeface(typeface: Typeface) {
+        val changed = family !== typeface
         family = typeface
         FieldLayout.hostFamily = typeface
+        if (changed) {
+            textCache.clear()
+            if (engine) check(BubbleNative.invalidateTextLayout(handle) == 0)
+        }
     }
 
     fun open(storageDir: File, font: ByteArray, manifest: String?, entry: ByteArray?, devUrl: String?) {
@@ -144,6 +150,8 @@ class BubbleView(context: Context) : View(context) {
 
     fun registerFont(family: String, data: ByteArray) {
         BubbleNative.registerFont(handle, family, data)
+        textCache.clear()
+        FieldLayout.clearEditCache()
     }
 
 
@@ -192,12 +200,14 @@ class BubbleView(context: Context) : View(context) {
     fun paintSize(): Int = paintBytes.size
 
     fun refresh() {
-        BubbleNative.tick(handle, SystemClock.uptimeMillis().toDouble())
-        drainHostCalls(context, handle)
-        val size = contentSize()
-        paintBytes = BubbleNative.frame(handle, size[0], size[1])
-        updateSemantics()
-        updateInputSession()
+        withEditingCache(textCache, family) {
+            BubbleNative.tick(handle, SystemClock.uptimeMillis().toDouble())
+            drainHostCalls(context, handle)
+            val size = contentSize()
+            paintBytes = BubbleNative.frame(handle, size[0], size[1])
+            updateSemantics()
+            updateInputSession()
+        }
         invalidate()
     }
 
@@ -527,24 +537,26 @@ class BubbleView(context: Context) : View(context) {
                     val w = buffer.float
                     val h = buffer.float
                     val font = buffer.float
-                    textPaint.color = color(buffer.float, buffer.float, buffer.float, buffer.float)
+                    val packed = color(buffer.float, buffer.float, buffer.float, buffer.float)
                     val lineHeight = buffer.float
                     val weight = buffer.short.toInt() and 0xffff
                     val align = buffer.get().toInt() and 0xff
-                    textPaint.typeface = if (weight >= 600) Typeface.create(family, Typeface.BOLD) else family
-                    textPaint.textSize = font
                     val n = buffer.int
                     val raw = ByteArray(n)
                     buffer.get(raw)
                     val text = String(raw, Charsets.UTF_8)
                     if (text.isNotEmpty() && w > 0f) {
-                        val layout = FieldLayout.build(text, textPaint, w, lineHeight, font, align)
+                        val layout = textCache.layout(text, w, font, lineHeight, weight, align, family)
+                        layout.paint.color = packed
                         canvas.save()
                         canvas.translate(x, y)
                         canvas.clipRect(0f, 0f, w, h)
                         layout.draw(canvas)
                         canvas.restore()
                     } else {
+                        textPaint.color = packed
+                        textPaint.typeface = if (weight >= 600) Typeface.create(family, Typeface.BOLD) else family
+                        textPaint.textSize = font
                         canvas.drawText(text, x, y + font, textPaint)
                     }
                 }
@@ -991,7 +1003,10 @@ class BubbleView(context: Context) : View(context) {
     }
 
     fun cancelActivePointers(timeMs: Double) {
+        withEditingCache(textCache, family) { cancelPointers(timeMs) }
+    }
 
+    private fun cancelPointers(timeMs: Double) {
         if (!engine || activePointers.isEmpty()) return
         val ids = activePointers.toList()
         activePointers.clear()
@@ -1012,7 +1027,9 @@ class BubbleView(context: Context) : View(context) {
         super.onDetachedFromWindow()
     }
 
-    override fun onTouchEvent(event: MotionEvent): Boolean {
+    override fun onTouchEvent(event: MotionEvent): Boolean = withEditingCache(textCache, family) { touchEvent(event) }
+
+    private fun touchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 focusAtDown = BubbleNative.focused(handle)
@@ -1073,6 +1090,18 @@ class BubbleView(context: Context) : View(context) {
     }
 
     companion object {
+        private val editingHost = ThreadLocal<Pair<TextLayoutCache, Typeface>>()
+
+        private fun <T> withEditingCache(cache: TextLayoutCache, family: Typeface, block: () -> T): T {
+            val previous = editingHost.get()
+            editingHost.set(cache to family)
+            try {
+                return block()
+            } finally {
+                if (previous == null) editingHost.remove() else editingHost.set(previous)
+            }
+        }
+
         @JvmStatic
         fun layoutSnapshot(
             text: ByteArray,
@@ -1085,9 +1114,21 @@ class BubbleView(context: Context) : View(context) {
             revision: Long,
         ): ByteArray {
             val value = String(text, Charsets.UTF_8)
-            val paint = FieldLayout.paint(fontSize, weight)
-            val layout = FieldLayout.build(value, paint, width, lineHeight, fontSize, align)
-            return FieldLayout.snapshot(value, layout, width, fontSize, lineHeight, density, weight, align, revision)
+            val host = editingHost.get()
+            if (host != null) {
+                return host.first.snapshot(value, width, fontSize, lineHeight, density, weight, align, revision, host.second)
+            }
+            return FieldLayout.cachedSnapshot(
+                value,
+                width,
+                fontSize,
+                lineHeight,
+                density,
+                weight,
+                align,
+                revision,
+                FieldLayout.hostFamily,
+            )
         }
     }
 }
